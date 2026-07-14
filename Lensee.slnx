@@ -1,0 +1,16 @@
+<Solution>
+    <Project Path="backend/Lensee.Host/Lensee.Host.csproj" />
+    <Project Path="backend/Lensee.Modules.Catalog/Lensee.Modules.Catalog.csproj" />
+    <Project Path="backend/Lensee.Modules.CRM/Lensee.Modules.CRM.csproj" />
+    <Project Path="backend/Lensee.Modules.Identity/Lensee.Modules.Identity.csproj" />
+    <Project Path="backend/Lensee.Modules.Inventory/Lensee.Modules.Inventory.csproj" />
+    <Project Path="backend/Lensee.Modules.Notifications/Lensee.Modules.Notifications.csproj" />
+    <Project Path="backend/Lensee.Modules.Operations/Lensee.Modules.Operations.csproj" />
+    <Project Path="backend/Lensee.Modules.Payments/Lensee.Modules.Payments.csproj" />
+    <Project Path="backend/Lensee.Modules.Reporting/Lensee.Modules.Reporting.csproj" />
+    <Project Path="backend/Lensee.SharedKernel/Lensee.SharedKernel.csproj" />
+    <Project Path="backend/Lensee.Tests/Lensee.Tests.csproj" />
+    <Project Path="docker-compose.dcproj">
+        <Build />
+    </Project>
+</Solution>

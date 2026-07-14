@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>9d245472-c343-47de-9c30-70924ccadff5</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <DockerfileContext>..\..</DockerfileContext>
+    <DockerComposeProjectPath>..\..\docker-compose.dcproj</DockerComposeProjectPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediatR" Version="12.4.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.27" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.27" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.27">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+    <PackageReference Include="QuestPDF" Version="2024.12.1" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" /> 
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lensee.SharedKernel\Lensee.SharedKernel.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Identity\Lensee.Modules.Identity.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Catalog\Lensee.Modules.Catalog.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Inventory\Lensee.Modules.Inventory.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.CRM\Lensee.Modules.CRM.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Operations\Lensee.Modules.Operations.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Payments\Lensee.Modules.Payments.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Notifications\Lensee.Modules.Notifications.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Reporting\Lensee.Modules.Reporting.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,833 @@
+sku_id,sku_code,product_name,brand_name,category_name,power_sign,power_value,color_name,size,barcode,pieces_per_pack,sell_mode
+bceb7d7d-df3c-46ce-b8c7-7353f8d4aecd,CV-CL-M05-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Blue,Pack 2,,2,SinglePiece
+35e49eb4-5f83-4710-b8eb-ab1b73e0c3d8,CV-CL-M05-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Galaxy Gray,Pack 2,,2,SinglePiece
+eadac135-7e38-4e97-80d0-f89a7e60d1d7,CV-CL-M05-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Gray,Pack 2,,2,SinglePiece
+5e7ca58c-5423-48aa-900e-0650a3c02ffc,CV-CL-M05-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Green,Pack 2,,2,SinglePiece
+c9f32aad-c72f-4d74-a3ee-a3515878353e,CV-CL-M05-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Green 2T,Pack 2,,2,SinglePiece
+1b615470-b304-4dac-84c5-fcbc6f5986a7,CV-CL-M05-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Hazel,Pack 2,,2,SinglePiece
+e6f2aedd-6154-4ed8-b70c-1ded817676f0,CV-CL-M05-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Jewel Brown,Pack 2,,2,SinglePiece
+cf9c62b0-3beb-481f-b892-ccc2889d027e,CV-CL-M05-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Marine,Pack 2,,2,SinglePiece
+f701de07-8272-4a57-9c3c-102cf7fe07f7,CV-CL-M05-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Pure Hazel,Pack 2,,2,SinglePiece
+438bd6d6-76ee-4f01-824e-418040c05b6d,CV-CL-M05-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Selena Gray,Pack 2,,2,SinglePiece
+54ca8bbf-e247-4779-bea0-fd9c81ad33c7,CV-CL-M05-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,Sunset,Pack 2,,2,SinglePiece
+14902f53-2009-4ac3-9503-e109bb4d8344,CV-CL-M05-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.5,True Sapphire,Pack 2,,2,SinglePiece
+148d32b0-9dea-4f23-9e39-791ffeec2499,CV-CL-M075-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Blue,Pack 2,,2,SinglePiece
+13bbbe03-3afd-47d7-bde1-dfe567ce20ad,CV-CL-M075-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Galaxy Gray,Pack 2,,2,SinglePiece
+aa0159e4-b005-4b93-887e-ae0f50f4aff8,CV-CL-M075-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Gray,Pack 2,,2,SinglePiece
+36be6c62-4c94-4a36-847c-335188eb50a4,CV-CL-M075-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Green,Pack 2,,2,SinglePiece
+6fbc767d-484b-4e89-9c5a-aed23c0de69d,CV-CL-M075-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Green 2T,Pack 2,,2,SinglePiece
+efb296b0-69e3-4aba-a69f-a5832afa0e74,CV-CL-M075-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Hazel,Pack 2,,2,SinglePiece
+dc3746e1-e807-472a-9ecc-183310046eab,CV-CL-M075-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Jewel Brown,Pack 2,,2,SinglePiece
+1075f194-8e95-4f76-9519-ac7c29f2ec92,CV-CL-M075-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Marine,Pack 2,,2,SinglePiece
+418c4181-4f40-4072-8ec5-b8138d95ed89,CV-CL-M075-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Pure Hazel,Pack 2,,2,SinglePiece
+317c8ae1-1fcd-4339-b183-68a3cce4bf56,CV-CL-M075-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Selena Gray,Pack 2,,2,SinglePiece
+8c57a288-1b92-4558-ada5-10f91032db7a,CV-CL-M075-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,Sunset,Pack 2,,2,SinglePiece
+e2b07a99-2ecc-4479-8350-58ea3d795b1a,CV-CL-M075-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,0.75,True Sapphire,Pack 2,,2,SinglePiece
+c9a5ef9a-c85b-4fde-8d2d-1f79907352d5,CV-CL-M1-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Blue,Pack 2,,2,SinglePiece
+f7f3597d-b9c5-4b09-ab69-775746717ed7,CV-CL-M1-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Galaxy Gray,Pack 2,,2,SinglePiece
+ef79589b-617c-48c0-bfa1-d3d9c9d0ef09,CV-CL-M1-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Gray,Pack 2,,2,SinglePiece
+1e1a5c0f-673e-49ed-8a8e-4ab14c32511e,CV-CL-M1-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Green,Pack 2,,2,SinglePiece
+2bea28af-1adc-4372-8ed9-1b4382cf2d41,CV-CL-M1-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Green 2T,Pack 2,,2,SinglePiece
+e60c0059-9845-4630-94a0-438042efddf8,CV-CL-M1-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Hazel,Pack 2,,2,SinglePiece
+5df26f18-e582-47fa-96bb-ea9771073a9b,CV-CL-M1-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Jewel Brown,Pack 2,,2,SinglePiece
+5c222343-8f0a-4ca1-80ba-54044c9a012d,CV-CL-M1-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Marine,Pack 2,,2,SinglePiece
+d68164bf-b29f-4e92-ae56-80cb502bf988,CV-CL-M1-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Pure Hazel,Pack 2,,2,SinglePiece
+195f1f39-e2c9-4352-91cc-d7db4a158c5c,CV-CL-M1-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Selena Gray,Pack 2,,2,SinglePiece
+5cfb95c3-05e7-4677-a6ef-3f8dc19de84c,CV-CL-M1-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,Sunset,Pack 2,,2,SinglePiece
+9076679b-d41c-436a-b6c5-87121d22fcc3,CV-CL-M1-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1,True Sapphire,Pack 2,,2,SinglePiece
+154fea9f-912a-4114-a12c-9ea42fce846c,CV-CL-M10-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Blue,Pack 2,,2,SinglePiece
+f28a77ec-f6d4-4747-bec5-81755304dd80,CV-CL-M10-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Galaxy Gray,Pack 2,,2,SinglePiece
+ed0afb14-4047-4cfe-837d-00fdf03ba0c2,CV-CL-M10-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Gray,Pack 2,,2,SinglePiece
+5e0392b5-fc72-4dd7-9f3e-e1fc5be0f710,CV-CL-M10-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Green,Pack 2,,2,SinglePiece
+e5f4e861-438c-4327-b2eb-c2ea1cd19134,CV-CL-M10-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Green 2T,Pack 2,,2,SinglePiece
+b75a30c3-08d5-410e-845a-171982a45a0b,CV-CL-M10-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Hazel,Pack 2,,2,SinglePiece
+51ca23c5-bb4d-4f61-971c-10ff5aa09569,CV-CL-M10-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Jewel Brown,Pack 2,,2,SinglePiece
+20e0b770-ef43-4ca7-bd3b-15a688bf4d97,CV-CL-M10-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Marine,Pack 2,,2,SinglePiece
+12573e35-a4c3-49c5-b0ce-995f4bd8ccbd,CV-CL-M10-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Pure Hazel,Pack 2,,2,SinglePiece
+ae3456cd-f0c0-4b1f-bd2f-49f02b558867,CV-CL-M10-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Selena Gray,Pack 2,,2,SinglePiece
+23ba477e-df74-49f6-be51-73d0ac6f0467,CV-CL-M10-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,Sunset,Pack 2,,2,SinglePiece
+8cc17aef-11e4-41e6-9574-8cab9c1c99d7,CV-CL-M10-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,10,True Sapphire,Pack 2,,2,SinglePiece
+76697f75-615b-4b0a-8b11-3774dddf0b9f,CV-CL-M125-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Blue,Pack 2,,2,SinglePiece
+c47ec503-928d-4e72-b08a-22700fc1fea0,CV-CL-M125-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Galaxy Gray,Pack 2,,2,SinglePiece
+ccfd26d6-de87-4b57-8f72-a4a020ad27e6,CV-CL-M125-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Gray,Pack 2,,2,SinglePiece
+c4467081-ecdf-4eaf-b0d6-116d279fcad5,CV-CL-M125-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Green,Pack 2,,2,SinglePiece
+2b98e1cc-705d-4e15-a34c-33904aaa65e8,CV-CL-M125-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Green 2T,Pack 2,,2,SinglePiece
+29640e81-3e18-46d2-b693-e1ed5e97564f,CV-CL-M125-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Hazel,Pack 2,,2,SinglePiece
+09039c69-7f55-405e-bec3-23bab63155e0,CV-CL-M125-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Jewel Brown,Pack 2,,2,SinglePiece
+fd30b621-54bf-4dfa-8fea-a730c9ca8209,CV-CL-M125-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Marine,Pack 2,,2,SinglePiece
+e4422508-d05a-4956-aa35-23358e2e4e7a,CV-CL-M125-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Pure Hazel,Pack 2,,2,SinglePiece
+05e4dc62-a8dc-4edd-b029-e189e493844c,CV-CL-M125-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Selena Gray,Pack 2,,2,SinglePiece
+d896bbd8-4b07-4a37-950d-9b179ea3d10c,CV-CL-M125-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,Sunset,Pack 2,,2,SinglePiece
+d7705b66-4457-402a-8acd-d01b661b4cec,CV-CL-M125-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.25,True Sapphire,Pack 2,,2,SinglePiece
+fc84e12d-143c-4dfd-8674-60c15268a760,CV-CL-M15-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Blue,Pack 2,,2,SinglePiece
+771563a8-cf10-4b0e-b81f-e4b47b30c8a4,CV-CL-M15-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Galaxy Gray,Pack 2,,2,SinglePiece
+b0b503ed-5ecc-4dc5-a562-b38f6a881a81,CV-CL-M15-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Gray,Pack 2,,2,SinglePiece
+539d370f-4a71-4910-836c-7d27cdde6e78,CV-CL-M15-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Green,Pack 2,,2,SinglePiece
+b6d8fe17-9d62-427e-a065-049c19a46749,CV-CL-M15-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Green 2T,Pack 2,,2,SinglePiece
+e4de412b-f734-4be1-ac50-7e2e7ddb79b9,CV-CL-M15-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Hazel,Pack 2,,2,SinglePiece
+a35ca593-f1f9-4ab3-a8e5-93d85532d3b9,CV-CL-M15-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Jewel Brown,Pack 2,,2,SinglePiece
+a5935bf8-5234-4dd0-ab27-02942dbd1179,CV-CL-M15-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Marine,Pack 2,,2,SinglePiece
+47f7cdfe-ec09-4d1d-8ad6-7233b1abbe71,CV-CL-M15-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Pure Hazel,Pack 2,,2,SinglePiece
+e4121b2f-5d1e-4b97-a506-582a066de6b5,CV-CL-M15-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Selena Gray,Pack 2,,2,SinglePiece
+543a265c-0685-4a97-a0f0-b581695da69e,CV-CL-M15-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,Sunset,Pack 2,,2,SinglePiece
+40de62b5-476c-46ff-abca-03fdf3d2ce87,CV-CL-M15-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.5,True Sapphire,Pack 2,,2,SinglePiece
+697e0cd3-93a4-43c0-bd5d-f05ada36ec22,CV-CL-M175-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Blue,Pack 2,,2,SinglePiece
+bc2123cc-70df-4df2-95cc-d4e2c54bc07d,CV-CL-M175-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Galaxy Gray,Pack 2,,2,SinglePiece
+c2d739c6-a97a-4bad-a2bd-81b466114f16,CV-CL-M175-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Gray,Pack 2,,2,SinglePiece
+87ff27a3-4e21-437f-ba0a-f43a52c2d94b,CV-CL-M175-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Green,Pack 2,,2,SinglePiece
+478c7254-68ab-469f-9c57-723bb2e005d8,CV-CL-M175-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Green 2T,Pack 2,,2,SinglePiece
+8f37d13d-fb13-4e7a-946a-ab5c23bddc6f,CV-CL-M175-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Hazel,Pack 2,,2,SinglePiece
+71e722c1-63b9-440d-beb9-c014dbf46c7b,CV-CL-M175-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Jewel Brown,Pack 2,,2,SinglePiece
+4c1b4b93-81fa-4898-b35a-921c9f686872,CV-CL-M175-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Marine,Pack 2,,2,SinglePiece
+2bfe6ab5-0b11-4ac1-a4ff-506370d3d441,CV-CL-M175-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Pure Hazel,Pack 2,,2,SinglePiece
+e29acbeb-520e-4b93-8485-9c551d3444f9,CV-CL-M175-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Selena Gray,Pack 2,,2,SinglePiece
+21450229-8a61-439e-9373-ea67548a287f,CV-CL-M175-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,Sunset,Pack 2,,2,SinglePiece
+bf379548-3fde-454f-a00d-c71f782c16f5,CV-CL-M175-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,1.75,True Sapphire,Pack 2,,2,SinglePiece
+1aff496c-e176-4a4e-a617-6ba1d4466271,CV-CL-M2-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Blue,Pack 2,,2,SinglePiece
+e3ea7bf1-b3a2-45c2-8c07-303eede43b5b,CV-CL-M2-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Galaxy Gray,Pack 2,,2,SinglePiece
+5accdd64-e658-47ff-95e4-66acb3f5dbd4,CV-CL-M2-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Gray,Pack 2,,2,SinglePiece
+0fce23b1-3b02-4d89-a528-9af0156c6645,CV-CL-M2-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Green,Pack 2,,2,SinglePiece
+f19ae981-d2a4-4d5c-99f3-945a248949a7,CV-CL-M2-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Green 2T,Pack 2,,2,SinglePiece
+f5c7647e-cc7f-4b0f-9008-4962e0745c82,CV-CL-M2-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Hazel,Pack 2,,2,SinglePiece
+d241e3bb-0c37-4996-9adf-887a33520dfa,CV-CL-M2-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Jewel Brown,Pack 2,,2,SinglePiece
+743527cb-0c0b-46f3-b6b4-679a7b4b764b,CV-CL-M2-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Marine,Pack 2,,2,SinglePiece
+09d2a000-98c0-433e-a1d0-afd871f06e24,CV-CL-M2-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Pure Hazel,Pack 2,,2,SinglePiece
+349a9791-1ae1-44b8-8834-4ac80c9465d1,CV-CL-M2-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Selena Gray,Pack 2,,2,SinglePiece
+c0fe9fbd-746d-4ffd-a6a8-dbc08df49ba6,CV-CL-M2-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,Sunset,Pack 2,,2,SinglePiece
+2e477d5c-67b1-4a1b-bce3-2451ed50beb8,CV-CL-M2-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2,True Sapphire,Pack 2,,2,SinglePiece
+a26dd395-b7f2-498b-8f90-c473ea223c88,CV-CL-M225-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Blue,Pack 2,,2,SinglePiece
+47529447-7b68-4cf6-a25e-d227941716e7,CV-CL-M225-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Galaxy Gray,Pack 2,,2,SinglePiece
+5f7caae2-d98b-47f0-9bee-a7e2aae1397e,CV-CL-M225-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Gray,Pack 2,,2,SinglePiece
+eadec503-b93d-4303-b0e6-8b1ca9dce926,CV-CL-M225-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Green,Pack 2,,2,SinglePiece
+e023c0db-5d06-443c-96a3-9dd999b940e5,CV-CL-M225-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Green 2T,Pack 2,,2,SinglePiece
+b2a8cebd-168d-4f4c-af46-2b3439a26600,CV-CL-M225-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Hazel,Pack 2,,2,SinglePiece
+89666b82-e841-4705-a9be-e8e6777302f6,CV-CL-M225-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Jewel Brown,Pack 2,,2,SinglePiece
+7f7c5895-ac9d-4202-9c2c-a8a32bbdf123,CV-CL-M225-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Marine,Pack 2,,2,SinglePiece
+96325a83-3f62-438d-85bb-c73bb79b6f3c,CV-CL-M225-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Pure Hazel,Pack 2,,2,SinglePiece
+fdde4343-3ad4-4d71-b165-f97100f12d72,CV-CL-M225-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Selena Gray,Pack 2,,2,SinglePiece
+6c4f5f51-d6db-4b0b-b510-687b920d65eb,CV-CL-M225-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,Sunset,Pack 2,,2,SinglePiece
+18138fd3-04ad-4e43-8b57-c6495957f748,CV-CL-M225-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.25,True Sapphire,Pack 2,,2,SinglePiece
+c2614a50-f481-4dd6-98af-0affd396ac49,CV-CL-M25-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Blue,Pack 2,,2,SinglePiece
+4e17ccbc-f9cb-48e2-af19-bfa80a83cacc,CV-CL-M25-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Galaxy Gray,Pack 2,,2,SinglePiece
+9c619062-f335-4fa4-8fd1-6c8dcf0640e6,CV-CL-M25-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Gray,Pack 2,,2,SinglePiece
+e51e7b10-63a0-426f-a963-efe310e16022,CV-CL-M25-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Green,Pack 2,,2,SinglePiece
+c8d5741a-c543-4cde-b768-88ed9baf320f,CV-CL-M25-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Green 2T,Pack 2,,2,SinglePiece
+c57554c3-452f-410e-891d-a3241d4815a1,CV-CL-M25-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Hazel,Pack 2,,2,SinglePiece
+7ffd40db-3053-4923-9658-8c1049c61497,CV-CL-M25-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Jewel Brown,Pack 2,,2,SinglePiece
+33eb162f-0e70-4841-a134-cbfff382711a,CV-CL-M25-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Marine,Pack 2,,2,SinglePiece
+bedab6eb-4955-4660-aa55-c16fe5ea0f4f,CV-CL-M25-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Pure Hazel,Pack 2,,2,SinglePiece
+9ae937cc-d83e-4a29-974c-15a356a967ab,CV-CL-M25-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Selena Gray,Pack 2,,2,SinglePiece
+776e4456-346b-4f50-a33c-21b0622450ba,CV-CL-M25-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,Sunset,Pack 2,,2,SinglePiece
+2e2af79a-589f-4a75-bfe1-2383dcf3c6d1,CV-CL-M25-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.5,True Sapphire,Pack 2,,2,SinglePiece
+44e9a7a6-28e7-4d41-a21f-e845d1ab954e,CV-CL-M275-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Blue,Pack 2,,2,SinglePiece
+c7fffac7-c428-4c25-8920-48312bc5055b,CV-CL-M275-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Galaxy Gray,Pack 2,,2,SinglePiece
+d003d693-c86e-4f83-bc69-f9d2365daf83,CV-CL-M275-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Gray,Pack 2,,2,SinglePiece
+9f68eea4-64b1-4d59-a12d-cdbc2086b7c2,CV-CL-M275-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Green,Pack 2,,2,SinglePiece
+e401d368-e7cb-4cb7-8cba-a12523e8f0b2,CV-CL-M275-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Green 2T,Pack 2,,2,SinglePiece
+de8a853a-71f7-46ee-b8ce-dfb626760bc3,CV-CL-M275-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Hazel,Pack 2,,2,SinglePiece
+4dea3713-47b2-4581-8e85-9a68ecd1aec4,CV-CL-M275-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Jewel Brown,Pack 2,,2,SinglePiece
+7e397986-c417-4d77-8c5a-b393bb66746a,CV-CL-M275-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Marine,Pack 2,,2,SinglePiece
+a32d0413-e9b3-49dd-9d04-874135908944,CV-CL-M275-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Pure Hazel,Pack 2,,2,SinglePiece
+507855e7-3b7a-4f7e-a55c-a5d63956b767,CV-CL-M275-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Selena Gray,Pack 2,,2,SinglePiece
+2d290628-9523-4e40-ac69-5ba22871097c,CV-CL-M275-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,Sunset,Pack 2,,2,SinglePiece
+f4b3be2c-7bbe-419a-b9ed-6d85b38189b4,CV-CL-M275-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,2.75,True Sapphire,Pack 2,,2,SinglePiece
+ab7d7e46-2f64-4202-9510-c43f980e5134,CV-CL-M3-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Blue,Pack 2,,2,SinglePiece
+48ae446c-c8b5-4a9a-8a15-41dac8cf10c9,CV-CL-M3-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Galaxy Gray,Pack 2,,2,SinglePiece
+cde741e2-4a78-4d5d-8f95-cec4c93e7d51,CV-CL-M3-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Gray,Pack 2,,2,SinglePiece
+7ac9b334-f8fc-414f-b9cf-098138366c87,CV-CL-M3-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Green,Pack 2,,2,SinglePiece
+e76ab3ec-0300-4ab5-b256-bc17b0700cbc,CV-CL-M3-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Green 2T,Pack 2,,2,SinglePiece
+22f3fc6e-28b6-42c6-8eee-fccb4e11ee1f,CV-CL-M3-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Hazel,Pack 2,,2,SinglePiece
+39c1fdbd-5761-40b5-9536-5b5f72d88e8a,CV-CL-M3-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Jewel Brown,Pack 2,,2,SinglePiece
+b2c2267d-c14c-4144-bbdd-64f8f9da713a,CV-CL-M3-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Marine,Pack 2,,2,SinglePiece
+4f25a4d9-1f9d-45b9-ba12-11cc80070b39,CV-CL-M3-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Pure Hazel,Pack 2,,2,SinglePiece
+6eff1bec-6cd6-4d70-8274-567316a0175c,CV-CL-M3-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Selena Gray,Pack 2,,2,SinglePiece
+249d6bad-1043-4b72-b04e-3f3541aa78ad,CV-CL-M3-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,Sunset,Pack 2,,2,SinglePiece
+6a358612-3e44-44a6-8233-453bb2b5cad9,CV-CL-M3-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3,True Sapphire,Pack 2,,2,SinglePiece
+e84d810a-3c48-4405-ad87-2a61621d0823,CV-CL-M325-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Blue,Pack 2,,2,SinglePiece
+4f38c93f-a741-4cb8-bf67-bb69f86fba9d,CV-CL-M325-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Galaxy Gray,Pack 2,,2,SinglePiece
+223f58a5-10b2-4e9d-8800-9fd4fecc3370,CV-CL-M325-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Gray,Pack 2,,2,SinglePiece
+26a5046e-44ec-4903-b23d-f2ca0194fcf6,CV-CL-M325-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Green,Pack 2,,2,SinglePiece
+874d3161-fca9-49b5-b59f-ad3a4e4b977c,CV-CL-M325-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Green 2T,Pack 2,,2,SinglePiece
+35dad338-7cd7-4a11-a4ac-83a8bdacd642,CV-CL-M325-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Hazel,Pack 2,,2,SinglePiece
+f21a9ad1-3e0c-4e5a-825e-7b6703ff30fa,CV-CL-M325-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Jewel Brown,Pack 2,,2,SinglePiece
+3414b27b-84d9-4e01-abed-8d2acd69b386,CV-CL-M325-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Marine,Pack 2,,2,SinglePiece
+d3c498e0-8a5d-427f-914f-2f007eb5bb4a,CV-CL-M325-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Pure Hazel,Pack 2,,2,SinglePiece
+41eb2887-e59b-45ad-b944-704649266ba2,CV-CL-M325-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Selena Gray,Pack 2,,2,SinglePiece
+984bfa1b-bc4c-4130-a6ab-97c2fb7265c0,CV-CL-M325-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,Sunset,Pack 2,,2,SinglePiece
+dc16c48c-5027-4ab2-ab70-457302edd904,CV-CL-M325-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.25,True Sapphire,Pack 2,,2,SinglePiece
+26bbc52d-fc82-4af4-bea5-dcdfa534db3d,CV-CL-M35-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Blue,Pack 2,,2,SinglePiece
+c1febbf8-2361-41f5-8674-4801fd2ba41a,CV-CL-M35-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Galaxy Gray,Pack 2,,2,SinglePiece
+91535012-a6ec-4634-9539-7226448d9df9,CV-CL-M35-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Gray,Pack 2,,2,SinglePiece
+2edead1e-afb0-4b1d-8607-5bcf0c30d375,CV-CL-M35-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Green,Pack 2,,2,SinglePiece
+e9ec9fcf-ce61-42a6-892b-d61081b1de59,CV-CL-M35-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Green 2T,Pack 2,,2,SinglePiece
+9fa5ca80-e1c0-4f7b-876d-c0d16f65e0ee,CV-CL-M35-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Hazel,Pack 2,,2,SinglePiece
+728a8018-3a8d-423b-95ca-a05421321c0c,CV-CL-M35-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Jewel Brown,Pack 2,,2,SinglePiece
+68647412-9ffd-4a52-ba0b-6216c70d7074,CV-CL-M35-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Marine,Pack 2,,2,SinglePiece
+b607c276-650b-4f39-9dde-788d13d88c06,CV-CL-M35-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Pure Hazel,Pack 2,,2,SinglePiece
+ef870e2b-7edc-43da-8dcd-f37f45eb7ce3,CV-CL-M35-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Selena Gray,Pack 2,,2,SinglePiece
+c5ca3a25-6fca-4a27-9606-c2c19dd46253,CV-CL-M35-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,Sunset,Pack 2,,2,SinglePiece
+8755c04f-623d-4344-b280-78a082678f1c,CV-CL-M35-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.5,True Sapphire,Pack 2,,2,SinglePiece
+9297647b-55a5-4274-8ec3-8ab3c9dcc2e7,CV-CL-M375-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Blue,Pack 2,,2,SinglePiece
+87b3a382-57a2-42dc-962e-0eabed474715,CV-CL-M375-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Galaxy Gray,Pack 2,,2,SinglePiece
+6b316029-81c3-4be9-850a-a74f535e7c68,CV-CL-M375-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Gray,Pack 2,,2,SinglePiece
+63c22972-4f1a-4899-bbba-d33771fa0bef,CV-CL-M375-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Green,Pack 2,,2,SinglePiece
+6cd498e5-6bf0-4e4f-9940-6c45e915f447,CV-CL-M375-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Green 2T,Pack 2,,2,SinglePiece
+6575017c-1a43-4717-9d9c-93c1f98940c8,CV-CL-M375-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Hazel,Pack 2,,2,SinglePiece
+50c5a210-b28e-4207-92e5-3afa71f00c6a,CV-CL-M375-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Jewel Brown,Pack 2,,2,SinglePiece
+3bab1a18-9407-4e53-9bc3-d66b08cf3c9b,CV-CL-M375-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Marine,Pack 2,,2,SinglePiece
+b32ce56d-a8e2-4297-8d73-14e044c05680,CV-CL-M375-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Pure Hazel,Pack 2,,2,SinglePiece
+aa41f6f9-fcac-4d8a-a58f-7fd63fa8aae8,CV-CL-M375-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Selena Gray,Pack 2,,2,SinglePiece
+8d5059c8-955d-4fe5-8af5-2843d4bfb7c2,CV-CL-M375-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,Sunset,Pack 2,,2,SinglePiece
+cb0ed85c-0592-46ea-8b15-ba117d62aaad,CV-CL-M375-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,3.75,True Sapphire,Pack 2,,2,SinglePiece
+567cd3ea-93ca-461b-8b33-e8feffc880cc,CV-CL-M4-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Blue,Pack 2,,2,SinglePiece
+2cfae72d-9d26-464b-b8eb-c6752488de14,CV-CL-M4-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Galaxy Gray,Pack 2,,2,SinglePiece
+793dd7b2-765f-409d-b1cb-72a416601424,CV-CL-M4-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Gray,Pack 2,,2,SinglePiece
+24ea2b60-468d-410b-bdb6-472d262bc597,CV-CL-M4-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Green,Pack 2,,2,SinglePiece
+28eff765-eaa3-4b64-a654-6638030f4757,CV-CL-M4-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Green 2T,Pack 2,,2,SinglePiece
+df44044c-91aa-49bd-aab2-52a0fa09d8d5,CV-CL-M4-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Hazel,Pack 2,,2,SinglePiece
+f82d72f9-3a93-4c64-90fa-984a4b84bdb6,CV-CL-M4-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Jewel Brown,Pack 2,,2,SinglePiece
+53ac0725-9416-4fd6-82fc-b42ba536e3a7,CV-CL-M4-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Marine,Pack 2,,2,SinglePiece
+e27c108a-cf0f-428c-981d-3843ff4b369a,CV-CL-M4-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Pure Hazel,Pack 2,,2,SinglePiece
+65080710-2046-424d-9abf-4bfc90b48092,CV-CL-M4-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Selena Gray,Pack 2,,2,SinglePiece
+2a997075-b2a2-44f1-8a95-f579243bf549,CV-CL-M4-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,Sunset,Pack 2,,2,SinglePiece
+27b5d231-2db0-42bf-948e-6a200714ecd8,CV-CL-M4-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4,True Sapphire,Pack 2,,2,SinglePiece
+2209cc2a-1ba9-46ab-ac4c-203f49f485b8,CV-CL-M425-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Blue,Pack 2,,2,SinglePiece
+ac419431-657f-4d30-be6d-dd831f390176,CV-CL-M425-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Galaxy Gray,Pack 2,,2,SinglePiece
+03817b21-ff23-4fff-a1ac-1198245d33dd,CV-CL-M425-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Gray,Pack 2,,2,SinglePiece
+2418b633-d371-40da-8ed5-def96d236f32,CV-CL-M425-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Green,Pack 2,,2,SinglePiece
+9e5bad9f-d5d9-4a1e-9064-fc6c1b40edf2,CV-CL-M425-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Green 2T,Pack 2,,2,SinglePiece
+b4b4288f-94bf-4645-8418-5a7fcaa4f266,CV-CL-M425-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Hazel,Pack 2,,2,SinglePiece
+83a82f48-f93a-46d3-8d29-3f451bd6f185,CV-CL-M425-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Jewel Brown,Pack 2,,2,SinglePiece
+7aa480e8-1c21-4e44-a2f7-5d60fb18f1b4,CV-CL-M425-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Marine,Pack 2,,2,SinglePiece
+56856911-4406-4bd3-a52b-62948cce586c,CV-CL-M425-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Pure Hazel,Pack 2,,2,SinglePiece
+d75f410a-1701-453f-be36-a82850ffc238,CV-CL-M425-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Selena Gray,Pack 2,,2,SinglePiece
+98f061fe-2fe2-45b3-bcc7-d1ea267560e9,CV-CL-M425-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,Sunset,Pack 2,,2,SinglePiece
+5326825d-5b72-49df-ac9d-9d6bba12031f,CV-CL-M425-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.25,True Sapphire,Pack 2,,2,SinglePiece
+f497b89f-d071-40fe-8c4d-bb1eee8e24bf,CV-CL-M45-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Blue,Pack 2,,2,SinglePiece
+67973b0d-95a3-42e0-9cd9-7dc1c1ece61d,CV-CL-M45-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Galaxy Gray,Pack 2,,2,SinglePiece
+adc6162b-daa9-46e1-b523-6bf9970ff4c7,CV-CL-M45-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Gray,Pack 2,,2,SinglePiece
+9d67ad02-b842-4020-b3e4-91610794361e,CV-CL-M45-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Green,Pack 2,,2,SinglePiece
+4050af74-5de2-4867-a313-e0ee409ab845,CV-CL-M45-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Green 2T,Pack 2,,2,SinglePiece
+f9e89861-0ba8-4a9c-b225-60d3e9443ec0,CV-CL-M45-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Hazel,Pack 2,,2,SinglePiece
+132c8a9e-596d-4d1c-bfa5-c1c0dc41fe11,CV-CL-M45-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Jewel Brown,Pack 2,,2,SinglePiece
+682660a3-3b08-4e61-bc81-d8587e13149b,CV-CL-M45-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Marine,Pack 2,,2,SinglePiece
+604c279c-c342-4579-9a8d-9a6b31fbc134,CV-CL-M45-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Pure Hazel,Pack 2,,2,SinglePiece
+24bef2bf-b6cf-427b-82c9-6a1733c34e71,CV-CL-M45-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Selena Gray,Pack 2,,2,SinglePiece
+24372626-1372-46d6-8b66-b959df938a13,CV-CL-M45-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,Sunset,Pack 2,,2,SinglePiece
+fdf7f4ad-b0e5-4345-a847-91fd6d79573d,CV-CL-M45-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.5,True Sapphire,Pack 2,,2,SinglePiece
+bbf56a0e-2c05-48cb-adc2-e259eba4452c,CV-CL-M475-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Blue,Pack 2,,2,SinglePiece
+4beef074-228f-4bd3-883d-610d9581ceba,CV-CL-M475-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Galaxy Gray,Pack 2,,2,SinglePiece
+7b7f48a1-41a8-4157-a806-ba3a27912e70,CV-CL-M475-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Gray,Pack 2,,2,SinglePiece
+87dac673-0e79-4fb3-99a5-7365a7fb93ec,CV-CL-M475-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Green,Pack 2,,2,SinglePiece
+031a5ca4-e354-4d3b-bfbe-eb54049b1da8,CV-CL-M475-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Green 2T,Pack 2,,2,SinglePiece
+39061107-095b-4920-980e-023e79afdc90,CV-CL-M475-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Hazel,Pack 2,,2,SinglePiece
+0a30130b-4442-489b-a1ae-89cdab3f217a,CV-CL-M475-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Jewel Brown,Pack 2,,2,SinglePiece
+7e6fbe31-8fac-497d-9a73-15ae47acb4f4,CV-CL-M475-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Marine,Pack 2,,2,SinglePiece
+b2bd29c5-8362-40aa-801c-4accde2e4073,CV-CL-M475-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Pure Hazel,Pack 2,,2,SinglePiece
+daf304ff-0258-4854-90fc-b98215a1affd,CV-CL-M475-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Selena Gray,Pack 2,,2,SinglePiece
+f822f302-29e7-49dc-ac22-3520cf640516,CV-CL-M475-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,Sunset,Pack 2,,2,SinglePiece
+3ff0a742-04d6-4df1-a6ed-9eafefcdf055,CV-CL-M475-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,4.75,True Sapphire,Pack 2,,2,SinglePiece
+6ef0dd86-7dd6-4c14-a37b-32e6eddb3cd6,CV-CL-M5-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Blue,Pack 2,,2,SinglePiece
+998dc258-f8dd-4b03-a325-3a746e43a01a,CV-CL-M5-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Galaxy Gray,Pack 2,,2,SinglePiece
+34b97d30-923e-45e5-90ea-e7186d048f2e,CV-CL-M5-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Gray,Pack 2,,2,SinglePiece
+233d97ee-f306-4021-a6d6-df6842a8d175,CV-CL-M5-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Green,Pack 2,,2,SinglePiece
+fbd97774-a786-40bc-bdd6-8acabe16a394,CV-CL-M5-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Green 2T,Pack 2,,2,SinglePiece
+bddd180a-c69b-4ebc-b564-8f408979855c,CV-CL-M5-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Hazel,Pack 2,,2,SinglePiece
+29f064a6-d39c-485a-b2c5-3312cff8b1d4,CV-CL-M5-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Jewel Brown,Pack 2,,2,SinglePiece
+121bbd56-4cfb-4dcc-a88a-6408cd5bfd8d,CV-CL-M5-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Marine,Pack 2,,2,SinglePiece
+73bf0d50-d7dd-4f91-95d1-d4ead888f742,CV-CL-M5-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Pure Hazel,Pack 2,,2,SinglePiece
+afee04a4-2b6b-4f15-abcf-ecbddd2a7330,CV-CL-M5-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Selena Gray,Pack 2,,2,SinglePiece
+ae324910-35bb-42d7-b97b-6358e37160ed,CV-CL-M5-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,Sunset,Pack 2,,2,SinglePiece
+246342b0-5022-4ae5-8f3f-314f16e1cba7,CV-CL-M5-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5,True Sapphire,Pack 2,,2,SinglePiece
+a09cdd25-9ba7-4a2d-a950-da7f30ded1df,CV-CL-M55-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Blue,Pack 2,,2,SinglePiece
+77be1a04-47e1-431c-8360-1698ac700433,CV-CL-M55-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Galaxy Gray,Pack 2,,2,SinglePiece
+cd660b3f-0c90-459e-99bd-0af493f9d88d,CV-CL-M55-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Gray,Pack 2,,2,SinglePiece
+c44b823e-8bb1-4b4d-966b-e0706239c29d,CV-CL-M55-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Green,Pack 2,,2,SinglePiece
+9c172594-d78b-4da9-873c-1df30a81232c,CV-CL-M55-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Green 2T,Pack 2,,2,SinglePiece
+f22f1790-e10b-45bf-af8c-ab3ab8c8ff25,CV-CL-M55-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Hazel,Pack 2,,2,SinglePiece
+852b7dda-b875-4af8-9985-f1133a5a1c38,CV-CL-M55-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Jewel Brown,Pack 2,,2,SinglePiece
+5b62aff9-c34b-493d-a97d-4a0b57cfaa04,CV-CL-M55-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Marine,Pack 2,,2,SinglePiece
+723be0dd-fd77-466c-ae11-40b04556474c,CV-CL-M55-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Pure Hazel,Pack 2,,2,SinglePiece
+40ceaa08-6303-4ab3-94b8-493f43430f20,CV-CL-M55-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Selena Gray,Pack 2,,2,SinglePiece
+2d2f2ef3-41fd-4586-a578-fae3fed9c6e7,CV-CL-M55-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,Sunset,Pack 2,,2,SinglePiece
+07c284ee-1e39-4697-82aa-efcdc2eed471,CV-CL-M55-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,5.5,True Sapphire,Pack 2,,2,SinglePiece
+43644f3e-34d3-42a2-994f-b531eca8ec16,CV-CL-M6-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Blue,Pack 2,,2,SinglePiece
+6a43925b-eabd-4d90-bc15-b3b1d2c28ed3,CV-CL-M6-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Galaxy Gray,Pack 2,,2,SinglePiece
+2f33e24d-84b2-4532-9c2a-e64bd05630b6,CV-CL-M6-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Gray,Pack 2,,2,SinglePiece
+8fdaa31c-7d03-4dd8-bba1-807d7d1e606c,CV-CL-M6-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Green,Pack 2,,2,SinglePiece
+e245806f-1df7-4e78-9ef4-6b5b89a40f9d,CV-CL-M6-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Green 2T,Pack 2,,2,SinglePiece
+ab27f37b-2107-4df8-8e5e-d6ea00978379,CV-CL-M6-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Hazel,Pack 2,,2,SinglePiece
+a4d9b9b1-0f79-4e1c-961d-775c125ed301,CV-CL-M6-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Jewel Brown,Pack 2,,2,SinglePiece
+584357ad-bf93-4f31-9e7d-f228b33c5d72,CV-CL-M6-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Marine,Pack 2,,2,SinglePiece
+1d1797bd-46ee-4f89-8c74-a5003761fa03,CV-CL-M6-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Pure Hazel,Pack 2,,2,SinglePiece
+ad070b2d-bbac-4e58-b6da-b6f0a91fe9e5,CV-CL-M6-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Selena Gray,Pack 2,,2,SinglePiece
+4222c358-893c-47bc-a98f-a5584b43fd23,CV-CL-M6-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,Sunset,Pack 2,,2,SinglePiece
+f9a55e66-b4cb-4502-80b2-9bdf867bafdc,CV-CL-M6-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6,True Sapphire,Pack 2,,2,SinglePiece
+f104bd52-15a8-4dec-b20a-0e193b0826cc,CV-CL-M65-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Blue,Pack 2,,2,SinglePiece
+b2ad9ebb-2f6e-4ae1-b2dc-7185ef21ff83,CV-CL-M65-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Galaxy Gray,Pack 2,,2,SinglePiece
+183c4bf9-8cdf-4bcd-9719-286052cc4bdb,CV-CL-M65-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Gray,Pack 2,,2,SinglePiece
+d5e9a75d-6446-4e4c-81aa-4b425125977f,CV-CL-M65-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Green,Pack 2,,2,SinglePiece
+82f68828-d836-4800-8e53-34d6ff26f609,CV-CL-M65-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Green 2T,Pack 2,,2,SinglePiece
+b1ee2683-a73c-4e71-b373-351fd92d839a,CV-CL-M65-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Hazel,Pack 2,,2,SinglePiece
+204e7273-bef9-42a5-b7cf-0f0fd094aa28,CV-CL-M65-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Jewel Brown,Pack 2,,2,SinglePiece
+69e79bff-16a9-442f-8661-f948ab7aaa14,CV-CL-M65-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Marine,Pack 2,,2,SinglePiece
+e936b76d-7864-4e17-8ed9-7c94f0c19445,CV-CL-M65-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Pure Hazel,Pack 2,,2,SinglePiece
+23f93082-d8e4-4378-91e9-022c4684f6f2,CV-CL-M65-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Selena Gray,Pack 2,,2,SinglePiece
+fe03994c-1649-4ba9-a2df-da144894159c,CV-CL-M65-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,Sunset,Pack 2,,2,SinglePiece
+94b296f5-aa27-4276-9ddd-e0ee00f6cab3,CV-CL-M65-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,6.5,True Sapphire,Pack 2,,2,SinglePiece
+9517c55e-fe64-4dd5-873c-ea28201333ea,CV-CL-M7-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Blue,Pack 2,,2,SinglePiece
+4a2e5932-0802-4894-af7a-2a60133affe4,CV-CL-M7-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Galaxy Gray,Pack 2,,2,SinglePiece
+325d3883-927d-458b-9777-d25498512511,CV-CL-M7-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Gray,Pack 2,,2,SinglePiece
+e8a40177-876b-4cb4-8d2c-185b085038b2,CV-CL-M7-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Green,Pack 2,,2,SinglePiece
+1e568f37-cfb6-4ea5-8651-351bdef8fe12,CV-CL-M7-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Green 2T,Pack 2,,2,SinglePiece
+ab6d3d95-c705-406f-83aa-f7efd201ee63,CV-CL-M7-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Hazel,Pack 2,,2,SinglePiece
+fdd2f8b0-79a5-4292-bcde-4db8fac47ac8,CV-CL-M7-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Jewel Brown,Pack 2,,2,SinglePiece
+7ba341a5-8a90-4ff6-a0ac-cccc2666d8d5,CV-CL-M7-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Marine,Pack 2,,2,SinglePiece
+60228336-9993-4d28-a12f-96bbdb54b4fe,CV-CL-M7-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Pure Hazel,Pack 2,,2,SinglePiece
+4f9607d8-4cd8-4f8c-8726-22cf232c1165,CV-CL-M7-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Selena Gray,Pack 2,,2,SinglePiece
+901d76b2-fece-4752-8156-7a9b142b1219,CV-CL-M7-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,Sunset,Pack 2,,2,SinglePiece
+6b4db2f7-1ed9-4183-83cc-1b014868fcfe,CV-CL-M7-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7,True Sapphire,Pack 2,,2,SinglePiece
+ccac2ee4-75e7-42d4-84b0-bd1e47272171,CV-CL-M75-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Blue,Pack 2,,2,SinglePiece
+f63532d6-a249-4dd2-b766-d6d84b1998e5,CV-CL-M75-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Galaxy Gray,Pack 2,,2,SinglePiece
+27a81f75-b337-49b0-abea-fbadddbfa4fc,CV-CL-M75-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Gray,Pack 2,,2,SinglePiece
+0f2b28ec-0971-4884-bf5c-a9a3b93393ef,CV-CL-M75-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Green,Pack 2,,2,SinglePiece
+d768418b-3598-4d9a-8125-55d67aa72188,CV-CL-M75-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Green 2T,Pack 2,,2,SinglePiece
+7873b810-1874-417c-a871-7532a6b55926,CV-CL-M75-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Hazel,Pack 2,,2,SinglePiece
+5971bce2-434a-4069-a675-2fd85e5e3f4f,CV-CL-M75-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Jewel Brown,Pack 2,,2,SinglePiece
+c4e4481c-12d9-46a9-915a-5c32b5e52185,CV-CL-M75-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Marine,Pack 2,,2,SinglePiece
+298f4cf8-29bf-4b30-9533-06d0429b95e0,CV-CL-M75-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Pure Hazel,Pack 2,,2,SinglePiece
+4eadb235-3064-4166-8896-9901f55bf351,CV-CL-M75-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Selena Gray,Pack 2,,2,SinglePiece
+7420e5df-26ed-49f1-b2ae-231d63f65100,CV-CL-M75-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,Sunset,Pack 2,,2,SinglePiece
+732eadc8-a6c1-4ebf-916f-26e7e0480f59,CV-CL-M75-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,7.5,True Sapphire,Pack 2,,2,SinglePiece
+f495c68c-d96a-48c9-b7de-6c0928aa4c0c,CV-CL-M8-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Blue,Pack 2,,2,SinglePiece
+ca9a3b94-46aa-44c9-8374-a4db1df8a93d,CV-CL-M8-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Galaxy Gray,Pack 2,,2,SinglePiece
+d3a2ba13-6c49-4bf1-813c-41b2ae04d449,CV-CL-M8-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Gray,Pack 2,,2,SinglePiece
+1ede3e62-618c-41a1-9594-246930be9a8f,CV-CL-M8-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Green,Pack 2,,2,SinglePiece
+6f9a3867-8195-4e0e-8941-da2398bd2853,CV-CL-M8-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Green 2T,Pack 2,,2,SinglePiece
+72f50086-d52d-4bc2-a5a4-a4c23ac570d8,CV-CL-M8-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Hazel,Pack 2,,2,SinglePiece
+e4871b7a-e7de-4ba4-90db-f8dea9de52ef,CV-CL-M8-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Jewel Brown,Pack 2,,2,SinglePiece
+c5e90081-0c8a-4993-a4c0-96c55ca94c03,CV-CL-M8-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Marine,Pack 2,,2,SinglePiece
+054b2491-072b-455a-8cc8-6c887892e0fe,CV-CL-M8-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Pure Hazel,Pack 2,,2,SinglePiece
+86890736-6373-41eb-a003-9eb40d11bea0,CV-CL-M8-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Selena Gray,Pack 2,,2,SinglePiece
+0abcc679-e460-4220-b807-e4ec555f01fc,CV-CL-M8-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,Sunset,Pack 2,,2,SinglePiece
+a25f5e20-67cf-4223-9f2b-fb8de784a36c,CV-CL-M8-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8,True Sapphire,Pack 2,,2,SinglePiece
+b46f149f-2531-4dcc-b68f-ad5fe85a39a8,CV-CL-M85-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Blue,Pack 2,,2,SinglePiece
+290d56f3-d270-4e79-8e30-f58e611467e7,CV-CL-M85-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Galaxy Gray,Pack 2,,2,SinglePiece
+7683055d-0163-4e45-84e1-60c36a0e9fc3,CV-CL-M85-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Gray,Pack 2,,2,SinglePiece
+f27dffaf-9743-40ab-9c64-ca950a237043,CV-CL-M85-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Green,Pack 2,,2,SinglePiece
+34a71040-d458-40f4-8509-6e98df363229,CV-CL-M85-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Green 2T,Pack 2,,2,SinglePiece
+0808acb4-712d-4580-842d-0f7c31571d87,CV-CL-M85-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Hazel,Pack 2,,2,SinglePiece
+071c998e-3bae-48a1-b872-a1d6ee6efc5e,CV-CL-M85-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Jewel Brown,Pack 2,,2,SinglePiece
+6c1f7b39-21e8-41e3-a262-2aca8a2280f7,CV-CL-M85-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Marine,Pack 2,,2,SinglePiece
+49bc17b3-d69d-4099-8fe2-014d5aef84f1,CV-CL-M85-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Pure Hazel,Pack 2,,2,SinglePiece
+c2cdde70-f2a7-4007-b394-c0c2c02034da,CV-CL-M85-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Selena Gray,Pack 2,,2,SinglePiece
+9146eda6-8abb-4a08-844c-04e61c7b57c6,CV-CL-M85-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,Sunset,Pack 2,,2,SinglePiece
+36f4ba34-f0bf-4071-a228-7fd201d8e555,CV-CL-M85-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,8.5,True Sapphire,Pack 2,,2,SinglePiece
+05726b1f-f4c2-41ac-a6d9-e727b93dbff4,CV-CL-M9-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Blue,Pack 2,,2,SinglePiece
+c5321dba-1ae0-4454-a6cd-c68c07317833,CV-CL-M9-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Galaxy Gray,Pack 2,,2,SinglePiece
+0e2989b7-55f5-44d2-a825-e5ca29a68114,CV-CL-M9-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Gray,Pack 2,,2,SinglePiece
+4ecbf318-fd18-48a3-957c-41e50d231ea0,CV-CL-M9-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Green,Pack 2,,2,SinglePiece
+d2415fcf-ab01-422c-ba95-d79ab74c6c7b,CV-CL-M9-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Green 2T,Pack 2,,2,SinglePiece
+5d39505e-402e-4177-bc3f-91677c046726,CV-CL-M9-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Hazel,Pack 2,,2,SinglePiece
+2b11e1a4-cbcd-4897-9427-a6711ce89556,CV-CL-M9-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Jewel Brown,Pack 2,,2,SinglePiece
+90b025a0-71e4-4f85-892c-f060de7d7498,CV-CL-M9-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Marine,Pack 2,,2,SinglePiece
+d9099a35-1d6c-42f7-8b59-79d181a3b5d1,CV-CL-M9-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Pure Hazel,Pack 2,,2,SinglePiece
+6f577248-090e-4842-a100-36325a2a9c80,CV-CL-M9-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Selena Gray,Pack 2,,2,SinglePiece
+4b9c997e-b8a8-48f9-99dc-1302593411fd,CV-CL-M9-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,Sunset,Pack 2,,2,SinglePiece
+5cc94137-4956-4758-a478-96b3f60029e5,CV-CL-M9-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9,True Sapphire,Pack 2,,2,SinglePiece
+b2cd6cf8-115a-47bb-961c-b00f21a17b2e,CV-CL-M95-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Blue,Pack 2,,2,SinglePiece
+5884e0f1-14c4-4c99-96dc-b40b3e15aa51,CV-CL-M95-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Galaxy Gray,Pack 2,,2,SinglePiece
+3e0db192-764f-4600-bc8a-725e8ef87a15,CV-CL-M95-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Gray,Pack 2,,2,SinglePiece
+759d63c4-9258-4385-b2c3-b50cd7046f90,CV-CL-M95-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Green,Pack 2,,2,SinglePiece
+02b3c435-0318-420c-844e-1755f587c31c,CV-CL-M95-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Green 2T,Pack 2,,2,SinglePiece
+0ef7bc1e-c846-4ca8-83d5-e2375f71514f,CV-CL-M95-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Hazel,Pack 2,,2,SinglePiece
+4911df5a-e20c-4753-978b-ca2b7457bb8e,CV-CL-M95-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Jewel Brown,Pack 2,,2,SinglePiece
+c48ca659-f9e0-4590-9f35-cf63ab1f307a,CV-CL-M95-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Marine,Pack 2,,2,SinglePiece
+1d2b291c-2bd2-4bfc-a5d7-5604f638f47c,CV-CL-M95-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Pure Hazel,Pack 2,,2,SinglePiece
+2ca307b6-1575-4ba9-b8b0-68a62c81bbf1,CV-CL-M95-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Selena Gray,Pack 2,,2,SinglePiece
+9b2e1883-0e72-4bac-988c-ed9cd98a277f,CV-CL-M95-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,Sunset,Pack 2,,2,SinglePiece
+e49ad175-9709-4555-a220-f15b7753132c,CV-CL-M95-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,-,9.5,True Sapphire,Pack 2,,2,SinglePiece
+6bf9cec1-9413-48e5-a354-4fe1df0c1559,CV-CL-P0-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Blue,Pack 2,,2,SinglePiece
+5397c2fd-2fec-4aec-8d7b-9b33ed27e9a7,CV-CL-P0-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Galaxy Gray,Pack 2,,2,SinglePiece
+e486741d-c0cc-418e-99dd-4299861b2aca,CV-CL-P0-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Gray,Pack 2,,2,SinglePiece
+4ef7c2da-53fb-4a21-8346-eae1b4a55ddb,CV-CL-P0-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Green,Pack 2,,2,SinglePiece
+e25bcb7f-9a9e-4840-901a-3b4f7217742b,CV-CL-P0-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Green 2T,Pack 2,,2,SinglePiece
+dbde1c12-8307-439d-9e7f-36fc7a349c4e,CV-CL-P0-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Hazel,Pack 2,,2,SinglePiece
+36380282-4f55-4414-a183-95544bb617c6,CV-CL-P0-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Jewel Brown,Pack 2,,2,SinglePiece
+c8916f92-77f0-4243-9c3b-d86e142024de,CV-CL-P0-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Marine,Pack 2,,2,SinglePiece
+ea77904b-a376-4fa6-b1fb-9b1cda0145a2,CV-CL-P0-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Pure Hazel,Pack 2,,2,SinglePiece
+8b94550d-b9a0-4c11-89be-ac2e2032d351,CV-CL-P0-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Selena Gray,Pack 2,,2,SinglePiece
+59c2be9a-8d23-418f-940c-f8caa1e568cb,CV-CL-P0-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,Sunset,Pack 2,,2,SinglePiece
+48d31a4e-2702-41c8-a2a1-62c6daa5b3a1,CV-CL-P0-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0,True Sapphire,Pack 2,,2,SinglePiece
+cb51dbbb-ff89-4ab6-a79a-287a77d608d2,CV-CL-P05-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Blue,Pack 2,,2,SinglePiece
+6f652405-2f9f-4b08-8248-86554d93b01f,CV-CL-P05-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Galaxy Gray,Pack 2,,2,SinglePiece
+d3b60944-172b-4974-a751-854af76fe50e,CV-CL-P05-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Gray,Pack 2,,2,SinglePiece
+933d9070-d4fe-44ee-869b-aff4592daadd,CV-CL-P05-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Green,Pack 2,,2,SinglePiece
+101ed1c9-24e0-49e7-8f29-39c66bf5727d,CV-CL-P05-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Green 2T,Pack 2,,2,SinglePiece
+8ea949f8-be41-4f25-b338-7c4bc13eff88,CV-CL-P05-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Hazel,Pack 2,,2,SinglePiece
+775a27ae-6757-4f3f-bf77-3a2155af42e5,CV-CL-P05-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Jewel Brown,Pack 2,,2,SinglePiece
+3bfd09a1-c518-4fd2-b245-86446d93fb00,CV-CL-P05-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Marine,Pack 2,,2,SinglePiece
+eba876b6-a03b-40b3-aacf-b4bfae76e3b1,CV-CL-P05-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Pure Hazel,Pack 2,,2,SinglePiece
+daaeaebd-0e3c-4245-915e-e3a736aeb6ba,CV-CL-P05-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Selena Gray,Pack 2,,2,SinglePiece
+54f7e39d-73ca-4624-8e76-5034cfd5379c,CV-CL-P05-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,Sunset,Pack 2,,2,SinglePiece
+0dc6c045-f6e8-44e0-a09c-7321e6879698,CV-CL-P05-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.5,True Sapphire,Pack 2,,2,SinglePiece
+d7372be9-9a42-4754-bbac-0e54775044fd,CV-CL-P075-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Blue,Pack 2,,2,SinglePiece
+10f0aba7-b8e4-4263-a4d9-260a2bc30f4b,CV-CL-P075-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Galaxy Gray,Pack 2,,2,SinglePiece
+20791802-e4b8-493b-ad23-d6008f0cce40,CV-CL-P075-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Gray,Pack 2,,2,SinglePiece
+90849fcf-f29d-4925-8c3f-77416086e359,CV-CL-P075-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Green,Pack 2,,2,SinglePiece
+f44aa03c-3b51-4a63-9c8a-54ac6d8e01bc,CV-CL-P075-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Green 2T,Pack 2,,2,SinglePiece
+c0a05e33-a5c4-46e7-a7ea-b4cabf0583f5,CV-CL-P075-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Hazel,Pack 2,,2,SinglePiece
+51642251-0d5c-4534-bd05-dffbe91b30ee,CV-CL-P075-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Jewel Brown,Pack 2,,2,SinglePiece
+4effd1fa-8211-4611-af25-27d66d8cc758,CV-CL-P075-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Marine,Pack 2,,2,SinglePiece
+d36550ad-557f-4c1d-bcab-977c2a9e2314,CV-CL-P075-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Pure Hazel,Pack 2,,2,SinglePiece
+b738c2a6-0053-47ab-b1e1-e1b1d59b5ff1,CV-CL-P075-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Selena Gray,Pack 2,,2,SinglePiece
+b78cbef8-3f7d-4143-8ac6-93f38dcd5f37,CV-CL-P075-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,Sunset,Pack 2,,2,SinglePiece
+324e1453-1984-4c88-8c28-6549112c783a,CV-CL-P075-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,0.75,True Sapphire,Pack 2,,2,SinglePiece
+2dfc0488-dc10-4f02-9f0b-c9c0b6f22670,CV-CL-P1-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Blue,Pack 2,,2,SinglePiece
+8780fb72-127c-4895-8297-7677134afce0,CV-CL-P1-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Galaxy Gray,Pack 2,,2,SinglePiece
+bfa917bd-2ebd-486f-8276-10689b93f702,CV-CL-P1-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Gray,Pack 2,,2,SinglePiece
+72d23bc5-8ab6-435c-9456-2f461f202d30,CV-CL-P1-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Green,Pack 2,,2,SinglePiece
+f12d90d8-1f74-4699-a988-d7ce6f9ecbf1,CV-CL-P1-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Green 2T,Pack 2,,2,SinglePiece
+0fb6f48a-9c3a-477c-b417-14c56ee0574b,CV-CL-P1-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Hazel,Pack 2,,2,SinglePiece
+6bcd768c-39e0-47a3-8b59-73fb4ee7c92c,CV-CL-P1-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Jewel Brown,Pack 2,,2,SinglePiece
+195d6f6b-48ba-40d9-9019-0cc4c49894f1,CV-CL-P1-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Marine,Pack 2,,2,SinglePiece
+829d388a-9a37-41e5-a8b3-98d70b4c6773,CV-CL-P1-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Pure Hazel,Pack 2,,2,SinglePiece
+dc5ce9bb-d963-4aa5-9165-b7d2ba1f86db,CV-CL-P1-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Selena Gray,Pack 2,,2,SinglePiece
+6c72aefc-1230-4ffc-b895-5c9b8b285195,CV-CL-P1-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,Sunset,Pack 2,,2,SinglePiece
+b4ac6e23-6a4d-45a7-8eea-4d70b3ee942a,CV-CL-P1-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1,True Sapphire,Pack 2,,2,SinglePiece
+893e3fa0-3879-4a82-8824-00497493dcc7,CV-CL-P10-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Blue,Pack 2,,2,SinglePiece
+d6baeb0b-e4cd-48be-886e-f64f695bc8a7,CV-CL-P10-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Galaxy Gray,Pack 2,,2,SinglePiece
+80cc0971-1e0e-4319-9766-3d01109398a6,CV-CL-P10-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Gray,Pack 2,,2,SinglePiece
+c6dab44b-ffd7-4a1e-877f-9c79bc01b8e1,CV-CL-P10-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Green,Pack 2,,2,SinglePiece
+c4621555-ba03-4bca-a079-77f0543c0ee4,CV-CL-P10-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Green 2T,Pack 2,,2,SinglePiece
+0b66d2cf-514c-42a4-884a-2e4e6df84e3d,CV-CL-P10-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Hazel,Pack 2,,2,SinglePiece
+39d48f67-77c6-419e-a05b-9a5dcbe0b0ff,CV-CL-P10-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Jewel Brown,Pack 2,,2,SinglePiece
+4dc91f99-6b14-45f1-8f3e-b47250db2349,CV-CL-P10-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Marine,Pack 2,,2,SinglePiece
+d081d046-1f7d-4e71-9b7c-be5bfee0f67b,CV-CL-P10-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Pure Hazel,Pack 2,,2,SinglePiece
+985bfee7-4271-4f83-ab9e-b1a04f7896b9,CV-CL-P10-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Selena Gray,Pack 2,,2,SinglePiece
+e08c5832-278b-429a-96cd-81d65e6549df,CV-CL-P10-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,Sunset,Pack 2,,2,SinglePiece
+739e238c-0802-405a-880c-8a9ed91bce62,CV-CL-P10-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,10,True Sapphire,Pack 2,,2,SinglePiece
+87c881dd-765d-40b7-9bf5-069a851efd98,CV-CL-P125-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Blue,Pack 2,,2,SinglePiece
+7cacc1c0-3568-41a2-8b1b-1205c8afb2e6,CV-CL-P125-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Galaxy Gray,Pack 2,,2,SinglePiece
+752cd213-e4f2-46cf-87e2-0b5d9c9fbfa4,CV-CL-P125-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Gray,Pack 2,,2,SinglePiece
+f473284c-980c-4a58-8c5e-e07f5eb2c9cf,CV-CL-P125-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Green,Pack 2,,2,SinglePiece
+8546b43d-8371-4fe8-8a99-16fc617913f0,CV-CL-P125-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Green 2T,Pack 2,,2,SinglePiece
+8ce5468c-30a7-4d3e-b6f3-29292b6c1512,CV-CL-P125-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Hazel,Pack 2,,2,SinglePiece
+921eb8e8-727f-46df-9233-35d45b943eb7,CV-CL-P125-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Jewel Brown,Pack 2,,2,SinglePiece
+bc3886f0-4712-476a-8ad9-1719e404749c,CV-CL-P125-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Marine,Pack 2,,2,SinglePiece
+e32a9f29-fee9-4e36-b5b1-6b6ff61ebbae,CV-CL-P125-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Pure Hazel,Pack 2,,2,SinglePiece
+14496086-6827-4621-8310-074a641a605d,CV-CL-P125-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Selena Gray,Pack 2,,2,SinglePiece
+2c99c277-f311-442b-b5bb-500b8e44addf,CV-CL-P125-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,Sunset,Pack 2,,2,SinglePiece
+4cde0ca2-5b83-43b6-827b-804037529322,CV-CL-P125-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.25,True Sapphire,Pack 2,,2,SinglePiece
+0c33441e-a1a4-4b9d-9424-bbe8095453e0,CV-CL-P15-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Blue,Pack 2,,2,SinglePiece
+17518c8f-9e0f-4497-bbf1-11743995397c,CV-CL-P15-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Galaxy Gray,Pack 2,,2,SinglePiece
+5d56383d-ea10-444c-8ced-9fa758e230f9,CV-CL-P15-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Gray,Pack 2,,2,SinglePiece
+79f704c9-178b-4bfa-bc56-ebf400f640ed,CV-CL-P15-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Green,Pack 2,,2,SinglePiece
+ad3521c0-ab27-4e40-afa6-72e0f9f2b7c4,CV-CL-P15-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Green 2T,Pack 2,,2,SinglePiece
+595005e1-7466-41b8-b701-a9447daf7534,CV-CL-P15-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Hazel,Pack 2,,2,SinglePiece
+972a002b-2fb5-4472-99d4-c84b3c4ee8a2,CV-CL-P15-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Jewel Brown,Pack 2,,2,SinglePiece
+6c9057ca-0005-4b3c-98b8-af33cbba5ebb,CV-CL-P15-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Marine,Pack 2,,2,SinglePiece
+afb3efab-c0ce-48fb-88b2-1f4e5c117da5,CV-CL-P15-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Pure Hazel,Pack 2,,2,SinglePiece
+aa03cef1-26a1-48b9-8d74-57cdbe8d694b,CV-CL-P15-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Selena Gray,Pack 2,,2,SinglePiece
+fcf2e300-77c5-4f2d-ac3c-b0e2249e6272,CV-CL-P15-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,Sunset,Pack 2,,2,SinglePiece
+2df4108a-61a3-4e05-a39d-2060b9fc6398,CV-CL-P15-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.5,True Sapphire,Pack 2,,2,SinglePiece
+c4ec5539-55cf-47fa-9bcc-ae3cf4a80be7,CV-CL-P175-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Blue,Pack 2,,2,SinglePiece
+4491aaaa-b08c-40ce-9fa8-fc8a82b7ff22,CV-CL-P175-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Galaxy Gray,Pack 2,,2,SinglePiece
+7a689cbc-f351-466e-a9dd-2421198b3deb,CV-CL-P175-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Gray,Pack 2,,2,SinglePiece
+6967c60c-0bf0-4f0b-8e67-0d03b22f078a,CV-CL-P175-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Green,Pack 2,,2,SinglePiece
+5fa5be6e-4f2d-4b87-9714-89b8ea0e0a20,CV-CL-P175-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Green 2T,Pack 2,,2,SinglePiece
+0efa6893-aa89-43f1-9a09-6ded67ad21fd,CV-CL-P175-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Hazel,Pack 2,,2,SinglePiece
+8ff98f5d-a621-4ed5-959e-8b05415ae5dd,CV-CL-P175-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Jewel Brown,Pack 2,,2,SinglePiece
+ed62bba3-92bc-4b50-8a11-cefb10f257f8,CV-CL-P175-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Marine,Pack 2,,2,SinglePiece
+42b196e9-ddd4-4b99-a2cd-7f50c4d8c0da,CV-CL-P175-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Pure Hazel,Pack 2,,2,SinglePiece
+3c3b759f-9d72-44c9-b5f8-1b2ae97aac92,CV-CL-P175-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Selena Gray,Pack 2,,2,SinglePiece
+d9425164-0cbd-45d5-b988-744060aa271f,CV-CL-P175-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,Sunset,Pack 2,,2,SinglePiece
+e3ab41a8-b6d6-464a-9dce-a1de4d20ebe4,CV-CL-P175-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,1.75,True Sapphire,Pack 2,,2,SinglePiece
+c6b3e37a-ecfd-4528-88c1-abb42bc35944,CV-CL-P2-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Blue,Pack 2,,2,SinglePiece
+48220e72-c9ab-4da8-bfb4-1b7cb7f0b591,CV-CL-P2-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Galaxy Gray,Pack 2,,2,SinglePiece
+e83ab8e3-26c4-4cb8-a8ee-d5467f0b9c21,CV-CL-P2-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Gray,Pack 2,,2,SinglePiece
+941e3f14-eda4-4c1c-9ce4-c7280c6a2be8,CV-CL-P2-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Green,Pack 2,,2,SinglePiece
+4a997918-de87-440c-980c-4b702669b967,CV-CL-P2-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Green 2T,Pack 2,,2,SinglePiece
+34e7b7df-17a1-456d-9b64-570df14c73f4,CV-CL-P2-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Hazel,Pack 2,,2,SinglePiece
+d8599355-a200-41e9-abd1-ec8b7055bb4b,CV-CL-P2-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Jewel Brown,Pack 2,,2,SinglePiece
+a4e7ddc0-f436-48cd-a1af-40df1d70f961,CV-CL-P2-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Marine,Pack 2,,2,SinglePiece
+5e9c2888-db06-4564-97b5-28a8af95ba7e,CV-CL-P2-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Pure Hazel,Pack 2,,2,SinglePiece
+dfaeeb6f-d6aa-4398-a0f1-3b0582636a49,CV-CL-P2-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Selena Gray,Pack 2,,2,SinglePiece
+6c4996df-c60d-4c15-8554-f36752d87119,CV-CL-P2-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,Sunset,Pack 2,,2,SinglePiece
+6d7929b5-bed3-4a9a-b8c7-a5ff77ddb276,CV-CL-P2-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2,True Sapphire,Pack 2,,2,SinglePiece
+1b4a82de-7512-4075-be6a-567e299ad59c,CV-CL-P225-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Blue,Pack 2,,2,SinglePiece
+167891aa-1da6-4fda-b6f1-808971268620,CV-CL-P225-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Galaxy Gray,Pack 2,,2,SinglePiece
+4b663420-58c3-468d-bd56-68d144323bf7,CV-CL-P225-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Gray,Pack 2,,2,SinglePiece
+c73faa10-91c6-40b3-9c71-76b9a6e63213,CV-CL-P225-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Green,Pack 2,,2,SinglePiece
+20330e30-32d4-4318-aa70-d18891584ff5,CV-CL-P225-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Green 2T,Pack 2,,2,SinglePiece
+8af8e389-d073-4ea9-b386-4c8e1cf76cb8,CV-CL-P225-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Hazel,Pack 2,,2,SinglePiece
+003561ac-99f9-4bd5-a419-198c65bcb146,CV-CL-P225-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Jewel Brown,Pack 2,,2,SinglePiece
+c117511c-db20-40b6-b1c9-dcaa405bfa8e,CV-CL-P225-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Marine,Pack 2,,2,SinglePiece
+43f0ffb7-faed-434d-929e-b950e7f25d8d,CV-CL-P225-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Pure Hazel,Pack 2,,2,SinglePiece
+3fda3fc9-a7ea-4c85-bb08-cd3ad23072bc,CV-CL-P225-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Selena Gray,Pack 2,,2,SinglePiece
+4ed5c2a6-c85d-42f1-86d1-3b4810ea8c80,CV-CL-P225-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,Sunset,Pack 2,,2,SinglePiece
+e1c9018d-ab6a-4bc5-a5e1-03d3cc439af7,CV-CL-P225-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.25,True Sapphire,Pack 2,,2,SinglePiece
+7fb7d22d-0235-4e86-a5a5-af3397fc65f9,CV-CL-P25-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Blue,Pack 2,,2,SinglePiece
+98b2874f-b313-490e-89ee-f0347e3cbe8c,CV-CL-P25-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Galaxy Gray,Pack 2,,2,SinglePiece
+0af04996-2c65-4f43-913a-d4fe56e59621,CV-CL-P25-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Gray,Pack 2,,2,SinglePiece
+9234694a-254b-44e3-90af-e0a0a628482c,CV-CL-P25-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Green,Pack 2,,2,SinglePiece
+b566cd76-3b7c-4fd6-991f-e30f21704a98,CV-CL-P25-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Green 2T,Pack 2,,2,SinglePiece
+e69decbc-c229-4942-9f6b-cf8bc484d60b,CV-CL-P25-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Hazel,Pack 2,,2,SinglePiece
+9d8c1f47-0842-4844-81f3-9836218773f3,CV-CL-P25-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Jewel Brown,Pack 2,,2,SinglePiece
+2784c23d-5872-4410-8362-520631fe9d8d,CV-CL-P25-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Marine,Pack 2,,2,SinglePiece
+dbab4fa3-be51-460c-9f7e-d37fa0a41e7d,CV-CL-P25-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Pure Hazel,Pack 2,,2,SinglePiece
+40b66dac-716d-466f-b123-f75c685f40fc,CV-CL-P25-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Selena Gray,Pack 2,,2,SinglePiece
+08e6198e-14d7-4338-b536-58a07e8361f1,CV-CL-P25-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,Sunset,Pack 2,,2,SinglePiece
+db1ea0a4-ff30-4cd0-bdbd-6857ab79c5f9,CV-CL-P25-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.5,True Sapphire,Pack 2,,2,SinglePiece
+4405c031-e8a7-4c72-8493-42e760b30715,CV-CL-P275-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Blue,Pack 2,,2,SinglePiece
+fc3cc639-023c-4fab-b05b-61121a98cb00,CV-CL-P275-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Galaxy Gray,Pack 2,,2,SinglePiece
+24355f90-76c0-49af-b3f4-56cc63079907,CV-CL-P275-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Gray,Pack 2,,2,SinglePiece
+033d6a90-cc7d-474f-93ab-d06486d86d24,CV-CL-P275-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Green,Pack 2,,2,SinglePiece
+7cc50f19-13ae-44a8-b379-57959a3386a8,CV-CL-P275-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Green 2T,Pack 2,,2,SinglePiece
+5eec4e6f-cd88-47a0-aad9-4e95075b3861,CV-CL-P275-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Hazel,Pack 2,,2,SinglePiece
+86e9b7ad-4c74-499b-b247-7bb0cea041ca,CV-CL-P275-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Jewel Brown,Pack 2,,2,SinglePiece
+b06ca142-40b5-400b-973a-bc6f574d5d48,CV-CL-P275-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Marine,Pack 2,,2,SinglePiece
+63fb6289-d9f6-4636-9c62-f2a6d06437dc,CV-CL-P275-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Pure Hazel,Pack 2,,2,SinglePiece
+2baa7ff0-8898-4d11-861b-fc0c37b910ea,CV-CL-P275-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Selena Gray,Pack 2,,2,SinglePiece
+78fb1c5e-bbc3-4b20-832e-baf9ed2f549d,CV-CL-P275-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,Sunset,Pack 2,,2,SinglePiece
+57b444b9-376b-44b4-9e78-7e197c5d3b75,CV-CL-P275-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,2.75,True Sapphire,Pack 2,,2,SinglePiece
+9fca62c8-01a4-4091-b6b2-0692a237a1e8,CV-CL-P3-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Blue,Pack 2,,2,SinglePiece
+13f55b45-b4c0-4261-ab37-78411a1fafac,CV-CL-P3-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Galaxy Gray,Pack 2,,2,SinglePiece
+80f2ec16-88a9-4733-bebf-e6a315dbbf7c,CV-CL-P3-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Gray,Pack 2,,2,SinglePiece
+4cb5b7a8-87e8-4ee1-9f7f-9e11cc6c0916,CV-CL-P3-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Green,Pack 2,,2,SinglePiece
+de2a3c24-3b0a-4f8a-8f5d-f0e30715dbb2,CV-CL-P3-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Green 2T,Pack 2,,2,SinglePiece
+7558c19b-6c67-4110-9495-afc411c68a57,CV-CL-P3-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Hazel,Pack 2,,2,SinglePiece
+2173ac39-a2ca-4c79-b290-af4e353c0765,CV-CL-P3-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Jewel Brown,Pack 2,,2,SinglePiece
+e3e45384-2475-4a2d-8dda-dc78505659f2,CV-CL-P3-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Marine,Pack 2,,2,SinglePiece
+26e9a488-aae3-4901-b27d-b0dbea0a9215,CV-CL-P3-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Pure Hazel,Pack 2,,2,SinglePiece
+71deaa75-483f-4758-a7a2-98486ae2fd06,CV-CL-P3-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Selena Gray,Pack 2,,2,SinglePiece
+462c2c56-c922-4504-8a92-a57c54be75a1,CV-CL-P3-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,Sunset,Pack 2,,2,SinglePiece
+aa97c6a8-7901-4cba-849f-c6f3de902412,CV-CL-P3-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3,True Sapphire,Pack 2,,2,SinglePiece
+1ea3c9c9-0877-4b5e-b083-8da35803e900,CV-CL-P325-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Blue,Pack 2,,2,SinglePiece
+f0a7c255-bb29-41a1-96c1-19d8c949ddcd,CV-CL-P325-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Galaxy Gray,Pack 2,,2,SinglePiece
+dcdf53b0-9f44-4bc6-a64e-857c0428197d,CV-CL-P325-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Gray,Pack 2,,2,SinglePiece
+bea27522-1ac8-4340-aef5-b8951f603204,CV-CL-P325-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Green,Pack 2,,2,SinglePiece
+180daa39-fa7a-48cc-958b-fa61b3817cd4,CV-CL-P325-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Green 2T,Pack 2,,2,SinglePiece
+2752aaa6-67e2-4b4c-944f-cdfa1c6fdbbe,CV-CL-P325-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Hazel,Pack 2,,2,SinglePiece
+c7c6cfb0-b714-46de-bdf1-06362908c3cd,CV-CL-P325-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Jewel Brown,Pack 2,,2,SinglePiece
+da697a83-79a2-4383-b550-aa9370712735,CV-CL-P325-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Marine,Pack 2,,2,SinglePiece
+9c6c2bd9-2d45-4fe3-a74a-0b55350caece,CV-CL-P325-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Pure Hazel,Pack 2,,2,SinglePiece
+bb409f39-b0a5-474c-ac9d-d3e09e876ab2,CV-CL-P325-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Selena Gray,Pack 2,,2,SinglePiece
+a3e07fca-b12a-4415-86dc-9b1e16895c72,CV-CL-P325-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,Sunset,Pack 2,,2,SinglePiece
+d013f340-e1c4-470a-8d63-89630be8dc5a,CV-CL-P325-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.25,True Sapphire,Pack 2,,2,SinglePiece
+8fc17da4-6d2a-4fd1-93bf-55b097ecb741,CV-CL-P35-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Blue,Pack 2,,2,SinglePiece
+c2b47af1-24e6-473b-81e8-f653da72ebe9,CV-CL-P35-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Galaxy Gray,Pack 2,,2,SinglePiece
+b4dd706d-fa65-413b-9e91-d4cbbb603421,CV-CL-P35-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Gray,Pack 2,,2,SinglePiece
+dea6e2be-1309-4078-89de-171328e4d2fb,CV-CL-P35-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Green,Pack 2,,2,SinglePiece
+8ba7ff3e-5ed1-4503-b776-645132f9d935,CV-CL-P35-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Green 2T,Pack 2,,2,SinglePiece
+a29d7828-694a-4c92-b212-8c94d1e8994f,CV-CL-P35-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Hazel,Pack 2,,2,SinglePiece
+9f17f3c6-fce9-4e81-91e8-d8f4862f66d8,CV-CL-P35-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Jewel Brown,Pack 2,,2,SinglePiece
+060eeb9b-e281-48b2-ab1f-e8851664a605,CV-CL-P35-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Marine,Pack 2,,2,SinglePiece
+5e30d76c-16cf-4833-acff-327ee0280a10,CV-CL-P35-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Pure Hazel,Pack 2,,2,SinglePiece
+881838c7-ac50-421e-b24b-5123b381a502,CV-CL-P35-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Selena Gray,Pack 2,,2,SinglePiece
+9afc0646-ab9b-4433-a08a-875bcbd5a5bc,CV-CL-P35-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,Sunset,Pack 2,,2,SinglePiece
+75f35309-4318-4b0a-8700-d2839262199c,CV-CL-P35-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.5,True Sapphire,Pack 2,,2,SinglePiece
+c2d0d7b3-2880-42b9-ae81-acc6f4a63249,CV-CL-P375-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Blue,Pack 2,,2,SinglePiece
+549ceda0-8f6c-4eab-a06f-f575c4c059f5,CV-CL-P375-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Galaxy Gray,Pack 2,,2,SinglePiece
+6b915eb1-0ded-4607-ade2-60939095ad60,CV-CL-P375-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Gray,Pack 2,,2,SinglePiece
+e1c138c6-e1e7-4cd7-bc77-d270542e0c8b,CV-CL-P375-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Green,Pack 2,,2,SinglePiece
+6307b7d0-dd66-4698-848d-21eb9d35b339,CV-CL-P375-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Green 2T,Pack 2,,2,SinglePiece
+a0049b98-4931-4b6f-86ee-a614796313c1,CV-CL-P375-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Hazel,Pack 2,,2,SinglePiece
+3b5c84e1-796f-49c2-bf26-d1d8136e72b1,CV-CL-P375-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Jewel Brown,Pack 2,,2,SinglePiece
+1b457c0c-148b-48b6-88d9-b2b6d0b58882,CV-CL-P375-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Marine,Pack 2,,2,SinglePiece
+7c8bad83-3a1a-471b-92b3-79fb59167a0e,CV-CL-P375-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Pure Hazel,Pack 2,,2,SinglePiece
+fcdaa419-62f7-46b1-a810-74a6031e4bf4,CV-CL-P375-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Selena Gray,Pack 2,,2,SinglePiece
+8416bcc4-5bb3-48e4-8d30-fbf4f11f9b28,CV-CL-P375-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,Sunset,Pack 2,,2,SinglePiece
+22275237-1c7e-44a9-b9fd-5058ee862d07,CV-CL-P375-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,3.75,True Sapphire,Pack 2,,2,SinglePiece
+97bfedfc-67a5-43a4-aedd-b34663c28a57,CV-CL-P4-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Blue,Pack 2,,2,SinglePiece
+9f3d87f0-16d2-4246-a9ea-f9123e33e505,CV-CL-P4-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Galaxy Gray,Pack 2,,2,SinglePiece
+3cc71047-bc6f-419f-b71b-c58c1091af04,CV-CL-P4-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Gray,Pack 2,,2,SinglePiece
+5e7c5e0a-148e-4668-9f59-4d0298cc5039,CV-CL-P4-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Green,Pack 2,,2,SinglePiece
+6a7edeec-135e-43c8-ab2d-2995ae02b8c3,CV-CL-P4-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Green 2T,Pack 2,,2,SinglePiece
+97ff43ec-5d9d-4487-9efe-7c31e5e7db1a,CV-CL-P4-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Hazel,Pack 2,,2,SinglePiece
+8c6ef6bc-3a0f-44d7-b1dd-62db8b99f3a2,CV-CL-P4-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Jewel Brown,Pack 2,,2,SinglePiece
+12298a87-64fd-4567-8e90-7d0f77e089d1,CV-CL-P4-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Marine,Pack 2,,2,SinglePiece
+a56ce003-1b2e-4da6-bfef-43c1ec9da39d,CV-CL-P4-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Pure Hazel,Pack 2,,2,SinglePiece
+44905afe-ea29-4804-89c0-dbd5cd3f03e7,CV-CL-P4-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Selena Gray,Pack 2,,2,SinglePiece
+b13f37b5-cf8a-4b33-af30-d16eafe0f92a,CV-CL-P4-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,Sunset,Pack 2,,2,SinglePiece
+bfc48378-c652-49fc-b2fb-209d0d253a6d,CV-CL-P4-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4,True Sapphire,Pack 2,,2,SinglePiece
+cacd58fa-e728-4515-9710-325792805677,CV-CL-P425-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Blue,Pack 2,,2,SinglePiece
+5900ebc7-8985-49e8-ba7f-29c1335cf0b4,CV-CL-P425-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Galaxy Gray,Pack 2,,2,SinglePiece
+0c09ed59-02dc-473c-bc62-98881a213ad9,CV-CL-P425-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Gray,Pack 2,,2,SinglePiece
+6719d8a4-938b-4d9a-bc11-e3719fd42268,CV-CL-P425-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Green,Pack 2,,2,SinglePiece
+bd9809fd-e4a4-4dbe-8b3c-e9acec7f1aa4,CV-CL-P425-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Green 2T,Pack 2,,2,SinglePiece
+9cf207a1-e5e2-4ce6-b4b9-7f61a0c2a248,CV-CL-P425-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Hazel,Pack 2,,2,SinglePiece
+993440bd-b3bc-442f-ac7c-6bca00fe3211,CV-CL-P425-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Jewel Brown,Pack 2,,2,SinglePiece
+fb74874e-0570-44bd-8636-7a3902e34475,CV-CL-P425-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Marine,Pack 2,,2,SinglePiece
+74b091bc-8817-4284-ac42-29e141968565,CV-CL-P425-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Pure Hazel,Pack 2,,2,SinglePiece
+692984fe-a90d-4df3-b0e4-715daf741651,CV-CL-P425-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Selena Gray,Pack 2,,2,SinglePiece
+1fd8bef2-816a-494f-87c0-0480fc687364,CV-CL-P425-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,Sunset,Pack 2,,2,SinglePiece
+3e98117e-c57e-4c2f-967f-5f1d05ca690e,CV-CL-P425-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.25,True Sapphire,Pack 2,,2,SinglePiece
+913ec509-be74-47a6-90c1-3b084c50a3c7,CV-CL-P45-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Blue,Pack 2,,2,SinglePiece
+f190ff20-3b0d-41a9-9e03-50fa542aa105,CV-CL-P45-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Galaxy Gray,Pack 2,,2,SinglePiece
+ed91cb1f-0d05-4781-b1d2-81d7a56124bc,CV-CL-P45-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Gray,Pack 2,,2,SinglePiece
+ab9d0c0b-1989-467e-ab5a-01dad16191d4,CV-CL-P45-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Green,Pack 2,,2,SinglePiece
+303e32a8-578c-43ac-9f17-efb06c4231fb,CV-CL-P45-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Green 2T,Pack 2,,2,SinglePiece
+75c7ba5d-ffe9-40ee-a29c-9abdc46b33b2,CV-CL-P45-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Hazel,Pack 2,,2,SinglePiece
+26ab81d7-37b7-4e27-8de0-eb0a6a869f36,CV-CL-P45-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Jewel Brown,Pack 2,,2,SinglePiece
+231229ce-f783-4eda-8b27-698b957651bc,CV-CL-P45-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Marine,Pack 2,,2,SinglePiece
+b60ef4d2-69a7-4ee2-bf61-e220b0f2c37c,CV-CL-P45-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Pure Hazel,Pack 2,,2,SinglePiece
+e135afb3-d8ad-4f1f-a96c-dcda19ee7d09,CV-CL-P45-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Selena Gray,Pack 2,,2,SinglePiece
+59c1f0d3-88f3-4caa-a471-8b4ca4b0c5d3,CV-CL-P45-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,Sunset,Pack 2,,2,SinglePiece
+5a43beab-7983-43be-99bf-e1382855941e,CV-CL-P45-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.5,True Sapphire,Pack 2,,2,SinglePiece
+07b38264-bb4f-4cde-a9d3-5c7f023e2197,CV-CL-P475-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Blue,Pack 2,,2,SinglePiece
+8d8b981b-4d37-45f8-acec-656465f43014,CV-CL-P475-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Galaxy Gray,Pack 2,,2,SinglePiece
+fac2c6cc-29c9-44b2-9f57-ba348d9f671c,CV-CL-P475-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Gray,Pack 2,,2,SinglePiece
+58de3455-5a01-4a30-ac29-757ece8f0894,CV-CL-P475-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Green,Pack 2,,2,SinglePiece
+7834bdf9-df68-4c57-807d-1421733984c4,CV-CL-P475-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Green 2T,Pack 2,,2,SinglePiece
+9652ad53-f05b-4c3f-9001-30fae56737d5,CV-CL-P475-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Hazel,Pack 2,,2,SinglePiece
+c37c397a-5b33-4043-968a-92b9d58829ca,CV-CL-P475-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Jewel Brown,Pack 2,,2,SinglePiece
+9650d7ab-e0a7-4d31-83d0-210ae561f5a2,CV-CL-P475-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Marine,Pack 2,,2,SinglePiece
+213ec20b-aa13-4341-81f3-1fae9480e1cc,CV-CL-P475-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Pure Hazel,Pack 2,,2,SinglePiece
+c0c33b41-1da1-4b0c-91c9-98795ffe84d9,CV-CL-P475-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Selena Gray,Pack 2,,2,SinglePiece
+c82930f8-ae7e-4d6c-8931-90947183964b,CV-CL-P475-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,Sunset,Pack 2,,2,SinglePiece
+3217560d-92a7-4909-8a92-843daa0a61e9,CV-CL-P475-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,4.75,True Sapphire,Pack 2,,2,SinglePiece
+a8526453-9c43-4615-8be2-7f4021c1db39,CV-CL-P5-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Blue,Pack 2,,2,SinglePiece
+560c4a7f-52b1-4c13-af39-b32f9156d3c0,CV-CL-P5-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Galaxy Gray,Pack 2,,2,SinglePiece
+fa6f9934-6070-4003-8458-c8e549ffcc00,CV-CL-P5-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Gray,Pack 2,,2,SinglePiece
+e7c3c0ad-5ba6-4761-b5b0-217aa752f1b4,CV-CL-P5-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Green,Pack 2,,2,SinglePiece
+c016a337-ca8d-4c95-8a27-26e65064b6fb,CV-CL-P5-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Green 2T,Pack 2,,2,SinglePiece
+58f2ddb4-6367-4736-8ed1-d59629713ea2,CV-CL-P5-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Hazel,Pack 2,,2,SinglePiece
+52d8320a-ca29-449a-8af0-463d4dfdaac7,CV-CL-P5-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Jewel Brown,Pack 2,,2,SinglePiece
+3492cf42-2122-4cdc-a62e-81bc7c955585,CV-CL-P5-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Marine,Pack 2,,2,SinglePiece
+d284fadc-e184-42bf-af6d-7526768fb02c,CV-CL-P5-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Pure Hazel,Pack 2,,2,SinglePiece
+0dd713cb-f153-4a06-a490-6ecbb6af3736,CV-CL-P5-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Selena Gray,Pack 2,,2,SinglePiece
+e9105d39-dfb7-45c4-a04c-09f116ce66f1,CV-CL-P5-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,Sunset,Pack 2,,2,SinglePiece
+3812691f-e486-49e5-a92d-128dc9f623f9,CV-CL-P5-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5,True Sapphire,Pack 2,,2,SinglePiece
+345dfd2b-9c37-4a27-aa87-eaf5516eb6c2,CV-CL-P55-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Blue,Pack 2,,2,SinglePiece
+efb64957-cb82-48cc-8045-7d86c1e4451e,CV-CL-P55-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Galaxy Gray,Pack 2,,2,SinglePiece
+4f9fcfd5-cea9-4ecf-8e34-421bf42f252c,CV-CL-P55-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Gray,Pack 2,,2,SinglePiece
+d2a107a3-01a0-4d39-b8a7-11f8fb0942a8,CV-CL-P55-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Green,Pack 2,,2,SinglePiece
+80f9363e-84fd-4851-a98a-9fe69a7fc475,CV-CL-P55-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Green 2T,Pack 2,,2,SinglePiece
+8edfe443-ed52-404d-9b5c-afebf757bd57,CV-CL-P55-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Hazel,Pack 2,,2,SinglePiece
+22ab07d6-5694-409e-b8bc-6159a4e9c781,CV-CL-P55-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Jewel Brown,Pack 2,,2,SinglePiece
+9aece985-3d34-4315-a14a-d8ab580f8ee8,CV-CL-P55-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Marine,Pack 2,,2,SinglePiece
+76684ca1-9df5-4545-9a7e-45dbf8e62b67,CV-CL-P55-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Pure Hazel,Pack 2,,2,SinglePiece
+a286b54f-7ce6-4212-9350-577a0bead0b1,CV-CL-P55-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Selena Gray,Pack 2,,2,SinglePiece
+908c1bd6-680f-4436-97c7-4dc89db5b37d,CV-CL-P55-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,Sunset,Pack 2,,2,SinglePiece
+ff7b8229-15aa-4429-b272-d8d113b25afa,CV-CL-P55-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,5.5,True Sapphire,Pack 2,,2,SinglePiece
+dc6fc2f6-f6c6-403d-9c48-56825df8c954,CV-CL-P6-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Blue,Pack 2,,2,SinglePiece
+9777e857-7e4e-4f10-98e9-02860c705dcf,CV-CL-P6-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Galaxy Gray,Pack 2,,2,SinglePiece
+4adb22f8-e6a8-4280-b303-88dce3923761,CV-CL-P6-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Gray,Pack 2,,2,SinglePiece
+d0c4ca33-a3f7-44a7-b86a-e2ec21493d8a,CV-CL-P6-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Green,Pack 2,,2,SinglePiece
+8ac1618a-ea17-4886-9475-55effb373889,CV-CL-P6-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Green 2T,Pack 2,,2,SinglePiece
+43018a45-6403-4dbf-8c2a-50728b8c3c83,CV-CL-P6-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Hazel,Pack 2,,2,SinglePiece
+ee5c46aa-f625-467e-b502-63fe809960a8,CV-CL-P6-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Jewel Brown,Pack 2,,2,SinglePiece
+5ad2593c-9320-4c05-acf6-aa0056a84207,CV-CL-P6-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Marine,Pack 2,,2,SinglePiece
+4698b693-9026-4d56-bb47-a68a65c6c3b1,CV-CL-P6-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Pure Hazel,Pack 2,,2,SinglePiece
+95666745-4ec0-4ab6-97ce-7124b3baba0d,CV-CL-P6-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Selena Gray,Pack 2,,2,SinglePiece
+3f4991e0-2d9d-4c3e-a839-e0f03da64dfa,CV-CL-P6-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,Sunset,Pack 2,,2,SinglePiece
+b527e127-b28c-4392-ae10-aab2349aa156,CV-CL-P6-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6,True Sapphire,Pack 2,,2,SinglePiece
+a40c1954-e211-4566-b397-e67021a31544,CV-CL-P65-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Blue,Pack 2,,2,SinglePiece
+6f99046c-f014-4117-a45f-d3ca728cdbed,CV-CL-P65-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Galaxy Gray,Pack 2,,2,SinglePiece
+a38254ea-2f78-4595-9486-2e52d6e3f347,CV-CL-P65-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Gray,Pack 2,,2,SinglePiece
+da568deb-a3b2-4c78-b73f-f49130ab21bb,CV-CL-P65-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Green,Pack 2,,2,SinglePiece
+834826a9-9b17-43ae-9a6a-27f25c005d16,CV-CL-P65-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Green 2T,Pack 2,,2,SinglePiece
+317183b5-2ff3-4233-9f39-fd68a2a6c799,CV-CL-P65-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Hazel,Pack 2,,2,SinglePiece
+31cb804c-efbb-42b1-82b6-d8cc551d005e,CV-CL-P65-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Jewel Brown,Pack 2,,2,SinglePiece
+dce64d00-5391-4dd0-87a4-85c41df85d97,CV-CL-P65-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Marine,Pack 2,,2,SinglePiece
+9704556e-19f1-4857-8d00-80776e302313,CV-CL-P65-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Pure Hazel,Pack 2,,2,SinglePiece
+009d2b17-9fcf-4108-829c-45e1249c402b,CV-CL-P65-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Selena Gray,Pack 2,,2,SinglePiece
+a8db047d-9205-4830-8a69-0d8a1ae08614,CV-CL-P65-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,Sunset,Pack 2,,2,SinglePiece
+24f3bd63-1294-4f40-92c9-d0eb2ad48880,CV-CL-P65-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,6.5,True Sapphire,Pack 2,,2,SinglePiece
+b11f1084-4cc9-40e8-b88e-6f6b7ba50cac,CV-CL-P7-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Blue,Pack 2,,2,SinglePiece
+ed7dde2d-70f2-44d6-95a7-e673f3c89b70,CV-CL-P7-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Galaxy Gray,Pack 2,,2,SinglePiece
+99ef4cd6-f40f-494a-a480-cf3608f315fb,CV-CL-P7-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Gray,Pack 2,,2,SinglePiece
+614cfe1f-8848-4cb2-a9c3-75eaa7b00d77,CV-CL-P7-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Green,Pack 2,,2,SinglePiece
+5abb48ee-29b2-4781-a088-47dfec8ad7e8,CV-CL-P7-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Green 2T,Pack 2,,2,SinglePiece
+40a94f8d-9c26-4bab-abb5-96321ee886ff,CV-CL-P7-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Hazel,Pack 2,,2,SinglePiece
+0ca30b12-104c-43fa-bb3d-ea5127d1b14b,CV-CL-P7-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Jewel Brown,Pack 2,,2,SinglePiece
+48619ebc-3f4f-4305-b7c0-05418beb302d,CV-CL-P7-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Marine,Pack 2,,2,SinglePiece
+e38b659c-fbf5-47be-be1e-e0befa580874,CV-CL-P7-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Pure Hazel,Pack 2,,2,SinglePiece
+e3499fec-ba72-494b-b92c-ad11af6df951,CV-CL-P7-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Selena Gray,Pack 2,,2,SinglePiece
+251ec2d7-8d27-4dc5-a9da-ae5f9f2ef263,CV-CL-P7-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,Sunset,Pack 2,,2,SinglePiece
+110bb31a-ad66-4c30-a3f0-1cb5e91a0372,CV-CL-P7-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7,True Sapphire,Pack 2,,2,SinglePiece
+16465ec4-2c0f-4425-b230-94023af5518f,CV-CL-P75-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Blue,Pack 2,,2,SinglePiece
+d5082d52-69be-4be3-967c-84bb4a3e99b4,CV-CL-P75-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Galaxy Gray,Pack 2,,2,SinglePiece
+8f54f36d-331d-4c66-a63e-06384a0bb8d6,CV-CL-P75-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Gray,Pack 2,,2,SinglePiece
+4140c739-6041-437f-b181-11932861a5b6,CV-CL-P75-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Green,Pack 2,,2,SinglePiece
+558e41f7-8e51-49ef-989e-46af9b0e8c70,CV-CL-P75-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Green 2T,Pack 2,,2,SinglePiece
+975acd1a-e7e8-4afd-a4aa-2605e2a86d9c,CV-CL-P75-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Hazel,Pack 2,,2,SinglePiece
+21ecd452-9107-46dd-8c9e-147c96fe0a81,CV-CL-P75-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Jewel Brown,Pack 2,,2,SinglePiece
+91bbb4a0-761f-43c2-b15a-590885832f52,CV-CL-P75-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Marine,Pack 2,,2,SinglePiece
+e32a1835-3c41-4198-969d-b13378d82fc5,CV-CL-P75-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Pure Hazel,Pack 2,,2,SinglePiece
+187c56f7-84f0-4e4b-910d-e33824a2fc8e,CV-CL-P75-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Selena Gray,Pack 2,,2,SinglePiece
+594752b1-7bf7-47a5-9311-7d8d3e688ef2,CV-CL-P75-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,Sunset,Pack 2,,2,SinglePiece
+e956bdef-c363-48a1-b773-d9714eb0267f,CV-CL-P75-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,7.5,True Sapphire,Pack 2,,2,SinglePiece
+29474c70-11d8-4054-a61f-c3915151185a,CV-CL-P8-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Blue,Pack 2,,2,SinglePiece
+4747b8ca-24f4-4623-9e2e-59f72c8ccb01,CV-CL-P8-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Galaxy Gray,Pack 2,,2,SinglePiece
+5ba056ca-d4eb-4045-8669-5f3689226f8e,CV-CL-P8-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Gray,Pack 2,,2,SinglePiece
+b2a2bb4a-d5b1-4bd0-ae80-c0f942336f96,CV-CL-P8-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Green,Pack 2,,2,SinglePiece
+1cf37a0c-d0dc-4f5d-a8be-64852e3cbf6a,CV-CL-P8-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Green 2T,Pack 2,,2,SinglePiece
+7c2c8971-b078-483e-b4d9-a196893c01d4,CV-CL-P8-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Hazel,Pack 2,,2,SinglePiece
+138c85b4-5eee-4046-9a09-c9a56302e3e1,CV-CL-P8-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Jewel Brown,Pack 2,,2,SinglePiece
+f760e578-63bd-4887-a9f4-ecf07484c12d,CV-CL-P8-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Marine,Pack 2,,2,SinglePiece
+496ca80e-c527-4a77-9ea6-6e105f65dd4d,CV-CL-P8-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Pure Hazel,Pack 2,,2,SinglePiece
+077c70dd-0b1c-4a96-b9b5-66a625732672,CV-CL-P8-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Selena Gray,Pack 2,,2,SinglePiece
+5f7022ef-20ef-41cb-9199-0059ec550a71,CV-CL-P8-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,Sunset,Pack 2,,2,SinglePiece
+48dfb1dd-158b-40db-a228-80648f6854e2,CV-CL-P8-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8,True Sapphire,Pack 2,,2,SinglePiece
+8a8a0d1a-0b91-44c1-a77f-f76ebc109d2e,CV-CL-P85-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Blue,Pack 2,,2,SinglePiece
+e1b180ae-733e-4113-963d-c3da8e6e5e1b,CV-CL-P85-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Galaxy Gray,Pack 2,,2,SinglePiece
+da017060-398d-4132-b2d2-61164c25903a,CV-CL-P85-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Gray,Pack 2,,2,SinglePiece
+4c9a52fa-d388-4afd-bd1a-32d873addf6f,CV-CL-P85-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Green,Pack 2,,2,SinglePiece
+09f0bb39-48fd-452c-a427-196ad5d4895e,CV-CL-P85-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Green 2T,Pack 2,,2,SinglePiece
+9df3a202-6497-4941-8319-ac7617ae2a47,CV-CL-P85-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Hazel,Pack 2,,2,SinglePiece
+c9239c7a-b363-4e5a-bb78-cfbe22edbef0,CV-CL-P85-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Jewel Brown,Pack 2,,2,SinglePiece
+2c673dc8-4922-45dc-82e7-f0d0d451fdc2,CV-CL-P85-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Marine,Pack 2,,2,SinglePiece
+f05ea4d4-1c6a-4a40-9227-49f4168bc330,CV-CL-P85-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Pure Hazel,Pack 2,,2,SinglePiece
+c01bc8ed-14a4-43c3-8968-cf1139e41be9,CV-CL-P85-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Selena Gray,Pack 2,,2,SinglePiece
+5c510f25-b523-431d-a117-c83461a3da92,CV-CL-P85-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,Sunset,Pack 2,,2,SinglePiece
+384b3107-c4ff-4045-8a6a-558fdb487d02,CV-CL-P85-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,8.5,True Sapphire,Pack 2,,2,SinglePiece
+ab0ee90b-34e7-4668-a120-8b21e43ac79c,CV-CL-P9-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Blue,Pack 2,,2,SinglePiece
+b41cd6f1-230f-4d09-b1cd-8057502035c9,CV-CL-P9-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Galaxy Gray,Pack 2,,2,SinglePiece
+b89af6a1-f551-4622-8255-ac4aeb4aeb19,CV-CL-P9-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Gray,Pack 2,,2,SinglePiece
+999d64ff-65d8-4dc3-88e8-f6a79887b104,CV-CL-P9-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Green,Pack 2,,2,SinglePiece
+e5d91d0d-b1e3-43d3-ad25-c1eb094554cc,CV-CL-P9-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Green 2T,Pack 2,,2,SinglePiece
+9e1aaa0c-52fe-4850-bcd6-c4709827c722,CV-CL-P9-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Hazel,Pack 2,,2,SinglePiece
+3cc123b5-e795-467d-9187-4ba50399236c,CV-CL-P9-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Jewel Brown,Pack 2,,2,SinglePiece
+3bf44095-1250-4043-9d08-ace7e89b6292,CV-CL-P9-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Marine,Pack 2,,2,SinglePiece
+30952cf4-09b9-4182-b5d0-b1d17d8a9b04,CV-CL-P9-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Pure Hazel,Pack 2,,2,SinglePiece
+158e413e-b609-4f10-93cf-fed7a00a1f2c,CV-CL-P9-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Selena Gray,Pack 2,,2,SinglePiece
+307d8875-6fdb-4aff-8639-62183b9c8e26,CV-CL-P9-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,Sunset,Pack 2,,2,SinglePiece
+f23181e7-ecb5-4361-8f8e-414678d27a93,CV-CL-P9-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9,True Sapphire,Pack 2,,2,SinglePiece
+a518c724-5803-4920-8b0c-8100ec4a9d9b,CV-CL-P95-BLUE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Blue,Pack 2,,2,SinglePiece
+9b002f18-dd64-4bf1-b4de-3d6b168cf2a8,CV-CL-P95-GALAXYGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Galaxy Gray,Pack 2,,2,SinglePiece
+fcbe2e13-3607-4df5-8943-320d03961d51,CV-CL-P95-GRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Gray,Pack 2,,2,SinglePiece
+1ed60ebd-3bbd-43e1-b999-05731336b68f,CV-CL-P95-GREEN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Green,Pack 2,,2,SinglePiece
+1622ea11-a5da-4fc2-bac1-f7d6630278ba,CV-CL-P95-GREEN2T-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Green 2T,Pack 2,,2,SinglePiece
+1293cb13-65b5-4da2-952e-370eac41843b,CV-CL-P95-HAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Hazel,Pack 2,,2,SinglePiece
+02b27e66-c07a-4d90-b50c-d448b27dc381,CV-CL-P95-JEWELBROWN-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Jewel Brown,Pack 2,,2,SinglePiece
+507a2a3f-59c7-4806-a082-b8fdfb454d17,CV-CL-P95-MARINE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Marine,Pack 2,,2,SinglePiece
+1596308b-dd65-4894-acc8-e877abe88442,CV-CL-P95-PUREHAZEL-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Pure Hazel,Pack 2,,2,SinglePiece
+469cfb4e-13e0-445f-97f9-0941fb4605c1,CV-CL-P95-SELENAGRAY-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Selena Gray,Pack 2,,2,SinglePiece
+938fddc6-4843-441b-aa64-ddf8134f266f,CV-CL-P95-SUNSET-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,Sunset,Pack 2,,2,SinglePiece
+07b75b20-e913-45b6-901e-f980677bc8b7,CV-CL-P95-TRUESAPPHIRE-PACK2,Clear Vision Colored Medical Lens Pack,Clear Vision,Colored Lenses,+,9.5,True Sapphire,Pack 2,,2,SinglePiece
+939a9a78-3571-44ed-a581-c8b0c8f530f4,CV-SOL-120ML,Clear Vision Multi-Purpose Solution,Clear Vision,Solution,,,,120ml,,1,SinglePiece
+95f8347b-aea1-4530-aeee-d6570d3be0ea,CV-SOL-250ML,Clear Vision Multi-Purpose Solution,Clear Vision,Solution,,,,250ml,,1,SinglePiece
+aa7162d3-a708-4d7f-bdcb-838eb161f0c5,CV-SOL-360ML,Clear Vision Multi-Purpose Solution,Clear Vision,Solution,,,,360ml,,1,SinglePiece
+f2e40404-01e7-4ad3-af22-e2844e28af66,CV-SOL-60ML,Clear Vision Multi-Purpose Solution,Clear Vision,Solution,,,,60ml,,1,SinglePiece
+26617a71-0780-495e-844a-4f9a98e5e4dd,CV-ML-M10-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,10,Plain,Box 3,,3,SealedPackOnly
+3a878b48-1ce6-4218-9ba8-d534b6751c3f,CV-ML-M105-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,10.5,Plain,Box 3,,3,SealedPackOnly
+7afa0b65-d7e2-41ba-b2d5-424c77c03690,CV-ML-M11-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,11,Plain,Box 3,,3,SealedPackOnly
+b706a738-c2d3-4ad9-a74e-aa2cf51c9649,CV-ML-M115-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,11.5,Plain,Box 3,,3,SealedPackOnly
+b29b1aca-1d42-49b4-b228-4a079facc43f,CV-ML-M12-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,12,Plain,Box 3,,3,SealedPackOnly
+5500f280-3eb4-4207-ad2a-d81041c6b935,CV-ML-M13-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,13,Plain,Box 3,,3,SealedPackOnly
+4f5d6616-58bb-4ae6-9845-fa932216a6a6,CV-ML-M135-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,13.5,Plain,Box 3,,3,SealedPackOnly
+b2eb48b0-f522-4f3d-887e-22515e5705e3,CV-ML-M14-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,14,Plain,Box 3,,3,SealedPackOnly
+827a632d-b374-4ded-9b7d-277201d89bf1,CV-ML-M145-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,14.5,Plain,Box 3,,3,SealedPackOnly
+7e31fc0d-f56e-4827-a8da-861959d9350e,CV-ML-M155-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,15.5,Plain,Box 3,,3,SealedPackOnly
+fdbf99c7-3c2c-4b3a-acb2-3ca88bf6fa2f,CV-ML-M16-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,16,Plain,Box 3,,3,SealedPackOnly
+97ed939a-cafb-4fa9-a9c5-054039ca8da8,CV-ML-M165-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,16.5,Plain,Box 3,,3,SealedPackOnly
+dde62061-0d9a-4882-ba9e-2240e3d61659,CV-ML-M17-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,17,Plain,Box 3,,3,SealedPackOnly
+4a13e095-003e-4e8b-b677-1c88bd392a4d,CV-ML-M18-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,18,Plain,Box 3,,3,SealedPackOnly
+4ecf991f-1c6a-4d29-b47c-c4909c3b1854,CV-ML-M185-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,18.5,Plain,Box 3,,3,SealedPackOnly
+35796e43-285e-41d8-8250-12ecb1116d43,CV-ML-M19-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,19,Plain,Box 3,,3,SealedPackOnly
+95661fab-d1a7-42b2-bd39-72d29ecd3283,CV-ML-M195-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,19.5,Plain,Box 3,,3,SealedPackOnly
+88ff29f4-3d83-40bb-b882-5f14f423ec68,CV-ML-M20-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,20,Plain,Box 3,,3,SealedPackOnly
+fc8e4fd8-4e8a-42c3-bb05-69d1e1388544,CV-ML-M425-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,4.25,Plain,Box 3,,3,SealedPackOnly
+6672a150-1edd-4eda-a023-0f14a88a91d3,CV-ML-M45-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,4.5,Plain,Box 3,,3,SealedPackOnly
+b3709eb4-be53-4cf5-ad2b-c3389eba25c4,CV-ML-M475-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,4.75,Plain,Box 3,,3,SealedPackOnly
+89e65111-71df-4540-9f44-28f878cd48f1,CV-ML-M5-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,5,Plain,Box 3,,3,SealedPackOnly
+47ae3b94-d7b5-405d-837b-c1f308179930,CV-ML-M55-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,5.5,Plain,Box 3,,3,SealedPackOnly
+bea66b4d-70d4-498a-89b9-a2ee1b0ec56c,CV-ML-M6-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,6,Plain,Box 3,,3,SealedPackOnly
+bee4b58f-1824-4a2c-b2f9-5efbcd76815b,CV-ML-M65-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,6.5,Plain,Box 3,,3,SealedPackOnly
+5d042b94-1f43-4741-83b1-b2d1ddde93de,CV-ML-M7-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,7,Plain,Box 3,,3,SealedPackOnly
+40777dc9-1ee9-4486-82b8-74eb211ee2c1,CV-ML-M75-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,7.5,Plain,Box 3,,3,SealedPackOnly
+93c123ec-30ae-40c9-9106-97ecb3d2d5c3,CV-ML-M8-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,8,Plain,Box 3,,3,SealedPackOnly
+7aa150c1-b5ec-4839-9639-362423aa3eec,CV-ML-M85-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,8.5,Plain,Box 3,,3,SealedPackOnly
+ff1f76ee-1ada-419e-90e3-a56e49adce92,CV-ML-M9-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,9,Plain,Box 3,,3,SealedPackOnly
+23fa5991-08be-46f6-852c-b48ec17cd984,CV-ML-M95-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,-,9.5,Plain,Box 3,,3,SealedPackOnly
+749ac7f4-1e1a-4e48-b625-c75b9b83eb7b,CV-ML-P05-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,0.5,Plain,Box 3,,3,SealedPackOnly
+6dc49f9c-2f73-4f44-b3e8-b5a02c3b2888,CV-ML-P075-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,0.75,Plain,Box 3,,3,SealedPackOnly
+0bdcf106-2567-4e74-8d32-a2584d637803,CV-ML-P1-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,1,Plain,Box 3,,3,SealedPackOnly
+1032bfe4-82f7-4b8a-8b25-b110be9e2f8e,CV-ML-P10-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,10,Plain,Box 3,,3,SealedPackOnly
+83e08f20-2f52-4088-8cb2-fb395f0bb372,CV-ML-P125-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,1.25,Plain,Box 3,,3,SealedPackOnly
+edd8f4ac-c4de-49ef-b530-7d29bbe60a91,CV-ML-P15-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,1.5,Plain,Box 3,,3,SealedPackOnly
+db480e20-c8ef-4861-9ac3-25073fcc8572,CV-ML-P175-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,1.75,Plain,Box 3,,3,SealedPackOnly
+91f0e039-fb4d-4a3a-b41f-b74a170aea7c,CV-ML-P2-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,2,Plain,Box 3,,3,SealedPackOnly
+b68b9c38-abe4-4159-97ba-51845d72a22f,CV-ML-P225-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,2.25,Plain,Box 3,,3,SealedPackOnly
+d5374ca0-6d17-4044-b22d-7f554218ce40,CV-ML-P25-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,2.5,Plain,Box 3,,3,SealedPackOnly
+af11c52c-2dc1-4c14-bd52-514d7c64b9b1,CV-ML-P275-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,2.75,Plain,Box 3,,3,SealedPackOnly
+7482345b-5240-409a-9443-ec384d99305b,CV-ML-P3-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,3,Plain,Box 3,,3,SealedPackOnly
+a9a0ce88-e561-4d79-a57e-5ff47c474acb,CV-ML-P325-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,3.25,Plain,Box 3,,3,SealedPackOnly
+15b89f0e-2fd4-4814-9b14-2ea19d49c0e6,CV-ML-P35-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,3.5,Plain,Box 3,,3,SealedPackOnly
+bc757fe0-2c6c-4093-988b-a2002f6b4ef5,CV-ML-P375-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,3.75,Plain,Box 3,,3,SealedPackOnly
+13592a8b-a1e6-4894-af64-b4b55867c3a0,CV-ML-P4-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,4,Plain,Box 3,,3,SealedPackOnly
+7710b96c-ef07-462c-9a96-15be7195ad59,CV-ML-P425-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,4.25,Plain,Box 3,,3,SealedPackOnly
+1199f9ca-a3a7-42bd-baf3-a57760f355a9,CV-ML-P45-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,4.5,Plain,Box 3,,3,SealedPackOnly
+4943f662-6921-4f29-921d-a1478c6d249b,CV-ML-P475-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,4.75,Plain,Box 3,,3,SealedPackOnly
+1883eb25-b70c-46e7-9b2c-9e29e52dd95c,CV-ML-P5-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,5,Plain,Box 3,,3,SealedPackOnly
+4fe27c9d-3e80-4ee4-a957-a1486ad43bd5,CV-ML-P55-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,5.5,Plain,Box 3,,3,SealedPackOnly
+d89e551d-0fd9-48ad-9a4e-2c145d77ad28,CV-ML-P6-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,6,Plain,Box 3,,3,SealedPackOnly
+afa2c8a4-bd7d-4a2e-a888-60880d966908,CV-ML-P65-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,6.5,Plain,Box 3,,3,SealedPackOnly
+6d6e7233-0f20-4ca3-8732-e50014fc7884,CV-ML-P7-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,7,Plain,Box 3,,3,SealedPackOnly
+4233186e-defe-4f07-86e5-c9ad9bb8443b,CV-ML-P75-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,7.5,Plain,Box 3,,3,SealedPackOnly
+7e9d1c0d-8ec4-4117-93e1-1fdf36bace49,CV-ML-P8-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,8,Plain,Box 3,,3,SealedPackOnly
+bd384407-d865-40b1-8d19-c583132d2937,CV-ML-P85-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,8.5,Plain,Box 3,,3,SealedPackOnly
+99917195-bc77-40fc-819b-05ff1d02697a,CV-ML-P9-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,9,Plain,Box 3,,3,SealedPackOnly
+529f1eaa-98ac-4ef9-9d77-ae6e59e84b52,CV-ML-P95-PLAIN-BOX3,Plain Medical Lens Box,Clear Vision,Medical Lenses,+,9.5,Plain,Box 3,,3,SealedPackOnly
+ea2c040b-7b3d-4d8b-a041-9cb6f1e24420,CV-ML-M10-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,10,Plain,Vial 1,,1,SealedPackOnly
+04678b16-68a1-41c9-ad36-4983e89cce70,CV-ML-M105-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,10.5,Plain,Vial 1,,1,SealedPackOnly
+759504ed-3f45-42e6-8c62-15c0f6917407,CV-ML-M11-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,11,Plain,Vial 1,,1,SealedPackOnly
+94155da9-a6ea-4b3f-84e3-1af3a4c28eea,CV-ML-M115-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,11.5,Plain,Vial 1,,1,SealedPackOnly
+25976491-347c-47df-8be7-82364cf6745c,CV-ML-M12-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,12,Plain,Vial 1,,1,SealedPackOnly
+8220b06f-24ec-4e83-a470-1e7ce9e4ad94,CV-ML-M13-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,13,Plain,Vial 1,,1,SealedPackOnly
+2442f9df-6109-4af7-8226-f6bf556c4be5,CV-ML-M135-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,13.5,Plain,Vial 1,,1,SealedPackOnly
+c9ccf818-e597-4748-8119-2e88fcb4fda9,CV-ML-M14-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,14,Plain,Vial 1,,1,SealedPackOnly
+f3749b15-7827-4775-beb3-86013fc95b9b,CV-ML-M145-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,14.5,Plain,Vial 1,,1,SealedPackOnly
+5808a0dd-88b3-4030-a012-99097ca82691,CV-ML-M155-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,15.5,Plain,Vial 1,,1,SealedPackOnly
+35ee6e58-0111-4001-9fa3-533b5b1fcabb,CV-ML-M16-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,16,Plain,Vial 1,,1,SealedPackOnly
+6081c4a4-d1a7-4b8a-b89c-5fea4bae0a44,CV-ML-M165-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,16.5,Plain,Vial 1,,1,SealedPackOnly
+0d7cb160-e8b7-4935-ba60-ad1a760c1cc0,CV-ML-M17-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,17,Plain,Vial 1,,1,SealedPackOnly
+2305f665-19a0-4a8b-a201-8b443165f7c1,CV-ML-M18-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,18,Plain,Vial 1,,1,SealedPackOnly
+953ef1ec-ab54-4700-8332-c907feb5c6d7,CV-ML-M185-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,18.5,Plain,Vial 1,,1,SealedPackOnly
+17ed00e3-b63a-49bd-8cd1-4f02e39a42fa,CV-ML-M19-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,19,Plain,Vial 1,,1,SealedPackOnly
+3d848071-fa8f-4594-8d3e-785cb5c1ff60,CV-ML-M195-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,19.5,Plain,Vial 1,,1,SealedPackOnly
+998664af-70f1-4d7d-b39e-ce5948b55986,CV-ML-M20-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,20,Plain,Vial 1,,1,SealedPackOnly
+0ac77d36-bf6b-42c3-a2c8-c6b7c8e26e52,CV-ML-M425-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,4.25,Plain,Vial 1,,1,SealedPackOnly
+fc0400c9-b2c5-4104-9096-bdac2d62293a,CV-ML-M45-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,4.5,Plain,Vial 1,,1,SealedPackOnly
+6dcb02bb-7caa-4e87-86b9-d42853baef0a,CV-ML-M475-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,4.75,Plain,Vial 1,,1,SealedPackOnly
+f18782fb-22d5-447f-973f-46fe1c28992d,CV-ML-M5-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,5,Plain,Vial 1,,1,SealedPackOnly
+d12f1125-7e2b-45a4-81b2-2c40b3f364d7,CV-ML-M55-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,5.5,Plain,Vial 1,,1,SealedPackOnly
+45e385a1-7eff-48ff-a469-d4cdc78c4dea,CV-ML-M6-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,6,Plain,Vial 1,,1,SealedPackOnly
+594f2a40-ec0c-4870-a67a-d4dbc580237c,CV-ML-M65-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,6.5,Plain,Vial 1,,1,SealedPackOnly
+3b54a136-dbc6-4dd1-949f-e58772479a0d,CV-ML-M7-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,7,Plain,Vial 1,,1,SealedPackOnly
+b5913480-5a01-4830-91db-3b16ea708396,CV-ML-M75-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,7.5,Plain,Vial 1,,1,SealedPackOnly
+b7e1e597-be8a-4c0f-bd65-3feaed899550,CV-ML-M8-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,8,Plain,Vial 1,,1,SealedPackOnly
+43825cdf-0708-4428-8d1e-64511e117aee,CV-ML-M85-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,8.5,Plain,Vial 1,,1,SealedPackOnly
+0d4629f7-e750-4fc6-b862-681bf95cb6ab,CV-ML-M9-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,9,Plain,Vial 1,,1,SealedPackOnly
+0e318cc1-a47c-4af9-823b-10e0f4a287da,CV-ML-M95-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,-,9.5,Plain,Vial 1,,1,SealedPackOnly
+173a3581-0ecb-431a-aa85-673673318fc4,CV-ML-P05-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,0.5,Plain,Vial 1,,1,SealedPackOnly
+31a9b959-7c73-4eef-98aa-59a5f1a29f60,CV-ML-P075-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,0.75,Plain,Vial 1,,1,SealedPackOnly
+9955fb4f-175d-4208-bfaf-fbba68cfa160,CV-ML-P1-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,1,Plain,Vial 1,,1,SealedPackOnly
+a9aafdd0-4bf8-41d8-9a77-3af7297fe1f0,CV-ML-P10-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,10,Plain,Vial 1,,1,SealedPackOnly
+d860559c-b9c8-43dc-a383-7c093dbe0bf1,CV-ML-P125-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,1.25,Plain,Vial 1,,1,SealedPackOnly
+f7d8f784-bb89-426e-9e55-e63134b86a43,CV-ML-P15-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,1.5,Plain,Vial 1,,1,SealedPackOnly
+d35dc89c-ad60-4acc-8c69-d33b4560ec9b,CV-ML-P175-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,1.75,Plain,Vial 1,,1,SealedPackOnly
+2789b4fb-299d-41a0-832a-3666dd640c3b,CV-ML-P2-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,2,Plain,Vial 1,,1,SealedPackOnly
+11548152-979a-492e-b6d4-2b9a4c75ba56,CV-ML-P225-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,2.25,Plain,Vial 1,,1,SealedPackOnly
+20656634-9725-4e28-b35b-548dac8576f0,CV-ML-P25-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,2.5,Plain,Vial 1,,1,SealedPackOnly
+2cf8ffdd-8ecb-4b73-8349-531f91513e3d,CV-ML-P275-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,2.75,Plain,Vial 1,,1,SealedPackOnly
+3e4c0c58-2473-4adc-8cc5-6d724879c760,CV-ML-P3-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,3,Plain,Vial 1,,1,SealedPackOnly
+93f4aba8-8d15-439e-9d2b-04c113cd7cef,CV-ML-P325-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,3.25,Plain,Vial 1,,1,SealedPackOnly
+50d1c779-a39f-4a70-8c61-2dd5fd4a4dfc,CV-ML-P35-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,3.5,Plain,Vial 1,,1,SealedPackOnly
+78c4f197-1d0d-47ec-ade3-3bd3871e024b,CV-ML-P375-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,3.75,Plain,Vial 1,,1,SealedPackOnly
+7527129b-409f-4c58-b487-aa5d66cc8ae8,CV-ML-P4-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,4,Plain,Vial 1,,1,SealedPackOnly
+d2c80aba-225c-48b0-a6c4-735a697dc76f,CV-ML-P425-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,4.25,Plain,Vial 1,,1,SealedPackOnly
+2168b803-40a2-4ba4-9183-96fb09e4d427,CV-ML-P45-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,4.5,Plain,Vial 1,,1,SealedPackOnly
+fe619e21-e2fb-48ec-a1c1-ddbba293ed1a,CV-ML-P475-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,4.75,Plain,Vial 1,,1,SealedPackOnly
+623f261f-aac2-4dbc-ba9f-16bf150a1ed6,CV-ML-P5-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,5,Plain,Vial 1,,1,SealedPackOnly
+d0b920ee-833c-404e-b767-377667a487bd,CV-ML-P55-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,5.5,Plain,Vial 1,,1,SealedPackOnly
+8a6cbe1d-93de-4d8d-965d-0e8d33f61d4a,CV-ML-P6-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,6,Plain,Vial 1,,1,SealedPackOnly
+7e5e028a-388b-4ee9-b146-6e2d4d3a91a0,CV-ML-P65-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,6.5,Plain,Vial 1,,1,SealedPackOnly
+c04dbc54-9cd7-4acf-9a78-92203b154bab,CV-ML-P7-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,7,Plain,Vial 1,,1,SealedPackOnly
+bc08123d-f0c6-441f-8f76-9380c627e5a4,CV-ML-P75-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,7.5,Plain,Vial 1,,1,SealedPackOnly
+a6d04e5a-4162-4cca-b7dd-422f0f0230db,CV-ML-P8-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,8,Plain,Vial 1,,1,SealedPackOnly
+9b38fb2f-8198-4995-9521-eb8520f197d2,CV-ML-P85-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,8.5,Plain,Vial 1,,1,SealedPackOnly
+6be69fa9-9333-4a6d-ab75-fb8fe4e0e948,CV-ML-P9-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,9,Plain,Vial 1,,1,SealedPackOnly
+5f67d4a9-9d3c-4903-995d-450faa603009,CV-ML-P95-PLAIN-VIAL1,Plain Medical Lens Vial,Clear Vision,Medical Lenses,+,9.5,Plain,Vial 1,,1,SealedPackOnly

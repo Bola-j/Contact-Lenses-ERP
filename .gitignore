@@ -1,0 +1,38 @@
+# Visual Studio
+.vs/
+
+# Build outputs
+bin/
+obj/
+
+# Node / Playwright
+node_modules/
+playwright-report/
+test-results/
+.playwright/
+
+# Rider
+.idea/
+
+# VS Code
+.vscode/
+
+# User files
+*.user
+*.suo
+
+# Local configuration and secrets
+.env
+backend/Lensee.Host/appsettings.Development.json
+backend/Lensee.Host/appsettings.json
+backups/
+*.dump
+postman/results/
+
+
+.docker-compose.override.yml
+.docker-compose.yml
+.vercel
+
+testsprite_tests\tmp\config.json
+docs/*

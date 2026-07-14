@@ -1,0 +1,32 @@
+{
+  "name": "lensee-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "e2e:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-setup.ps1",
+    "e2e": "playwright test",
+    "e2e:smoke": "playwright test --grep \"auth:|mobile:\"",
+    "e2e:business-day": "playwright test e2e/full-business-day.spec.js --project=chromium",
+    "e2e:editing": "playwright test e2e/record-editing-complex.spec.js --project=chromium",
+    "e2e:headed": "playwright test --headed",
+    "e2e:headed:comprehensive": "set \"LENSEE_E2E_SKIP_WEBSERVER=1\"&& set \"LENSEE_E2E_FRONTEND_PORT=3001\"&& set \"LENSEE_E2E_FRONTEND_URL=http://127.0.0.1:3001\"&& playwright test e2e/lensee-ui-comprehensive-headed.spec.js --project=chromium --headed --reporter=line",
+    "e2e:ui": "playwright test --ui",
+    "e2e:report": "playwright show-report",
+    "test:e2e": "playwright test",
+    "test:e2e:mvp": "playwright test e2e",
+    "test:e2e:editing": "playwright test e2e/record-editing-complex.spec.js --project=chromium",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug",
+    "test:e2e:report": "playwright show-report",
+    "postman:seed-lenses": "npx newman run postman/Lensee_Lens_Seed.postman_collection.json --env-var baseUrl=http://localhost:5000 --env-var adminUsername=admin --env-var adminPassword=Admin123! --env-var requestThrottleMs=550 --env-var rateLimitBackoffMs=65000",
+    "vercel:build": "node scripts/build-vercel-frontend.mjs",
+    "check:encoding": "node scripts/check-text-encoding.mjs",
+    "check": "npm run check:encoding",
+    "pretest:e2e": "npm run check:encoding",
+    "prevercel:build": "npm run check:encoding"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

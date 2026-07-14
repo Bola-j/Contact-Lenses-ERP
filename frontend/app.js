@@ -1,0 +1,6170 @@
+﻿const configuredApiBase = window.LENSEE_CONFIG?.apiBaseUrl?.trim();
+const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+const defaultApiBase = isLocalHost ? "http://localhost:5275" : "";
+let apiBase = configuredApiBase || localStorage.getItem("lensee.apiBase") || defaultApiBase;
+const authKey = "lensee.auth";
+const apiCandidates = [
+  configuredApiBase,
+  localStorage.getItem("lensee.apiBase"),
+  ...(isLocalHost ? ["http://localhost:5275", "http://localhost:5000", "https://localhost:7237"] : [])
+].filter(Boolean);
+const ngrokSkipHeader = "ngrok-skip-browser-warning";
+const mutationEventName = "lensee:data-mutated";
+const authEventName = "lensee:auth-changed";
+
+let catalogCategories = [];
+let categoryTree = [];
+let catalogBrands = [];
+let selectedProductId = null;
+let inventoryLocations = [];
+let inventorySkuOptions = [];
+let selectedInventoryLocationId = "";
+let operationLocations = [];
+let operationSkuOptions = [];
+let operationProductOptions = [];
+let operationAvailableSkuIds = null;
+let operationMerchantOptions = [];
+let operationRepresentativeOptions = [];
+let operationsUiState = {
+  mode: "create",
+  operationId: null,
+  operationType: "InventoryReceipt",
+  revisionReason: "",
+  openDetailIds: []
+};
+let paymentMerchants = [];
+let paymentAccountants = [];
+let paymentHistoryRows = [];
+let reportOperationRows = [];
+let reportPaymentRows = [];
+let reportMerchantRows = [];
+let reportStocktakeRows = [];
+let selectedMerchantId = null;
+let selectedRepresentativeId = null;
+let notificationPageState = { page: 1, pageSize: 10 };
+let activeRefreshTimer = null;
+let activeRefreshController = null;
+let activeRefreshInFlight = false;
+let notificationBadgeInFlight = false;
+let refreshSessionPromise = null;
+let noticeSequence = 0;
+const mutationLocks = new Set();
+
+const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("lensee-sync") : null;
+
+const languageKey = "lensee.language";
+let currentLanguage = localStorage.getItem(languageKey) === "en" ? "en" : "ar";
+let applyingLanguage = false;
+let languageApplyTimer = null;
+
+const arabicTranslations = Object.freeze({
+  "Sign In": "تسجيل الدخول",
+  "Identity": "الهوية وتسجيل الدخول",
+  "Overview": "نظرة عامة",
+  "Dashboard": "لوحة التحكم",
+  "Catalog": "الكتالوج",
+  "Inventory": "المخزون",
+  "CRM": "إدارة العلاقات التجارية",
+  "Operations": "العمليات",
+  "Payments": "المدفوعات",
+  "Notifications": "التنبيهات",
+  "Reports": "التقارير",
+  "Stocktake": "الجرد",
+  "Admin": "مدير النظام",
+  "Administration": "إدارة النظام",
+  "Operations Console": "منصة تشغيل Lensee",
+  "Sign in": "تسجيل الدخول",
+  "Sign out": "تسجيل الخروج",
+  "API healthy": "الخادم متصل ويعمل",
+  "API degraded": "الخادم متصل جزئيًا",
+  "API offline": "الخادم غير متصل",
+  "Checking API": "جارٍ التحقق من اتصال الخادم",
+  "Not signed in": "غير مسجّل الدخول",
+  "Location scoped": "مقيّد بالموقع المعيّن",
+  "Access denied": "غير مصرح بالدخول",
+  "This session cannot open that workspace.": "لا تملك هذه الجلسة صلاحية فتح مساحة العمل المطلوبة.",
+  "Continue": "متابعة",
+  "Cancel": "إلغاء",
+  "Confirm": "تأكيد",
+  "Create": "إنشاء",
+  "Clear": "مسح",
+  "Reset": "إعادة ضبط",
+  "Refresh": "تحديث",
+  "Save": "حفظ",
+  "Save draft": "حفظ المسودة",
+  "New": "جديد",
+  "Edit": "تعديل",
+  "Detail": "التفاصيل",
+  "Details": "التفاصيل",
+  "Actions": "الإجراءات",
+  "Action": "الإجراء",
+  "Loading": "جارٍ التحميل",
+  "Loading...": "جارٍ التحميل...",
+  "No results": "لا توجد نتائج",
+  "Name": "الاسم",
+  "Business name": "اسم النشاط",
+  "Contact person": "مسؤول التواصل",
+  "Phone": "رقم الهاتف",
+  "Business type": "نوع النشاط",
+  "Merchant": "تاجر",
+  "Merchants": "التجار",
+  "Representative": "مندوب",
+  "Representatives": "المندوبون",
+  "Add merchant": "إضافة تاجر",
+  "Create merchant": "إضافة تاجر",
+  "Update merchant": "تعديل بيانات التاجر",
+  "Add note": "إضافة ملاحظة",
+  "Eligibility": "أهلية المرتجع والاستبدال",
+  "Deactivate": "إيقاف",
+  "Reactivate": "إعادة تفعيل",
+  "Active": "نشط",
+  "Inactive": "غير نشط",
+  "Locations": "المواقع",
+  "Location": "الموقع",
+  "Stock balances": "أرصدة المخزون",
+  "Batches": "دفعات المخزون",
+  "Expired batches": "دفعات منتهية الصلاحية",
+  "Transactions": "حركات المخزون",
+  "Set target": "تحديد المستهدف",
+  "Target": "الجهة المستهدفة",
+  "Low stock": "مخزون منخفض",
+  "No target": "بدون مستهدف",
+  "Show zero-stock SKUs": "إظهار الأصناف ذات الرصيد الصفري",
+  "Show empty batches": "إظهار الدفعات الخالية",
+  "Operations control": "لوحة العمليات",
+  "Create draft": "إنشاء مسودة",
+  "Type": "النوع",
+  "Source location": "موقع الصرف",
+  "Destination location": "موقع الاستلام",
+  "Buyer name": "اسم العميل",
+  "Buyer phone": "رقم هاتف العميل",
+  "Payment method": "طريقة الدفع",
+  "Supplier": "المورد",
+  "Invoice": "رقم الفاتورة",
+  "Notes": "ملاحظات",
+  "Revision reason": "سبب المراجعة",
+  "Operation lines": "بنود العملية",
+  "Add line": "إضافة بند",
+  "Find stock": "البحث في المخزون",
+  "Product": "المنتج",
+  "Power": "درجة العدسة",
+  "Color": "اللون",
+  "Package": "نوع العبوة",
+  "Side": "الطرف",
+  "Returned": "مرتجع",
+  "Replacement": "بديل",
+  "Mode": "وحدة الإدخال",
+  "Packs": "عبوات",
+  "Pieces": "قطع",
+  "Quantity": "الكمية",
+  "Unit price": "سعر الوحدة",
+  "Bonus": "مجاني",
+  "Batch / expiry": "الدفعة / تاريخ الصلاحية",
+  "Lot": "رقم الدفعة",
+  "Batch expiry": "تاريخ انتهاء الدفعة",
+  "Resolved SKU": "رمز الصنف المحدد",
+  "Select merchant": "اختر التاجر",
+  "Select representative": "اختر المندوب",
+  "Inventory receipt": "استلام مخزون",
+  "Warehouse transfer": "تحويل مخزون",
+  "Wholesale sale": "بيع جملة",
+  "Retail/online sale": "بيع قطاعي / أونلاين",
+  "Representative reserve": "حجز للمندوب",
+  "Return": "مرتجع",
+  "Change": "استبدال",
+  "Write-off": "إعدام / تسوية مخزون",
+  "Draft": "مسودة",
+  "Reserved": "محجوز",
+  "Shipped": "تم الشحن",
+  "Received": "تم الاستلام",
+  "Completed": "مكتمل",
+  "Confirmed": "مؤكد",
+  "Cancelled": "ملغي",
+  "PendingAdminReview": "بانتظار مراجعة الإدارة",
+  "Rejected": "مرفوض",
+  "Approved": "معتمد",
+  "Cash hand to hand": "نقدي مباشر",
+  "Cash transaction": "تحويل أو إيداع نقدي",
+  "Installment": "تقسيط",
+  "Payments and remaining": "المدفوعات والمتبقي",
+  "Amount": "المبلغ",
+  "Assign": "إسناد",
+  "Approve": "اعتماد",
+  "Reject": "رفض",
+  "Load remaining": "تحميل المتبقي",
+  "Reports and exports": "التقارير والتصدير",
+  "Download": "تنزيل",
+  "Export log": "سجل التصدير",
+  "Stock": "المخزون",
+  "Payment": "المدفوعات",
+  "Merchant remaining": "المتبقي على التجار",
+  "Stocktake sessions": "جلسات الجرد",
+  "No users found.": "لم يتم العثور على مستخدمين.",
+  "No merchants yet.": "لا يوجد تجار بعد.",
+  "No representatives yet.": "لا يوجد مندوبون بعد.",
+  "Show completed/received/cancelled history": "إظهار سجل العمليات المكتملة والمستلمة والملغاة",
+  "Username": "اسم المستخدم",
+  "Password": "كلمة المرور",
+  "Show password": "إظهار كلمة المرور",
+  "Show": "إظهار",
+  "Hide": "إخفاء",
+  "Sign in to Lensee": "تسجيل الدخول إلى Lensee",
+  "Sign in with your account to continue to the workspace.": "سجّل الدخول بحسابك للمتابعة إلى مساحة العمل.",
+  "Required": "مطلوب",
+  "No matches": "لا توجد نتائج مطابقة",
+  "Select product": "اختر المنتج",
+  "Select source and SKU": "اختر موقع الصرف ورمز الصنف",
+  "Select batch / expiry": "اختر الدفعة وتاريخ الصلاحية",
+  "Not required": "غير مطلوب",
+  "Loading stock...": "جارٍ تحميل المخزون...",
+  "No non-expired stock": "لا يوجد مخزون صالح",
+  "Failed to load stock": "تعذر تحميل المخزون",
+  "No export logs yet.": "لا توجد سجلات تصدير حتى الآن.",
+  "All available": "الكل",
+  "All available locations": "جميع المواقع المتاحة",
+  "All locations": "جميع المواقع",
+  "All SKUs": "جميع رموز الأصناف",
+  "All types": "جميع الأنواع",
+  "Loading users...": "جارٍ تحميل المستخدمين...",
+  "Loading catalog": "جارٍ تحميل الكتالوج",
+  "Loading product": "جارٍ تحميل المنتج",
+  "Loading merchant detail...": "جارٍ تحميل تفاصيل التاجر...",
+  "Loading operation details...": "جارٍ تحميل تفاصيل العملية...",
+  "Loading payment details...": "جارٍ تحميل تفاصيل المدفوعة...",
+  "Loading stocktakes...": "جارٍ تحميل جلسات الجرد...",
+  "No active operations.": "لا توجد عمليات نشطة.",
+  "No stock rows.": "لا توجد أرصدة مخزون.",
+  "No operations.": "لا توجد عمليات.",
+  "No payment logs.": "لا توجد سجلات دفع.",
+  "No merchant remaining.": "لا يوجد متبقٍ على التجار.",
+  "Users and access": "المستخدمون والصلاحيات",
+  "User": "المستخدم",
+  "Role": "الدور",
+  "Status": "الحالة",
+  "New password": "كلمة المرور الجديدة",
+  "Warehouse Clerk": "أمين المخزن",
+  "C-Level": "الإدارة التنفيذية",
+  "Accountant": "محاسب",
+  "Open session": "فتح جلسة",
+  "Sessions": "الجلسات",
+  "Session detail": "تفاصيل الجلسة",
+  "Counted": "الكمية المعدودة",
+  "Discrepancy": "فرق الجرد",
+  "Run replenishment": "تشغيل إعادة التوريد",
+  "Daily replenishment": "إعادة التوريد اليومية",
+  "Mark read": "تحديد كمقروء",
+  "Mark all read": "تحديد الكل كمقروء",
+  "Unread": "غير مقروء",
+  "Read": "مقروء",
+  "Document downloads": "تنزيل المستندات",
+  "Operation bill": "فاتورة العملية",
+  "Payment receipt": "إيصال الدفع",
+  "Merchant statement": "كشف حساب التاجر",
+  "Stocktake summary": "ملخص الجرد",
+  "Download bill": "تنزيل الفاتورة",
+  "Download receipt": "تنزيل الإيصال",
+  "Download statement": "تنزيل كشف الحساب",
+  "Download summary": "تنزيل ملخص الجرد",
+  "PDF": "PDF",
+  "Create category": "إنشاء تصنيف",
+  "Create brand": "إنشاء علامة تجارية",
+  "Create product": "إنشاء منتج",
+  "Save SKU": "حفظ كود الصنف",
+  "Barcode": "الباركود",
+  "Size": "المقاس",
+  "Unknown SKU": "رمز صنف غير معروف",
+  "SKU conflict": "تعارض في رمز الصنف",
+  "No matching SKU": "لا يوجد رمز صنف مطابق",
+  "Eligibility ledger": "سجل أهلية المرتجع والاستبدال",
+  "Cash received": "تحصيل نقدي",
+  "Cash refund": "استرداد نقدي",
+  "Financial adjustment": "تسوية مالية",
+  "Merchant credit": "رصيد دائن للتاجر",
+  "Remaining reduction": "تخفيض المتبقي",
+  "Draft sub-log": "حفظ كسجل فرعي مسودة",
+  "Record cash": "تسجيل حركة نقدية",
+  "Save adjustment": "حفظ التسوية",
+  "Date received": "تاريخ التحصيل",
+  "Operation reference": "مرجع العملية",
+  "Payment log reference": "مرجع سجل الدفع",
+  "Payment history": "سجل حركة المدفوعات",
+  "When": "التوقيت",
+  "Event": "الحدث",
+  "Buyer / merchant": "العميل / التاجر",
+  "Actor": "المسؤول",
+  "Payment log opened": "تم فتح سجل دفع",
+  "Installment drafted": "تم تسجيل قسط كمسودة",
+  "Installment approved": "تم اعتماد القسط",
+  "Installment rejected": "تم رفض القسط",
+  "Cash receipt recorded": "تم تسجيل تحصيل نقدي",
+  "Cash receipt approved": "تم اعتماد التحصيل النقدي",
+  "Cash refund recorded": "تم تسجيل الاسترداد النقدي",
+  "Financial cash refund": "استرداد نقدي مالي",
+  "Assigned to accountant": "تم الإسناد إلى المحاسب",
+  "No stage history yet.": "لا يوجد سجل للمراحل حتى الآن.",
+  "No cash records.": "لا توجد حركات نقدية.",
+  "No financial adjustments.": "لا توجد تسويات مالية.",
+  "No payment history yet.": "لا يوجد سجل لحركة المدفوعات بعد.",
+  "No installment or cash confirmations are waiting.": "لا توجد أقساط أو حركات نقدية في انتظار الاعتماد.",
+  "open confirmations": "اعتمادات معلقة",
+  "record": "سجل",
+  "Export intent logged.": "تم تسجيل طلب التصدير.",
+  "Report downloaded.": "تم تنزيل التقرير.",
+  "PDF downloaded.": "تم تنزيل ملف PDF.",
+  "Select a document row before downloading.": "اختر سجل المستند المطلوب قبل التنزيل.",
+  "Cannot reach the API. Check the API base URL and whether the host is running.": "لا يمكن الوصول إلى النظام. راجع عنوان الخادم وتأكد من تشغيله.",
+  "English": "English",
+  "Switch to English": "التبديل إلى الإنجليزية",
+  "Switch to Arabic": "التبديل إلى العربية",
+  "Dismiss notice": "إغلاق الإشعار",
+  "Authorization": "التفويض",
+  "Forbidden": "غير مسموح",
+  "Signing in": "جارٍ تسجيل الدخول",
+  "Username or password is incorrect.": "اسم المستخدم أو كلمة المرور غير صحيحة.",
+  "The API cannot connect to PostgreSQL. Check the database connection and restart the backend if needed.": "يتعذر على الخادم الاتصال بقاعدة بيانات PostgreSQL. راجع إعدادات الاتصال ثم أعد تشغيل الخادم.",
+  "Sign in failed. Check the account credentials and try again.": "فشل تسجيل الدخول. راجع بيانات الحساب ثم حاول مرة أخرى.",
+  "Session expired. Sign in again.": "انتهت صلاحية الجلسة. سجّل الدخول مرة أخرى.",
+  "This account does not have permission for that action.": "هذا الحساب لا يملك صلاحية تنفيذ هذا الإجراء.",
+  "Check the request values.": "راجع القيم المُدخلة في الطلب.",
+  "The workspace request failed.": "فشل تنفيذ الطلب داخل مساحة العمل.",
+  "Could not load users.": "تعذر تحميل المستخدمين.",
+  "No rows are available for this workspace yet.": "لا توجد بيانات متاحة في مساحة العمل هذه حتى الآن.",
+  "Lensee operations control center": "مركز التحكم في عمليات Lensee",
+  "Products, SKUs, categories, and brands.": "المنتجات ورموز الأصناف والتصنيفات والعلامات التجارية.",
+  "Stock balances, batches, replenishment, and targets.": "أرصدة المخزون والدفعات وإعادة التوريد والمستهدفات.",
+  "Merchants, representatives, notes, and eligibility.": "التجار والمندوبون والملاحظات وأهلية المرتجع والاستبدال.",
+  "Receipts, transfers, sales, returns, changes, and write-offs.": "الاستلامات والتحويلات والمبيعات والمرتجعات والاستبدالات والتسويات.",
+  "Payment logs, approvals, cash records, and live remaining.": "سجلات الدفع والاعتمادات والحركات النقدية والمتبقي الحالي.",
+  "Workflow alerts, stock alerts, and operational updates.": "تنبيهات سير العمل والمخزون والتحديثات التشغيلية.",
+  "CSV exports, PDF documents, and export history.": "تصدير ملفات CSV ومستندات PDF وسجل عمليات التصدير.",
+  "Batch-aware counts and reconciliations.": "جرد وتسويات مع تتبع دفعات المخزون.",
+  "Users, passwords, and access maintenance.": "إدارة المستخدمين وكلمات المرور والصلاحيات.",
+  "Open workspace": "فتح مساحة العمل",
+  "Current role": "الدور الحالي",
+  "Workspace access": "صلاحيات مساحات العمل",
+  "Scope": "النطاق",
+  "Assigned location access": "الوصول إلى الموقع المعيّن",
+  "Cross-location access": "الوصول إلى جميع المواقع",
+  "Workspace map": "خريطة مساحات العمل",
+  "Cross-module administration": "إدارة شاملة لكل الوحدات",
+  "Executive oversight": "إشراف تنفيذي",
+  "Payments and remaining control": "إدارة المدفوعات والمتبقي",
+  "Inventory and operational execution": "تنفيذ أعمال المخزون والعمليات",
+  "modules": "وحدات",
+  "Catalog master data": "البيانات الأساسية للكتالوج",
+  "Manage products, SKUs, categories, and brands with clear active states and reusable product structure.": "إدارة المنتجات ورموز الأصناف والتصنيفات والعلامات التجارية مع حالات تفعيل واضحة وبنية منتجات قابلة لإعادة الاستخدام.",
+  "Filters": "عوامل التصفية",
+  "Search": "بحث",
+  "Product, brand, category": "المنتج أو العلامة التجارية أو التصنيف",
+  "Show inactive products": "إظهار المنتجات غير النشطة",
+  "Products": "المنتجات",
+  "Brand": "العلامة التجارية",
+  "Category": "التصنيف",
+  "Pack": "العبوة",
+  "Writable": "قابل للتعديل",
+  "Read only": "للقراءة فقط",
+  "Product detail": "تفاصيل المنتج",
+  "Select a product to review its configuration, SKU set, and lifecycle state.": "اختر منتجًا لعرض إعداداته ورموز أصنافه وحالة تفعيله.",
+  "Access": "الصلاحيات",
+  "This role can review catalog data but cannot change it.": "يمكن لهذا الدور عرض بيانات الكتالوج فقط دون تعديلها.",
+  "Product editor": "محرر المنتج",
+  "Sell mode": "طريقة البيع",
+  "Single piece": "قطعة منفردة",
+  "Sealed pack only": "عبوة مغلقة فقط",
+  "Both": "كلاهما",
+  "Pieces per pack": "عدد القطع في العبوة",
+  "Expiry source": "مصدر الصلاحية",
+  "Batch expiry date": "تاريخ انتهاء دفعة المخزون",
+  "No batch expiry": "دون صلاحية على مستوى الدفعة",
+  "Valid for": "مدة الصلاحية بعد الفتح",
+  "Duration unit": "وحدة المدة",
+  "Days": "أيام",
+  "Months": "أشهر",
+  "Years": "سنوات",
+  "New product": "منتج جديد",
+  "Categories": "التصنيفات",
+  "Parent": "التصنيف الأب",
+  "None": "لا يوجد",
+  "New category": "تصنيف جديد",
+  "Brands": "العلامات التجارية",
+  "New brand": "علامة تجارية جديدة",
+  "No categories": "لا توجد تصنيفات",
+  "No products found": "لم يتم العثور على منتجات",
+  "Expiry": "الصلاحية",
+  "Opening validity": "صلاحية الاستخدام بعد الفتح",
+  "Unused in MVP": "غير مستخدم في النسخة الحالية",
+  "Batch expiry dates on inventory batches control FEFO, sales, transfers, and opened-piece expiry.": "تتحكم تواريخ انتهاء دفعات المخزون في الصرف حسب الأقرب انتهاءً والمبيعات والتحويلات وصلاحية القطع بعد الفتح.",
+  "SKUs": "رموز الأصناف",
+  "Generated SKU": "رمز الصنف المُنشأ",
+  "Derived after save": "يتم إنشاؤه بعد الحفظ",
+  "Power sign": "إشارة الدرجة",
+  "Power value": "قيمة الدرجة",
+  "SKU": "رمز الصنف",
+  "No SKUs": "لا توجد رموز أصناف",
+  "Update category": "تحديث التصنيف",
+  "Update brand": "تحديث العلامة التجارية",
+  "Update product": "تحديث المنتج",
+  "Product status updated.": "تم تحديث حالة المنتج.",
+  "SKU saved.": "تم حفظ رمز الصنف.",
+  "SKU status updated.": "تم تحديث حالة رمز الصنف.",
+  "Category saved.": "تم حفظ التصنيف.",
+  "Brand saved.": "تم حفظ العلامة التجارية.",
+  "Product saved.": "تم حفظ المنتج.",
+  "Product name, category, and brand are required.": "اسم المنتج والتصنيف والعلامة التجارية حقول مطلوبة.",
+  "Pieces per pack must be greater than zero.": "يجب أن يكون عدد القطع في العبوة أكبر من صفر.",
+  "Clinical params": "الخصائص الطبية",
+  "Color is required for lens SKUs.": "اللون مطلوب عند إنشاء رمز صنف لعدسة.",
+  "Size is required for solution SKUs.": "الحجم مطلوب عند إنشاء رمز صنف للمحلول.",
+  "Check the catalog form values.": "راجع القيم المُدخلة في نموذج الكتالوج.",
+  "That SKU code already exists.": "رمز الصنف هذا مستخدم بالفعل.",
+  "You do not have permission to change catalog data.": "لا تملك صلاحية تعديل بيانات الكتالوج.",
+  "Catalog change failed.": "فشل حفظ التعديل في الكتالوج.",
+  "You do not have access to this catalog action.": "لا تملك صلاحية تنفيذ هذا الإجراء في الكتالوج.",
+  "Could not load catalog data.": "تعذر تحميل بيانات الكتالوج.",
+  "Stock, batches, and replenishment": "المخزون والدفعات وإعادة التوريد",
+  "Monitor available stock, reserved stock, replenishment gaps, blocked expiry batches, and the immutable stock ledger.": "تابع المخزون المتاح والمحجوز ونواقص إعادة التوريد والدفعات المحظورة بسبب انتهاء الصلاحية وسجل حركات المخزون.",
+  "Available": "المتاح",
+  "Meant to be": "المستهدف",
+  "Needed": "المطلوب",
+  "Updated": "آخر تحديث",
+  "Loading stock": "جارٍ تحميل المخزون",
+  "Online and retail targets are topped up from MainWarehouse through reserved warehouse transfers.": "تُستكمل مستهدفات الأونلاين ونقاط البيع من المخزن الرئيسي عبر تحويلات مخزون محجوزة.",
+  "Destination": "الوجهة",
+  "Incoming": "الوارد",
+  "Main available": "المتاح في المخزن الرئيسي",
+  "Loading replenishment": "جارٍ تحميل احتياجات إعادة التوريد",
+  "Expired batches are blocked from FEFO sale, transfer, reserve, and write-off allocation.": "تُحظر الدفعات منتهية الصلاحية من البيع والتحويل والحجز والتسوية عند الصرف حسب الأقرب انتهاءً.",
+  "Reason": "السبب",
+  "Loading expired batches": "جارٍ تحميل الدفعات منتهية الصلاحية",
+  "Expiry date": "تاريخ الانتهاء",
+  "Loading batches": "جارٍ تحميل دفعات المخزون",
+  "Created": "تاريخ الإنشاء",
+  "Loading transactions": "جارٍ تحميل حركات المخزون",
+  "No locations": "لا توجد مواقع",
+  "Catalog unavailable": "الكتالوج غير متاح",
+  "No stock balances yet.": "لا توجد أرصدة مخزون حتى الآن.",
+  "No target-stock rows yet.": "لا توجد مستهدفات مخزون حتى الآن.",
+  "Covered": "مغطى",
+  "No batches yet.": "لا توجد دفعات مخزون حتى الآن.",
+  "No expired batches.": "لا توجد دفعات منتهية الصلاحية.",
+  "No transactions yet.": "لا توجد حركات مخزون حتى الآن.",
+  "Healthy": "المخزون مناسب",
+  "Inactive SKU": "رمز صنف غير نشط",
+  "pieces not set": "عدد القطع غير محدد",
+  "No expiry": "بدون تاريخ انتهاء",
+  "expired": "منتهي الصلاحية",
+  "Set Target Packs": "تحديد مستهدف العبوات",
+  "Target stock is measured in packs.": "يُقاس مستهدف المخزون بعدد العبوات.",
+  "Target packs must be a non-negative whole number.": "يجب أن يكون مستهدف العبوات عددًا صحيحًا لا يقل عن صفر.",
+  "Target packs updated.": "تم تحديث مستهدف العبوات.",
+  "Check the inventory filters or target packs.": "راجع عوامل تصفية المخزون أو قيمة مستهدف العبوات.",
+  "You do not have access to this inventory action.": "لا تملك صلاحية تنفيذ هذا الإجراء في المخزون.",
+  "Could not load inventory data.": "تعذر تحميل بيانات المخزون.",
+  "MainWarehouse": "المخزن الرئيسي",
+  "SubWarehouse": "مخزن فرعي",
+  "Online": "الأونلاين",
+  "Retail": "نقطة بيع",
+  "Target packs": "مستهدف العبوات",
+  "Available packs": "العبوات المتاحة",
+  "Available pieces": "القطع المتاحة",
+  "Reserved packs": "العبوات المحجوزة",
+  "Reserved pieces": "القطع المحجوزة",
+  "Shortage": "العجز",
+  "Location type": "نوع الموقع",
+  "Stock ledger": "سجل حركات المخزون",
+  "Transaction type": "نوع الحركة",
+  "Reference": "المرجع",
+  "Occurred at": "وقت الحركة",
+  "Merchant and representative records": "بيانات التجار والمندوبين",
+  "Maintain commercial relationships, operational notes, and merchant context used across sales, returns, payments, and reporting.": "إدارة العلاقات التجارية والملاحظات التشغيلية وبيانات التجار المستخدمة في المبيعات والمرتجعات والمدفوعات والتقارير.",
+  "Profiles, commercial contacts, remaining context, and operational history.": "الملفات التجارية وبيانات التواصل والمتبقي والسجل التشغيلي.",
+  "Pharmacy": "صيدلية",
+  "Oculist": "طبيب عيون",
+  "BeautyCenter": "مركز تجميل",
+  "Other": "أخرى",
+  "Business": "النشاط",
+  "Contact": "جهة الاتصال",
+  "External": "خارجي",
+  "Internal": "داخلي",
+  "Create representative": "إضافة مندوب",
+  "Business name and contact person are required.": "اسم النشاط ومسؤول التواصل حقول مطلوبة.",
+  "Merchant updated.": "تم تحديث بيانات التاجر.",
+  "Merchant created.": "تم إنشاء التاجر.",
+  "Representative name is required.": "اسم المندوب مطلوب.",
+  "Representative updated.": "تم تحديث بيانات المندوب.",
+  "Representative created.": "تم إنشاء المندوب.",
+  "Representative not found.": "لم يتم العثور على المندوب.",
+  "Merchant deactivated.": "تم إيقاف التاجر.",
+  "Merchant reactivated.": "تمت إعادة تفعيل التاجر.",
+  "Representative deactivated.": "تم إيقاف المندوب.",
+  "Representative reactivated.": "تمت إعادة تفعيل المندوب.",
+  "No merchant eligibility ledger rows yet.": "لا توجد حركات في سجل أهلية المرتجع والاستبدال لهذا التاجر.",
+  "Eligibility ledger loaded.": "تم تحميل سجل أهلية المرتجع والاستبدال.",
+  "Add Merchant Note": "إضافة ملاحظة للتاجر",
+  "Write a short note for this merchant profile.": "اكتب ملاحظة قصيرة في ملف التاجر.",
+  "Note added.": "تمت إضافة الملاحظة.",
+  "Sold packs": "العبوات المباعة",
+  "Sold pieces": "القطع المباعة",
+  "Remaining": "المتبقي",
+  "Operation": "العملية",
+  "Qty": "الكمية",
+  "Total": "الإجمالي",
+  "No operations for this merchant yet.": "لا توجد عمليات لهذا التاجر حتى الآن.",
+  "Sold minus returned by SKU, lot, and batch expiry": "المباع مطروحًا منه المرتجع حسب رمز الصنف ورقم الدفعة وتاريخ الانتهاء",
+  "Latest notes": "أحدث الملاحظات",
+  "No notes yet.": "لا توجد ملاحظات حتى الآن.",
+  "Merchant return/change reference": "مرجع مرتجع أو استبدال التاجر",
+  "Sold": "المباع",
+  "Returnable": "المتاح للمرتجع أو الاستبدال",
+  "Alert": "تنبيه",
+  "No confirmed merchant sales or returns yet.": "لا توجد مبيعات أو مرتجعات مؤكدة لهذا التاجر حتى الآن.",
+  "Over by": "تجاوز بمقدار",
+  "OK": "سليم",
+  "Select a merchant": "اختر تاجرًا",
+  "Add representative": "إضافة مندوب",
+  "Update representative": "تحديث بيانات المندوب",
+  "Representative type": "نوع المندوب",
+  "Merchant detail": "تفاصيل التاجر",
+  "Representative detail": "تفاصيل المندوب",
+  "Commercial profile": "الملف التجاري",
+  "Start a new operation draft.": "ابدأ مسودة عملية جديدة.",
+  "This role can inspect operations but cannot create or revise drafts.": "يمكن لهذا الدور عرض العمليات فقط، ولا يمكنه إنشاء المسودات أو تعديلها.",
+  "No.": "الرقم",
+  "Route": "المسار",
+  "Receipt only": "خاص بعمليات الاستلام",
+  "Used for receipt flows": "يُستخدم في مسارات الاستلام",
+  "Required for revisions": "مطلوب عند مراجعة عملية",
+  "Select product attributes to resolve SKU.": "اختر خصائص المنتج لتحديد رمز الصنف.",
+  "Select product, power, and color to resolve SKU.": "اختر المنتج ودرجة العدسة واللون لتحديد رمز الصنف.",
+  "Try another color, power, package, or source location.": "جرّب لونًا أو درجة أو عبوة أو موقع صرف آخر.",
+  "SKUs match these attributes. Refine package/size.": "يوجد أكثر من رمز صنف مطابق لهذه الخصائص. حدّد العبوة أو الحجم بدقة أكبر.",
+  "Not used": "غير مستخدم",
+  "External supplier": "مورد خارجي",
+  "MainWarehouse unavailable": "المخزن الرئيسي غير متاح",
+  "Select destination": "اختر موقع الاستلام",
+  "Select source": "اختر موقع الصرف",
+  "No destination": "بدون وجهة",
+  "Select receiving/issuing location": "اختر موقع الاستلام أو الصرف",
+  "Route is fixed for this operation once chosen.": "لا يمكن تغيير مسار العملية بعد اختياره.",
+  "Edit draft": "تعديل المسودة",
+  "Update the existing draft without changing its operation type.": "حدّث المسودة الحالية دون تغيير نوع العملية.",
+  "Draft edit": "تعديل مسودة",
+  "Save draft changes": "حفظ تعديلات المسودة",
+  "Revise operation": "مراجعة العملية",
+  "Reapply this operation with a required reason. Stock and payment effects are recalculated by the API.": "أعد تطبيق العملية مع إدخال سبب إلزامي. سيعيد الخادم حساب تأثيراتها على المخزون والمدفوعات.",
+  "Revision": "مراجعة",
+  "Submit revision": "إرسال المراجعة",
+  "Draft loaded into the editor.": "تم تحميل المسودة في المحرر.",
+  "Operation loaded for revision.": "تم تحميل العملية للمراجعة.",
+  "Draft updated.": "تم تحديث المسودة.",
+  "Revision reason is required.": "سبب المراجعة مطلوب.",
+  "Operation revised.": "تمت مراجعة العملية.",
+  "Draft saved.": "تم حفظ المسودة.",
+  "Add at least one operation line.": "أضف بندًا واحدًا على الأقل إلى العملية.",
+  "Select a SKU for every line.": "اختر رمز صنف لكل بند.",
+  "Each SKU can appear once per side. Sales may use one paid line and one bonus line for the same SKU.": "يمكن أن يظهر رمز الصنف مرة واحدة في كل جانب. في المبيعات يمكن إضافة بند مدفوع وبند مجاني للرمز نفسه.",
+  "Every pack quantity must be a whole number greater than zero.": "يجب أن تكون كمية كل بند عددًا صحيحًا أكبر من صفر.",
+  "MainWarehouse must exist before operations can be created.": "يجب إنشاء المخزن الرئيسي قبل إنشاء العمليات.",
+  "Inventory receipt destination must be MainWarehouse.": "يجب أن يكون موقع استلام المخزون هو المخزن الرئيسي.",
+  "Warehouse transfer must move packs from MainWarehouse to a non-main destination.": "يجب أن ينقل تحويل المخزون العبوات من المخزن الرئيسي إلى موقع آخر.",
+  "Select a source location before choosing stock.": "اختر موقع الصرف قبل اختيار المخزون.",
+  "Wholesale sale requires a merchant.": "بيع الجملة يتطلب اختيار تاجر.",
+  "Sale line unit price must be greater than zero unless the line is marked as bonus.": "يجب أن يكون سعر الوحدة أكبر من صفر، إلا إذا كان البند مجانيًا.",
+  "Select a batch / expiry for every stock-consuming line.": "اختر دفعة وتاريخ صلاحية لكل بند يخصم من المخزون.",
+  "Retail installment sales require a registered merchant.": "المبيعات القطاعي بالتقسيط تتطلب اختيار تاجر مسجل.",
+  "Reserve requires a representative.": "الحجز للمندوب يتطلب اختيار مندوب.",
+  "Return requires a merchant.": "المرتجع يتطلب اختيار تاجر.",
+  "Return lines must include batch expiry.": "يجب إدخال تاريخ انتهاء الدفعة في بنود المرتجع.",
+  "Change requires a merchant.": "الاستبدال يتطلب اختيار تاجر.",
+  "Change needs at least one returned line and one replacement line.": "يجب أن يحتوي الاستبدال على بند مرتجع واحد وبند بديل واحد على الأقل.",
+  "Returned change lines must include batch expiry.": "يجب إدخال تاريخ انتهاء الدفعة في البنود المرتجعة ضمن الاستبدال.",
+  "Standard": "عادي",
+  "Paid": "مدفوع",
+  "Revise": "مراجعة",
+  "Ship": "شحن",
+  "Receive": "استلام",
+  "Complete": "إكمال",
+  "Working": "جارٍ التنفيذ",
+  "Confirmation cancelled. The operation is still a draft.": "تم إلغاء التأكيد، وما زالت العملية مسودة.",
+  "Return/change eligibility warning": "تنبيه أهلية المرتجع أو الاستبدال",
+  "Eligibility warning": "تنبيه أهلية المرتجع والاستبدال",
+  "This return/change exceeds the merchant eligibility ledger.": "تتجاوز هذه العملية الكمية المتاحة في سجل أهلية المرتجع أو الاستبدال للتاجر.",
+  "Confirm anyway": "تأكيد رغم التحذير",
+  "Keep as draft": "الإبقاء كمسودة",
+  "This exception will be recorded as a business decision. Check the SKU, lot, and batch expiry before continuing.": "سيُسجل هذا الاستثناء كقرار إداري. راجع رمز الصنف ورقم الدفعة وتاريخ الانتهاء قبل المتابعة.",
+  "Requested": "المطلوب",
+  "Eligible": "المؤهل",
+  "Operation code": "رمز العملية",
+  "Created by": "أنشأها",
+  "Confirmed by": "اعتمدها",
+  "Last edited by": "آخر تعديل بواسطة",
+  "Merchant / buyer": "التاجر / العميل",
+  "Current version": "الإصدار الحالي",
+  "Eligibility warning: review before confirming": "تنبيه أهلية: راجع البيانات قبل التأكيد",
+  "Lot / Expiry / Requested / Eligible": "رقم الدفعة / الانتهاء / المطلوب / المؤهل",
+  "No lines.": "لا توجد بنود.",
+  "Allocated SKU": "رمز الصنف المخصّص",
+  "No batch allocation snapshot.": "لا توجد لقطة لتخصيص دفعات المخزون.",
+  "No versions.": "لا توجد إصدارات سابقة.",
+  "pack(s)": "عبوة",
+  "ChangeIn": "البديل",
+  "ChangeOut": "المرتجع",
+  "InventoryReceipt": "استلام مخزون",
+  "WarehouseTransfer": "تحويل مخزون",
+  "WholesaleSale": "بيع جملة",
+  "RetailSale": "بيع قطاعي / أونلاين",
+  "Reserve": "حجز للمندوب",
+  "WriteOff": "إعدام / تسوية مخزون",
+  "CashHandToHand": "نقدي مباشر",
+  "CashTransaction": "تحويل أو إيداع نقدي",
+  "Remove": "حذف",
+  "Draft edit mode": "وضع تعديل المسودة",
+  "Revision mode": "وضع مراجعة العملية",
+  "Control installment and cash confirmation queues, then review the full payment history without losing the operational trail.": "إدارة قوائم اعتماد الأقساط والحركات النقدية، ثم مراجعة سجل المدفوعات الكامل مع الحفاظ على أثر كل عملية.",
+  "Assign to accountant...": "إسناد إلى محاسب...",
+  "Buyer": "العميل",
+  "Method": "الطريقة",
+  "Remaining": "المتبقي",
+  "Loading payments": "جارٍ تحميل المدفوعات",
+  "Review every payment-related record created across the system, including opening logs, installment actions, cash records, approvals, refunds, and financial adjustments.": "راجع جميع سجلات المدفوعات في النظام، بما يشمل فتح السجلات والأقساط والحركات النقدية والاعتمادات والاستردادات والتسويات المالية.",
+  "Loading history": "جارٍ تحميل السجل",
+  "Draft payment entry": "إضافة حركة دفع كمسودة",
+  "Cash / refund record": "حركة نقدية / استرداد",
+  "Use for return/change outcomes that become merchant credit, remaining reduction, or cash refund.": "استخدم هذا القسم لنتائج المرتجع أو الاستبدال التي تتحول إلى رصيد دائن للتاجر أو تخفيض للمتبقي أو استرداد نقدي.",
+  "Operation ID": "معرّف العملية",
+  "Merchant remaining": "المتبقي على التاجر",
+  "Use": "الاستخدام",
+  "By": "بواسطة",
+  "Approve cash": "اعتماد النقدية",
+  "Initialized by": "بدأه",
+  "Assigned to": "مسند إلى",
+  "Last modified by": "آخر تعديل بواسطة",
+  "Stage": "المرحلة",
+  "Date": "التاريخ",
+  "Drafted": "أُنشئت كمسودة",
+  "Decision": "القرار",
+  "No sub-logs yet.": "لا توجد سجلات فرعية حتى الآن.",
+  "Cash record": "السجل النقدي",
+  "Adjustment": "التسوية",
+  "Payment sub-log drafted.": "تم حفظ حركة الدفع كمسودة.",
+  "Payment approved.": "تم اعتماد الدفع.",
+  "Cash receipt approved.": "تم اعتماد التحصيل النقدي.",
+  "Reject Payment Entry": "رفض حركة الدفع",
+  "Record the reason. Rejected entries remain visible in the log.": "سجّل سبب الرفض. ستظل الحركات المرفوضة ظاهرة في السجل.",
+  "Payment rejected.": "تم رفض حركة الدفع.",
+  "Select an accountant before assigning the payment log.": "اختر محاسبًا قبل إسناد سجل الدفع.",
+  "Payment log moved to accountant queue.": "تم نقل سجل الدفع إلى قائمة المحاسب.",
+  "Merchant and positive amount are required.": "يجب اختيار تاجر وإدخال مبلغ أكبر من صفر.",
+  "Cash refund adjustments must reference an operation ID.": "يجب ربط تسوية الاسترداد النقدي بمعرّف عملية.",
+  "Financial adjustment saved.": "تم حفظ التسوية المالية.",
+  "Cash record saved.": "تم حفظ الحركة النقدية.",
+  "Loaded": "تم التحميل",
+  "PendingAdmin": "بانتظار الإدارة",
+  "PendingAccountant": "بانتظار المحاسب",
+  "CashReceived": "تحصيل نقدي",
+  "CashRefund": "استرداد نقدي",
+  "MerchantCredit": "رصيد دائن للتاجر",
+  "BalanceReduction": "تخفيض المتبقي على التاجر",
+  "Required for cash refund": "مطلوب عند الاسترداد النقدي",
+  "Download operational, inventory, payment, and statement outputs in CSV and PDF formats.": "نزّل تقارير العمليات والمخزون والمدفوعات وكشوف الحساب بصيغ CSV وPDF.",
+  "CSV": "CSV",
+  "Sales": "المبيعات",
+  "Net collected": "صافي التحصيل",
+  "Returns / adjustments": "المرتجعات / التسويات",
+  "Loading operations": "جارٍ تحميل العمليات",
+  "Cash receive receipt": "إيصال تحصيل نقدي",
+  "Loading cash payments": "جارٍ تحميل المدفوعات النقدية",
+  "Download cash receipt": "تنزيل إيصال التحصيل النقدي",
+  "Loading merchants": "جارٍ تحميل التجار",
+  "Loading stocktakes": "جارٍ تحميل جلسات الجرد",
+  "No rows available": "لا توجد سجلات متاحة",
+  "Select...": "اختر...",
+  "Report": "التقرير",
+  "Requested by": "طلبه",
+  "Count physical stock by SKU, lot, and expiry, then confirm reconciliations through the ledger.": "سجّل الجرد الفعلي حسب رمز الصنف ورقم الدفعة وتاريخ الانتهاء، ثم اعتمد فروق الجرد في سجل المخزون.",
+  "Read-only stocktake review.": "عرض جلسات الجرد دون تعديل.",
+  "Session": "الجلسة",
+  "Select a session to enter counts or review discrepancies.": "اختر جلسة لإدخال الكميات الفعلية أو مراجعة فروق الجرد.",
+  "No stocktake sessions yet.": "لا توجد جلسات جرد حتى الآن.",
+  "Confirm adjustments": "اعتماد فروق الجرد",
+  "System": "النظام",
+  "Physical": "الفعلي",
+  "Delta": "الفرق",
+  "Note": "ملاحظة",
+  "No counted lines yet.": "لا توجد بنود معدودة حتى الآن.",
+  "Save counts": "حفظ الكميات",
+  "Lot number": "رقم الدفعة",
+  "Physical count": "الكمية الفعلية",
+  "Location is required.": "الموقع مطلوب.",
+  "Stocktake session opened.": "تم فتح جلسة الجرد.",
+  "Every stocktake line needs a SKU and non-negative whole-number count.": "يجب اختيار رمز صنف لكل بند وإدخال كمية فعلية صحيحة لا تقل عن صفر.",
+  "Stocktake counts saved.": "تم حفظ كميات الجرد.",
+  "Stocktake confirmed and ledger adjustments posted.": "تم اعتماد الجرد وتسجيل التسويات في سجل المخزون.",
+  "Review alerts, workflow updates, targets, and linked records without losing context.": "راجع التنبيهات وتحديثات سير العمل والمستهدفات والسجلات المرتبطة دون فقدان سياقها.",
+  "Visible": "الظاهرة",
+  "Unread only": "غير المقروء فقط",
+  "Previous": "السابق",
+  "Next": "التالي",
+  "Page 1 of 1": "الصفحة 1 من 1",
+  "Manual alert triggers": "تشغيل التنبيهات يدويًا",
+  "Run alert scans on demand when you want to refresh operational warnings immediately.": "شغّل فحص التنبيهات يدويًا لتحديث التحذيرات التشغيلية فورًا.",
+  "Unresolved reserves": "حجوزات غير محسومة",
+  "Outstanding remaining": "مبالغ متبقية مستحقة",
+  "No notifications match the current filters.": "لا توجد تنبيهات تطابق عوامل التصفية الحالية.",
+  "Broadcast": "إرسال عام",
+  "Open inventory": "فتح المخزون",
+  "Open payments": "فتح المدفوعات",
+  "Open operations": "فتح العمليات",
+  "Open stocktakes": "فتح الجرد",
+  "Open CRM": "فتح إدارة العلاقات التجارية",
+  "Open reports": "فتح التقارير",
+  "Open related page": "فتح الصفحة المرتبطة",
+  "Payment workflow": "سير عمل المدفوعات",
+  "Operation status": "حالة العملية",
+  "Stocktake confirmed": "تم اعتماد الجرد",
+  "Notification": "تنبيه",
+  "Channel": "القناة",
+  "Event location": "موقع الحدث",
+  "Review active accounts, assigned locations, and password resets from one controlled admin surface.": "راجع الحسابات النشطة والمواقع المعيّنة وعمليات إعادة تعيين كلمات المرور من شاشة إدارية واحدة.",
+  "Confirm password": "تأكيد كلمة المرور",
+  "Reset password": "إعادة تعيين كلمة المرور",
+  "Password must be at least 8 characters.": "يجب ألا تقل كلمة المرور عن 8 أحرف.",
+  "Password confirmation does not match.": "تأكيد كلمة المرور غير مطابق.",
+  "Active sessions were revoked.": "تم إنهاء الجلسات النشطة.",
+  "Failed": "فشل التحميل",
+  "Update": "تحديث",
+  "Lens": "عدسات",
+  "Solution": "محلول",
+  "SinglePiece": "قطعة منفردة",
+  "SealedPackOnly": "عبوة مغلقة فقط",
+  "Batch": "دفعة مخزون",
+  "Daily": "يومي",
+  "Monthly": "شهري",
+  "Annually": "سنوي",
+  "This operation contains returned SKU, lot, or expiry quantities that exceed this merchant's sale eligibility. Review carefully before confirming.": "تحتوي هذه العملية على كميات مرتجعة تتجاوز أهلية مبيعات التاجر حسب رمز الصنف أو رقم الدفعة أو تاريخ الانتهاء. راجعها بعناية قبل التأكيد.",
+  "Unknown location": "موقع غير معروف",
+  "8+ characters": "8 أحرف على الأقل",
+  "Repeat": "أعد إدخال كلمة المرور",
+  "Alert run": "تشغيل التنبيه",
+  "LowStock": "مخزون منخفض",
+  "UnresolvedReserves": "حجوزات غير محسومة",
+  "OutstandingBalances": "أرصدة مستحقة",
+  "PaymentWorkflow": "سير عمل المدفوعات",
+  "OperationStatus": "حالة العملية",
+  "StocktakeConfirmed": "تم اعتماد الجرد",
+  "PaymentLogOpened": "تم فتح سجل دفع",
+  "PaymentAssigned": "تم الإسناد إلى المحاسب",
+  "InstallmentDrafted": "تم تسجيل قسط كمسودة",
+  "InstallmentApproved": "تم اعتماد القسط",
+  "InstallmentRejected": "تم رفض القسط",
+  "CashReceiptRecorded": "تم تسجيل تحصيل نقدي",
+  "CashReceiptApproved": "تم اعتماد التحصيل النقدي",
+  "CashRefundRecorded": "تم تسجيل الاسترداد النقدي",
+  "Primary": "التنقل الرئيسي",
+  "Lensee dashboard": "لوحة تحكم Lensee",
+  "Blank if none": "اتركه فارغًا إذا لم يوجد",
+  "Notification type": "نوع التنبيه",
+  "Product, color, power, SKU": "المنتج أو اللون أو الدرجة أو رمز الصنف",
+  "Remove line": "حذف البند",
+  "Can edit catalog": "يمكنه تعديل الكتالوج",
+  "View only": "عرض فقط",
+  "Product scope": "نطاق المنتجات",
+  "Products and SKUs": "المنتجات ورموز الأصناف",
+  "Reference data": "البيانات المرجعية",
+  "Categories and brands": "التصنيفات والعلامات التجارية",
+  "Not set": "غير محدد",
+  "Can adjust targets": "يمكنه تعديل المستهدفات",
+  "Assigned location": "الموقع المعيّن",
+  "Ledger model": "نظام السجل",
+  "Append-only stock history": "سجل مخزون غير قابل للحذف أو التعديل",
+  "Blocked": "محظور",
+  "Can edit CRM records": "يمكنه تعديل بيانات العلاقات التجارية",
+  "Merchant context": "بيانات التاجر",
+  "Eligibility and notes": "أهلية المرتجع والاستبدال والملاحظات",
+  "Operations link": "الربط بالعمليات",
+  "Shared across workflows": "مشترك بين مسارات العمل",
+  "No lot": "بدون رقم دفعة",
+  "Unknown buyer": "عميل غير معروف",
+  "Can create operations": "يمكنه إنشاء العمليات",
+  "Can revise operations": "يمكنه مراجعة العمليات",
+  "Operation scope": "نطاق العمليات",
+  "Draft and confirmed lifecycle": "دورة المسودة والتأكيد",
+  "Payment controls": "ضوابط المدفوعات",
+  "Admin approval workflow": "مسار اعتماد الإدارة",
+  "Reporting scope": "نطاق التقارير",
+  "CSV and PDF outputs": "مخرجات CSV وPDF",
+  "Can manage stocktakes": "يمكنه إدارة الجرد",
+  "Can review stocktakes": "يمكنه مراجعة الجرد",
+  "Alert scope": "نطاق التنبيهات",
+  "Role and location aware": "بحسب الدور والموقع",
+  "Open confirmations": "الاعتمادات المعلقة",
+  "Main warehouse": "المخزن الرئيسي"
+});
+
+const translatedTextSources = new WeakMap();
+const translatedAttributeSources = new WeakMap();
+
+function translateEnglishText(value, contextElement = null) {
+  const leadingWhitespace = value.match(/^\s*/)?.[0] || "";
+  const trailingWhitespace = value.match(/\s*$/)?.[0] || "";
+  const text = value.slice(leadingWhitespace.length, value.length - trailingWhitespace.length);
+  if (!text) return value;
+
+  if (text === "Change" && currentPath() === "/operations") {
+    return `${leadingWhitespace}استبدال${trailingWhitespace}`;
+  }
+  if (text === "Target" && currentPath() === "/notifications") {
+    return `${leadingWhitespace}الجهة المستهدفة${trailingWhitespace}`;
+  }
+
+  const exact = arabicTranslations[text];
+  if (exact) return `${leadingWhitespace}${exact}${trailingWhitespace}`;
+
+  let match = text.match(/^(.+?)\s+-\s+Location scoped$/i);
+  if (match) {
+    const translatedRole = arabicTranslations[match[1]] || match[1];
+    return `${leadingWhitespace}${translatedRole} — مقيّد بالموقع المعيّن${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(.+?)\s*->\s*(.+)$/);
+  if (match) {
+    const source = arabicTranslations[match[1]] || match[1];
+    const destination = arabicTranslations[match[2]] || match[2];
+    return `${leadingWhitespace}${source} ← ${destination}${trailingWhitespace}`;
+  }
+
+  match = text.match(/^Operation\s+(confirm|ship|receive|complete|cancel)\s+completed\.$/i);
+  if (match) {
+    const actions = {
+      confirm: "تأكيد",
+      ship: "شحن",
+      receive: "استلام",
+      complete: "إكمال",
+      cancel: "إلغاء"
+    };
+    return `${leadingWhitespace}تم ${actions[match[1].toLowerCase()]} العملية بنجاح.${trailingWhitespace}`;
+  }
+
+  match = text.match(/^Reserved\s+(\d+)\s+replenishment transfer\(s\)\.\s+(\d+)\s+pack\(s\)\s+still uncovered\.(.*)$/i);
+  if (match) {
+    const alert = match[3] ? ` ${match[3].replace(/^\s*Alert:\s*/i, "تنبيه: ")}` : "";
+    return `${leadingWhitespace}تم حجز ${match[1]} تحويل لإعادة التوريد، وما زال ${match[2]} عبوة غير مغطاة.${alert}${trailingWhitespace}`;
+  }
+
+  match = text.match(/^Page\s+(\d+)\s+of\s+(\d+)$/i);
+  if (match) return `${leadingWhitespace}الصفحة ${match[1]} من ${match[2]}${trailingWhitespace}`;
+
+  match = text.match(/^Editing\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}تعديل ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^Edit\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}تعديل ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^Update\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}تحديث ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^No\.\s*(.+)$/i);
+  if (match) return `${leadingWhitespace}رقم ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^User\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}المستخدم ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^Password changed for (.+)\. Active sessions were revoked\.$/);
+  if (match) return `${leadingWhitespace}تم تغيير كلمة المرور للمستخدم ${match[1]} وإنهاء جلساته النشطة.${trailingWhitespace}`;
+
+  match = text.match(/^Alert run matched (\d+) item\(s\)\.$/);
+  if (match) return `${leadingWhitespace}اكتمل فحص التنبيه وطابق ${match[1]} عنصر.${trailingWhitespace}`;
+
+  match = text.match(/^(.+?)\s*\((\d+)(?:,\s*(\d+)\s+unread)?\)$/i);
+  if (match) {
+    const translatedLabel = arabicTranslations[match[1]] || match[1];
+    const unreadPart = match[3] ? `، ${match[3]} غير مقروء` : "";
+    return `${leadingWhitespace}${translatedLabel} (${match[2]}${unreadPart})${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+(products?|users?|modules?|merchants?|representatives?|unread|active|operations?|visible|shortages?|items?|packs?|pieces?)$/i);
+  if (match) {
+    const labels = {
+      product: "منتج", products: "منتج",
+      user: "مستخدم", users: "مستخدم",
+      module: "وحدة", modules: "وحدة",
+      merchant: "تاجر", merchants: "تاجر",
+      representative: "مندوب", representatives: "مندوب",
+      unread: "غير مقروء",
+      active: "عملية نشطة",
+      operation: "عملية", operations: "عملية",
+      visible: "ظاهر",
+      shortage: "حالة عجز", shortages: "حالة عجز",
+      item: "عنصر", items: "عنصر",
+      pack: "عبوة", packs: "عبوة",
+      piece: "قطعة", pieces: "قطعة"
+    };
+    return `${leadingWhitespace}${match[1]} ${labels[match[2].toLowerCase()]}${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+pack\(s\)$/i);
+  if (match) return `${leadingWhitespace}${match[1]} عبوة${trailingWhitespace}`;
+
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+packs?(?:\s*\/\s*(-?\d+(?:\.\d+)?)\s+pieces?)?$/i);
+  if (match) {
+    const pieces = match[2] !== undefined ? ` / ${match[2]} قطعة` : "";
+    return `${leadingWhitespace}${match[1]} عبوة${pieces}${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(.+?)\s*\/\s*(\d+)\s+pcs$/i);
+  if (match) return `${leadingWhitespace}${match[1]} / ${match[2]} قطعة${trailingWhitespace}`;
+
+  match = text.match(/^(.+?)\s+expired$/i);
+  if (match) return `${leadingWhitespace}${match[1]} — منتهي الصلاحية${trailingWhitespace}`;
+
+  const colonMatch = text.match(/^([^:]+):\s*(.+)$/);
+  if (colonMatch && arabicTranslations[colonMatch[1]]) {
+    return `${leadingWhitespace}${arabicTranslations[colonMatch[1]]}: ${colonMatch[2]}${trailingWhitespace}`;
+  }
+
+  return value;
+}
+
+function getOriginalText(node) {
+  const current = node.nodeValue;
+  let original = translatedTextSources.get(node);
+  if (original === undefined) {
+    original = current;
+    translatedTextSources.set(node, original);
+    return original;
+  }
+
+  const expectedArabic = translateEnglishText(original, node.parentElement);
+  if (current !== original && current !== expectedArabic) {
+    original = current;
+    translatedTextSources.set(node, original);
+  }
+  return original;
+}
+
+function getOriginalAttribute(element, attribute) {
+  let sources = translatedAttributeSources.get(element);
+  if (!sources) {
+    sources = new Map();
+    translatedAttributeSources.set(element, sources);
+  }
+
+  const current = element.getAttribute(attribute) || "";
+  let original = sources.get(attribute);
+  if (original === undefined) {
+    original = current;
+    sources.set(attribute, original);
+    return original;
+  }
+
+  const expectedArabic = translateEnglishText(original);
+  if (current !== original && current !== expectedArabic) {
+    original = current;
+    sources.set(attribute, original);
+  }
+  return original;
+}
+
+function applyLanguage() {
+  if (applyingLanguage) return;
+  applyingLanguage = true;
+
+  const isArabic = currentLanguage === "ar";
+  document.documentElement.lang = isArabic ? "ar-EG" : "en";
+  document.documentElement.dir = isArabic ? "rtl" : "ltr";
+  document.body.classList.toggle("lang-ar", isArabic);
+
+  const route = routes[currentPath()];
+  document.title = route
+    ? `Lensee — ${isArabic ? translateEnglishText(route.title).trim() : route.title}`
+    : "Lensee";
+
+  document.querySelectorAll("#language-toggle, #login-language-toggle").forEach((toggle) => {
+    toggle.setAttribute("data-no-translate", "");
+    toggle.textContent = isArabic ? "English" : "العربية";
+    toggle.setAttribute("aria-label", isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic");
+    toggle.title = isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic";
+  });
+
+  const root = document.body;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+
+  for (const node of nodes) {
+    if (node.parentElement?.closest("[data-no-translate], script, style")) continue;
+    const original = getOriginalText(node);
+    const translated = isArabic ? translateEnglishText(original, node.parentElement) : original;
+    if (node.nodeValue !== translated) node.nodeValue = translated;
+  }
+
+  root.querySelectorAll("[placeholder], [title], [aria-label]").forEach((element) => {
+    if (element.closest("[data-no-translate]")) return;
+    for (const attribute of ["placeholder", "title", "aria-label"]) {
+      if (!element.hasAttribute(attribute)) continue;
+      const original = getOriginalAttribute(element, attribute);
+      const translated = isArabic ? translateEnglishText(original) : original;
+      if (element.getAttribute(attribute) !== translated) element.setAttribute(attribute, translated);
+    }
+  });
+
+  applyingLanguage = false;
+}
+
+function setLanguage(language) {
+  currentLanguage = language === "ar" ? "ar" : "en";
+  localStorage.setItem(languageKey, currentLanguage);
+  applyLanguage();
+}
+
+const systemValueAliases = Object.freeze({
+  "استلام مخزون": "InventoryReceipt",
+  "تحويل مخزون": "WarehouseTransfer",
+  "بيع جملة": "WholesaleSale",
+  "بيع قطاعي / أونلاين": "RetailSale",
+  "حجز للمندوب": "Reserve",
+  "مرتجع": "Return",
+  "استبدال": "Change",
+  "إعدام / تسوية مخزون": "WriteOff",
+  "نقدي مباشر": "CashHandToHand",
+  "تحويل أو إيداع نقدي": "CashTransaction",
+  "تقسيط": "Installment",
+  "عبوات": "Packs",
+  "قطع": "Pieces",
+  "بديل": "ChangeIn",
+  "راجع": "ChangeOut",
+  "استلام نقدي": "CashReceived",
+  "استرداد نقدي": "CashRefund",
+  "رصيد للتاجر": "MerchantCredit",
+  "تخفيض الرصيد": "BalanceReduction"
+});
+
+function canonicalSystemValue(value) {
+  const text = String(value || "").trim();
+  return systemValueAliases[text] || text;
+}
+
+function canonicalSelectValue(id) {
+  const element = document.getElementById(id);
+  return canonicalSystemValue(element?.value || element?.selectedOptions?.[0]?.textContent || "");
+}
+
+const routes = {
+  "/login": { title: "Sign In", label: "Identity", roles: [], render: renderLogin },
+  "/dashboard": { title: "Overview", label: "Dashboard", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderDashboard },
+  "/catalog": { title: "Catalog", label: "Catalog", roles: ["CLevel", "Admin", "WarehouseClerk"], render: renderCatalog },
+  "/inventory": { title: "Inventory", label: "Inventory", roles: ["CLevel", "Admin", "WarehouseClerk"], render: renderInventory },
+  "/crm": { title: "CRM", label: "CRM", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderCrm },
+  "/operations": { title: "Operations", label: "Operations", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderOperations },
+  "/payments": { title: "Payments", label: "Payments", roles: ["CLevel", "Admin", "Accountant"], render: renderPayments },
+  "/notifications": { title: "Notifications", label: "Notifications", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderNotifications },
+  "/reports": { title: "Reports", label: "Reports", roles: ["CLevel", "Admin", "Accountant"], render: renderReports },
+  "/stocktakes": { title: "Stocktake", label: "Stocktake", roles: ["CLevel", "Admin"], render: renderStocktakes },
+  "/admin": { title: "Administration", label: "Admin", roles: ["Admin"], render: renderAdmin }
+};
+
+const navItems = [
+  ["/dashboard", "Dashboard"],
+  ["/catalog", "Catalog"],
+  ["/inventory", "Inventory"],
+  ["/crm", "CRM"],
+  ["/operations", "Operations"],
+  ["/payments", "Payments"],
+  ["/notifications", "Notifications"],
+  ["/reports", "Reports"],
+  ["/stocktakes", "Stocktake"],
+  ["/admin", "Admin"]
+];
+
+if (!sessionStorage.getItem("lensee.tabId")) {
+  sessionStorage.setItem("lensee.tabId", crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+}
+
+document.getElementById("logout-button").addEventListener("click", logout);
+document.getElementById("language-toggle").addEventListener("click", () => setLanguage(currentLanguage === "ar" ? "en" : "ar"));
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#login-language-toggle")) {
+    setLanguage(currentLanguage === "ar" ? "en" : "ar");
+  }
+});
+window.addEventListener("hashchange", renderRoute);
+window.addEventListener("focus", () => {
+  checkHealth();
+  refreshActiveView({ reason: "focus" });
+});
+window.addEventListener(mutationEventName, () => {
+  refreshActiveView({ reason: "local-mutation" });
+  updateNotificationBadge();
+});
+window.addEventListener("storage", (event) => {
+  if (event.key === "lensee.sync" && event.newValue) {
+    try { handleExternalSync(JSON.parse(event.newValue)); } catch { /* Ignore malformed sync payloads. */ }
+  }
+  if (event.key === authKey) {
+    window.dispatchEvent(new CustomEvent(authEventName));
+  }
+});
+window.addEventListener(authEventName, renderRoute);
+syncChannel?.addEventListener("message", (event) => handleExternalSync(event.data));
+checkHealth();
+renderRoute();
+const languageObserver = new MutationObserver(() => {
+  if (applyingLanguage || currentLanguage !== "ar") return;
+  window.clearTimeout(languageApplyTimer);
+  languageApplyTimer = window.setTimeout(applyLanguage, 0);
+});
+languageObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+applyLanguage();
+
+function getAuth() {
+  try {
+    return JSON.parse(localStorage.getItem(authKey));
+  } catch {
+    return null;
+  }
+}
+
+function setAuth(auth, { broadcast = true } = {}) {
+  localStorage.setItem(authKey, JSON.stringify(auth));
+  if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
+}
+
+function clearAuth({ broadcast = true } = {}) {
+  localStorage.removeItem(authKey);
+  if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
+}
+
+function publishSync(payload) {
+  syncChannel?.postMessage(payload);
+  localStorage.setItem("lensee.sync", JSON.stringify({ ...payload, at: Date.now() }));
+}
+
+function handleExternalSync(payload) {
+  if (!payload || payload.source === sessionStorage.getItem("lensee.tabId")) return;
+  if (payload.type === "auth") {
+    renderRoute();
+    return;
+  }
+  if (payload.type === "mutation") {
+    refreshActiveView({ reason: "external-mutation" });
+    updateNotificationBadge();
+  }
+}
+
+function buildRequestHeaders(options = {}, auth = getAuth()) {
+  const headers = new Headers(options.headers || {});
+  applyApiHeaders(headers);
+  if (options.body !== undefined && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (auth?.accessToken) {
+    headers.set("Authorization", `Bearer ${auth.accessToken}`);
+  }
+  return headers;
+}
+
+async function fetchWithAuth(path, options = {}) {
+  let auth = getAuth();
+  let headers = buildRequestHeaders(options, auth);
+  let response = await fetch(`${apiBase}${path}`, { ...options, headers });
+  if (response.status !== 401 || !auth?.refreshToken) {
+    return response;
+  }
+
+  const refreshed = await refreshSession(auth.refreshToken);
+  if (!refreshed) {
+    return response;
+  }
+
+  auth = refreshed;
+  headers = buildRequestHeaders(options, auth);
+  return fetch(`${apiBase}${path}`, { ...options, headers });
+}
+
+async function request(path, options = {}) {
+  const response = await fetchWithAuth(path, options);
+
+  if (!response.ok) {
+    const body = await response.text();
+    const error = new Error(body || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
+
+  const payload = response.status === 204 ? null : await response.json();
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET") {
+    window.dispatchEvent(new CustomEvent(mutationEventName, { detail: { path, method } }));
+    publishSync({ type: "mutation", source: sessionStorage.getItem("lensee.tabId"), path, method });
+  }
+
+  return payload;
+}
+
+async function downloadFile(path, fileName) {
+  const response = await fetchWithAuth(path);
+
+  if (!response.ok) {
+    const body = await response.text();
+    const error = new Error(body || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function refreshSession(refreshToken) {
+  if (refreshSessionPromise) {
+    return refreshSessionPromise;
+  }
+
+  refreshSessionPromise = (async () => {
+    try {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      applyApiHeaders(headers);
+      const response = await fetch(`${apiBase}/api/v1/auth/refresh`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ refreshToken })
+      });
+      if (!response.ok) {
+        clearAuth();
+        return null;
+      }
+      const auth = await response.json();
+      setAuth(auth);
+      return auth;
+    } catch {
+      clearAuth();
+      return null;
+    } finally {
+      refreshSessionPromise = null;
+    }
+  })();
+
+  return refreshSessionPromise;
+}
+
+async function checkHealth() {
+  const pill = document.getElementById("health-pill");
+  try {
+    const healthBase = await resolveApiBase();
+    const health = await fetch(`${healthBase}/health`, { headers: apiHeaders() }).then((response) => response.json());
+    pill.textContent = health.status === "Healthy" ? "API healthy" : "API degraded";
+    pill.className = `status-pill ${health.status === "Healthy" ? "status-ok" : "status-warn"}`;
+  } catch {
+    pill.textContent = "API offline";
+    pill.className = "status-pill status-warn";
+  }
+}
+
+async function resolveApiBase(preferred = apiBase) {
+  const candidates = [preferred, ...apiCandidates].filter((value, index, values) => value && values.indexOf(value) === index);
+  for (const candidate of candidates) {
+    try {
+      const normalized = candidate.replace(/\/$/, "");
+      const response = await fetch(`${normalized}/health`, { headers: apiHeaders() });
+      if (response.ok) {
+        apiBase = normalized;
+        localStorage.setItem("lensee.apiBase", apiBase);
+        return apiBase;
+      }
+    } catch {
+      // Try the next local development URL.
+    }
+  }
+  return preferred.replace(/\/$/, "");
+}
+
+function currentPath() {
+  return location.hash.replace("#", "") || "/dashboard";
+}
+
+function renderRoute() {
+  const auth = getAuth();
+  const path = currentPath();
+  const route = routes[path];
+  if (!route) {
+    location.hash = auth ? "/dashboard" : "/login";
+    return;
+  }
+  document.body.classList.toggle("auth-page", path === "/login" && !auth);
+
+  if (path !== "/login" && !auth) {
+    location.hash = "/login";
+    return;
+  }
+  if (auth && path === "/login") {
+    location.hash = "/dashboard";
+    return;
+  }
+  if (route.roles.length > 0 && auth && !route.roles.includes(auth.user.role)) {
+    renderForbidden();
+    return;
+  }
+
+  document.getElementById("page-title").textContent = route.title;
+  document.getElementById("route-label").textContent = route.label;
+  renderNav(auth);
+  renderSession(auth);
+  updateNotificationBadge();
+  route.render();
+  applyLanguage();
+  scheduleRouteRefresh(path);
+}
+
+function renderNav(auth) {
+  const nav = document.getElementById("nav");
+  const path = currentPath();
+  nav.innerHTML = "";
+  if (!auth) {
+    nav.innerHTML = `<a href="#/login" aria-current="page">Sign in</a>`;
+    return;
+  }
+
+  for (const [href, label] of navItems) {
+    if (!routes[href].roles.includes(auth.user.role)) {
+      continue;
+    }
+    const link = document.createElement("a");
+    link.href = `#${href}`;
+    link.textContent = label;
+    if (href === "/notifications") {
+      link.id = "notifications-nav-link";
+    }
+    if (path === href) {
+      link.setAttribute("aria-current", "page");
+    }
+    nav.appendChild(link);
+  }
+}
+
+function renderSession(auth) {
+  const session = document.getElementById("session");
+  session.textContent = auth ? `${roleLabel(auth.user.role)}${auth.user.locationId ? " - Location scoped" : ""}` : "Not signed in";
+  document.getElementById("logout-button").hidden = !auth;
+}
+
+function notice(message, tone = "info") {
+  const area = document.getElementById("notification-area");
+  const id = `notice-${++noticeSequence}`;
+  const node = document.createElement("div");
+  node.className = `notice notice-${tone}`;
+  node.id = id;
+  node.setAttribute("role", tone === "error" ? "alert" : "status");
+  node.innerHTML = `<span>${escapeHtml(message)}</span><button class="notice-close" type="button" aria-label="Dismiss notice">x</button>`;
+  node.querySelector("button").addEventListener("click", () => node.remove());
+  area.appendChild(node);
+  window.setTimeout(() => {
+    const current = document.getElementById(id);
+    if (current) current.remove();
+  }, tone === "error" ? 12000 : 7000);
+}
+
+function promptDialog({ title, label, defaultValue = "", inputType = "text", required = false, multiline = false }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-overlay";
+    overlay.innerHTML = `
+      <form class="dialog-card">
+        <div class="section-head tight-head">
+          <div><h2>${escapeHtml(title)}</h2><p class="muted-text">${escapeHtml(label)}</p></div>
+        </div>
+        <div class="field">
+          ${multiline
+            ? `<textarea class="input dialog-input" rows="4">${escapeHtml(defaultValue)}</textarea>`
+            : `<input class="input dialog-input" type="${escapeHtml(inputType)}" value="${escapeHtml(defaultValue)}">`}
+        </div>
+        <div class="form-actions">
+          <button class="button primary" type="submit">Continue</button>
+          <button class="button secondary" type="button" data-dialog-cancel>Cancel</button>
+        </div>
+      </form>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector(".dialog-input");
+    input.focus();
+    input.select?.();
+    const close = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(null);
+      }
+    });
+    overlay.querySelector("[data-dialog-cancel]").addEventListener("click", () => close(null));
+    overlay.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = input.value.trim();
+      if (required && !value) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+        return;
+      }
+      close(value);
+    });
+  });
+}
+
+
+async function withMutationGuard(key, control, action) {
+  if (mutationLocks.has(key)) {
+    return null;
+  }
+
+  mutationLocks.add(key);
+  const previousDisabled = control?.disabled;
+  const previousBusy = control?.getAttribute?.("aria-busy");
+  if (control) {
+    control.disabled = true;
+    control.setAttribute("aria-busy", "true");
+  }
+
+  try {
+    return await action();
+  } finally {
+    mutationLocks.delete(key);
+    if (control) {
+      control.disabled = Boolean(previousDisabled);
+      if (previousBusy === null || previousBusy === undefined) {
+        control.removeAttribute("aria-busy");
+      } else {
+        control.setAttribute("aria-busy", previousBusy);
+      }
+    }
+  }
+}
+function apiHeaders() {
+  const headers = new Headers();
+  applyApiHeaders(headers);
+  return headers;
+}
+
+function applyApiHeaders(headers) {
+  headers.set(ngrokSkipHeader, "true");
+}
+
+function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel = "Cancel", tone = "default", bodyHtml = "" }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-overlay";
+    overlay.innerHTML = `
+      <section class="dialog-card confirm-dialog ${tone === "warning" ? "confirm-dialog-warning" : ""}" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+        <div class="section-head tight-head">
+          <div>
+            <h2 id="confirm-dialog-title">${escapeHtml(title)}</h2>
+            <p class="muted-text">${escapeHtml(message)}</p>
+          </div>
+        </div>
+        ${bodyHtml ? `<div class="confirm-dialog-body">${bodyHtml}</div>` : ""}
+        <div class="form-actions">
+          <button class="button primary" type="button" data-dialog-confirm>${escapeHtml(confirmLabel)}</button>
+          <button class="button secondary" type="button" data-dialog-cancel>${escapeHtml(cancelLabel)}</button>
+        </div>
+      </section>`;
+    document.body.appendChild(overlay);
+    const close = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(false);
+      }
+    });
+    overlay.querySelector("[data-dialog-cancel]").addEventListener("click", () => close(false));
+    overlay.querySelector("[data-dialog-confirm]").addEventListener("click", () => close(true));
+    overlay.querySelector("[data-dialog-confirm]").focus();
+  });
+}
+
+function scheduleRouteRefresh(path) {
+  window.clearInterval(activeRefreshTimer);
+  activeRefreshTimer = null;
+  activeRefreshController?.abort();
+  activeRefreshController = null;
+  if (path === "/login") {
+    return;
+  }
+
+  activeRefreshTimer = window.setInterval(() => {
+    refreshActiveView({ reason: "timer" });
+    updateNotificationBadge();
+  }, 15000);
+}
+
+async function refreshActiveView({ reason = "manual" } = {}) {
+  if (!getAuth() || activeRefreshInFlight) {
+    return;
+  }
+
+  activeRefreshInFlight = true;
+  activeRefreshController?.abort();
+  activeRefreshController = new AbortController();
+  const startedPath = currentPath();
+
+  try {
+    switch (startedPath) {
+      case "/catalog":
+        await loadCatalogProducts();
+        break;
+      case "/inventory":
+        await refreshInventoryTables();
+        break;
+      case "/crm":
+        await Promise.all([loadMerchants(), loadRepresentatives()]);
+        break;
+      case "/operations":
+        await loadOperations();
+        break;
+      case "/payments":
+        await Promise.all([loadPayments(), loadPaymentHistory()]);
+        break;
+      case "/notifications":
+        await loadNotifications();
+        break;
+      case "/reports":
+        await loadReports();
+        break;
+      case "/stocktakes":
+        await loadStocktakes();
+        break;
+      case "/admin":
+        await loadAdminUsers();
+        break;
+    }
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      console.warn(`Refresh failed for ${startedPath} (${reason})`, error);
+    }
+  } finally {
+    activeRefreshInFlight = false;
+  }
+}
+
+async function updateNotificationBadge() {
+  const link = document.getElementById("notifications-nav-link");
+  if (!link || !getAuth() || notificationBadgeInFlight) {
+    return;
+  }
+
+  notificationBadgeInFlight = true;
+  try {
+    const result = await request("/api/v1/notifications/unread-count");
+    const count = Number(result.count || 0);
+    link.textContent = count > 0 ? `Notifications (${count})` : "Notifications";
+  } catch (error) {
+    link.textContent = "Notifications";
+    if (error?.status === 401) {
+      clearAuth();
+    }
+  } finally {
+    notificationBadgeInFlight = false;
+  }
+}
+
+function renderLogin() {
+  document.getElementById("notification-area").innerHTML = "";
+  document.getElementById("view").innerHTML = `
+    <section class="auth-layout">
+      <div class="auth-copy">
+        <span class="brand-mark auth-mark">L</span>
+        <button class="button secondary auth-language-toggle" id="login-language-toggle" type="button">${currentLanguage === "ar" ? "English" : "العربية"}</button>
+        <h2>Sign in to Lensee</h2>
+        <p>Sign in with your account to continue to the workspace.</p>
+        <div class="auth-status"><span id="login-health-dot" class="health-dot"></span><span id="login-health-text">Checking API</span></div>
+      </div>
+      <form class="auth-panel" id="login-form">
+        <div class="field"><label for="username">Username</label><input class="input" id="username" name="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label for="password">Password</label><div class="password-field"><input class="input" id="password" name="password" type="password" autocomplete="current-password" required><button class="button secondary inline-icon password-toggle" id="toggle-password" type="button" aria-label="Show password" title="Show password">Show</button></div></div>
+        <div class="login-error" id="login-error" role="alert" hidden></div>
+        <button class="button auth-submit" id="login-submit" type="submit">Sign in</button>
+      </form>
+    </section>`;
+
+  checkLoginHealth();
+  document.getElementById("toggle-password").addEventListener("click", () => {
+    const password = document.getElementById("password");
+    const isHidden = password.type === "password";
+    password.type = isHidden ? "text" : "password";
+    document.getElementById("toggle-password").textContent = isHidden ? "Hide" : "Show";
+  });
+  document.getElementById("login-form").addEventListener("submit", login);
+}
+
+async function login(event) {
+  event.preventDefault();
+  const submit = document.getElementById("login-submit");
+  const error = document.getElementById("login-error");
+  const form = new FormData(event.currentTarget);
+  const nextApiBase = (await resolveApiBase(apiBase)).replace(/\/$/, "");
+
+  localStorage.setItem("lensee.apiBase", nextApiBase);
+  apiBase = nextApiBase;
+  error.hidden = true;
+  submit.disabled = true;
+  submit.textContent = "Signing in";
+  try {
+    const auth = await loginRequest(nextApiBase, {
+      method: "POST",
+      body: JSON.stringify({ username: form.get("username"), password: form.get("password") })
+    });
+    setAuth(auth);
+    location.hash = "/dashboard";
+    location.reload();
+  } catch (exception) {
+    error.textContent = getFriendlyLoginError(exception);
+    error.hidden = false;
+    submit.disabled = false;
+    submit.textContent = "Sign in";
+  }
+}
+
+async function loginRequest(baseUrl, options) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  applyApiHeaders(headers);
+  const response = await fetch(`${baseUrl}/api/v1/auth/login`, { ...options, headers });
+  if (!response.ok) {
+    throw new Error(await response.text() || response.statusText);
+  }
+  return response.json();
+}
+
+async function checkLoginHealth() {
+  const dot = document.getElementById("login-health-dot");
+  const text = document.getElementById("login-health-text");
+  try {
+    const healthBase = await resolveApiBase(apiBase);
+    const health = await fetch(`${healthBase}/health`, { headers: apiHeaders() }).then((response) => response.json());
+    dot.className = `health-dot ${health.status === "Healthy" ? "health-ok" : "health-warn"}`;
+    text.textContent = health.status === "Healthy" ? "API healthy" : "API degraded";
+  } catch {
+    dot.className = "health-dot health-warn";
+    text.textContent = "API offline";
+  }
+}
+
+function renderDashboard() {
+  const auth = getAuth();
+  const currentRole = auth?.user?.role || "";
+  const visibleWorkspaces = navItems
+    .filter(([href]) => routes[href].roles.length === 0 || routes[href].roles.includes(currentRole))
+    .filter(([href]) => href !== "/dashboard")
+    .map(([href, label]) => {
+      const descriptions = {
+        "/catalog": "Products, SKUs, categories, and brands.",
+        "/inventory": "Stock balances, batches, replenishment, and targets.",
+        "/crm": "Merchants, representatives, notes, and eligibility.",
+        "/operations": "Receipts, transfers, sales, returns, changes, and write-offs.",
+        "/payments": "Payment logs, approvals, cash records, and live remaining.",
+        "/notifications": "Workflow alerts, stock alerts, and operational updates.",
+        "/reports": "CSV exports, PDF documents, and export history.",
+        "/stocktakes": "Batch-aware counts and reconciliations.",
+        "/admin": "Users, passwords, and access maintenance."
+      };
+      return workspaceCard(href, label, descriptions[href] || "Open workspace");
+    })
+    .join("");
+
+  document.getElementById("view").innerHTML = `
+    <section class="catalog-hero">
+      <div>
+        <p class="eyebrow">Overview</p>
+        <h2>Lensee operations control center</h2>
+      </div>
+      <div class="scenario-grid">
+        ${scenarioCard("Total sales", "Loading", "status-muted", "dashboard-total-sales")}
+        ${scenarioCard("Actual total I have", "Loading", "status-muted", "dashboard-actual-collected")}
+        ${scenarioCard("Remaining", "Loading", "status-muted", "dashboard-remaining-receivable")}
+      </div>
+    </section>
+    
+    <section class="band">
+      <div class="section-head">
+        <div>
+          <h2>Workspace map</h2>
+        </div>
+      </div>
+      <div class="workspace-card-grid">${visibleWorkspaces}</div>
+    </section>`;
+
+  loadDashboardFinancialSummary();
+}
+
+async function loadDashboardFinancialSummary() {
+  const sales = document.getElementById("dashboard-total-sales");
+  const actual = document.getElementById("dashboard-actual-collected");
+  const remaining = document.getElementById("dashboard-remaining-receivable");
+  if (!sales || !actual || !remaining) return;
+  try {
+    const summary = await request("/api/v1/reports/financial-summary");
+    sales.textContent = formatMoney(summary.totalSales);
+    actual.textContent = formatMoney(summary.actualCollected);
+    remaining.textContent = formatMoney(summary.remainingReceivable);
+    sales.className = "status-ok";
+    actual.className = "status-ok";
+    remaining.className = Number(summary.remainingReceivable || 0) > 0 ? "status-warn" : "status-ok";
+  } catch {
+    sales.textContent = "Unavailable";
+    actual.textContent = "Unavailable";
+    remaining.textContent = "Unavailable";
+  }
+}
+
+function renderCatalog() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  document.getElementById("view").innerHTML = `
+    <section class="catalog-hero">
+      <div>
+        <p class="eyebrow">Catalog</p>
+        <h2>Catalog master data</h2>
+        <p>Manage products, SKUs, categories, and brands with clear active states and reusable product structure.</p>
+      </div>
+      <div class="scenario-grid">
+        ${scenarioCard("Role", canWrite ? "Can edit catalog" : "View only", canWrite ? "status-ok" : "status-muted")}
+        ${scenarioCard("Product scope", "Products and SKUs", "status-muted")}
+        ${scenarioCard("Reference data", "Categories and brands", "status-muted")}
+      </div>
+    </section>
+
+    <section class="catalog-layout">
+      <aside class="catalog-side">
+        <section class="band compact-band">
+          <div class="section-head"><h2>Filters</h2><button id="catalog-refresh" class="button secondary" type="button">Refresh</button></div>
+          <div class="field"><label for="catalog-search">Search</label><input id="catalog-search" class="input" placeholder="Product, brand, category"></div>
+          <label class="check-field"><input id="catalog-include-inactive" type="checkbox" checked><span>Show inactive products</span></label>
+          <div class="muted-text" id="catalog-count">Loading</div>
+        </section>
+      </aside>
+
+      <section class="catalog-main">
+        <section class="band">
+          <div class="section-head"><h2>Products</h2><span class="status-pill ${canWrite ? "status-ok" : "status-muted"}">${canWrite ? "Writable" : "Read only"}</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Brand</th><th>Category</th><th>Pack</th><th>Status</th>${canWrite ? "<th>Actions</th>" : ""}</tr></thead><tbody id="catalog-products"><tr><td colspan="${canWrite ? 7 : 6}">Loading catalog</td></tr></tbody></table></div>
+        </section>
+        <section class="catalog-detail-grid">
+          <section class="band" id="catalog-detail"><h2>Product detail</h2><p class="muted-text">Select a product to review its configuration, SKU set, and lifecycle state.</p></section>
+          ${canWrite ? renderCatalogWritePanel() : `<section class="band"><h2>Access</h2><p class="muted-text">This role can review catalog data but cannot change it.</p></section>`}
+        </section>
+      </section>
+    </section>`;
+
+  document.getElementById("catalog-refresh").addEventListener("click", refreshCatalogWorkspace);
+  document.getElementById("catalog-search").addEventListener("input", debounce(loadCatalogProducts, 250));
+  document.getElementById("catalog-include-inactive").addEventListener("change", loadCatalogProducts);
+
+  if (canWrite) {
+    wireCatalogWritePanel();
+  }
+  refreshCatalogWorkspace();
+}
+
+function scenarioCard(title, value, tone, valueId = null) {
+  const idAttribute = valueId ? ` id="${escapeHtml(valueId)}"` : "";
+  return `<div class="scenario-card"><span>${escapeHtml(title)}</span><strong${idAttribute} class="${escapeHtml(tone)}">${escapeHtml(value)}</strong></div>`;
+}
+
+function workspaceCard(href, title, description) {
+  return `<a class="workspace-card" href="#${escapeHtml(href)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></a>`;
+}
+
+function dashboardPrimaryResponsibility(role) {
+  return {
+    Admin: "Cross-module administration",
+    CLevel: "Executive oversight",
+    Accountant: "Payments and remaining control",
+    WarehouseClerk: "Inventory and operational execution"
+  }[role] || "Workspace access";
+}
+
+function renderCatalogWritePanel() {
+  return `
+    <section class="write-stack">
+      <section class="band">
+        <div class="section-head"><h2>Product editor</h2><button class="button secondary" id="product-reset" type="button">New</button></div>
+        <form class="form wide-form" id="product-form">
+          <input type="hidden" id="product-id">
+          <div class="form-error" id="product-error" hidden></div>
+          <div class="form-grid">
+            <div class="field"><label for="product-name">Name</label><input id="product-name" class="input" required></div>
+            <div class="field"><label for="product-type">Type</label><select id="product-type" class="select"><option value="Lens">Lens</option><option value="Solution">Solution</option></select></div>
+            <div class="field"><label for="product-category">Category</label><select id="product-category" class="select" required></select></div>
+            <div class="field"><label for="product-brand">Brand</label><select id="product-brand" class="select" required></select></div>
+            <div class="field"><label for="product-sell-mode">Sell mode</label><select id="product-sell-mode" class="select"><option value="SinglePiece">Single piece</option><option value="SealedPackOnly">Sealed pack only</option><option value="Both">Both</option></select></div>
+            <div class="field"><label for="product-pieces">Pieces per pack</label><input id="product-pieces" class="input" type="number" min="1" value="1"></div>
+            <div class="field"><label for="product-expiry">Expiry source</label><select id="product-expiry" class="select"><option value="Batch">Batch expiry date</option><option value="None">No batch expiry</option></select></div>
+            <div class="field"><label for="product-duration-value">Valid for</label><input id="product-duration-value" class="input" type="number" min="1" step="1" value="6"></div>
+            <div class="field"><label for="product-duration-unit">Duration unit</label><select id="product-duration-unit" class="select"><option value="Daily">Days</option><option value="Monthly" selected>Months</option><option value="Annually">Years</option></select></div>
+            <input type="hidden" id="product-clinical">
+          </div>
+          
+          
+            <div class="form-actions"><button class="button" id="product-submit" type="submit">Create product</button><span class="muted-text" id="product-mode">New product</span></div>
+        </form>
+      </section>
+
+      <section class="catalog-admin-grid">
+        <section class="band compact-band">
+          <div class="section-head"><h2>Categories</h2><button class="button secondary" id="category-reset" type="button">New</button></div>
+          <form class="form" id="category-form">
+            <input type="hidden" id="category-id">
+            <div class="form-error" id="category-error" hidden></div>
+            <div class="field"><label for="category-name">Name</label><input id="category-name" class="input" required></div>
+            <div class="field"><label for="category-parent">Parent</label><select id="category-parent" class="select"><option value="">None</option></select></div>
+            <div class="form-actions"><button class="button" id="category-submit" type="submit">Create category</button><span class="muted-text" id="category-mode">New category</span></div>
+          </form>
+          <div class="tree-list" id="category-list"></div>
+        </section>
+        <section class="band compact-band">
+          <div class="section-head"><h2>Brands</h2><button class="button secondary" id="brand-reset" type="button">New</button></div>
+          <form class="form" id="brand-form">
+            <input type="hidden" id="brand-id">
+            <div class="form-error" id="brand-error" hidden></div>
+            <div class="field"><label for="brand-name">Name</label><input id="brand-name" class="input" required></div>
+            <div class="form-actions"><button class="button" id="brand-submit" type="submit">Create brand</button><span class="muted-text" id="brand-mode">New brand</span></div>
+          </form>
+          <div class="chip-list" id="brand-list"></div>
+        </section>
+      </section>
+    </section>`;
+}
+
+function wireCatalogWritePanel() {
+  document.getElementById("product-type").addEventListener("change", syncProductTypeFields);
+  document.getElementById("product-reset").addEventListener("click", resetProductForm);
+  document.getElementById("category-reset").addEventListener("click", resetCategoryForm);
+  document.getElementById("brand-reset").addEventListener("click", resetBrandForm);
+  document.getElementById("category-form").addEventListener("submit", saveCategory);
+  document.getElementById("brand-form").addEventListener("submit", saveBrand);
+  document.getElementById("product-form").addEventListener("submit", saveProduct);
+  syncProductTypeFields();
+}
+
+async function refreshCatalogWorkspace() {
+  await loadCatalogLookups();
+  await loadCatalogProducts();
+  if (selectedProductId) {
+    await loadCatalogDetail(selectedProductId);
+  }
+}
+
+async function loadCatalogLookups() {
+  try {
+    const [categories, tree, brands] = await Promise.all([
+      request("/api/v1/catalog/categories"),
+      request("/api/v1/catalog/categories/tree"),
+      request("/api/v1/catalog/brands")
+    ]);
+    catalogCategories = categories;
+    categoryTree = tree;
+    catalogBrands = brands;
+    refreshLookupControls();
+  } catch (exception) {
+    notice(getFriendlyApiError(exception), "error");
+  }
+}
+
+function refreshLookupControls() {
+  const canWrite = getAuth()?.user.role === "Admin";
+  if (!canWrite) {
+    return;
+  }
+  fillCategorySelect(document.getElementById("category-parent"), true);
+  fillCategorySelect(document.getElementById("product-category"), false);
+  fillSelect(document.getElementById("product-brand"), catalogBrands);
+  renderCatalogReferenceLists();
+}
+
+function renderCatalogReferenceLists() {
+  const categoryList = document.getElementById("category-list");
+  const brandList = document.getElementById("brand-list");
+  if (categoryList) {
+    categoryList.innerHTML = renderCategoryTree(categoryTree);
+    categoryList.querySelectorAll("[data-category-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const category = catalogCategories.find((value) => value.id === button.dataset.categoryId);
+        if (category) {
+          document.getElementById("category-id").value = category.id;
+          document.getElementById("category-name").value = category.name;
+          document.getElementById("category-parent").value = category.parentId || "";
+          document.getElementById("category-submit").textContent = "Update category";
+          document.getElementById("category-mode").textContent = `Editing ${category.name}`;
+          clearFormError("category-error");
+          document.getElementById("category-name").focus();
+        }
+      });
+    });
+  }
+  if (brandList) {
+    brandList.innerHTML = catalogBrands.map((brand) => `<button class="chip" type="button" data-brand-id="${escapeHtml(brand.id)}">Edit ${escapeHtml(brand.name)}</button>`).join("");
+    brandList.querySelectorAll("[data-brand-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const brand = catalogBrands.find((value) => value.id === button.dataset.brandId);
+        if (brand) {
+          document.getElementById("brand-id").value = brand.id;
+          document.getElementById("brand-name").value = brand.name;
+          document.getElementById("brand-submit").textContent = "Update brand";
+          document.getElementById("brand-mode").textContent = `Editing ${brand.name}`;
+          clearFormError("brand-error");
+          document.getElementById("brand-name").focus();
+        }
+      });
+    });
+  }
+}
+
+function renderCategoryTree(nodes, depth = 0) {
+  if (nodes.length === 0) {
+    return depth === 0 ? `<p class="muted-text">No categories</p>` : "";
+  }
+  return nodes.map((node) => `
+    <div class="tree-row" style="--depth:${depth}">
+      <button class="chip" type="button" data-category-id="${escapeHtml(node.id)}">Edit ${escapeHtml(node.name)}</button>
+    </div>
+    ${renderCategoryTree(node.children || [], depth + 1)}
+  `).join("");
+}
+
+function fillCategorySelect(select, includeEmpty) {
+  const current = select.value;
+  const options = [];
+  flattenCategoryOptions(categoryTree, options);
+  select.innerHTML = includeEmpty ? `<option value="">None</option>` : "";
+  select.innerHTML += options.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+function flattenCategoryOptions(nodes, output, depth = 0) {
+  for (const node of nodes) {
+    output.push({ id: node.id, label: `${"  ".repeat(depth)}${node.name}` });
+    flattenCategoryOptions(node.children || [], output, depth + 1);
+  }
+}
+
+function fillSelect(select, items) {
+  const current = select.value;
+  select.innerHTML = items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+async function loadCatalogProducts() {
+  const tbody = document.getElementById("catalog-products");
+  const count = document.getElementById("catalog-count");
+  const searchInput = document.getElementById("catalog-search");
+  const includeInactiveInput = document.getElementById("catalog-include-inactive");
+  if (!tbody || !count || !searchInput || !includeInactiveInput) {
+    return;
+  }
+  const canWrite = getAuth()?.user.role === "Admin";
+  const search = searchInput.value.trim();
+  const includeInactive = includeInactiveInput.checked;
+  const params = new URLSearchParams({ page: "1", pageSize: "50", includeInactive: String(includeInactive) });
+  if (search) {
+    params.set("search", search);
+  }
+
+  tbody.innerHTML = `<tr><td colspan="${canWrite ? 7 : 6}">Loading catalog</td></tr>`;
+  try {
+    const result = await request(`/api/v1/catalog/products?${params}`);
+    count.textContent = `${result.totalCount} product${result.totalCount === 1 ? "" : "s"}`;
+    tbody.innerHTML = result.items.length === 0
+      ? `<tr><td colspan="${canWrite ? 7 : 6}">No products found</td></tr>`
+      : result.items.map((product) => `
+        <tr class="click-row ${product.id === selectedProductId ? "selected-row" : ""}" data-product-id="${escapeHtml(product.id)}">
+          <td>${escapeHtml(product.name)}</td><td>${escapeHtml(product.productType)}</td><td>${escapeHtml(product.brandName)}</td>
+          <td>${escapeHtml(product.categoryName)}</td><td>${formatPackHint(product)}</td>
+          <td><span class="status-pill ${product.isActive ? "status-ok" : "status-muted"}">${product.isActive ? "Active" : "Inactive"}</span></td>
+          ${canWrite ? `<td><button class="button secondary table-action" type="button" data-product-edit="${escapeHtml(product.id)}">Edit</button></td>` : ""}
+        </tr>`).join("");
+    tbody.querySelectorAll("[data-product-id]").forEach((row) => row.addEventListener("click", () => loadCatalogDetail(row.dataset.productId)));
+    tbody.querySelectorAll("[data-product-edit]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      editProductFromList(button.dataset.productEdit);
+    }));
+  } catch (exception) {
+    tbody.innerHTML = `<tr><td colspan="${canWrite ? 7 : 6}">${escapeHtml(getFriendlyApiError(exception))}</td></tr>`;
+    count.textContent = "";
+  }
+}
+
+async function editProductFromList(productId) {
+  try {
+    const product = await request(`/api/v1/catalog/products/${productId}`);
+    selectedProductId = productId;
+    fillProductForm(product);
+    await loadCatalogDetail(productId);
+  } catch (exception) {
+    notice(getFriendlyApiError(exception), "error");
+  }
+}
+
+async function loadCatalogDetail(productId) {
+  selectedProductId = productId;
+  const detail = document.getElementById("catalog-detail");
+  const canWrite = getAuth()?.user.role === "Admin";
+  detail.innerHTML = `<h2>Product detail</h2><p>Loading product</p>`;
+  try {
+    const product = await request(`/api/v1/catalog/products/${productId}`);
+    detail.innerHTML = `
+      <div class="section-head">
+        <div><h2>${escapeHtml(product.name)}</h2><p class="muted-text">${escapeHtml(product.brandName)} - ${escapeHtml(product.categoryName)}</p></div>
+        <div class="inline-actions">
+          <span class="status-pill ${product.isActive ? "status-ok" : "status-muted"}">${product.isActive ? "Active" : "Inactive"}</span>
+          ${canWrite ? `<button class="button secondary" id="edit-product" type="button">Edit</button><button class="button secondary" id="toggle-product" type="button">${product.isActive ? "Deactivate" : "Reactivate"}</button>` : ""}
+        </div>
+      </div>
+      <div class="detail-grid">
+        <div><span>Type</span><strong>${escapeHtml(product.productType)}</strong></div>
+        <div><span>Sell mode</span><strong>${escapeHtml(product.sellMode || "Not set")}</strong></div>
+        <div><span>Pieces per pack</span><strong>${escapeHtml(product.piecesPerPack || "Not set")}</strong></div>
+        <div><span>Expiry</span><strong>${escapeHtml(product.expiryType || "Not set")}</strong></div>
+        <div><span>Opening validity</span><strong>Unused in MVP</strong></div>
+      </div>
+      <p class="muted-text">Batch expiry dates on inventory batches control FEFO, sales, transfers, and opened-piece expiry.</p>
+      ${renderSkuSection(product, canWrite)}`;
+    if (canWrite) {
+      wireProductAdminActions(product);
+    }
+    await loadCatalogProducts();
+  } catch (exception) {
+    detail.innerHTML = `<h2>Product detail</h2><p>${escapeHtml(getFriendlyApiError(exception))}</p>`;
+  }
+}
+
+function renderSkuSection(product, canWrite) {
+  return `
+    <h3>SKUs</h3>
+    ${canWrite ? `
+      <form class="form wide-form compact-form" id="sku-form">
+        <input type="hidden" id="sku-id"><div class="form-error" id="sku-error" hidden></div>
+        <div class="form-grid">
+          <div class="sku-preview"><span>Generated SKU</span><strong id="sku-code-preview">Derived after save</strong></div>
+          <div class="field"><label for="sku-power-sign">Power sign</label><select id="sku-power-sign" class="select"><option value="">None</option><option value="+">+</option><option value="-">-</option></select></div>
+          <div class="field"><label for="sku-power-value">Power value</label><input id="sku-power-value" class="input" type="number" step="0.25" min="0"></div>
+          <div class="field"><label for="sku-color">Color</label><input id="sku-color" class="input"></div>
+          <div class="field"><label for="sku-size">Size</label><input id="sku-size" class="input"></div>
+          <div class="field"><label for="sku-barcode">Barcode</label><input id="sku-barcode" class="input"></div>
+        </div>
+        <div class="form-actions"><button class="button" type="submit">Save SKU</button><button class="button secondary" id="sku-reset" type="button">Clear</button></div>
+      </form>` : ""}
+    <div class="table-wrap"><table><thead><tr><th>SKU</th><th>Power</th><th>Color</th><th>Size</th><th>Barcode</th><th>Status</th>${canWrite ? "<th>Actions</th>" : ""}</tr></thead><tbody>
+      ${product.skus.length === 0 ? `<tr><td colspan="${canWrite ? 7 : 6}">No SKUs</td></tr>` : product.skus.map((sku) => `
+        <tr><td>${escapeHtml(sku.skuCode)}</td><td>${escapeHtml(formatPower(sku))}</td><td>${escapeHtml(sku.colorName || "-")}</td><td>${escapeHtml(sku.size || "-")}</td><td>${escapeHtml(sku.barcode || "-")}</td>
+        <td><span class="status-pill ${sku.isActive ? "status-ok" : "status-muted"}">${sku.isActive ? "Active" : "Inactive"}</span></td>
+        ${canWrite ? `<td><button class="button secondary table-action" type="button" data-edit-sku="${escapeHtml(sku.id)}">Edit</button><button class="button secondary table-action" type="button" data-toggle-sku="${escapeHtml(sku.id)}">${sku.isActive ? "Deactivate" : "Reactivate"}</button></td>` : ""}</tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function wireProductAdminActions(product) {
+  document.getElementById("edit-product").addEventListener("click", () => fillProductForm(product));
+  document.getElementById("toggle-product").addEventListener("click", async () => {
+    if (await saveCatalogEntity(`/api/v1/catalog/products/${product.id}/${product.isActive ? "deactivate" : "reactivate"}`, "PATCH", null, "Product status updated.")) {
+      await loadCatalogDetail(product.id);
+    }
+  });
+  document.getElementById("sku-reset").addEventListener("click", resetSkuForm);
+  ["sku-power-sign", "sku-power-value", "sku-color", "sku-size"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", () => updateSkuPreview(product));
+    document.getElementById(id).addEventListener("change", () => updateSkuPreview(product));
+  });
+  updateSkuPreview(product);
+  document.getElementById("sku-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const validation = validateSkuForm(product.productType);
+    if (validation) {
+      showFormError("sku-error", validation);
+      return;
+    }
+    const skuId = document.getElementById("sku-id").value;
+    const saved = await saveCatalogEntity(skuId ? `/api/v1/catalog/skus/${skuId}` : `/api/v1/catalog/products/${product.id}/skus`, skuId ? "PUT" : "POST", readSkuForm(), "SKU saved.", "sku-error");
+    if (saved) {
+      resetSkuForm();
+      await loadCatalogDetail(product.id);
+    }
+  });
+  document.querySelectorAll("[data-edit-sku]").forEach((button) => button.addEventListener("click", () => {
+    const sku = product.skus.find((value) => value.id === button.dataset.editSku);
+    if (sku) {
+      fillSkuForm(sku);
+    }
+  }));
+  document.querySelectorAll("[data-toggle-sku]").forEach((button) => button.addEventListener("click", async () => {
+    const sku = product.skus.find((value) => value.id === button.dataset.toggleSku);
+    if (sku && await saveCatalogEntity(`/api/v1/catalog/skus/${sku.id}/${sku.isActive ? "deactivate" : "reactivate"}`, "PATCH", null, "SKU status updated.")) {
+      await loadCatalogDetail(product.id);
+    }
+  }));
+}
+
+async function saveCategory(event) {
+  event.preventDefault();
+  const id = document.getElementById("category-id").value;
+  const saved = await saveCatalogEntity(id ? `/api/v1/catalog/categories/${id}` : "/api/v1/catalog/categories", id ? "PUT" : "POST", {
+    name: document.getElementById("category-name").value,
+    parentId: document.getElementById("category-parent").value || null
+  }, "Category saved.", "category-error");
+  if (saved) {
+    resetCategoryForm();
+    await loadCatalogLookups();
+  }
+}
+
+async function saveBrand(event) {
+  event.preventDefault();
+  const id = document.getElementById("brand-id").value;
+  const saved = await saveCatalogEntity(id ? `/api/v1/catalog/brands/${id}` : "/api/v1/catalog/brands", id ? "PUT" : "POST", {
+    name: document.getElementById("brand-name").value
+  }, "Brand saved.", "brand-error");
+  if (saved) {
+    resetBrandForm();
+    await loadCatalogLookups();
+  }
+}
+
+async function saveProduct(event) {
+  event.preventDefault();
+  const validation = validateProductForm();
+  if (validation) {
+    showFormError("product-error", validation);
+    return;
+  }
+  const id = document.getElementById("product-id").value;
+  const saved = await saveCatalogEntity(id ? `/api/v1/catalog/products/${id}` : "/api/v1/catalog/products", id ? "PUT" : "POST", readProductForm(), "Product saved.", "product-error");
+  if (saved) {
+    resetProductForm();
+    await loadCatalogProducts();
+    if (id) {
+      await loadCatalogDetail(id);
+    }
+  }
+}
+
+async function saveCatalogEntity(path, method, payload, successMessage, errorId) {
+  clearFormError(errorId);
+  try {
+    await request(path, { method, body: payload === null ? undefined : JSON.stringify(payload) });
+    notice(successMessage, "success");
+    return true;
+  } catch (exception) {
+    const message = getFriendlyCatalogWriteError(exception);
+    if (errorId) {
+      showFormError(errorId, message);
+    }
+    notice(message, "error");
+    return false;
+  }
+}
+
+function validateProductForm() {
+  const name = document.getElementById("product-name").value.trim();
+  const type = document.getElementById("product-type").value;
+  const category = document.getElementById("product-category").value;
+  const brand = document.getElementById("product-brand").value;
+  const pieces = Number(document.getElementById("product-pieces").value || 0);
+  if (!name || !category || !brand) {
+    return "Product name, category, and brand are required.";
+  }
+  if (pieces <= 0) {
+    return "Pieces per pack must be greater than zero.";
+  }
+  return validateJson(buildClinicalParamsFromForm(), "Clinical params");
+}
+
+function validateSkuForm(productType) {
+  const color = document.getElementById("sku-color").value.trim();
+  const size = document.getElementById("sku-size").value.trim();
+  if (productType !== "Solution" && !color) {
+    return "Color is required for lens SKUs.";
+  }
+  if (productType === "Solution" && !size) {
+    return "Size is required for solution SKUs.";
+  }
+  return null;
+}
+
+function validateJson(value, label) {
+  if (!value) {
+    return null;
+  }
+  try {
+    JSON.parse(value);
+    return null;
+  } catch {
+    return `${label} must be valid JSON.`;
+  }
+}
+
+function readProductForm() {
+  const type = document.getElementById("product-type").value;
+  const pieces = document.getElementById("product-pieces").value;
+  const clinicalParams = buildClinicalParamsFromForm();
+  return {
+    categoryId: document.getElementById("product-category").value,
+    brandId: document.getElementById("product-brand").value,
+    name: document.getElementById("product-name").value,
+    productType: type,
+    expiryType: document.getElementById("product-expiry").value,
+    sealedExpiryDuration: null,
+    sealedExpiryRate: null,
+    openedExpiryDuration: null,
+    piecesPerPack: pieces ? Number(pieces) : null,
+    sellMode: document.getElementById("product-sell-mode").value,
+    clinicalParams,
+    extendedAttributes: null
+  };
+}
+
+function parseDurationAmount(duration) {
+  const match = String(duration || "").trim().match(/^([1-9][0-9]*)\s+(day|days|month|months|year|years)$/i);
+  return match ? match[1] : "";
+}
+
+function parseDurationRate(duration) {
+  const match = String(duration || "").trim().match(/^[1-9][0-9]*\s+(day|days|month|months|year|years)$/i);
+  const unit = match ? match[1].toLowerCase() : "";
+  if (unit.startsWith("day")) {
+    return "Daily";
+  }
+  if (unit.startsWith("year")) {
+    return "Annually";
+  }
+  return "Monthly";
+}
+
+function extractClinicalDurationUnit(clinicalParams) {
+  if (!clinicalParams) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(clinicalParams);
+    const duration = String(parsed.duration || "").toLowerCase();
+    if (duration.startsWith("day")) {
+      return "Daily";
+    }
+    if (duration.startsWith("year")) {
+      return "Annually";
+    }
+    if (duration.startsWith("month")) {
+      return "Monthly";
+    }
+  } catch {
+    return "";
+  }
+
+  return "";
+}
+
+function buildDuration(amount, rate) {
+  const value = Number(amount);
+  const unit = rate === "Daily"
+    ? value === 1 ? "day" : "days"
+    : rate === "Annually"
+      ? value === 1 ? "year" : "years"
+      : value === 1 ? "month" : "months";
+  return `${value} ${unit}`;
+}
+
+function fillProductForm(product) {
+  document.getElementById("product-id").value = product.id;
+  document.getElementById("product-name").value = product.name;
+  document.getElementById("product-type").value = product.productType;
+  document.getElementById("product-category").value = product.categoryId;
+  document.getElementById("product-brand").value = product.brandId;
+  document.getElementById("product-sell-mode").value = product.sellMode || "SinglePiece";
+  document.getElementById("product-pieces").value = product.piecesPerPack || "";
+  document.getElementById("product-expiry").value = product.expiryType || "Batch";
+  const durationValue = document.getElementById("product-duration-value");
+  const durationUnit = document.getElementById("product-duration-unit");
+  const clinical = document.getElementById("product-clinical");
+  if (durationValue) {
+    durationValue.value = extractClinicalDurationAmount(product.clinicalParams) || "6";
+  }
+  if (durationUnit) {
+    durationUnit.value = extractClinicalDurationUnit(product.clinicalParams) || "Monthly";
+  }
+  if (clinical) {
+    clinical.value = product.clinicalParams || "";
+  }
+  document.getElementById("product-submit").textContent = "Update product";
+  document.getElementById("product-mode").textContent = `Editing ${product.name}`;
+  syncProductTypeFields();
+  document.getElementById("product-name").focus();
+}
+
+function resetProductForm() {
+  document.getElementById("product-id").value = "";
+  document.getElementById("product-name").value = "";
+  document.getElementById("product-type").value = "Lens";
+  document.getElementById("product-sell-mode").value = "SinglePiece";
+  document.getElementById("product-pieces").value = "1";
+  document.getElementById("product-expiry").value = "Batch";
+  const durationValue = document.getElementById("product-duration-value");
+  const durationUnit = document.getElementById("product-duration-unit");
+  const clinical = document.getElementById("product-clinical");
+  if (durationValue) {
+    durationValue.value = "6";
+  }
+  if (durationUnit) {
+    durationUnit.value = "Monthly";
+  }
+  if (clinical) {
+    clinical.value = buildClinicalParamsFromForm();
+  }
+  document.getElementById("product-submit").textContent = "Create product";
+  document.getElementById("product-mode").textContent = "New product";
+  clearFormError("product-error");
+  syncProductTypeFields();
+}
+
+function readSkuForm() {
+  const powerValue = document.getElementById("sku-power-value").value;
+  return {
+    powerSign: document.getElementById("sku-power-sign").value || null,
+    powerValue: powerValue ? Number(powerValue) : null,
+    colorName: document.getElementById("sku-color").value || null,
+    size: document.getElementById("sku-size").value || null,
+    barcode: document.getElementById("sku-barcode").value || null
+  };
+}
+
+function fillSkuForm(sku) {
+  document.getElementById("sku-id").value = sku.id;
+  document.getElementById("sku-code-preview").textContent = sku.skuCode;
+  document.getElementById("sku-power-sign").value = sku.powerSign || "";
+  document.getElementById("sku-power-value").value = sku.powerValue ?? "";
+  document.getElementById("sku-color").value = sku.colorName || "";
+  document.getElementById("sku-size").value = sku.size || "";
+  document.getElementById("sku-barcode").value = sku.barcode || "";
+  document.getElementById("sku-power-sign").focus();
+}
+
+function resetSkuForm() {
+  ["sku-id", "sku-power-sign", "sku-power-value", "sku-color", "sku-size", "sku-barcode"].forEach((id) => {
+    document.getElementById(id).value = "";
+  });
+  const preview = document.getElementById("sku-code-preview");
+  if (preview) {
+    preview.textContent = "Derived after save";
+  }
+  clearFormError("sku-error");
+}
+
+function updateSkuPreview(product) {
+  const preview = document.getElementById("sku-code-preview");
+  if (!preview) {
+    return;
+  }
+
+  preview.textContent = generateSkuPreview(product, readSkuForm());
+}
+
+function generateSkuPreview(product, sku) {
+  const brand = toBrandCode(product.brandName);
+  const category = toCategoryCode(product.categoryName);
+  if (product.productType === "Solution") {
+    return joinSkuParts(brand, category, toCode(sku.size, 8));
+  }
+
+  return joinSkuParts(
+    brand,
+    category,
+    formatSkuPower(sku.powerSign, sku.powerValue),
+    toCode(sku.colorName, 12),
+    toOptionalCode(sku.size, 8));
+}
+
+function toBrandCode(value) {
+  const parts = String(value || "")
+    .split(/[ \/_-]+/)
+    .filter((part) => part && !["and", "of"].includes(part.toLowerCase()));
+  if (parts.length > 1) {
+    return toCode(parts.map((part) => part[0]).join(""), 3);
+  }
+
+  return toCode(value, 3);
+}
+
+function toCategoryCode(value) {
+  const parts = String(value || "")
+    .split(/[ \/_-]+/)
+    .filter((part) => part && !["and", "of"].includes(part.toLowerCase()));
+  if (parts.length > 1) {
+    return toCode(parts.map((part) => part[0]).join(""), 3);
+  }
+
+  return toCode(value, 3);
+}
+
+function toCode(value, maxLength) {
+  const code = String(value || "NA")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toUpperCase();
+
+  return (code || "NA").slice(0, maxLength);
+}
+
+function toOptionalCode(value, maxLength) {
+  return String(value || "").trim() ? toCode(value, maxLength) : "";
+}
+
+function formatSkuPower(sign, value) {
+  if (value === null || value === undefined || value === "") {
+    return "P0";
+  }
+
+  return `${sign === "-" ? "M" : "P"}${String(Number(value).toFixed(2)).replace(/\.?0+$/, "").replace(".", "")}`;
+}
+
+function joinSkuParts(...parts) {
+  return parts.filter(Boolean).join("-");
+}
+
+function resetCategoryForm() {
+  document.getElementById("category-id").value = "";
+  document.getElementById("category-name").value = "";
+  document.getElementById("category-parent").value = "";
+  document.getElementById("category-submit").textContent = "Create category";
+  document.getElementById("category-mode").textContent = "New category";
+  clearFormError("category-error");
+}
+
+function resetBrandForm() {
+  document.getElementById("brand-id").value = "";
+  document.getElementById("brand-name").value = "";
+  document.getElementById("brand-submit").textContent = "Create brand";
+  document.getElementById("brand-mode").textContent = "New brand";
+  clearFormError("brand-error");
+}
+
+function syncProductTypeFields() {
+  const type = document.getElementById("product-type")?.value;
+  const durationValue = document.getElementById("product-duration-value");
+  const durationUnit = document.getElementById("product-duration-unit");
+  const clinical = document.getElementById("product-clinical");
+  if (!clinical || !durationUnit || !durationValue) {
+    return;
+  }
+  clinical.value = buildClinicalParamsFromForm();
+  durationUnit.disabled = type === "Solution";
+  durationValue.disabled = type === "Solution";
+}
+
+function buildClinicalParamsFromForm() {
+  const type = document.getElementById("product-type")?.value;
+  const durationValue = Number(document.getElementById("product-duration-value")?.value || 0);
+  const durationUnit = document.getElementById("product-duration-unit")?.value || "Monthly";
+  if (type === "Solution") {
+    return null;
+  }
+  if (durationValue <= 0) {
+    return null;
+  }
+  const amount = durationValue === 1 ? "1" : String(durationValue);
+  const duration = durationUnit === "Daily" ? "daily" : durationUnit === "Annually" ? "annually" : "monthly";
+  return JSON.stringify({ duration: `${amount} ${duration}` });
+}
+
+function extractClinicalDurationAmount(clinicalParams) {
+  if (!clinicalParams) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(clinicalParams);
+    const duration = String(parsed.duration || "").trim();
+    const match = duration.match(/^([1-9][0-9]*)\s+(day|days|month|months|year|years)$/i);
+    return match ? match[1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function showFormError(id, message) {
+  const element = document.getElementById(id);
+  if (!element) {
+    return;
+  }
+  element.textContent = message;
+  element.hidden = false;
+}
+
+function clearFormError(id) {
+  if (!id) {
+    return;
+  }
+  const element = document.getElementById(id);
+  if (element) {
+    element.hidden = true;
+    element.textContent = "";
+  }
+}
+
+function renderInventory() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  document.getElementById("view").innerHTML = `
+    <section class="catalog-hero">
+      <div>
+        <p class="eyebrow">Inventory</p>
+        <h2>Stock, batches, and replenishment</h2>
+        <p>Monitor available stock, reserved stock, replenishment gaps, blocked expiry batches, and the immutable stock ledger.</p>
+      </div>
+      <div class="scenario-grid">
+        ${scenarioCard("Role", canWrite ? "Can adjust targets" : "Read only", canWrite ? "status-ok" : "status-muted")}
+        ${scenarioCard("Scope", auth?.user.locationId ? "Assigned location" : "All available locations", "status-muted")}
+        ${scenarioCard("Ledger model", "Append-only stock history", "status-ok")}
+      </div>
+    </section>
+
+    <section class="catalog-layout">
+      <aside class="catalog-side">
+        <section class="band compact-band">
+          <div class="section-head"><h2>Filters</h2><button id="inventory-refresh" class="button secondary" type="button">Refresh</button></div>
+          <div class="field"><label for="inventory-location">Location</label><select id="inventory-location" class="select"><option value="">All available</option></select></div>
+          <div class="field"><label for="inventory-sku">SKU</label><select id="inventory-sku" class="select"><option value="">All SKUs</option></select></div>
+          <label class="check-field"><input id="inventory-include-zero-stock" type="checkbox"><span>Show zero-stock SKUs</span></label>
+          <label class="check-field"><input id="inventory-include-empty" type="checkbox"><span>Show empty batches</span></label>
+        </section>
+        <section class="band compact-band">
+          <h2>Locations</h2>
+          <div id="inventory-locations" class="reference-list"><span class="muted-text">Loading</span></div>
+        </section>
+      </aside>
+
+      <section class="catalog-main">
+        <section class="band">
+          <div class="section-head"><h2>Product totals</h2><span id="inventory-product-total-count" class="muted-text">Loading</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU count</th><th>Total packs</th><th>Total pieces</th></tr></thead><tbody id="inventory-product-totals"><tr><td colspan="4">Loading product totals</td></tr></tbody></table></div>
+        </section>
+        <section class="band">
+          <div class="section-head"><h2>Stock balances</h2><span id="inventory-balance-count" class="muted-text">Loading</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Location</th><th>SKU</th><th>Available</th><th>Reserved</th><th>Meant to be</th><th>Needed</th><th>Status</th><th>Updated</th>${canWrite ? "<th>Actions</th>" : ""}</tr></thead><tbody id="inventory-balances"><tr><td colspan="${canWrite ? 9 : 8}">Loading stock</td></tr></tbody></table></div>
+        </section>
+        <section class="band">
+          <div class="section-head">
+            <div><h2>Daily replenishment</h2><p>Online and retail targets are topped up from MainWarehouse through reserved warehouse transfers.</p></div>
+            <div class="inline-actions">
+              <span id="inventory-replenishment-count" class="muted-text">Loading</span>
+              ${canWrite ? `<button id="reserve-replenishment" class="button secondary" type="button">Run replenishment</button>` : ""}
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Destination</th><th>SKU</th><th>Available</th><th>Incoming</th><th>Meant to be</th><th>Needed</th><th>Main available</th></tr></thead><tbody id="inventory-replenishment"><tr><td colspan="7">Loading replenishment</td></tr></tbody></table></div>
+        </section>
+        <section class="band">
+          <div class="section-head">
+            <div><h2>Expired batches</h2><p>Expired batches are blocked from FEFO sale, transfer, reserve, and write-off allocation.</p></div>
+            <span id="inventory-blocked-count" class="muted-text">Loading</span>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Location</th><th>SKU</th><th>Lot</th><th>Quantity</th><th>Expiry</th><th>Reason</th></tr></thead><tbody id="inventory-blocked-batches"><tr><td colspan="6">Loading expired batches</td></tr></tbody></table></div>
+        </section>
+        <section class="catalog-detail-grid">
+          <section class="band">
+            <div class="section-head"><h2>Batches</h2><span id="inventory-batch-count" class="muted-text">Loading</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Lot</th><th>Location</th><th>SKU</th><th>Quantity</th><th>Expiry date</th><th>Notes</th></tr></thead><tbody id="inventory-batches"><tr><td colspan="6">Loading batches</td></tr></tbody></table></div>
+          </section>
+          <section class="band">
+            <div class="section-head"><h2>Transactions</h2><span id="inventory-transaction-count" class="muted-text">Loading</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Type</th><th>Location</th><th>SKU</th><th>Change</th><th>Created</th></tr></thead><tbody id="inventory-transactions"><tr><td colspan="5">Loading transactions</td></tr></tbody></table></div>
+          </section>
+        </section>
+      </section>
+    </section>`;
+
+  document.getElementById("inventory-refresh").addEventListener("click", refreshInventoryWorkspace);
+  document.getElementById("inventory-location").addEventListener("change", () => {
+    selectedInventoryLocationId = document.getElementById("inventory-location").value;
+    refreshInventoryTables();
+  });
+  document.getElementById("inventory-sku").addEventListener("input", debounce(refreshInventoryTables, 300));
+  document.getElementById("inventory-sku").addEventListener("change", refreshInventoryTables);
+  document.getElementById("inventory-include-zero-stock").addEventListener("change", loadInventoryBalances);
+  document.getElementById("inventory-include-empty").addEventListener("change", loadInventoryBatches);
+  document.getElementById("reserve-replenishment")?.addEventListener("click", reserveInventoryReplenishment);
+  refreshInventoryWorkspace();
+}
+
+async function refreshInventoryWorkspace() {
+  if (!document.getElementById("inventory-balances")) {
+    return;
+  }
+  await Promise.all([loadInventoryLocations(), loadInventorySkuOptions()]);
+  await refreshInventoryTables();
+}
+
+async function refreshInventoryTables() {
+  if (!document.getElementById("inventory-balances")) {
+    return;
+  }
+  await Promise.all([
+    loadInventoryProductTotals(),
+    loadInventoryBalances(),
+    loadInventoryReplenishment(),
+    loadTransferBlockedBatches(),
+    loadInventoryBatches(),
+    loadInventoryTransactions()
+  ]);
+}
+
+async function loadInventoryLocations() {
+  const select = document.getElementById("inventory-location");
+  const list = document.getElementById("inventory-locations");
+  try {
+    inventoryLocations = await request("/api/v1/inventory/locations");
+    select.innerHTML = `<option value="">All available</option>${inventoryLocations.map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name)}</option>`).join("")}`;
+    if (getAuth()?.user.locationId && !selectedInventoryLocationId) {
+      selectedInventoryLocationId = getAuth().user.locationId;
+    }
+    select.value = selectedInventoryLocationId;
+    select.disabled = Boolean(getAuth()?.user.locationId);
+    list.innerHTML = inventoryLocations.length === 0
+      ? `<span class="muted-text">No locations</span>`
+      : inventoryLocations.map((location) => `<button class="reference-item" type="button" data-location-id="${escapeHtml(location.id)}"><strong>${escapeHtml(location.name)}</strong><span>${escapeHtml(location.locationType)} ${location.isActive ? "Active" : "Inactive"}</span></button>`).join("");
+    list.querySelectorAll("[data-location-id]").forEach((button) => button.addEventListener("click", () => {
+      selectedInventoryLocationId = button.dataset.locationId;
+      select.value = selectedInventoryLocationId;
+      refreshInventoryTables();
+    }));
+  } catch (exception) {
+    list.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyInventoryError(exception))}</span>`;
+  }
+}
+
+async function loadInventorySkuOptions() {
+  const filter = document.getElementById("inventory-sku");
+  try {
+    const products = [];
+    let page = 1;
+    let totalCount = 0;
+    do {
+      const result = await request(`/api/v1/catalog/products?includeInactive=false&page=${page}&pageSize=100`);
+      products.push(...(result.items || []));
+      totalCount = result.totalCount || products.length;
+      page += 1;
+    } while (products.length < totalCount);
+
+    const options = [];
+    for (const product of products) {
+      const detail = await request(`/api/v1/catalog/products/${product.id}`);
+      for (const sku of detail.skus || []) {
+        if (sku.isActive) {
+          options.push({
+            id: sku.id,
+            label: `${sku.skuCode} - ${detail.name}`
+          });
+        }
+      }
+    }
+    inventorySkuOptions = options.sort((left, right) => left.label.localeCompare(right.label));
+    const optionsHtml = inventorySkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("");
+    if (filter) {
+      const current = filter.value;
+      filter.innerHTML = `<option value="">All SKUs</option>${optionsHtml}`;
+      filter.value = current;
+    }
+  } catch (exception) {
+    if (filter) {
+      filter.innerHTML = `<option value="">Catalog unavailable</option>`;
+    }
+  }
+}
+
+async function loadInventoryProductTotals() {
+  const tbody = document.getElementById("inventory-product-totals");
+  const count = document.getElementById("inventory-product-total-count");
+  if (!tbody || !count) {
+    return;
+  }
+
+  const params = new URLSearchParams();
+  if (selectedInventoryLocationId) {
+    params.set("locationId", selectedInventoryLocationId);
+  }
+
+  try {
+    const rows = await request(`/api/v1/inventory/product-totals?${params.toString()}`);
+    count.textContent = `${rows.length} product${rows.length === 1 ? "" : "s"}`;
+    tbody.innerHTML = rows.length === 0
+      ? `<tr><td colspan="4">No available stock for this location.</td></tr>`
+      : rows.map((row) => `
+        <tr>
+          <td><strong>${escapeHtml(row.productName || row.productId)}</strong></td>
+          <td>${escapeHtml(row.skuCount)}</td>
+          <td>${escapeHtml(row.totalPacks)}</td>
+          <td>${row.totalPieces == null ? "-" : escapeHtml(row.totalPieces)}</td>
+        </tr>`).join("");
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="4">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+  }
+}
+
+async function loadInventoryBalances() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  const tbody = document.getElementById("inventory-balances");
+  const count = document.getElementById("inventory-balance-count");
+  const includeZeroStock = document.getElementById("inventory-include-zero-stock");
+  if (!tbody || !count || !includeZeroStock) {
+    return;
+  }
+  const params = inventoryParams();
+  params.set("pageSize", "50");
+  params.set("includeZeroStock", String(includeZeroStock.checked));
+  try {
+    const result = await request(`/api/v1/inventory/stock-balances?${params.toString()}`);
+    count.textContent = `${result.totalCount} balance${result.totalCount === 1 ? "" : "s"}`;
+    tbody.innerHTML = result.items.length === 0
+      ? `<tr><td colspan="${canWrite ? 9 : 8}">No stock balances yet.</td></tr>`
+      : result.items.map((balance) => `
+        <tr>
+          <td>${escapeHtml(balance.locationName)}</td>
+          <td><strong>${escapeHtml(balance.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(balance.skuIsActive)}<span class="muted-cell">${escapeHtml(balance.productName || balance.skuId)}</span></td>
+          <td>${quantityStack(balance.availablePacks, balance.availablePieces, balance.locationType)}</td>
+          <td>${quantityStack(balance.reservedInWarehousePacks + balance.reservedWithRepPacks, addNullable(balance.reservedInWarehousePieces, balance.reservedWithRepPieces), balance.locationType)}</td>
+          <td>${quantityStack(balance.targetPacks, balance.targetPieces, balance.locationType)}</td>
+          <td>${quantityStack(inventoryShortagePacks(balance), inventoryShortagePieces(balance), balance.locationType)}</td>
+          <td>${inventoryStockStatus(balance)}</td>
+          <td>${escapeHtml(formatDateTime(balance.lastUpdated))}</td>
+          ${canWrite ? `<td><button class="button secondary table-action" type="button" data-target-location="${escapeHtml(balance.locationId)}" data-target-sku="${escapeHtml(balance.skuId)}" data-target-current="${escapeHtml(balance.targetPacks ?? "")}">Set target</button></td>` : ""}
+        </tr>`).join("");
+    tbody.querySelectorAll("[data-target-location]").forEach((button) => button.addEventListener("click", () => setInventoryTarget(button)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="${canWrite ? 9 : 8}">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+  }
+}
+
+async function loadInventoryReplenishment() {
+  const tbody = document.getElementById("inventory-replenishment");
+  const count = document.getElementById("inventory-replenishment-count");
+  if (!tbody || !count) {
+    return;
+  }
+
+  const params = inventoryParams();
+  try {
+    const rows = await request(`/api/v1/operations/replenishment?${params.toString()}`);
+    const shortages = rows.filter((row) => row.shortagePacks > 0);
+    count.textContent = `${shortages.length} shortage${shortages.length === 1 ? "" : "s"}`;
+    tbody.innerHTML = rows.length === 0
+      ? `<tr><td colspan="7">No target-stock rows yet.</td></tr>`
+      : rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.destinationLocationName)}</td>
+          <td><strong>${escapeHtml(row.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(row.productName || row.skuId)}</span></td>
+          <td>${quantityStack(row.availablePacks, row.availablePieces, row.destinationLocationType)}</td>
+          <td>${quantityStack(row.incomingPacks, row.incomingPieces, row.destinationLocationType)}</td>
+          <td>${quantityStack(row.targetPacks, row.targetPieces, row.destinationLocationType)}</td>
+          <td>${row.shortagePacks > 0 ? `<span class="status-pill status-warn">${quantityText(row.shortagePacks, row.shortagePieces, row.destinationLocationType)}</span>` : `<span class="status-pill status-ok">Covered</span>`}</td>
+          <td>${quantityStack(row.mainAvailablePacks, null, "MainWarehouse")}</td>
+        </tr>`).join("");
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="7">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function loadInventoryBatches() {
+  const tbody = document.getElementById("inventory-batches");
+  const count = document.getElementById("inventory-batch-count");
+  const params = inventoryParams();
+  params.set("pageSize", "50");
+  params.set("includeEmpty", String(document.getElementById("inventory-include-empty").checked));
+  try {
+    const result = await request(`/api/v1/inventory/batches?${params.toString()}`);
+    count.textContent = `${result.totalCount} batch${result.totalCount === 1 ? "" : "es"}`;
+    tbody.innerHTML = result.items.length === 0
+      ? `<tr><td colspan="6">No batches yet.</td></tr>`
+      : result.items.map((batch) => `
+        <tr>
+          <td>${escapeHtml(batch.lotNumber || "-")}</td>
+          <td>${escapeHtml(batch.locationName)}</td>
+          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || batch.skuId)}</span></td>
+          <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
+          <td>${expiryBadge(batch.expiryDate)}</td>
+          <td>${escapeHtml(batch.notes || "-")}</td>
+        </tr>`).join("");
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+  }
+}
+
+async function loadTransferBlockedBatches() {
+  const tbody = document.getElementById("inventory-blocked-batches");
+  const count = document.getElementById("inventory-blocked-count");
+  if (!tbody || !count) {
+    return;
+  }
+
+  const params = inventoryParams();
+  try {
+    const rows = await request(`/api/v1/inventory/transfer-blocked-batches?${params.toString()}`);
+    count.textContent = `${rows.length} expired`;
+    tbody.innerHTML = rows.length === 0
+      ? `<tr><td colspan="6">No expired batches.</td></tr>`
+      : rows.map((batch) => `
+        <tr>
+          <td>${escapeHtml(batch.locationName)}</td>
+          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(batch.productName || batch.skuId)}</span></td>
+          <td>${escapeHtml(batch.lotNumber || "-")}</td>
+          <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
+          <td>${expiryBadge(batch.expiryDate)}</td>
+          <td><span class="status-pill status-warn">${escapeHtml(batch.reason || "Blocked")}</span></td>
+        </tr>`).join("");
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+  }
+}
+
+async function loadInventoryTransactions() {
+  const tbody = document.getElementById("inventory-transactions");
+  const count = document.getElementById("inventory-transaction-count");
+  const params = inventoryParams();
+  params.set("pageSize", "50");
+  try {
+    const result = await request(`/api/v1/inventory/transactions?${params.toString()}`);
+    count.textContent = `${result.totalCount} transaction${result.totalCount === 1 ? "" : "s"}`;
+    tbody.innerHTML = result.items.length === 0
+      ? `<tr><td colspan="5">No transactions yet.</td></tr>`
+      : result.items.map((transaction) => `
+        <tr>
+          <td>${escapeHtml(transaction.transactionType)}</td>
+          <td>${escapeHtml(transaction.locationName)}</td>
+          <td><strong>${escapeHtml(transaction.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || transaction.skuId)}</span></td>
+          <td>${quantityStack(transaction.packChange, transaction.pieceChange, transaction.locationType)}</td>
+          <td>${escapeHtml(formatDateTime(transaction.createdAt))}</td>
+        </tr>`).join("");
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+  }
+}
+
+function inventoryStockStatus(balance) {
+  if (balance.targetPacks === null || balance.targetPacks === undefined) {
+    return `<span class="status-pill status-muted">No target</span>`;
+  }
+  if (balance.availablePacks < balance.targetPacks) {
+    return `<span class="status-pill status-warn">Low stock</span>`;
+  }
+  return `<span class="status-pill status-ok">Healthy</span>`;
+}
+
+function skuStatusBadge(isActive) {
+  if (isActive === false) {
+    return ` <span class="status-pill status-muted">Inactive SKU</span>`;
+  }
+  return "";
+}
+
+function inventoryShortagePacks(balance) {
+  if (balance.targetPacks === null || balance.targetPacks === undefined) {
+    return null;
+  }
+  return Math.max(Number(balance.targetPacks) - Number(balance.availablePacks), 0);
+}
+
+function inventoryShortagePieces(balance) {
+  const shortage = inventoryShortagePacks(balance);
+  if (shortage === null || balance.availablePieces === null || balance.availablePieces === undefined || !balance.piecesPerPack) {
+    return null;
+  }
+  return shortage * Number(balance.piecesPerPack);
+}
+
+function quantityStack(packs, pieces, locationType) {
+  const packText = packs === null || packs === undefined ? "-" : `${packs} pack${Math.abs(Number(packs)) === 1 ? "" : "s"}`;
+  if (locationType === "MainWarehouse") {
+    return `<strong>${escapeHtml(packText)}</strong>`;
+  }
+  const pieceText = pieces === null || pieces === undefined ? "pieces not set" : `${pieces} piece${Math.abs(Number(pieces)) === 1 ? "" : "s"}`;
+  return `<strong>${escapeHtml(packText)}</strong><span class="muted-cell">${escapeHtml(pieceText)}</span>`;
+}
+
+function quantityText(packs, pieces, locationType) {
+  const packText = `${packs} pack${Math.abs(Number(packs)) === 1 ? "" : "s"}`;
+  if (locationType === "MainWarehouse" || pieces === null || pieces === undefined) {
+    return packText;
+  }
+
+  return `${packText} / ${pieces} piece${Math.abs(Number(pieces)) === 1 ? "" : "s"}`;
+}
+
+function addNullable(left, right) {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return null;
+  }
+  return left + right;
+}
+
+function expiryBadge(expiryDate) {
+  if (!expiryDate) {
+    return `<span class="status-pill status-muted">No expiry</span>`;
+  }
+  const today = new Date();
+  const expiry = new Date(`${expiryDate}T00:00:00`);
+  const days = Math.ceil((expiry - today) / 86400000);
+  if (days < 0) {
+    return `<span class="status-pill status-warn">${escapeHtml(expiryDate)} expired</span>`;
+  }
+  if (days <= 90) {
+    return `<span class="status-pill status-warn">${escapeHtml(expiryDate)}</span>`;
+  }
+  return `<span class="status-pill status-ok">${escapeHtml(expiryDate)}</span>`;
+}
+
+function inventoryParams() {
+  const params = new URLSearchParams();
+  const locationId = document.getElementById("inventory-location")?.value;
+  const skuId = document.getElementById("inventory-sku")?.value.trim();
+  if (locationId) {
+    params.set("locationId", locationId);
+  }
+  if (skuId) {
+    params.set("skuId", skuId);
+  }
+  return params;
+}
+
+async function setInventoryTarget(button) {
+  const current = button.dataset.targetCurrent || "";
+  const raw = await promptDialog({
+    title: "Set Target Packs",
+    label: "Target stock is measured in packs.",
+    defaultValue: current,
+    inputType: "number",
+    required: true
+  });
+  if (raw === null) {
+    return;
+  }
+  const value = raw.trim();
+  if (value && (!Number.isInteger(Number(value)) || Number(value) < 0)) {
+    notice("Target packs must be a non-negative whole number.", "error");
+    return;
+  }
+
+  try {
+    await request(`/api/v1/inventory/stock-balances/${button.dataset.targetLocation}/${button.dataset.targetSku}/target`, {
+      method: "PUT",
+      body: JSON.stringify({ targetPacks: value ? Number(value) : null })
+    });
+    notice("Target packs updated.", "success");
+    await loadInventoryBalances();
+  } catch (exception) {
+    notice(getFriendlyInventoryError(exception), "error");
+  }
+}
+
+async function reserveInventoryReplenishment() {
+  try {
+    const locationId = document.getElementById("inventory-location")?.value || null;
+    const skuId = document.getElementById("inventory-sku")?.value || null;
+    const result = await request("/api/v1/operations/replenishment/daily-reset", {
+      method: "POST",
+      body: JSON.stringify({ locationId, skuId })
+    });
+    const alertText = result.alerts?.length
+      ? ` Alert: ${result.alerts.map((alert) => `${alert.skuCode || alert.skuId} at ${alert.destinationLocationName}: ${alert.message}`).join(" | ")}`
+      : "";
+    notice(`Reserved ${result.createdOperations} replenishment transfer(s). ${result.unfilledPacks} pack(s) still uncovered.${alertText}`, result.unfilledPacks > 0 ? "info" : "success");
+    await refreshInventoryTables();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderCrm() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  selectedMerchantId = null;
+  selectedRepresentativeId = null;
+  document.getElementById("view").innerHTML = `
+    <section class="catalog-hero">
+      <div>
+        <p class="eyebrow">CRM</p>
+        <h2>Merchant and representative records</h2>
+        <p>Maintain commercial relationships, operational notes, and merchant context used across sales, returns, payments, and reporting.</p>
+      </div>
+      <div class="scenario-grid">
+        ${scenarioCard("Role", canWrite ? "Can edit CRM records" : "Read only", canWrite ? "status-ok" : "status-muted")}
+        ${scenarioCard("Merchant context", "Eligibility and notes", "status-muted")}
+        ${scenarioCard("Operations link", "Shared across workflows", "status-muted")}
+      </div>
+    </section>
+    <section class="band">
+      <div class="section-head">
+        <div>
+          <h2>Merchants</h2>
+          <p>Profiles, commercial contacts, remaining context, and operational history.</p>
+        </div>
+        <span id="crm-count" class="status-pill status-muted">Loading</span>
+      </div>
+      ${canWrite ? `
+        <form id="merchant-form" class="form grid-form">
+          <input id="merchant-id" type="hidden">
+          <div class="field"><label for="merchant-name">Business name</label><input id="merchant-name" class="input" required></div>
+          <div class="field"><label for="merchant-contact">Contact person</label><input id="merchant-contact" class="input" required></div>
+          <div class="field"><label for="merchant-phone">Phone</label><input id="merchant-phone" class="input"></div>
+          <div class="field"><label for="merchant-type">Business type</label><select id="merchant-type" class="select"><option>Merchant</option><option>Pharmacy</option><option>Oculist</option><option>BeautyCenter</option><option>Other</option></select></div>
+          <div class="toolbar full-span">
+            <button id="merchant-save-button" class="button primary" type="submit">Create merchant</button>
+            <button id="merchant-reset-button" class="button secondary" type="button">Clear</button>
+          </div>
+        </form>` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Business</th><th>Contact</th><th>Phone</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody id="merchant-rows"></tbody></table>
+      </div>
+      <div id="merchant-detail-panel" class="detail-panel" hidden></div>
+    </section>
+    <section class="band">
+      <div class="section-head"><h2>Representatives</h2><span id="rep-count" class="status-pill status-muted">Loading</span></div>
+      ${canWrite ? `
+        <form id="rep-form" class="form grid-form">
+          <input id="rep-id" type="hidden">
+          <div class="field"><label for="rep-name">Name</label><input id="rep-name" class="input" required></div>
+          <div class="field"><label for="rep-phone">Phone</label><input id="rep-phone" class="input"></div>
+          <div class="field"><label for="rep-type">Type</label><select id="rep-type" class="select"><option>External</option><option>Internal</option></select></div>
+          <div class="toolbar full-span">
+            <button id="rep-save-button" class="button primary" type="submit">Create representative</button>
+            <button id="rep-reset-button" class="button secondary" type="button">Clear</button>
+          </div>
+        </form>` : ""}
+      <div class="table-wrap">
+        <table><thead><tr><th>Name</th><th>Phone</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody id="rep-rows"></tbody></table>
+      </div>
+    </section>`;
+
+  if (canWrite) {
+    document.getElementById("merchant-form").addEventListener("submit", saveMerchant);
+    document.getElementById("merchant-reset-button").addEventListener("click", resetMerchantForm);
+    document.getElementById("rep-form").addEventListener("submit", saveRepresentative);
+    document.getElementById("rep-reset-button").addEventListener("click", resetRepresentativeForm);
+  }
+  await Promise.all([loadMerchants(), loadRepresentatives()]);
+}
+
+async function loadMerchants(search = "") {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  const tbody = document.getElementById("merchant-rows");
+  const count = document.getElementById("crm-count");
+  try {
+    const result = await fetchMerchantList(search);
+    count.textContent = `${result.totalCount} merchants`;
+    tbody.innerHTML = result.items.length === 0 ? `<tr><td colspan="6">No merchants yet.</td></tr>` : result.items.map((merchant) => `
+      <tr>
+        <td>${escapeHtml(merchant.businessName)}</td>
+        <td>${escapeHtml(merchant.contactPersonName)}</td>
+        <td>${escapeHtml((merchant.phoneNumbers || []).join(", ") || "-")}</td>
+        <td>${escapeHtml(merchant.businessType)}</td>
+        <td><span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(merchant.status)}</span></td>
+        <td>
+          <button class="button secondary table-action" type="button" data-view-merchant="${escapeHtml(merchant.id)}">Detail</button>
+          ${canWrite ? `<button class="button secondary table-action" type="button" data-edit-merchant="${escapeHtml(merchant.id)}">Edit</button>` : ""}
+          ${canWrite ? `<button class="button secondary table-action" type="button" data-status-merchant="${escapeHtml(merchant.id)}" data-next-status="${merchant.status === "Active" ? "deactivate" : "reactivate"}">${merchant.status === "Active" ? "Deactivate" : "Reactivate"}</button>` : ""}
+          ${canWrite ? `<button class="button secondary table-action" type="button" data-note-merchant="${escapeHtml(merchant.id)}">Add note</button>` : ""}
+          <button class="button secondary table-action" type="button" data-eligibility-merchant="${escapeHtml(merchant.id)}">Eligibility</button>
+        </td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-view-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantDetail(button.dataset.viewMerchant)));
+    tbody.querySelectorAll("[data-edit-merchant]").forEach((button) => button.addEventListener("click", async () => {
+      const merchant = result.items.find((value) => value.id === button.dataset.editMerchant);
+      if (merchant) {
+        fillMerchantForm(merchant);
+        await loadMerchants();
+        return;
+      }
+      await editMerchant(button.dataset.editMerchant);
+    }));
+    tbody.querySelectorAll("[data-status-merchant]").forEach((button) => button.addEventListener("click", () => changeMerchantStatus(button.dataset.statusMerchant, button.dataset.nextStatus)));
+    tbody.querySelectorAll("[data-note-merchant]").forEach((button) => button.addEventListener("click", () => addMerchantNote(button.dataset.noteMerchant)));
+    tbody.querySelectorAll("[data-eligibility-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantEligibility(button.dataset.eligibilityMerchant)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function loadRepresentatives() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  const tbody = document.getElementById("rep-rows");
+  const count = document.getElementById("rep-count");
+  try {
+    const reps = await request("/api/v1/crm/representatives?includeInactive=true");
+    count.textContent = `${reps.length} reps`;
+    tbody.innerHTML = reps.length === 0 ? `<tr><td colspan="5">No representatives yet.</td></tr>` : reps.map((rep) => `
+      <tr>
+        <td>${escapeHtml(rep.name)}</td>
+        <td>${escapeHtml((rep.phoneNumbers || []).join(", ") || "-")}</td>
+        <td>${escapeHtml(rep.type)}</td>
+        <td><span class="status-pill ${rep.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(rep.status)}</span></td>
+        <td>
+          ${canWrite ? `<button class="button secondary table-action" type="button" data-edit-rep="${escapeHtml(rep.id)}">Edit</button>` : ""}
+          ${canWrite ? `<button class="button secondary table-action" type="button" data-status-rep="${escapeHtml(rep.id)}" data-next-status="${rep.status === "Active" ? "deactivate" : "reactivate"}">${rep.status === "Active" ? "Deactivate" : "Reactivate"}</button>` : ""}
+        </td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-edit-rep]").forEach((button) => button.addEventListener("click", () => editRepresentative(button.dataset.editRep)));
+    tbody.querySelectorAll("[data-status-rep]").forEach((button) => button.addEventListener("click", () => changeRepresentativeStatus(button.dataset.statusRep, button.dataset.nextStatus)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function saveMerchant(event) {
+  event.preventDefault();
+  const businessName = document.getElementById("merchant-name").value.trim();
+  const contactPersonName = document.getElementById("merchant-contact").value.trim();
+  const merchantId = document.getElementById("merchant-id").value;
+  if (!businessName || !contactPersonName) {
+    notice("Business name and contact person are required.", "error");
+    return;
+  }
+
+  try {
+    await request(merchantId ? `/api/v1/crm/merchants/${merchantId}` : "/api/v1/crm/merchants", {
+      method: merchantId ? "PUT" : "POST",
+      body: JSON.stringify({
+        businessName,
+        contactPersonName,
+        phoneNumbers: document.getElementById("merchant-phone").value.trim() ? [document.getElementById("merchant-phone").value.trim()] : [],
+        businessType: document.getElementById("merchant-type").value
+      })
+    });
+    resetMerchantForm();
+    notice(merchantId ? "Merchant updated." : "Merchant created.", "success");
+    await loadMerchants();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function fetchMerchantList(search = "") {
+  if (search) {
+    const params = new URLSearchParams({ includeInactive: "true", pageSize: "100", search });
+    return await request(`/api/v1/crm/merchants?${params.toString()}`);
+  }
+
+  const items = [];
+  let page = 1;
+  let totalCount = 0;
+  do {
+    const params = new URLSearchParams({ includeInactive: "true", pageSize: "100", page: String(page) });
+    const result = await request(`/api/v1/crm/merchants?${params.toString()}`);
+    items.push(...(result.items || []));
+    totalCount = result.totalCount || items.length;
+    page += 1;
+  } while (items.length < totalCount);
+
+  return { items, totalCount };
+}
+
+async function saveRepresentative(event) {
+  event.preventDefault();
+  const name = document.getElementById("rep-name").value.trim();
+  const repId = document.getElementById("rep-id").value;
+  if (!name) {
+    notice("Representative name is required.", "error");
+    return;
+  }
+
+  try {
+    await request(repId ? `/api/v1/crm/representatives/${repId}` : "/api/v1/crm/representatives", {
+      method: repId ? "PUT" : "POST",
+      body: JSON.stringify({
+        name,
+        phoneNumbers: document.getElementById("rep-phone").value.trim() ? [document.getElementById("rep-phone").value.trim()] : [],
+        type: document.getElementById("rep-type").value
+      })
+    });
+    resetRepresentativeForm();
+    notice(repId ? "Representative updated." : "Representative created.", "success");
+    await loadRepresentatives();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function resetMerchantForm() {
+  const form = document.getElementById("merchant-form");
+  if (!form) {
+    return;
+  }
+  form.reset();
+  document.getElementById("merchant-id").value = "";
+  document.getElementById("merchant-save-button").textContent = "Create merchant";
+  selectedMerchantId = null;
+}
+
+function resetRepresentativeForm() {
+  const form = document.getElementById("rep-form");
+  if (!form) {
+    return;
+  }
+  form.reset();
+  document.getElementById("rep-id").value = "";
+  document.getElementById("rep-save-button").textContent = "Create representative";
+  selectedRepresentativeId = null;
+}
+
+async function editMerchant(merchantId) {
+  try {
+    const detail = await request(`/api/v1/crm/merchants/${merchantId}`);
+    const merchant = detail.merchant;
+    fillMerchantForm(merchant);
+    await showMerchantDetail(merchantId, detail);
+    await loadMerchants();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function fillMerchantForm(merchant) {
+  document.getElementById("merchant-id").value = merchant.id;
+  document.getElementById("merchant-name").value = merchant.businessName || "";
+  document.getElementById("merchant-contact").value = merchant.contactPersonName || "";
+  document.getElementById("merchant-phone").value = (merchant.phoneNumbers || [])[0] || "";
+  document.getElementById("merchant-type").value = merchant.businessType || "Merchant";
+  document.getElementById("merchant-save-button").textContent = "Update merchant";
+  selectedMerchantId = merchant.id;
+}
+
+async function editRepresentative(repId) {
+  const rep = operationRepresentativeOptions.find((value) => value.id === repId) || (await request("/api/v1/crm/representatives?includeInactive=true")).find((value) => value.id === repId);
+  if (!rep) {
+    notice("Representative not found.", "error");
+    return;
+  }
+  document.getElementById("rep-id").value = rep.id;
+  document.getElementById("rep-name").value = rep.name || "";
+  document.getElementById("rep-phone").value = (rep.phoneNumbers || [])[0] || "";
+  document.getElementById("rep-type").value = rep.type || "External";
+  document.getElementById("rep-save-button").textContent = "Update representative";
+  selectedRepresentativeId = rep.id;
+}
+
+async function changeMerchantStatus(merchantId, action) {
+  try {
+    await request(`/api/v1/crm/merchants/${merchantId}/${action}`, { method: "PATCH" });
+    notice(action === "deactivate" ? "Merchant deactivated." : "Merchant reactivated.", "success");
+    await loadMerchants();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function changeRepresentativeStatus(repId, action) {
+  try {
+    await request(`/api/v1/crm/representatives/${repId}/${action}`, { method: "PATCH" });
+    notice(action === "deactivate" ? "Representative deactivated." : "Representative reactivated.", "success");
+    await loadRepresentatives();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function showMerchantDetail(merchantId, existingDetail = null) {
+  const panel = document.getElementById("merchant-detail-panel");
+  if (!panel) {
+    return;
+  }
+  panel.hidden = false;
+  panel.innerHTML = `<span class="muted-text">Loading merchant detail...</span>`;
+  try {
+    const detail = existingDetail || await request(`/api/v1/crm/merchants/${merchantId}`);
+    const merchant = detail.merchant;
+    const summary = detail.summary || {};
+    const notes = detail.notes || [];
+    const operations = detail.recentOperations || [];
+    const balance = summary.balance ?? summary.balancePlaceholder ?? 0;
+    const eligibilityRows = await request(`/api/v1/crm/merchants/${merchantId}/eligibility`);
+    panel.innerHTML = `
+      <div class="section-head tight-head">
+        <div><h3>${escapeHtml(merchant.businessName)}</h3><p>${escapeHtml(merchant.contactPersonName)} ${merchant.phoneNumbers?.length ? `- ${escapeHtml(merchant.phoneNumbers.join(", "))}` : ""}</p></div>
+        <span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(merchant.status)}</span>
+      </div>
+      <div class="operation-detail-grid">
+        <div class="metric"><span>Operations</span><strong>${escapeHtml(summary.operationCount || 0)}</strong></div>
+        <div class="metric"><span>Sold packs</span><strong>${escapeHtml(summary.soldPacks || 0)}</strong></div>
+        <div class="metric"><span>Sold pieces</span><strong>${escapeHtml(summary.soldPieces || 0)}</strong></div>
+        <div class="metric"><span>Remaining</span><strong>${escapeHtml(formatMoney(balance))}</strong></div>
+      </div>
+      <div class="table-wrap compact-table"><table><thead><tr><th>Operation</th><th>Type</th><th>Status</th><th>Payment</th><th>Qty</th><th>Bonus</th><th>Total</th><th>Created</th></tr></thead><tbody>${operations.length === 0
+        ? `<tr><td colspan="8">No operations for this merchant yet.</td></tr>`
+        : operations.map((operation) => `<tr>
+            <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
+            <td>${escapeHtml(operation.operationType)}</td>
+            <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operation.status)}</span></td>
+            <td>${escapeHtml(operation.paymentMethod || "-")}</td>
+            <td>${escapeHtml(operation.quantity || 0)}</td>
+            <td>${escapeHtml(operation.bonusQuantity || 0)}</td>
+            <td>${escapeHtml(formatMoney(operation.total || 0))}</td>
+            <td>${escapeHtml(formatDateTime(operation.createdAt))}</td>
+          </tr>`).join("")}</tbody></table></div>
+      <div class="section-head tight-head"><h3>Eligibility ledger</h3><span class="muted-text">Sold minus returned by SKU, lot, and batch expiry</span></div>
+      ${renderMerchantEligibilityTable(eligibilityRows)}
+      <div class="table-wrap compact-table"><table><thead><tr><th>Latest notes</th><th>Created</th></tr></thead><tbody>${notes.length === 0
+        ? `<tr><td colspan="2">No notes yet.</td></tr>`
+        : notes.map((note) => `<tr><td>${escapeHtml(note.note)}</td><td>${escapeHtml(formatDateTime(note.createdAt))}</td></tr>`).join("")}</tbody></table></div>`;
+    await loadMerchants();
+  } catch (exception) {
+    panel.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
+  }
+}
+
+async function showMerchantEligibility(merchantId) {
+  try {
+    const panel = document.getElementById("merchant-detail-panel");
+    const rows = await request(`/api/v1/crm/merchants/${merchantId}/eligibility`);
+    if (panel) {
+      panel.hidden = false;
+      panel.innerHTML = `
+        <div class="section-head tight-head"><h3>Eligibility ledger</h3><span class="muted-text">Merchant return/change reference</span></div>
+        ${renderMerchantEligibilityTable(rows)}`;
+    }
+    notice(rows.length === 0 ? "No merchant eligibility ledger rows yet." : "Eligibility ledger loaded.", "info");
+    await loadMerchants();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function renderMerchantEligibilityTable(rows) {
+  return `<div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Lot</th><th>Batch expiry</th><th>Sold</th><th>Returned</th><th>Returnable</th><th>Alert</th></tr></thead><tbody>${rows.length === 0
+    ? `<tr><td colspan="8">No confirmed merchant sales or returns yet.</td></tr>`
+    : rows.map((row) => {
+        const overReturned = row.overReturnedQty || Math.max((row.returnedQty || 0) - (row.soldQty || 0), 0);
+        return `<tr>
+          <td><strong>${escapeHtml(row.skuCode || row.skuId)}</strong></td>
+          <td>${escapeHtml(row.productName || "-")}</td>
+          <td>${escapeHtml(row.lotNumber || "-")}</td>
+          <td>${row.expiryDate ? expiryBadge(row.expiryDate) : `<span class="status-pill status-muted">-</span>`}</td>
+          <td>${escapeHtml(row.soldQty || 0)}</td>
+          <td>${escapeHtml(row.returnedQty || 0)}</td>
+          <td>${escapeHtml(row.returnableQty || 0)}</td>
+          <td>${overReturned > 0 ? `<span class="status-pill status-warn">Over by ${escapeHtml(overReturned)}</span>` : `<span class="status-pill status-ok">OK</span>`}</td>
+        </tr>`;
+      }).join("")}</tbody></table></div>`;
+}
+
+async function addMerchantNote(merchantId) {
+  const note = await promptDialog({
+    title: "Add Merchant Note",
+    label: "Write a short note for this merchant profile.",
+    multiline: true,
+    required: true
+  });
+  if (!note?.trim()) {
+    return;
+  }
+  try {
+    await request(`/api/v1/crm/merchants/${merchantId}/notes`, { method: "POST", body: JSON.stringify({ note }) });
+    notice("Note added.", "success");
+    await loadMerchants();
+    await showMerchantDetail(merchantId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderOperations() {
+  const auth = getAuth();
+  const canWrite = ["Admin", "WarehouseClerk"].includes(auth?.user.role);
+  operationsUiState.operationType = operationsUiState.operationType || "InventoryReceipt";
+  document.getElementById("view").innerHTML = `
+    <section class="band">
+      <div class="section-head">
+        <div><h2>Operations control</h2></div>
+        <span id="operation-count" class="status-pill status-muted">Loading</span>
+      </div>
+      ${canWrite ? `
+        <form id="operation-form" class="form grid-form">
+          <div class="full-span operation-editor-banner">
+            <div>
+              <strong id="operation-editor-title">Create draft</strong>
+              <p id="operation-editor-hint" class="muted-text">Start a new operation draft.</p>
+            </div>
+            <div class="toolbar compact-toolbar">
+              <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
+              <button id="operation-editor-reset" class="button secondary" type="button">Reset</button>
+            </div>
+          </div>
+          <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+          <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
+          <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
+          <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
+          <div class="field op-rep-field"><label for="op-representative">Representative</label><select id="op-representative" class="select"></select></div>
+          <div class="field op-buyer-field"><label for="op-buyer">Buyer name</label><input id="op-buyer" class="input" autocomplete="off"></div>
+          <div class="field op-buyer-field"><label for="op-buyer-phone">Buyer phone</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
+          <div class="field op-payment-field"><label for="op-payment">Payment method</label><select id="op-payment" class="select"><option value="">-</option><option value="CashHandToHand">Cash hand to hand</option><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option></select></div>
+          <div class="field"><label for="op-supplier">Supplier</label><input id="op-supplier" class="input" autocomplete="off" placeholder="Receipt only"></div>
+          <div class="field"><label for="op-invoice">Invoice</label><input id="op-invoice" class="input" autocomplete="off" placeholder="Used for receipt flows"></div>
+          <div class="field full-span"><label for="op-notes">Notes</label><input id="op-notes" class="input" autocomplete="off"></div>
+          <div class="field full-span" id="op-revision-reason-field" hidden><label for="op-revision-reason">Revision reason</label><input id="op-revision-reason" class="input" autocomplete="off" placeholder="Required for revisions"></div>
+          <div class="field full-span">
+            <div class="section-head tight-head"><label>Operation lines</label><button id="op-add-line" class="button secondary" type="button">Add line</button></div>
+            <div id="op-lines" class="line-editor"></div>
+          </div>
+          <button class="button primary" id="operation-submit-button" type="submit">Save draft</button>
+        </form>` : `<p class="muted-text">This role can inspect operations but cannot create or revise drafts.</p>`}
+      <div class="toolbar">
+        <label class="check-field"><input id="operations-show-completed" type="checkbox"><span>Show completed/received/cancelled history</span></label>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>No.</th><th>Type</th><th>Status</th><th>Route</th><th>Created</th><th>Action</th></tr></thead><tbody id="operation-rows"></tbody></table>
+      </div>
+    </section>`;
+
+  if (canWrite) {
+    await Promise.all([hydrateOperationLocations(), hydrateOperationSkus(), hydrateOperationCrmOptions()]);
+    const typeControl = document.getElementById("op-type");
+    if (!typeControl) {
+      return;
+    }
+    typeControl.value = operationsUiState.operationType;
+    typeControl.addEventListener("change", syncOperationTypeControls);
+    document.getElementById("op-source").addEventListener("change", () => {
+      lockOperationRouteIfSelected();
+      void refreshOperationSkuAvailability();
+    });
+    document.getElementById("op-destination").addEventListener("change", lockOperationRouteIfSelected);
+    document.getElementById("op-add-line").addEventListener("click", () => addOperationLine());
+    document.getElementById("operation-editor-reset").addEventListener("click", resetOperationEditorMode);
+    addOperationLine();
+    syncOperationTypeControls();
+    applyOperationEditorMode();
+    document.getElementById("operation-form").addEventListener("submit", submitOperationEditor);
+  }
+  document.getElementById("operations-show-completed").addEventListener("change", loadOperations);
+  await loadOperations();
+}
+
+async function hydrateOperationLocations() {
+  operationLocations = await request("/api/v1/inventory/locations");
+  for (const id of ["op-source", "op-destination"]) {
+    const select = document.getElementById(id);
+    select.innerHTML = `<option value="">-</option>${operationLocations.map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name)}</option>`).join("")}`;
+  }
+}
+
+async function hydrateOperationSkus() {
+  const products = [];
+  let page = 1;
+  let totalCount = 0;
+  do {
+    const result = await request(`/api/v1/catalog/products?includeInactive=false&page=${page}&pageSize=100`);
+    products.push(...(result.items || []));
+    totalCount = result.totalCount || products.length;
+    page += 1;
+  } while (products.length < totalCount);
+
+  const skus = [];
+  const productOptions = [];
+  for (const product of products) {
+    const detail = await request(`/api/v1/catalog/products/${product.id}`);
+    productOptions.push({
+      id: detail.id,
+      name: detail.name,
+      brandName: detail.brandName,
+      categoryName: detail.categoryName,
+      productType: detail.productType,
+      expiryType: detail.expiryType,
+      piecesPerPack: detail.piecesPerPack,
+      sellMode: detail.sellMode,
+      label: `${detail.brandName} / ${detail.name}`
+    });
+    for (const sku of detail.skus.filter((value) => value.isActive)) {
+      skus.push({
+        id: sku.id,
+        productId: detail.id,
+        productName: detail.name,
+        brandName: detail.brandName,
+        categoryName: detail.categoryName,
+        productType: detail.productType,
+        piecesPerPack: detail.piecesPerPack,
+        sellMode: detail.sellMode,
+        skuCode: sku.skuCode,
+        powerSign: sku.powerSign,
+        powerValue: sku.powerValue,
+        colorName: sku.colorName,
+        size: sku.size,
+        label: `${detail.name} / ${sku.skuCode}`
+      });
+    }
+  }
+  operationSkuOptions = skus;
+  operationProductOptions = productOptions.sort((a, b) => a.label.localeCompare(b.label));
+  document.querySelectorAll(".line-editor-row").forEach((row) => {
+    const skuId = row.querySelector(".op-line-sku")?.value;
+    populateOperationProductOptions(row);
+    if (skuId) {
+      seedOperationLineSkuSelection(row, skuId);
+    }
+  });
+}
+
+async function hydrateOperationCrmOptions() {
+  try {
+    const [merchants, representatives] = await Promise.all([
+      fetchMerchantList(""),
+      request("/api/v1/crm/representatives?includeInactive=false")
+    ]);
+    operationMerchantOptions = (merchants.items || []).filter((merchant) => merchant.status === "Active");
+    operationRepresentativeOptions = representatives || [];
+    const merchantSelect = document.getElementById("op-merchant");
+    const repSelect = document.getElementById("op-representative");
+    if (merchantSelect) {
+      merchantSelect.innerHTML = `<option value="">Select merchant</option>${operationMerchantOptions.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}`;
+    }
+    if (repSelect) {
+      repSelect.innerHTML = `<option value="">Select representative</option>${operationRepresentativeOptions.map((rep) => `<option value="${escapeHtml(rep.id)}">${escapeHtml(rep.name)}</option>`).join("")}`;
+    }
+  } catch {
+    operationMerchantOptions = [];
+    operationRepresentativeOptions = [];
+  }
+}
+
+function addOperationLine(line = {}) {
+  const container = document.getElementById("op-lines");
+  if (!container) {
+    return;
+  }
+
+  const row = document.createElement("div");
+  row.className = "line-editor-row";
+  row.innerHTML = `
+    <input class="op-line-sku" type="hidden" value="">
+    <div class="field op-line-finder"><label>Find stock</label><input class="input op-line-search" autocomplete="off" placeholder="Product, color, power, SKU"><div class="op-line-search-results" hidden></div></div>
+    <div class="field"><label>Product</label><select class="select op-line-product" required></select></div>
+    <div class="field"><label>Power</label><select class="select op-line-power" required><option value="">Power</option></select></div>
+    <div class="field"><label>Color</label><select class="select op-line-color" required><option value="">Color</option></select></div>
+    <div class="field"><label>Package</label><select class="select op-line-size"><option value="">Package</option></select></div>
+    <div class="op-line-resolved full-span"><span class="muted-text">Select product attributes to resolve SKU.</span></div>
+    <div class="field op-line-section-field"><label>Side</label><select class="select op-line-section"><option value="ChangeOut">Returned</option><option value="ChangeIn">Replacement</option></select></div>
+    <div class="field"><label>Mode</label><select class="select op-line-entry-mode"><option value="Packs">Packs</option><option value="Pieces">Pieces</option></select></div>
+    <div class="field"><label>Quantity</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.packQuantity || line.pieceQuantity || 1)}" required></div>
+    <div class="field op-line-sale-field"><label>Unit price</label><input class="input op-line-price" type="number" min="0" step="0.01" value="${escapeHtml(line.unitPrice || 0)}"></div>
+    <label class="check-field op-line-sale-field"><input class="op-line-bonus" type="checkbox" ${line.isBonus ? "checked" : ""}><span>Bonus</span></label>
+    <div class="field op-line-stock-field"><label>Batch / expiry</label><select class="select op-line-stock-option"><option value="">Select source and SKU</option></select></div>
+    <div class="field op-line-receipt-field"><label>Lot</label><input class="input op-line-lot" maxlength="100" value="${escapeHtml(line.lotNumber || "")}"></div>
+    <div class="field op-line-receipt-field"><label>Batch expiry</label><input class="input op-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
+    <button class="icon-button op-remove-line" type="button" title="Remove line">x</button>`;
+  populateOperationProductOptions(row);
+  row.querySelector(".op-line-section").value = line.section || "ChangeOut";
+  row.querySelector(".op-line-entry-mode").value = line.entryMode || "Packs";
+  const syncLineOnly = () => syncOperationLineControls(document.getElementById("op-type").value);
+  row.querySelector(".op-line-bonus").addEventListener("change", syncLineOnly);
+  row.querySelector(".op-line-section").addEventListener("change", syncLineOnly);
+  row.querySelector(".op-line-search").addEventListener("input", () => renderOperationSkuSearchResults(row));
+  row.querySelector(".op-line-product").addEventListener("change", () => {
+    populateOperationAttributeOptions(row);
+    resolveOperationLineSku(row);
+  });
+  row.querySelector(".op-line-power").addEventListener("change", () => resolveOperationLineSku(row));
+  row.querySelector(".op-line-color").addEventListener("change", () => resolveOperationLineSku(row));
+  row.querySelector(".op-line-size").addEventListener("change", () => resolveOperationLineSku(row));
+  row.querySelector(".op-line-entry-mode").addEventListener("change", () => {
+    syncLineOnly();
+    refreshOperationStockOptions(row);
+  });
+  row.querySelector(".op-line-stock-option").addEventListener("change", () => applySelectedStockOption(row));
+  row.querySelector(".op-remove-line").addEventListener("click", () => {
+    if (container.querySelectorAll(".line-editor-row").length > 1) {
+      row.remove();
+    }
+  });
+  container.appendChild(row);
+  if (line.skuId) {
+    seedOperationLineSkuSelection(row, line.skuId);
+  } else {
+    populateOperationAttributeOptions(row);
+    resolveOperationLineSku(row);
+  }
+  syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "InventoryReceipt");
+  if (line.lotNumber !== undefined || line.expiryDate !== undefined) {
+    row.querySelector(".op-line-lot").value = line.lotNumber || "";
+    row.querySelector(".op-line-expiry").value = line.expiryDate || "";
+    void refreshOperationStockOptions(row);
+  }
+}
+
+function isOperationStockConsumingType(type) {
+  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff"].includes(type);
+}
+
+function isOperationBatchSelectionType(type) {
+  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff"].includes(type);
+}
+
+function availableOperationSkusForType(type) {
+  if (!isOperationStockConsumingType(type) || operationAvailableSkuIds === null) {
+    return operationSkuOptions;
+  }
+
+  return operationSkuOptions.filter((sku) => operationAvailableSkuIds.has(sku.id));
+}
+
+function populateOperationProductOptions(row) {
+  const select = row.querySelector(".op-line-product");
+  if (!select) {
+    return;
+  }
+
+  const current = select.value;
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const skuPool = availableOperationSkusForType(type);
+  const availableProductIds = new Set(skuPool.map((sku) => sku.productId));
+  const products = operationProductOptions.filter((product) =>
+    !isOperationStockConsumingType(type) ||
+    operationAvailableSkuIds === null ||
+    availableProductIds.has(product.id));
+
+  select.innerHTML = `<option value="">Select product</option>${products.map((product) =>
+    `<option value="${escapeHtml(product.id)}">${escapeHtml(product.label)}</option>`).join("")}`;
+  select.value = products.some((product) => product.id === current) ? current : "";
+}
+
+function populateOperationAttributeOptions(row, preferred = {}) {
+  const productId = row.querySelector(".op-line-product")?.value;
+  const powerSelect = row.querySelector(".op-line-power");
+  const colorSelect = row.querySelector(".op-line-color");
+  const sizeSelect = row.querySelector(".op-line-size");
+  if (!powerSelect || !colorSelect || !sizeSelect) {
+    return;
+  }
+
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const product = operationProductOptions.find((value) => value.id === productId);
+  const skus = availableOperationSkusForType(type).filter((sku) => !productId || sku.productId === productId);
+  const powerValues = uniqueSortedValues(skus.map((sku) => operationPowerKey(sku)).filter(Boolean), comparePowerKeys);
+  const colorValues = uniqueSortedValues(skus.map((sku) => sku.colorName || "").filter(Boolean));
+  const sizeValues = uniqueSortedValues(skus.map((sku) => sku.size || "").filter(Boolean));
+
+  const isSolution = product?.productType === "Solution";
+  setSelectOptionsPreservingValue(
+    powerSelect,
+    isSolution ? [{ value: "", label: "Not used" }] : [{ value: "", label: "Power" }, ...powerValues.map((value) => ({ value, label: formatOperationPowerKey(value) }))],
+    isSolution ? "" : preferred.powerKey ?? powerSelect.value);
+  setSelectOptionsPreservingValue(
+    colorSelect,
+    isSolution ? [{ value: "", label: "Not used" }] : [{ value: "", label: "Color" }, ...colorValues.map((value) => ({ value, label: value }))],
+    isSolution ? "" : preferred.colorName ?? colorSelect.value);
+  setSelectOptionsPreservingValue(
+    sizeSelect,
+    [{ value: "", label: "Package" }, ...sizeValues.map((value) => ({ value, label: value }))],
+    preferred.size ?? sizeSelect.value);
+  powerSelect.disabled = isSolution;
+  colorSelect.disabled = isSolution;
+}
+
+function uniqueSortedValues(values, comparer = (a, b) => a.localeCompare(b)) {
+  return Array.from(new Set(values)).sort(comparer);
+}
+
+function operationPowerKey(sku) {
+  if (sku.powerValue === null || sku.powerValue === undefined || sku.powerValue === "") {
+    return "";
+  }
+
+  return `${sku.powerSign === "-" ? "-" : "+"}${Number(sku.powerValue).toFixed(2)}`;
+}
+
+function formatOperationPowerKey(value) {
+  if (!value) {
+    return "Power";
+  }
+
+  const sign = value.startsWith("-") ? "-" : "+";
+  const number = Math.abs(Number(value)).toFixed(2);
+  return `${sign}${number}`;
+}
+
+function comparePowerKeys(a, b) {
+  return Number(a) - Number(b);
+}
+
+function resolveOperationLineSku(row, options = {}) {
+  const hidden = row.querySelector(".op-line-sku");
+  const resolved = row.querySelector(".op-line-resolved");
+  const productId = row.querySelector(".op-line-product")?.value;
+  const product = operationProductOptions.find((value) => value.id === productId);
+  const powerKey = row.querySelector(".op-line-power")?.value;
+  const colorName = row.querySelector(".op-line-color")?.value;
+  const size = row.querySelector(".op-line-size")?.value;
+
+  hidden.value = "";
+  if (!options.preserveStock) {
+    clearOperationLineStockFields(row);
+  }
+
+  if (!productId) {
+    resolved.innerHTML = `<span class="muted-text">Select product attributes to resolve SKU.</span>`;
+    return null;
+  }
+
+  const isSolution = product?.productType === "Solution";
+  if (!isSolution && (!powerKey || !colorName)) {
+    resolved.innerHTML = `<span class="muted-text">Select product, power, and color to resolve SKU.</span>`;
+    return null;
+  }
+
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const matches = availableOperationSkusForType(type).filter((sku) =>
+    sku.productId === productId &&
+    (isSolution || operationPowerKey(sku) === powerKey) &&
+    (isSolution || (sku.colorName || "") === colorName) &&
+    ((sku.size || "") === (size || "") || (!sku.size && !size)));
+
+  if (matches.length === 0) {
+    resolved.innerHTML = `<span class="status-pill status-warn">No matching SKU</span><span class="muted-cell">Try another color, power, package, or source location.</span>`;
+    return null;
+  }
+
+  if (matches.length > 1) {
+    resolved.innerHTML = `<span class="status-pill status-warn">SKU conflict</span><span class="muted-cell">${matches.length} SKUs match these attributes. Refine package/size.</span>`;
+    return null;
+  }
+
+  const sku = matches[0];
+  hidden.value = sku.id;
+  resolved.innerHTML = `<span class="status-pill status-ok">Resolved SKU</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`;
+  void refreshOperationStockOptions(row);
+  return sku;
+}
+
+function seedOperationLineSkuSelection(row, skuId) {
+  const sku = operationSkuOptions.find((value) => value.id === skuId);
+  if (!sku) {
+    row.querySelector(".op-line-sku").value = skuId || "";
+    row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-warn">Unknown SKU</span><span class="muted-cell">${escapeHtml(shortId(skuId))}</span>`;
+    return;
+  }
+
+  row.querySelector(".op-line-product").value = sku.productId;
+  populateOperationAttributeOptions(row, {
+    powerKey: operationPowerKey(sku),
+    colorName: sku.colorName || "",
+    size: sku.size || ""
+  });
+  row.querySelector(".op-line-sku").value = sku.id;
+  row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-ok">Resolved SKU</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`;
+}
+
+function renderOperationSkuSearchResults(row) {
+  const input = row.querySelector(".op-line-search");
+  const results = row.querySelector(".op-line-search-results");
+  const query = input.value.trim().toLowerCase();
+  if (!query) {
+    results.hidden = true;
+    results.innerHTML = "";
+    return;
+  }
+
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const terms = query.split(/\s+/).filter(Boolean);
+  const matches = availableOperationSkusForType(type)
+    .filter((sku) => {
+      const haystack = `${sku.productName} ${sku.brandName} ${sku.categoryName} ${sku.skuCode} ${formatOperationPowerKey(operationPowerKey(sku))} ${sku.colorName || ""} ${sku.size || ""}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    })
+    .slice(0, 8);
+
+  results.hidden = false;
+  results.innerHTML = matches.length === 0
+    ? `<button type="button" class="op-line-search-result" disabled>No matches</button>`
+    : matches.map((sku) => `
+        <button type="button" class="op-line-search-result" data-sku-id="${escapeHtml(sku.id)}">
+          <strong>${escapeHtml(sku.productName)}</strong>
+          <span>${escapeHtml(formatOperationPowerKey(operationPowerKey(sku)))} / ${escapeHtml(sku.colorName || "-")} / ${escapeHtml(sku.size || "-")}</span>
+          <small>${escapeHtml(sku.skuCode)}</small>
+        </button>`).join("");
+  results.querySelectorAll("[data-sku-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      seedOperationLineSkuSelection(row, button.dataset.skuId);
+      input.value = "";
+      results.hidden = true;
+      results.innerHTML = "";
+      clearOperationLineStockFields(row);
+      void refreshOperationStockOptions(row);
+    });
+  });
+}
+
+function clearOperationLineStockFields(row) {
+  const stockSelect = row.querySelector(".op-line-stock-option");
+  if (stockSelect) {
+    stockSelect.innerHTML = `<option value="">Select batch / expiry</option>`;
+    stockSelect.value = "";
+  }
+  row.querySelector(".op-line-lot").value = "";
+  row.querySelector(".op-line-expiry").value = "";
+}
+
+function syncOperationTypeControls() {
+  const type = canonicalSelectValue("op-type");
+  operationsUiState.operationType = type;
+  const source = document.getElementById("op-source");
+  const destination = document.getElementById("op-destination");
+  const previousSource = source.value;
+  const previousDestination = destination.value;
+  const main = operationLocations.find((location) => location.locationType === "MainWarehouse");
+  const nonMain = operationLocations.filter((location) => location.locationType !== "MainWarehouse");
+
+  if (type === "InventoryReceipt") {
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "External supplier" }], previousSource);
+    setSelectOptionsPreservingValue(destination, main ? [{ value: main.id, label: main.name }] : [{ value: "", label: "MainWarehouse unavailable" }], previousDestination);
+    source.disabled = true;
+    destination.disabled = true;
+    document.getElementById("op-supplier").disabled = false;
+    document.getElementById("op-invoice").disabled = false;
+    setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: true });
+    syncOperationLineControls(type);
+    applyOperationEditorMode();
+    return;
+  }
+
+  setSelectOptionsPreservingValue(source, main ? [{ value: main.id, label: main.name }] : [{ value: "", label: "MainWarehouse unavailable" }], previousSource);
+  setSelectOptionsPreservingValue(destination, [{ value: "", label: "Select destination" }, ...nonMain.map((location) => ({ value: location.id, label: location.name }))], previousDestination);
+  source.disabled = true;
+  destination.disabled = false;
+  document.getElementById("op-supplier").disabled = true;
+  document.getElementById("op-invoice").disabled = true;
+  syncOperationLineControls(type);
+
+  if (type === "WarehouseTransfer") {
+    setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: false });
+    applyOperationEditorMode();
+    return;
+  }
+  if (type === "WholesaleSale") {
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
+    source.disabled = false;
+    destination.disabled = true;
+    setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
+    void refreshAllOperationStockOptions();
+    applyOperationEditorMode();
+    return;
+  }
+  if (type === "RetailSale") {
+    const retailLocations = operationLocations.filter((location) => ["SubWarehouse", "Online", "Retail"].includes(location.locationType) || /retail|online/i.test(location.name));
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...retailLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
+    source.disabled = false;
+    destination.disabled = true;
+    setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: true, payment: true, receipt: false });
+    void refreshAllOperationStockOptions();
+    applyOperationEditorMode();
+    return;
+  }
+  if (type === "Reserve") {
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
+    source.disabled = false;
+    destination.disabled = true;
+    setOperationFieldGroupVisibility({ merchant: false, rep: true, buyer: false, payment: false, receipt: false });
+    applyOperationEditorMode();
+    return;
+  }
+  if (type === "Return" || type === "Change") {
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select receiving/issuing location" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
+    source.disabled = false;
+    destination.disabled = true;
+    setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
+    applyOperationEditorMode();
+    return;
+  }
+  if (type === "WriteOff") {
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
+    source.disabled = false;
+    destination.disabled = true;
+    setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: false });
+  }
+  applyOperationEditorMode();
+}
+
+function setSelectOptionsPreservingValue(select, options, preferredValue) {
+  const fallback = options.some((option) => option.value === preferredValue)
+    ? preferredValue
+    : (options[0]?.value ?? "");
+  select.innerHTML = options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("");
+  select.value = fallback;
+}
+
+function lockOperationRouteIfSelected() {
+  const source = document.getElementById("op-source");
+  const destination = document.getElementById("op-destination");
+  const type = document.getElementById("op-type")?.value;
+  if (!source || !destination) {
+    return;
+  }
+
+  if (source.value) {
+    source.disabled = true;
+  }
+  if (destination.value) {
+    destination.disabled = true;
+  }
+
+  if (type === "InventoryReceipt" || type === "WarehouseTransfer" || type === "WriteOff") {
+    if (source.value) {
+      source.title = "Route is fixed for this operation once chosen.";
+    }
+    if (destination.value) {
+      destination.title = "Route is fixed for this operation once chosen.";
+    }
+  }
+}
+
+function setOperationFieldGroupVisibility({ merchant, rep, buyer, payment, receipt }) {
+  setFieldGroupState(".op-merchant-field", merchant);
+  setFieldGroupState(".op-rep-field", rep);
+  setFieldGroupState(".op-buyer-field", buyer);
+  setFieldGroupState(".op-payment-field", payment);
+  setSingleFieldState(document.getElementById("op-supplier"), receipt);
+  setSingleFieldState(document.getElementById("op-invoice"), receipt);
+}
+
+function setFieldGroupState(selector, visible) {
+  document.querySelectorAll(selector).forEach((field) => {
+    field.hidden = !visible;
+    field.querySelectorAll("input, select, textarea").forEach((control) => {
+      control.disabled = !visible;
+      if (!visible) {
+        control.value = "";
+      }
+    });
+  });
+}
+
+function setSingleFieldState(control, visible) {
+  const field = control.closest(".field");
+  field.hidden = !visible;
+  control.disabled = !visible;
+  if (!visible) {
+    control.value = "";
+  }
+}
+
+function syncOperationLineControls(type) {
+  const isSale = ["WholesaleSale", "RetailSale"].includes(type);
+  const isBatchSelectedFlow = isOperationBatchSelectionType(type);
+  const isFinancialShell = ["Return", "Change"].includes(type);
+  document.querySelectorAll(".line-editor-row").forEach((row) => {
+    const entryMode = row.querySelector(".op-line-entry-mode");
+    const price = row.querySelector(".op-line-price");
+    const bonus = row.querySelector(".op-line-bonus");
+    const bonusField = bonus.closest(".op-line-sale-field");
+    const priceField = price.closest(".op-line-sale-field");
+    const sectionField = row.querySelector(".op-line-section-field");
+    const section = row.querySelector(".op-line-section");
+    const stockField = row.querySelector(".op-line-stock-field");
+    const stockSelect = row.querySelector(".op-line-stock-option");
+
+    entryMode.disabled = type !== "RetailSale";
+    if (type !== "RetailSale") {
+      entryMode.value = "Packs";
+    }
+    sectionField.hidden = type !== "Change";
+    section.disabled = type !== "Change";
+    if (type !== "Change") {
+      section.value = "ChangeOut";
+    }
+
+    row.querySelectorAll(".op-line-receipt-field").forEach((field) => {
+      const visible = type === "InventoryReceipt" || type === "Return" || (type === "Change" && section.value === "ChangeOut");
+      field.hidden = !visible;
+      field.querySelectorAll("input").forEach((input) => {
+        input.disabled = !visible && !isSale && !isBatchSelectedFlow;
+        if (!visible && !isSale && !isBatchSelectedFlow) {
+          input.value = "";
+        }
+      });
+    });
+    stockField.hidden = !isBatchSelectedFlow;
+    stockSelect.disabled = !isBatchSelectedFlow;
+    if (!isBatchSelectedFlow) {
+      stockSelect.innerHTML = `<option value="">Not required</option>`;
+    }
+
+    priceField.hidden = !isSale && !isFinancialShell;
+    bonusField.hidden = !isSale;
+    price.disabled = (!isSale && !isFinancialShell) || bonus.checked;
+    bonus.disabled = !isSale;
+    if (!isSale && !isFinancialShell) {
+      price.value = 0;
+      bonus.checked = false;
+    } else if (bonus.checked) {
+      price.value = 0;
+    }
+  });
+  if (isBatchSelectedFlow) {
+    void refreshOperationSkuAvailability();
+  } else {
+    operationAvailableSkuIds = null;
+    document.querySelectorAll(".line-editor-row").forEach((row) => {
+      populateOperationProductOptions(row);
+      populateOperationAttributeOptions(row);
+      resolveOperationLineSku(row, { preserveStock: true });
+    });
+  }
+}
+
+function refreshAllOperationStockOptions() {
+  document.querySelectorAll(".line-editor-row").forEach((row) => {
+    void refreshOperationStockOptions(row);
+  });
+}
+
+async function refreshOperationSkuAvailability() {
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const sourceId = document.getElementById("op-source")?.value;
+  if (!isOperationStockConsumingType(type) || !sourceId) {
+    operationAvailableSkuIds = null;
+    document.querySelectorAll(".line-editor-row").forEach((row) => {
+      populateOperationProductOptions(row);
+      populateOperationAttributeOptions(row);
+      resolveOperationLineSku(row);
+    });
+    refreshAllOperationStockOptions();
+    return;
+  }
+
+  try {
+    const result = await request(`/api/v1/inventory/stock-balances?locationId=${encodeURIComponent(sourceId)}&pageSize=1000`);
+    operationAvailableSkuIds = new Set((result.items || [])
+      .filter((balance) => (balance.availablePacks || 0) > 0 || (balance.availablePieces || 0) > 0)
+      .map((balance) => balance.skuId));
+  } catch {
+    operationAvailableSkuIds = null;
+  }
+
+  document.querySelectorAll(".line-editor-row").forEach((row) => {
+    const currentSkuId = row.querySelector(".op-line-sku")?.value;
+    populateOperationProductOptions(row);
+    if (currentSkuId && (!operationAvailableSkuIds || operationAvailableSkuIds.has(currentSkuId))) {
+      seedOperationLineSkuSelection(row, currentSkuId);
+    } else {
+      populateOperationAttributeOptions(row);
+      resolveOperationLineSku(row);
+    }
+  });
+  refreshAllOperationStockOptions();
+}
+
+function applyOperationEditorMode() {
+  const title = document.getElementById("operation-editor-title");
+  const hint = document.getElementById("operation-editor-hint");
+  const mode = document.getElementById("operation-editor-mode");
+  const submit = document.getElementById("operation-submit-button");
+  const revisionField = document.getElementById("op-revision-reason-field");
+  const revisionInput = document.getElementById("op-revision-reason");
+  const typeControl = document.getElementById("op-type");
+  if (!title || !hint || !mode || !submit || !typeControl) {
+    return;
+  }
+
+  if (operationsUiState.mode === "edit") {
+    title.textContent = "Edit draft";
+    hint.textContent = "Update the existing draft without changing its operation type.";
+    mode.textContent = "Draft edit";
+    submit.textContent = "Save draft changes";
+    typeControl.disabled = true;
+    if (revisionField) {
+      revisionField.hidden = true;
+    }
+    if (revisionInput) {
+      revisionInput.value = "";
+    }
+    return;
+  }
+
+  if (operationsUiState.mode === "revise") {
+    title.textContent = "Revise operation";
+    hint.textContent = "Reapply this operation with a required reason. Stock and payment effects are recalculated by the API.";
+    mode.textContent = "Revision";
+    submit.textContent = "Submit revision";
+    typeControl.disabled = true;
+    if (revisionField) {
+      revisionField.hidden = false;
+    }
+    return;
+  }
+
+  title.textContent = "Create draft";
+  hint.textContent = "Start a new operation draft.";
+  mode.textContent = "Create";
+  submit.textContent = "Save draft";
+  typeControl.disabled = false;
+  if (revisionField) {
+    revisionField.hidden = true;
+  }
+  if (revisionInput) {
+    revisionInput.value = "";
+  }
+}
+
+function resetOperationEditorMode() {
+  operationsUiState.mode = "create";
+  operationsUiState.operationId = null;
+  operationsUiState.revisionReason = "";
+  const form = document.getElementById("operation-form");
+  if (form) {
+    form.reset();
+  }
+  const lines = document.getElementById("op-lines");
+  if (lines) {
+    lines.innerHTML = "";
+    addOperationLine();
+  }
+  const typeControl = document.getElementById("op-type");
+  if (typeControl) {
+    typeControl.value = operationsUiState.operationType || "InventoryReceipt";
+  }
+  syncOperationTypeControls();
+  applyOperationEditorMode();
+}
+
+function seedOperationEditor(detail, mode) {
+  operationsUiState.mode = mode;
+  operationsUiState.operationId = detail.id;
+  operationsUiState.operationType = detail.operationType;
+  const form = document.getElementById("operation-form");
+  if (!form) {
+    return;
+  }
+
+  form.reset();
+  document.getElementById("op-type").value = detail.operationType;
+  syncOperationTypeControls();
+  document.getElementById("op-source").value = detail.sourceLocationId || "";
+  document.getElementById("op-destination").value = detail.destinationLocationId || "";
+  const merchant = document.getElementById("op-merchant");
+  const rep = document.getElementById("op-representative");
+  const buyer = document.getElementById("op-buyer");
+  const buyerPhone = document.getElementById("op-buyer-phone");
+  const payment = document.getElementById("op-payment");
+  const notes = document.getElementById("op-notes");
+  if (merchant) {
+    merchant.value = detail.clientId || "";
+  }
+  if (rep) {
+    rep.value = detail.representativeId || "";
+  }
+  if (buyer && detail.operationType === "RetailSale" && !detail.clientId) {
+    buyer.value = detail.clientName || "";
+  }
+  if (buyerPhone) {
+    buyerPhone.value = detail.buyerPhone || "";
+  }
+  if (payment) {
+    payment.value = detail.paymentMethod || "";
+  }
+  if (notes) {
+    notes.value = detail.notes || "";
+  }
+  const supplier = document.getElementById("op-supplier");
+  const invoice = document.getElementById("op-invoice");
+  if (supplier && detail.receipt?.supplierName) {
+    supplier.value = detail.receipt.supplierName;
+  }
+  if (invoice && detail.receipt?.invoiceNumber) {
+    invoice.value = detail.receipt.invoiceNumber || "";
+  }
+
+  const lines = document.getElementById("op-lines");
+  lines.innerHTML = "";
+  (detail.lines || []).forEach((line) => addOperationLine({
+    skuId: line.skuId,
+    entryMode: line.entryMode,
+    pieceQuantity: line.entryMode === "Pieces" ? getOperationLinePrefillQuantity(line) : null,
+    packQuantity: line.entryMode === "Pieces" ? null : getOperationLinePrefillQuantity(line),
+    unitPrice: line.unitPrice,
+    isBonus: (line.bonusQuantity || 0) > 0,
+    lotNumber: line.lotNumber,
+    expiryDate: line.expiryDate,
+    section: line.section,
+    notes: line.notes
+  }));
+  if ((detail.lines || []).length === 0) {
+    addOperationLine();
+  }
+  refreshAllOperationStockOptions();
+  applyOperationEditorMode();
+}
+
+function getOperationLinePrefillQuantity(line) {
+  if (line.entryMode === "Pieces") {
+    return line.pieceQuantity ?? line.quantity ?? 1;
+  }
+
+  return line.packQuantity ?? line.quantity ?? 1;
+}
+
+async function startOperationEditorMode(operationId, mode) {
+  try {
+    const detail = await request(`/api/v1/operations/${operationId}`);
+    seedOperationEditor(detail, mode);
+    notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function refreshOperationStockOptions(row) {
+  const type = document.getElementById("op-type")?.value;
+  const select = row.querySelector(".op-line-stock-option");
+  if (!select || !isOperationBatchSelectionType(type)) {
+    return;
+  }
+
+  const sourceId = document.getElementById("op-source")?.value;
+  const skuId = row.querySelector(".op-line-sku")?.value;
+  const entryMode = type === "RetailSale" ? row.querySelector(".op-line-entry-mode").value : "Packs";
+  const current = encodeStockOption({
+    lotNumber: row.querySelector(".op-line-lot").value || null,
+    expiryDate: row.querySelector(".op-line-expiry").value || null
+  });
+
+  if (!sourceId || !skuId) {
+    select.innerHTML = `<option value="">Select source and SKU</option>`;
+    return;
+  }
+
+  select.innerHTML = `<option value="">Loading stock...</option>`;
+  try {
+    const options = await request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(sourceId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}`);
+    if (!options.length) {
+      select.innerHTML = `<option value="">No non-expired stock</option>`;
+      row.querySelector(".op-line-lot").value = "";
+      row.querySelector(".op-line-expiry").value = "";
+      return;
+    }
+
+    select.innerHTML = `<option value="">Select batch / expiry</option>${options.map((option) => {
+      const value = encodeStockOption(option);
+      const quantity = entryMode === "Pieces" && option.pieceQuantity != null
+        ? `${option.pieceQuantity} pieces`
+        : `${option.packQuantity} packs`;
+      const loose = entryMode === "Pieces" && option.loosePieceQuantity > 0 ? `, ${option.loosePieceQuantity} loose` : "";
+      return `<option value="${escapeHtml(value)}">${escapeHtml(`${option.expiryDate || "No expiry"} / ${option.lotNumber || "No lot"} / ${quantity}${loose}`)}</option>`;
+    }).join("")}`;
+    if (current && Array.from(select.options).some((option) => option.value === current)) {
+      select.value = current;
+    } else {
+      row.querySelector(".op-line-lot").value = "";
+      row.querySelector(".op-line-expiry").value = "";
+    }
+  } catch (exception) {
+    select.innerHTML = `<option value="">Failed to load stock</option>`;
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function applySelectedStockOption(row) {
+  const select = row.querySelector(".op-line-stock-option");
+  if (!select?.value) {
+    row.querySelector(".op-line-lot").value = "";
+    row.querySelector(".op-line-expiry").value = "";
+    return;
+  }
+
+  try {
+    const option = JSON.parse(decodeURIComponent(select.value));
+    row.querySelector(".op-line-lot").value = option.lotNumber || "";
+    row.querySelector(".op-line-expiry").value = option.expiryDate || "";
+  } catch {
+    row.querySelector(".op-line-lot").value = "";
+    row.querySelector(".op-line-expiry").value = "";
+  }
+}
+
+function encodeStockOption(option) {
+  if (!option || (!option.lotNumber && !option.expiryDate)) {
+    return "";
+  }
+
+  return encodeURIComponent(JSON.stringify({
+    lotNumber: option.lotNumber || null,
+    expiryDate: option.expiryDate || null
+  }));
+}
+
+async function loadOperations() {
+  const tbody = document.getElementById("operation-rows");
+  const count = document.getElementById("operation-count");
+  const auth = getAuth();
+  const canWrite = ["Admin", "WarehouseClerk"].includes(auth?.user.role);
+  try {
+    const result = await request("/api/v1/operations?pageSize=50");
+    const showCompleted = document.getElementById("operations-show-completed")?.checked;
+    const items = showCompleted
+      ? result.items
+      : result.items.filter((operation) => !["Received", "Completed", "Confirmed", "Cancelled"].includes(operation.status));
+    count.textContent = showCompleted ? `${result.totalCount} operations` : `${items.length} active`;
+    tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">No active operations.</td></tr>` : items.map((operation) => `
+      <tr>
+        <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
+        <td>${escapeHtml(operation.operationType)}</td>
+        <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operation.status)}</span></td>
+        <td>${escapeHtml(formatOperationRoute(operation))}</td>
+        <td>${escapeHtml(formatDateTime(operation.createdAt))}</td>
+        <td>${renderOperationActions(operation, canWrite)}</td>
+      </tr>
+      <tr class="operation-detail-row" id="operation-detail-${escapeHtml(operation.id)}" hidden><td colspan="6"><div class="operation-detail">Loading</div></td></tr>`).join("");
+    tbody.querySelectorAll("[data-op-toggle]").forEach((button) => button.addEventListener("click", () => toggleOperationDetails(button.dataset.opId, button)));
+    tbody.querySelectorAll("[data-op-action]").forEach((button) => button.addEventListener("click", () => runOperationAction(button.dataset.opAction, button.dataset.opId, button)));
+    tbody.querySelectorAll("[data-op-edit]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opEdit, "edit")));
+    tbody.querySelectorAll("[data-op-revise]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opRevise, "revise")));
+    for (const operationId of operationsUiState.openDetailIds) {
+      const toggle = tbody.querySelector(`[data-op-toggle][data-op-id="${operationId}"]`);
+      if (toggle) {
+        // eslint-disable-next-line no-await-in-loop
+        await toggleOperationDetails(operationId, toggle, true);
+      }
+    }
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function submitOperationEditor(event) {
+  event.preventDefault();
+  const type = document.getElementById("op-type").value;
+  const lines = readOperationLines(type);
+  const validationMessage = validateOperationForm(type, lines);
+  if (validationMessage) {
+    notice(validationMessage, "error");
+    return;
+  }
+  const payloadLines = lines.map(({ stockOptionSelected, ...line }) => line);
+
+  const body = {
+    operationType: type,
+    sourceLocationId: document.getElementById("op-source").value || null,
+    destinationLocationId: document.getElementById("op-destination").value || null,
+    merchantId: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? document.getElementById("op-merchant").value || null : null,
+    representativeId: type === "Reserve" ? document.getElementById("op-representative").value || null : null,
+    buyerName: type === "RetailSale" ? document.getElementById("op-buyer").value || null : null,
+    buyerPhone: type === "RetailSale" ? document.getElementById("op-buyer-phone").value || null : null,
+    paymentMethod: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? canonicalSelectValue("op-payment") || null : null,
+    notes: document.getElementById("op-notes").value || null,
+    receipt: type === "InventoryReceipt" ? { supplierName: document.getElementById("op-supplier").value || "Supplier", invoiceNumber: document.getElementById("op-invoice").value || null } : null,
+    lines: payloadLines
+  };
+
+  try {
+    if (operationsUiState.mode === "edit" && operationsUiState.operationId) {
+      await request(`/api/v1/operations/${operationsUiState.operationId}`, { method: "PUT", body: JSON.stringify(body) });
+      notice("Draft updated.", "success");
+    } else if (operationsUiState.mode === "revise" && operationsUiState.operationId) {
+      const reason = document.getElementById("op-revision-reason").value?.trim();
+      if (!reason) {
+        notice("Revision reason is required.", "error");
+        return;
+      }
+      await request(`/api/v1/operations/${operationsUiState.operationId}/revise`, {
+        method: "POST",
+        body: JSON.stringify({ operation: body, reason })
+      });
+      notice("Operation revised.", "success");
+    } else {
+      await request("/api/v1/operations", { method: "POST", body: JSON.stringify(body) });
+      notice("Draft saved.", "success");
+    }
+    resetOperationEditorMode();
+    await loadOperations();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function readOperationLines(type) {
+  return Array.from(document.querySelectorAll(".line-editor-row")).map((row) => ({
+    skuId: row.querySelector(".op-line-sku").value,
+    packQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? 0 : Number(row.querySelector(".op-line-qty").value),
+    pieceQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? Number(row.querySelector(".op-line-qty").value) : null,
+    entryMode: type === "RetailSale" ? canonicalSystemValue(row.querySelector(".op-line-entry-mode").value) : "Packs",
+    section: type === "Change" ? canonicalSystemValue(row.querySelector(".op-line-section").value) : null,
+    unitPrice: row.querySelector(".op-line-bonus").checked ? 0 : Number(row.querySelector(".op-line-price").value || 0),
+    isBonus: ["WholesaleSale", "RetailSale"].includes(type) ? row.querySelector(".op-line-bonus").checked : false,
+    stockOptionSelected: isOperationBatchSelectionType(type) ? Boolean(row.querySelector(".op-line-stock-option").value) : false,
+    expiryDate: isOperationBatchSelectionType(type) || type === "InventoryReceipt" || type === "Return" || (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut") ? row.querySelector(".op-line-expiry").value || null : null,
+    lotNumber: isOperationBatchSelectionType(type) || type === "InventoryReceipt" || type === "Return" || (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut") ? row.querySelector(".op-line-lot").value || null : null,
+    notes: null
+  }));
+}
+
+function validateOperationForm(type, lines) {
+  const source = document.getElementById("op-source").value;
+  const destination = document.getElementById("op-destination").value;
+  const main = operationLocations.find((location) => location.locationType === "MainWarehouse");
+
+  if (lines.length === 0) {
+    return "Add at least one operation line.";
+  }
+  if (lines.some((line) => !line.skuId)) {
+    return "Select a SKU for every line.";
+  }
+  if (new Set(lines.map((line) => operationLineUniquenessKey(type, line))).size !== lines.length) {
+    return "Each SKU can appear once per side. Sales may use one paid line and one bonus line for the same SKU.";
+  }
+  if (lines.some((line) => {
+    const quantity = line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity;
+    return !Number.isInteger(quantity) || quantity < 1;
+  })) {
+    return "Every pack quantity must be a whole number greater than zero.";
+  }
+  if (!main) {
+    return "MainWarehouse must exist before operations can be created.";
+  }
+  if (type === "InventoryReceipt" && destination !== main.id) {
+    return "Inventory receipt destination must be MainWarehouse.";
+  }
+  if (type === "InventoryReceipt" && lines.some((line) => {
+    const sku = operationSkuOptions.find((value) => value.id === line.skuId);
+    const product = operationProductOptions.find((value) => value.id === sku?.productId);
+    return product?.expiryType === "Batch" && !line.expiryDate;
+  })) {
+    return "Batch expiry is required for products with batch expiry tracking.";
+  }
+  if (type === "WarehouseTransfer" && (source !== main.id || !destination || destination === main.id)) {
+    return "Warehouse transfer must move packs from MainWarehouse to a non-main destination.";
+  }
+  if (isOperationStockConsumingType(type) && !source) {
+    return "Select a source location before choosing stock.";
+  }
+  if (type === "WholesaleSale" && !document.getElementById("op-merchant").value) {
+    return "Wholesale sale requires a merchant.";
+  }
+  if (["WholesaleSale", "RetailSale"].includes(type) && lines.some((line) => !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0))) {
+    return "Sale line unit price must be greater than zero unless the line is marked as bonus.";
+  }
+  if (isOperationBatchSelectionType(type) && lines.some((line) => !line.stockOptionSelected || !line.expiryDate)) {
+    return "Select a batch / expiry for every stock-consuming line.";
+  }
+  if (type === "RetailSale" && ["Installment"].includes(canonicalSelectValue("op-payment")) && !document.getElementById("op-merchant").value) {
+    return "Retail installment sales require a registered merchant.";
+  }
+  if (type === "Reserve" && !document.getElementById("op-representative").value) {
+    return "Reserve requires a representative.";
+  }
+  if (type === "Return" && !document.getElementById("op-merchant").value) {
+    return "Return requires a merchant.";
+  }
+  if (type === "Return" && lines.some((line) => !line.expiryDate)) {
+    return "Return lines must include batch expiry.";
+  }
+  if (type === "Change") {
+    if (!document.getElementById("op-merchant").value) {
+      return "Change requires a merchant.";
+    }
+    if (!lines.some((line) => line.section === "ChangeOut") || !lines.some((line) => line.section === "ChangeIn")) {
+      return "Change needs at least one returned line and one replacement line.";
+    }
+    if (lines.some((line) => line.section === "ChangeOut" && !line.expiryDate)) {
+      return "Returned change lines must include batch expiry.";
+    }
+  }
+
+  return "";
+}
+
+function operationLineUniquenessKey(type, line) {
+  const section = type === "Change" ? line.section || "ChangeOut" : "Standard";
+  const bonus = ["WholesaleSale", "RetailSale"].includes(type) && line.isBonus === true ? "Bonus" : "Paid";
+  return `${line.skuId}:${section}:${bonus}:${line.entryMode}:${line.lotNumber || ""}:${line.expiryDate || ""}`;
+}
+
+function renderOperationActions(operation, canWrite) {
+  const detailButton = `<button class="button secondary table-action" type="button" data-op-toggle="details" data-op-id="${escapeHtml(operation.id)}">Details</button>`;
+  if (!canWrite) {
+    return detailButton;
+  }
+  const actions = [];
+  if (operation.status === "Draft") {
+    actions.push(["edit-draft", "Edit"]);
+  } else if (getAuth()?.user?.role === "Admin" && operation.status !== "Cancelled") {
+    actions.push(["revise", "Revise"]);
+  }
+  const shippingOperationTypes = ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve"];
+  if (operation.status === "Draft") {
+    actions.push(["confirm", "Confirm"], ["cancel", "Cancel"]);
+  } else if (shippingOperationTypes.includes(operation.operationType) && operation.status === "Reserved") {
+    actions.push(["ship", "Ship"], [operation.operationType === "WholesaleSale" || operation.operationType === "RetailSale" ? "complete" : "receive", operation.operationType === "WarehouseTransfer" ? "Receive" : "Complete"], ["cancel", "Cancel"]);
+  } else if (shippingOperationTypes.includes(operation.operationType) && operation.status === "Shipped") {
+    actions.push([operation.operationType === "WholesaleSale" || operation.operationType === "RetailSale" ? "complete" : "receive", operation.operationType === "WarehouseTransfer" ? "Receive" : "Complete"]);
+  }
+
+  return actions.length === 0
+    ? detailButton
+    : `${detailButton} ${actions.map(([action, label]) => {
+      if (action === "edit-draft") {
+        return `<button class="button secondary table-action" type="button" data-op-edit="${escapeHtml(operation.id)}">${label}</button>`;
+      }
+      if (action === "revise") {
+        return `<button class="button secondary table-action" type="button" data-op-revise="${escapeHtml(operation.id)}">${label}</button>`;
+      }
+      return `<button class="button secondary table-action" type="button" data-op-action="${action}" data-op-id="${escapeHtml(operation.id)}">${label}</button>`;
+    }).join(" ")}`;
+}
+
+async function toggleOperationDetails(operationId, button, forceOpen = false) {
+  const row = document.getElementById(`operation-detail-${operationId}`);
+  if (!row) {
+    return;
+  }
+
+  if (!row.hidden && !forceOpen) {
+    row.hidden = true;
+    button.textContent = "Details";
+    operationsUiState.openDetailIds = operationsUiState.openDetailIds.filter((value) => value !== operationId);
+    return;
+  }
+
+  row.hidden = false;
+  button.textContent = "Hide";
+  if (!operationsUiState.openDetailIds.includes(operationId)) {
+    operationsUiState.openDetailIds.push(operationId);
+  }
+  const target = row.querySelector(".operation-detail");
+  if (target.dataset.loaded === "true") {
+    return;
+  }
+
+  target.innerHTML = `<span class="muted-text">Loading operation details...</span>`;
+  try {
+    const detail = await request(`/api/v1/operations/${operationId}`);
+    target.innerHTML = renderOperationDetail(detail);
+    target.dataset.loaded = "true";
+  } catch (exception) {
+    target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
+  }
+}
+
+function renderOperationDetail(detail) {
+  const lines = detail.lines || [];
+  const allocations = dedupeOperationAllocations(detail.allocations || []);
+  const warnings = detail.warnings || [];
+  const versions = detail.versions || [];
+  return `
+    <div class="operation-detail-grid">
+      <div class="metric"><span>Operation code</span><strong>${escapeHtml(detail.operationNumber)}</strong></div>
+      <div class="metric"><span>Status</span><strong>${escapeHtml(detail.status)}</strong></div>
+      <div class="metric"><span>Type</span><strong>${escapeHtml(detail.operationType)}</strong></div>
+      <div class="metric"><span>Created</span><strong>${escapeHtml(formatDateTime(detail.createdAt))}</strong></div>
+      <div class="metric"><span>Confirmed</span><strong>${escapeHtml(formatDateTime(detail.confirmedAt) || "-")}</strong></div>
+      <div class="metric"><span>Created by</span><strong>${escapeHtml(detail.createdByName || detail.createdBy || "-")}</strong></div>
+      <div class="metric"><span>Confirmed by</span><strong>${escapeHtml(detail.confirmedByName || detail.confirmedBy || "-")}</strong></div>
+      <div class="metric"><span>Last edited by</span><strong>${escapeHtml(detail.lastEditedByName || "-")}</strong></div>
+      <div class="metric"><span>Route</span><strong>${escapeHtml(formatOperationRoute(detail))}</strong></div>
+      <div class="metric"><span>Merchant / buyer</span><strong>${escapeHtml(detail.clientName || "-")}</strong></div>
+      <div class="metric"><span>Representative</span><strong>${escapeHtml(detail.representativeName || "-")}</strong></div>
+      <div class="metric"><span>Payment</span><strong>${escapeHtml(detail.paymentMethod || "-")}</strong></div>
+      <div class="metric"><span>Current version</span><strong>${escapeHtml(detail.currentVersionNumber || "-")}</strong></div>
+    </div>
+    ${detail.notes ? `<p class="muted-text">${escapeHtml(detail.notes)}</p>` : ""}
+    ${warnings.length ? `<div class="warning-panel"><strong>Eligibility warning: review before confirming</strong>${warnings.map((warning) => `
+      <div>
+        <strong>${escapeHtml(warning.skuCode || warning.skuId)}</strong>
+        <span>${escapeHtml(warning.message)}</span>
+        <span class="muted-cell">Lot ${escapeHtml(warning.lotNumber || "-")} / Expiry ${escapeHtml(warning.expiryDate || "-")} / Requested ${escapeHtml(warning.requestedQuantity)} / Eligible ${escapeHtml(warning.eligibleQuantity)}</span>
+      </div>`).join("")}</div>` : ""}
+    <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Side</th><th>Quantity</th><th>Bonus</th><th>Unit price</th><th>Total</th><th>Lot</th><th>Batch expiry</th><th>Notes</th></tr></thead><tbody>${lines.length === 0
+      ? `<tr><td colspan="10">No lines.</td></tr>`
+      : lines.map((line) => `<tr>
+          <td><strong>${escapeHtml(line.skuCode)}</strong></td>
+          <td>${escapeHtml(line.productName)}</td>
+          <td>${escapeHtml(formatOperationLineSection(line.section))}</td>
+          <td>${escapeHtml(line.quantity)} ${escapeHtml(line.entryMode || "Packs")}</td>
+          <td>${line.bonusQuantity ? `<span class="status-pill status-warn">${escapeHtml(line.bonusQuantity)}</span>` : "-"}</td>
+          <td>${escapeHtml(formatMoney(line.unitPrice || 0))}</td>
+          <td>${escapeHtml(formatMoney(line.lineTotal || 0))}</td>
+          <td>${escapeHtml(line.lotNumber || "-")}</td>
+          <td>${line.expiryDate ? expiryBadge(line.expiryDate) : `<span class="status-pill status-muted">-</span>`}</td>
+          <td>${escapeHtml(line.notes || "-")}</td>
+        </tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>Allocated SKU</th><th>Quantity</th><th>Lot</th><th>Batch expiry</th></tr></thead><tbody>${allocations.length === 0
+      ? `<tr><td colspan="4">No batch allocation snapshot.</td></tr>`
+      : allocations.map((allocation) => `<tr>
+          <td><strong>${escapeHtml(allocation.skuCode || allocation.skuId)}</strong>${allocation.productName ? `<span class="muted-cell"> / ${escapeHtml(allocation.productName)}</span>` : ""}</td>
+          <td>${escapeHtml(allocation.quantity)} pack(s)</td>
+          <td>${escapeHtml(allocation.lotNumber || "-")}</td>
+          <td>${allocation.expiryDate ? expiryBadge(allocation.expiryDate) : `<span class="status-pill status-muted">No expiry</span>`}</td>
+        </tr>`).join("")}</tbody></table></div>
+    <div class="operation-version-list">${versions.length === 0
+      ? `<span class="muted-text">No versions.</span>`
+      : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} · ${escapeHtml(formatDateTime(version.editedAt))} · ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
+}
+
+function formatOperationLineSection(section) {
+  if (section === "ChangeOut") {
+    return "Returned";
+  }
+  if (section === "ChangeIn") {
+    return "Replacement";
+  }
+  return "-";
+}
+
+function dedupeOperationAllocations(allocations) {
+  const grouped = new Map();
+  for (const allocation of allocations) {
+    const key = `${allocation.skuId || ""}:${allocation.batchId || ""}:${allocation.lotNumber || ""}:${allocation.expiryDate || ""}`;
+    const current = grouped.get(key);
+    if (current) {
+      current.quantity += Number(allocation.quantity || 0);
+      continue;
+    }
+    grouped.set(key, { ...allocation, quantity: Number(allocation.quantity || 0) });
+  }
+  return Array.from(grouped.values()).filter((allocation) => allocation.quantity > 0);
+}
+
+function operationStatusClass(status) {
+  if (status === "Received" || status === "Completed" || status === "Confirmed") {
+    return "status-ok";
+  }
+  if (status === "Cancelled") {
+    return "status-muted";
+  }
+  if (status === "Reserved" || status === "Shipped") {
+    return "status-warn";
+  }
+  return "status-muted";
+}
+
+function formatOperationRoute(operation) {
+  if (operation.operationType === "InventoryReceipt") {
+    return `External -> ${operation.destinationLocationName || "MainWarehouse"}`;
+  }
+  return `${operation.sourceLocationName || "MainWarehouse"} -> ${operation.destinationLocationName || "-"}`;
+}
+
+async function runOperationAction(action, operationId, button, options = {}) {
+  return withMutationGuard(`operation:${operationId}:${action}`, button, async () => {
+    const previousLabel = button?.textContent;
+    if (button) {
+      button.textContent = "Working";
+    }
+
+    try {
+      if (action === "confirm" && !options.body?.overrideEligibilityWarnings) {
+        const canContinue = await confirmEligibilityWarningsBeforeAction(operationId);
+        if (!canContinue) {
+          notice("Confirmation cancelled. The operation is still a draft.", "info");
+          await loadOperations();
+          return;
+        }
+        options.body = { ...(options.body || {}), overrideEligibilityWarnings: true };
+      }
+
+      const overrideQuery = options.body?.overrideEligibilityWarnings ? "?overrideEligibilityWarnings=true" : "";
+      await request(`/api/v1/operations/${operationId}/${action}${overrideQuery}`, {
+        method: "POST",
+        body: options.body ? JSON.stringify(options.body) : undefined
+      });
+      notice(`Operation ${action} completed.`, "success");
+      await Promise.all([
+        loadOperations(),
+        currentPath() === "/inventory" ? refreshInventoryTables() : Promise.resolve()
+      ]);
+    } catch (exception) {
+      if (action === "confirm" && exception.status === 409) {
+        const gate = parseJsonError(exception);
+        if (gate?.warnings?.length) {
+          if (await showEligibilityGateDialog(gate)) {
+            await runOperationAction(action, operationId, button, { body: { overrideEligibilityWarnings: true } });
+            return;
+          }
+          notice("Confirmation cancelled. The operation is still a draft.", "info");
+          await loadOperations();
+          return;
+        }
+      }
+      notice(getFriendlyWorkspaceError(exception), "error");
+      await loadOperations();
+    } finally {
+      if (button && previousLabel) {
+        button.textContent = previousLabel;
+      }
+    }
+  });
+}
+
+async function confirmEligibilityWarningsBeforeAction(operationId) {
+  const detail = await request(`/api/v1/operations/${operationId}`);
+  if (!["Return", "Change"].includes(detail.operationType)) {
+    return true;
+  }
+
+  const warnings = detail.warnings || [];
+  if (warnings.length === 0) {
+    return true;
+  }
+
+  return showEligibilityGateDialog({
+    title: "Return/change eligibility warning",
+    detail: "This operation contains returned SKU, lot, or expiry quantities that exceed this merchant's sale eligibility. Review carefully before confirming.",
+    warnings
+  });
+}
+
+function parseJsonError(exception) {
+  try {
+    return JSON.parse(exception.message || "{}");
+  } catch {
+    return null;
+  }
+}
+
+function showEligibilityGateDialog(gate) {
+  const rows = (gate.warnings || []).map((warning) => `
+    <tr>
+      <td><strong>${escapeHtml(warning.skuCode || shortId(warning.skuId))}</strong><span class="muted-cell">${escapeHtml(warning.productName || "")}</span></td>
+      <td>${escapeHtml(warning.lotNumber || "No lot")}</td>
+      <td>${escapeHtml(warning.expiryDate || "No expiry")}</td>
+      <td>${escapeHtml(warning.requestedQuantity)}</td>
+      <td>${escapeHtml(warning.eligibleQuantity)}</td>
+      <td>${escapeHtml(warning.message)}</td>
+    </tr>`).join("");
+  return confirmDialog({
+    title: gate.title || "Eligibility warning",
+    message: gate.detail || "This return/change exceeds the merchant eligibility ledger.",
+    confirmLabel: "Confirm anyway",
+    cancelLabel: "Keep as draft",
+    tone: "warning",
+    bodyHtml: `
+      <div class="eligibility-dialog-note">
+        This exception will be recorded as a business decision. Check the SKU, lot, and batch expiry before continuing.
+      </div>
+      <div class="table-wrap compact-table eligibility-dialog-table">
+        <table>
+          <thead><tr><th>SKU</th><th>Lot</th><th>Batch expiry</th><th>Requested</th><th>Eligible</th><th>Reason</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`
+  });
+}
+
+async function renderPayments() {
+  const auth = getAuth();
+  const isAdmin = auth?.user.role === "Admin";
+  const canDraft = ["Admin", "Accountant"].includes(auth?.user.role);
+  const merchants = await loadPaymentMerchants();
+  paymentMerchants = merchants;
+  paymentAccountants = isAdmin ? await loadPaymentAccountants() : [];
+  const accountantOptions = paymentAccountants.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName || user.username)} (${escapeHtml(user.username)})</option>`).join("");
+  document.getElementById("view").innerHTML = `
+    <section class="band">
+      <div class="section-head">
+        <div><h2>Payments and remaining</h2><p>Total sales, actual collected money, and remaining / owe amounts stay visible across all registered and anonymous buyer sales.</p></div>
+        <span id="payment-count" class="status-pill status-muted">Loading</span>
+      </div>
+      <div class="toolbar">
+        <button id="payments-refresh" class="button secondary" type="button">Refresh</button>
+        ${isAdmin ? `<select id="payment-accountant" class="select"><option value="">Assign to accountant...</option>${accountantOptions}</select>` : ""}
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Payment</th><th>Buyer</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody id="payment-rows"><tr><td colspan="9">Loading payments</td></tr></tbody></table></div>
+    </section>
+    <section class="band">
+      <div class="section-head">
+        <div><h2>Payment history</h2><p>Review every payment-related record created across the system, including opening logs, installment actions, cash records, approvals, refunds, and financial adjustments.</p></div>
+        <span id="payment-history-count" class="status-pill status-muted">Loading</span>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Updated</th><th>Payment</th><th>Buyer / merchant</th><th>Operation</th><th>Method</th><th>Total</th><th>Status</th><th>Actor</th><th>Stages</th></tr></thead><tbody id="payment-history-rows"><tr><td colspan="9">Loading history</td></tr></tbody></table></div>
+    </section>
+    ${canDraft ? `
+      <section class="band">
+        <h2>Draft payment entry</h2>
+        <form id="payment-sublog-form" class="form grid-form">
+          <div class="field"><label for="payment-log-id">Payment log reference</label><input id="payment-log-id" class="input" required></div>
+          <div class="field"><label for="payment-amount">Amount</label><input id="payment-amount" class="input" type="number" min="0.00" step="0.01" value="0"></div>
+          <div class="field"><label for="payment-method">Method</label><select id="payment-method" class="select"><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option><option value="CashHandToHand">Cash hand to hand</option></select></div>
+          <div class="field"><label for="payment-date">Date received</label><input id="payment-date" class="input" type="date"></div>
+          <div class="field full-span"><label for="payment-notes">Notes</label><input id="payment-notes" class="input"></div>
+          <button class="button" type="submit">Draft sub-log</button>
+        </form>
+      </section>` : ""}
+    ${isAdmin ? `
+      <section class="band">
+        <h2>Cash / refund record</h2>
+        <form id="cash-record-form" class="form grid-form">
+          <div class="field"><label for="cash-operation-id">Operation reference</label><input id="cash-operation-id" class="input" required></div>
+          <div class="field"><label for="cash-type">Type</label><select id="cash-type" class="select"><option value="CashReceived">Cash received</option><option value="CashRefund">Cash refund</option></select></div>
+          <div class="field"><label for="cash-amount">Amount</label><input id="cash-amount" class="input" type="number" min="0.01" step="0.01" required></div>
+          <div class="field full-span"><label for="cash-notes">Notes</label><input id="cash-notes" class="input"></div>
+          <button class="button" type="submit">Record cash</button>
+        </form>
+      </section>
+      <section class="band">
+        <h2>Financial adjustment</h2>
+        <p class="muted-text">Use for return/change outcomes that become merchant credit, remaining reduction, or cash refund.</p>
+        <form id="financial-adjustment-form" class="form grid-form">
+          <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
+          <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
+          <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="MerchantCredit">Merchant credit</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
+          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required for cash refund"></div>
+          <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
+          <div class="field full-span"><label for="adjustment-notes">Notes</label><input id="adjustment-notes" class="input"></div>
+          <button class="button" type="submit">Save adjustment</button>
+        </form>
+      </section>` : ""}
+    <section class="band">
+      <div class="section-head"><h2>Merchant remaining</h2><span id="merchant-balance-status" class="muted-text">Select a merchant</span></div>
+      <div class="toolbar"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><button id="load-merchant-balance" class="button secondary" type="button">Load remaining</button></div>
+      <div id="merchant-balance-panel" class="detail-grid"></div>
+    </section>`;
+
+  document.getElementById("payments-refresh").addEventListener("click", () => Promise.all([loadPayments(), loadPaymentHistory()]));
+  document.getElementById("payment-sublog-form")?.addEventListener("submit", draftPaymentSubLog);
+  document.getElementById("cash-record-form")?.addEventListener("submit", createCashRecord);
+  document.getElementById("financial-adjustment-form")?.addEventListener("submit", createFinancialAdjustment);
+  document.getElementById("load-merchant-balance").addEventListener("click", loadMerchantBalance);
+  await Promise.all([loadPayments(), loadPaymentHistory()]);
+}
+
+async function loadPaymentMerchants() {
+  try {
+    const merchants = await request("/api/v1/crm/merchants?includeInactive=true&pageSize=200");
+    return merchants.items || [];
+  } catch {
+    return [];
+  }
+}
+
+async function loadPaymentAccountants() {
+  try {
+    const users = await request("/api/v1/users");
+    return users.filter((user) => user.role === "Accountant" && user.isActive);
+  } catch {
+    return [];
+  }
+}
+
+async function loadPayments() {
+  const tbody = document.getElementById("payment-rows");
+  const count = document.getElementById("payment-count");
+  if (!tbody || !count) {
+    return;
+  }
+  const auth = getAuth();
+  const isAdmin = auth?.user.role === "Admin";
+  const isAccountant = auth?.user.role === "Accountant";
+  const canDraft = ["Admin", "Accountant"].includes(auth?.user.role);
+  try {
+    let result;
+    try {
+      result = await request("/api/v1/payments?pageSize=50");
+    } catch (firstError) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      result = await request("/api/v1/payments?pageSize=50");
+    }
+    const queueItems = (result.items || []).filter((log) =>
+      ["Installment", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
+      ["PendingAdmin", "PendingAccountant", "PendingAdminReview"].includes(log.status));
+    count.textContent = `${queueItems.length} open confirmation${queueItems.length === 1 ? "" : "s"}`;
+    tbody.innerHTML = queueItems.length === 0
+      ? `<tr><td colspan="9">No payment confirmations are waiting.</td></tr>`
+      : queueItems.map((log) => `
+        <tr>
+          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}">Use</button>` : ""}<strong>${escapeHtml(shortId(log.id))}</strong></td>
+          <td><strong>${escapeHtml(log.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(log.merchantId))}</div></td>
+          <td><strong>${escapeHtml(log.operationNumber || shortId(log.operationId))}</strong><div class="muted-cell">${escapeHtml(log.operationType || "-")}</div></td>
+          <td>${escapeHtml(log.paymentMethod)}</td>
+          <td>${escapeHtml(formatMoney(log.totalAmount))}</td>
+          <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
+          <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
+          <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(log.status)}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
+        </tr>
+        <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
+    tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
+      const logInput = document.getElementById("payment-log-id");
+      if (logInput) {
+        logInput.value = button.dataset.paymentUse;
+      }
+    }));
+    tbody.querySelectorAll("[data-payment-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentDetails(button.dataset.paymentDetail, button)));
+    tbody.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", () => assignPaymentLog(button.dataset.paymentAssign)));
+    tbody.querySelectorAll("[data-cash-approve]").forEach((button) => button.addEventListener("click", () => approveCashReceipt(button.dataset.cashApprove)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function loadPaymentHistory() {
+  const tbody = document.getElementById("payment-history-rows");
+  const count = document.getElementById("payment-history-count");
+  if (!tbody || !count) {
+    return;
+  }
+
+  try {
+    const result = await request("/api/v1/payments?pageSize=200");
+    paymentHistoryRows = result.items || [];
+    count.textContent = `${paymentHistoryRows.length} record${paymentHistoryRows.length === 1 ? "" : "s"}`;
+    tbody.innerHTML = paymentHistoryRows.length === 0
+      ? `<tr><td colspan="9">No payment history yet.</td></tr>`
+      : paymentHistoryRows.map((row) => `
+        <tr>
+          <td>${escapeHtml(formatDateTime(row.lastModifiedAt))}</td>
+          <td><strong>${escapeHtml(shortId(row.id))}</strong><div class="muted-cell">${escapeHtml(row.status || "-")}</div></td>
+          <td><strong>${escapeHtml(row.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(row.merchantId))}</div></td>
+          <td><strong>${escapeHtml(row.operationNumber || shortId(row.operationId))}</strong><div class="muted-cell">${escapeHtml(row.operationType || "-")}</div></td>
+          <td>${escapeHtml(row.paymentMethod || "-")}</td>
+          <td>${escapeHtml(formatMoney(row.totalAmount))}</td>
+          <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(row.status || "-")}</span></td>
+          <td>${escapeHtml(row.lastModifiedByName || row.initializedByName || "-")}</td>
+          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button></td>
+        </tr>
+        <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
+    tbody.querySelectorAll("[data-payment-history-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentHistoryDetails(button.dataset.paymentHistoryDetail, button)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+function paymentHistoryStatusClass(status) {
+  if (status === "Completed" || status === "Confirmed") {
+    return "status-ok";
+  }
+  if (status === "Rejected" || status === "Cancelled") {
+    return "status-muted";
+  }
+  return "status-warn";
+}
+
+async function togglePaymentDetails(id, button) {
+  const row = document.getElementById(`payment-detail-${id}`);
+  if (!row) {
+    return;
+  }
+  if (!row.hidden) {
+    row.hidden = true;
+    button.textContent = "Details";
+    return;
+  }
+  row.hidden = false;
+  button.textContent = "Hide";
+  const target = row.querySelector(".operation-detail");
+  target.innerHTML = `<span class="muted-text">Loading payment details...</span>`;
+  try {
+    const detail = await request(`/api/v1/payments/${id}`);
+    target.innerHTML = renderPaymentDetail(detail);
+    target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+  } catch (exception) {
+    target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
+  }
+}
+
+async function togglePaymentHistoryDetails(id, button) {
+  const row = document.getElementById(`payment-history-detail-${id}`);
+  if (!row) {
+    return;
+  }
+  if (!row.hidden) {
+    row.hidden = true;
+    button.textContent = "Details";
+    return;
+  }
+  row.hidden = false;
+  button.textContent = "Hide";
+  const target = row.querySelector(".operation-detail");
+  target.innerHTML = `<span class="muted-text">Loading payment details...</span>`;
+  try {
+    const detail = await request(`/api/v1/payments/${id}`);
+    target.innerHTML = renderPaymentDetail(detail);
+    target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+  } catch (exception) {
+    target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
+  }
+}
+
+function renderPaymentDetail(detail) {
+  const isAdmin = getAuth()?.user.role === "Admin";
+  const subLogs = detail.subLogs || [];
+  const cashRecords = detail.cashRecords || [];
+  const adjustments = detail.adjustments || [];
+  const stages = detail.stages || [];
+  const log = detail.log || {};
+  return `<div class="detail-stack">
+    <div class="operation-detail-grid">
+      <div class="metric"><span>Initialized by</span><strong>${escapeHtml(log.initializedByName || "-")}</strong></div>
+      <div class="metric"><span>Assigned to</span><strong>${escapeHtml(log.assignedToName || "-")}</strong></div>
+      <div class="metric"><span>Last modified by</span><strong>${escapeHtml(log.lastModifiedByName || "-")}</strong></div>
+      <div class="metric"><span>Status</span><strong>${escapeHtml(log.status || "-")}</strong></div>
+    </div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>Stage</th><th>When</th><th>Actor</th><th>Method</th><th>Amount</th><th>Status</th><th>Notes</th></tr></thead><tbody>${stages.length === 0
+    ? `<tr><td colspan="7">No stage history yet.</td></tr>`
+    : stages.map((stage) => `<tr>
+        <td>${escapeHtml(paymentStageLabel(stage.stageType))}</td>
+        <td>${escapeHtml(formatDateTime(stage.happenedAt))}</td>
+        <td>${escapeHtml(stage.actorName || "-")}</td>
+        <td>${escapeHtml(stage.paymentMethod || "-")}</td>
+        <td>${escapeHtml(formatMoney(stage.amount))}</td>
+        <td><span class="status-pill ${paymentHistoryStatusClass(stage.status)}">${escapeHtml(stage.status || "-")}</span></td>
+        <td>${escapeHtml(stage.notes || "-")}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>Amount</th><th>Method</th><th>Date</th><th>Status</th><th>Drafted</th><th>Decision</th><th>Actions</th></tr></thead><tbody>${subLogs.length === 0
+    ? `<tr><td colspan="7">No sub-logs yet.</td></tr>`
+    : subLogs.map((sub) => `<tr>
+        <td>${escapeHtml(formatMoney(sub.amount))}</td>
+        <td>${escapeHtml(sub.paymentMethod || "-")}</td>
+        <td>${escapeHtml(sub.dateReceived || "-")}</td>
+        <td><span class="status-pill ${sub.status === "Confirmed" ? "status-ok" : sub.status === "Rejected" ? "status-muted" : "status-warn"}">${escapeHtml(sub.status)}</span></td>
+        <td>${escapeHtml(formatDateTime(sub.draftedAt))}<div class="muted-cell">${escapeHtml(sub.draftedByName || "-")}</div></td>
+        <td>${escapeHtml(sub.rejectionReason || formatDateTime(sub.confirmedAt) || "-")}<div class="muted-cell">${escapeHtml(sub.confirmedByName || "-")}</div></td>
+        <td>${isAdmin && sub.status === "Draft" ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-approve="${escapeHtml(sub.id)}">Approve</button><button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-reject="${escapeHtml(sub.id)}">Reject</button>` : "-"}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>Cash record</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th></tr></thead><tbody>${cashRecords.length === 0
+    ? `<tr><td colspan="6">No cash records.</td></tr>`
+    : cashRecords.map((record) => `<tr>
+        <td>${escapeHtml(record.paymentType || "-")}<div class="muted-cell">${escapeHtml(record.subType || "-")}</div></td>
+        <td>${escapeHtml(formatMoney(record.amount))}</td>
+        <td>${escapeHtml(formatDateTime(record.paymentDate))}</td>
+        <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(record.status || "-")}</span></td>
+        <td>${escapeHtml(record.createdByName || "-")}</td>
+        <td>${escapeHtml(record.notes || "-")}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th></tr></thead><tbody>${adjustments.length === 0
+    ? `<tr><td colspan="6">No financial adjustments.</td></tr>`
+    : adjustments.map((adjustment) => `<tr>
+        <td>${escapeHtml(paymentStageLabel(adjustment.adjustmentType))}</td>
+        <td>${escapeHtml(formatMoney(adjustment.amount))}</td>
+        <td>${escapeHtml(formatDateTime(adjustment.createdAt))}</td>
+        <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(adjustment.status || "-")}</span></td>
+        <td>${escapeHtml(adjustment.createdByName || "-")}</td>
+        <td>${escapeHtml(adjustment.notes || "-")}</td>
+      </tr>`).join("")}</tbody></table></div>
+  </div>`;
+}
+
+function paymentStageLabel(stageType) {
+  const labels = {
+    PaymentLogOpened: "Payment log opened",
+    PaymentAssigned: "Assigned to accountant",
+    InstallmentDrafted: "Installment drafted",
+    InstallmentApproved: "Installment approved",
+    InstallmentRejected: "Installment rejected",
+    CashReceiptRecorded: "Cash receipt recorded",
+    CashReceiptApproved: "Cash receipt approved",
+    CashRefundRecorded: "Cash refund recorded",
+    MerchantCredit: "Merchant credit",
+    BalanceReduction: "Remaining reduction",
+    CashRefund: "Financial cash refund"
+  };
+  return labels[stageType] || stageType || "-";
+}
+
+async function draftPaymentSubLog(event) {
+  event.preventDefault();
+  const id = document.getElementById("payment-log-id").value.trim();
+  const amountValue = document.getElementById("payment-amount").value;
+  const notes = document.getElementById("payment-notes").value.trim();
+  try {
+    await request(`/api/v1/payments/${id}/sub-logs`, {
+      method: "POST",
+      body: JSON.stringify({
+        amount: amountValue === "" ? 0 : Number(amountValue),
+        paymentMethod: canonicalSelectValue("payment-method"),
+        dateReceived: document.getElementById("payment-date").value || null,
+        notes: notes || "0"
+      })
+    });
+    notice("Payment sub-log drafted.", "success");
+    event.target.reset();
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function approveSubLog(id, paymentLogId = null) {
+  try {
+    await request(`/api/v1/payments/sub-logs/${id}/approve`, { method: "POST" });
+    notice("Payment approved.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function approveCashReceipt(id) {
+  try {
+    await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/approve`, { method: "POST" });
+    notice("Cash receipt approved.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function rejectSubLog(id, paymentLogId = null) {
+  const reason = await promptDialog({
+    title: "Reject Payment Entry",
+    label: "Record the reason. Rejected entries remain visible in the log.",
+    multiline: true,
+    required: true
+  });
+  if (!reason) {
+    return;
+  }
+  try {
+    await request(`/api/v1/payments/sub-logs/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+    notice("Payment rejected.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function reopenPaymentDetail(paymentLogId) {
+  if (!paymentLogId) {
+    return;
+  }
+
+  const button = document.querySelector(`[data-payment-detail="${CSS.escape(paymentLogId)}"]`);
+  if (button) {
+    await togglePaymentDetails(paymentLogId, button);
+  }
+}
+
+async function assignPaymentLog(id) {
+  const accountantId = document.getElementById("payment-accountant")?.value || "";
+  if (!accountantId) {
+    notice("Select an accountant before assigning the payment log.", "error");
+    return;
+  }
+  try {
+    await request(`/api/v1/payments/${id}/assign`, { method: "POST", body: JSON.stringify({ accountantUserId: accountantId }) });
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    notice("Payment log moved to accountant queue.", "success");
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function createFinancialAdjustment(event) {
+  event.preventDefault();
+  clearFormError("financial-adjustment-error");
+  const adjustmentType = canonicalSelectValue("adjustment-type");
+  const operationId = document.getElementById("adjustment-operation-id").value.trim();
+  const amount = Number(document.getElementById("adjustment-amount").value);
+  if (!document.getElementById("adjustment-merchant").value || !Number.isFinite(amount) || amount <= 0) {
+    showFormError("financial-adjustment-error", "Merchant and positive amount are required.");
+    return;
+  }
+  if (adjustmentType === "CashRefund" && !operationId) {
+    showFormError("financial-adjustment-error", "Cash refund adjustments must reference an operation ID.");
+    return;
+  }
+
+  try {
+    await request("/api/v1/payments/adjustments", {
+      method: "POST",
+      body: JSON.stringify({
+        merchantId: document.getElementById("adjustment-merchant").value,
+        operationId: operationId || null,
+        adjustmentType,
+        amount,
+        notes: document.getElementById("adjustment-notes").value || null
+      })
+    });
+    notice("Financial adjustment saved.", "success");
+    event.target.reset();
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await loadMerchantBalance();
+  } catch (exception) {
+    showFormError("financial-adjustment-error", getFriendlyWorkspaceError(exception));
+  }
+}
+
+async function createCashRecord(event) {
+  event.preventDefault();
+  try {
+    await request("/api/v1/payments/cash-records", {
+      method: "POST",
+      body: JSON.stringify({
+        operationId: document.getElementById("cash-operation-id").value.trim(),
+        paymentType: canonicalSelectValue("cash-type"),
+        amount: Number(document.getElementById("cash-amount").value),
+        notes: document.getElementById("cash-notes").value || null
+      })
+    });
+    notice("Cash record saved.", "success");
+    event.target.reset();
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function loadMerchantBalance() {
+  const merchantId = document.getElementById("payment-merchant").value;
+  const status = document.getElementById("merchant-balance-status");
+  const panel = document.getElementById("merchant-balance-panel");
+  if (!merchantId) {
+    status.textContent = "Select merchant";
+    return;
+  }
+  try {
+    const balance = await request(`/api/v1/payments/merchants/${merchantId}/balance`);
+    const paymentsReceived = Number(balance.paymentsReceived || 0);
+    const cashRefunded = Number(balance.cashRefunded || 0);
+    const netCollected = paymentsReceived - cashRefunded;
+    const corrections = Number(balance.returnTotal || 0) +
+      Number(balance.merchantCredits || 0) +
+      Number(balance.balanceReductions || 0) -
+      Number(balance.changeNet || 0);
+    status.textContent = "Loaded";
+    panel.innerHTML = `
+      <div><span>Remaining</span><strong>${escapeHtml(formatMoney(balance.balance))}</strong></div>
+      <div><span>Sales</span><strong>${escapeHtml(formatMoney(balance.saleTotal))}</strong></div>
+      <div><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong></div>
+      <div><span>Returns / adjustments</span><strong>${escapeHtml(formatMoney(corrections))}</strong></div>`;
+  } catch (exception) {
+    status.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+function shortId(value) {
+  return String(value || "").slice(0, 8);
+}
+
+async function renderReports() {
+  const role = getAuth()?.user.role;
+  const canSeeStock = role !== "Accountant";
+  document.getElementById("view").innerHTML = `
+    <section class="band">
+      <div class="section-head"><div><h2>Reports and exports</h2><p class="muted-text">Download operational, inventory, payment, and statement outputs in CSV and PDF formats.</p></div><button id="reports-refresh" class="button secondary" type="button">Refresh</button></div>
+      <div class="report-grid">
+        ${canSeeStock ? `<section class="report-panel"><div class="section-head tight-head"><h3>Stock</h3><button class="button secondary table-action" type="button" data-download-report="stock.csv">CSV</button></div><div id="report-stock" class="table-wrap compact-table">Loading</div></section>` : ""}
+        <section class="report-panel"><div class="section-head tight-head"><h3>Operations</h3><button class="button secondary table-action" type="button" data-download-report="operations.csv">CSV</button></div><div id="report-operations" class="table-wrap compact-table">Loading</div></section>
+        <section class="report-panel"><div class="section-head tight-head"><h3>Payments</h3><button class="button secondary table-action" type="button" data-download-report="payments.csv">CSV</button></div><div id="report-payments" class="table-wrap compact-table">Loading</div></section>
+        <section class="report-panel"><div class="section-head tight-head"><h3>Merchant remaining</h3><button class="button secondary table-action" type="button" data-download-report="merchant-balances.csv">CSV</button></div><div id="report-balances" class="table-wrap compact-table">Loading</div></section>
+        <section class="report-panel report-download-panel">
+          <div class="section-head tight-head"><h3>Document downloads</h3><span class="muted-text">PDF</span></div>
+          <div class="download-grid">
+            <div class="field"><label for="report-operation-select">Operation bill</label><select id="report-operation-select" class="select"><option value="">Loading operations</option></select><button class="button secondary" type="button" data-pdf-report="operation-bill">Download bill</button></div>
+            <div class="field"><label for="report-payment-select">Payment receipt</label><select id="report-payment-select" class="select"><option value="">Loading payments</option></select><button class="button secondary" type="button" data-pdf-report="payment-receipt">Download receipt</button></div>
+            <div class="field"><label for="report-cash-receipt-select">Cash receive receipt</label><select id="report-cash-receipt-select" class="select"><option value="">Loading cash payments</option></select><button class="button secondary" type="button" data-pdf-report="cash-receipt">Download cash receipt</button></div>
+            <div class="field"><label for="report-merchant-select">Merchant statement</label><select id="report-merchant-select" class="select"><option value="">Loading merchants</option></select><button class="button secondary" type="button" data-pdf-report="merchant-statement">Download statement</button></div>
+            <div class="field"><label for="report-stocktake-select">Stocktake summary</label><select id="report-stocktake-select" class="select"><option value="">Loading stocktakes</option></select><button class="button secondary" type="button" data-pdf-report="stocktake-summary">Download summary</button></div>
+          </div>
+        </section>
+        <section class="report-panel"><div class="section-head tight-head"><h3>Export log</h3><span id="report-export-count" class="muted-text">Loading</span></div><div id="report-exports" class="table-wrap compact-table">Loading</div></section>
+      </div>
+    </section>`;
+
+  document.getElementById("reports-refresh").addEventListener("click", loadReports);
+  document.querySelectorAll("[data-download-report]").forEach((button) => button.addEventListener("click", () => downloadReport(button.dataset.downloadReport)));
+  document.querySelectorAll("[data-pdf-report]").forEach((button) => button.addEventListener("click", () => downloadReportPdf(button.dataset.pdfReport)));
+  await loadReports();
+}
+
+async function loadReports() {
+  const role = getAuth()?.user.role;
+  const canSeeStock = role !== "Accountant";
+  await Promise.all([
+    canSeeStock ? loadStockReport() : Promise.resolve(),
+    loadOperationsReport(),
+    loadPaymentsReport(),
+    loadMerchantBalancesReport(),
+    loadStocktakeReportOptions(),
+    loadExportLogs()
+  ]);
+  renderReportDownloadSelectors();
+}
+
+async function loadStockReport() {
+  const target = document.getElementById("report-stock");
+  if (!target) {
+    return;
+  }
+
+  try {
+    const rows = await request("/api/v1/reports/stock");
+    target.innerHTML = `<table><thead><tr><th>Location</th><th>SKU</th><th>Available</th><th>Reserved</th><th>Target</th><th>Updated</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="6">No stock rows.</td></tr>`
+      : rows.map((row) => `<tr>
+          <td>${escapeHtml(row.locationName)}</td>
+          <td><strong>${escapeHtml(row.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(row.productName || "")}</span></td>
+          <td>${escapeHtml(row.availableQty)}</td>
+          <td>${escapeHtml(Number(row.reservedInWarehouseQty || 0) + Number(row.reservedWithRepQty || 0))}</td>
+          <td>${escapeHtml(row.targetQty ?? "-")}</td>
+          <td>${escapeHtml(formatDateTime(row.lastUpdated))}</td>
+        </tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadOperationsReport() {
+  const target = document.getElementById("report-operations");
+  try {
+    const rows = await request("/api/v1/reports/operations");
+    reportOperationRows = rows;
+    target.innerHTML = `<table><thead><tr><th>Operation</th><th>Type</th><th>Status</th><th>Qty</th><th>Total</th><th>Created</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="6">No operations.</td></tr>`
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.operationNumber)}</td><td>${escapeHtml(row.operationType)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.total))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadPaymentsReport() {
+  const target = document.getElementById("report-payments");
+  try {
+    const rows = await request("/api/v1/reports/payments");
+    reportPaymentRows = rows;
+    target.innerHTML = `<table><thead><tr><th>Payment</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="6">No payment logs.</td></tr>`
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(shortId(row.id))}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadMerchantBalancesReport() {
+  const target = document.getElementById("report-balances");
+  try {
+    const rows = await request("/api/v1/reports/merchant-balances");
+    reportMerchantRows = rows;
+    target.innerHTML = `<table><thead><tr><th>Merchant</th><th>Remaining</th><th>Sales</th><th>Net collected</th><th>Returns / adjustments</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="5">No merchant remaining.</td></tr>`
+      : rows.slice(0, 12).map((row) => {
+        const paymentsReceived = Number(row.paymentsReceived || 0);
+        const cashRefunded = Number(row.cashRefunded || 0);
+        const corrections = Number(row.returnTotal || 0) +
+          Number(row.merchantCredits || 0) +
+          Number(row.balanceReductions || 0) -
+          Number(row.changeNet || 0);
+        return `<tr><td>${escapeHtml(row.businessName)}</td><td>${escapeHtml(formatMoney(row.balance))}</td><td>${escapeHtml(formatMoney(row.saleTotal))}</td><td>${escapeHtml(formatMoney(paymentsReceived - cashRefunded))}</td><td>${escapeHtml(formatMoney(corrections))}</td></tr>`;
+      }).join("")}</tbody></table>`;
+  } catch (exception) {
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadStocktakeReportOptions() {
+  try {
+    const result = await request("/api/v1/stocktakes?pageSize=100");
+    reportStocktakeRows = result.items || [];
+  } catch {
+    reportStocktakeRows = [];
+  }
+}
+
+function renderReportDownloadSelectors() {
+  setReportSelect("report-operation-select", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${row.operationType} / ${row.status}`);
+  setReportSelect("report-payment-select", reportPaymentRows, (row) => row.id, (row) => `${shortId(row.id)} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
+  setReportSelect("report-cash-receipt-select", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${shortId(row.id)} / ${row.status} / ${formatMoney(row.totalAmount)}`);
+  setReportSelect("report-merchant-select", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
+  setReportSelect("report-stocktake-select", reportStocktakeRows, (row) => row.id, (row) => `${shortId(row.id)} / ${row.status} / ${formatDateTime(row.createdAt)}`);
+}
+
+function setReportSelect(id, rows, valueSelector, labelSelector) {
+  const select = document.getElementById(id);
+  if (!select) {
+    return;
+  }
+  select.innerHTML = rows.length === 0
+    ? `<option value="">No rows available</option>`
+    : `<option value="">Select...</option>${rows.map((row) => `<option value="${escapeHtml(valueSelector(row))}">${escapeHtml(labelSelector(row))}</option>`).join("")}`;
+}
+
+async function loadExportLogs() {
+  const target = document.getElementById("report-exports");
+  const count = document.getElementById("report-export-count");
+  try {
+    const result = await request("/api/v1/reports/exports?pageSize=20");
+    count.textContent = `${result.totalCount} logged`;
+    target.innerHTML = `<table><thead><tr><th>Report</th><th>Requested by</th><th>Created</th></tr></thead><tbody>${result.items.length === 0
+      ? `<tr><td colspan="3">No export logs yet.</td></tr>`
+      : result.items.map((row) => `<tr><td>${escapeHtml(row.reportType)}</td><td>${escapeHtml(row.requestedByRole ? roleLabel(row.requestedByRole) : "System")}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    count.textContent = "Failed";
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function logReportExport(reportType) {
+  try {
+    await request("/api/v1/reports/exports", { method: "POST", body: JSON.stringify({ reportType }) });
+    notice("Export intent logged.", "success");
+    await loadExportLogs();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function downloadReport(reportName) {
+  try {
+    await downloadFile(`/api/v1/reports/${reportName}`, `lensee-${reportName}`);
+    notice("Report downloaded.", "success");
+    await loadExportLogs();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function downloadReportPdf(reportType) {
+  const selectors = {
+    "operation-bill": "report-operation-select",
+    "payment-receipt": "report-payment-select",
+    "cash-receipt": "report-cash-receipt-select",
+    "merchant-statement": "report-merchant-select",
+    "stocktake-summary": "report-stocktake-select"
+  };
+  const id = document.getElementById(selectors[reportType])?.value || "";
+  if (!id) {
+    notice("Select a document row before downloading.", "error");
+    return;
+  }
+
+  const paths = {
+    "operation-bill": `/api/v1/reports/operations/${encodeURIComponent(id.trim())}/bill.pdf`,
+    "payment-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/receipt.pdf`,
+    "cash-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/cash-receipt.pdf`,
+    "merchant-statement": `/api/v1/reports/merchants/${encodeURIComponent(id.trim())}/statement.pdf`,
+    "stocktake-summary": `/api/v1/reports/stocktakes/${encodeURIComponent(id.trim())}/summary.pdf`
+  };
+
+  try {
+    await downloadFile(`${paths[reportType]}?language=${currentLanguage}`, `lensee-${reportType}-${id.trim()}.pdf`);
+    notice("PDF downloaded.", "success");
+    await loadExportLogs();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderStocktakes() {
+  const isAdmin = getAuth()?.user.role === "Admin";
+  document.getElementById("view").innerHTML = `
+    <section class="catalog-layout">
+      <aside class="catalog-side">
+        <section class="band">
+          <div class="section-head"><div><h2>Stocktake</h2><p class="muted-text">Count physical stock by SKU, lot, and expiry, then confirm reconciliations through the ledger.</p></div><button id="stocktake-refresh" class="button secondary" type="button">Refresh</button></div>
+          ${isAdmin ? `
+            <form id="stocktake-create-form" class="form">
+              <div class="form-error" id="stocktake-error" hidden></div>
+              <div class="field"><label for="stocktake-location">Location</label><select id="stocktake-location" class="select"></select></div>
+              <div class="field"><label for="stocktake-notes">Notes</label><textarea id="stocktake-notes" class="input" rows="3"></textarea></div>
+              <button class="button primary" type="submit">Open session</button>
+            </form>` : `<p class="muted-text">Read-only stocktake review.</p>`}
+        </section>
+      </aside>
+      <section class="catalog-main">
+        <section class="band">
+          <div class="section-head"><h2>Sessions</h2><span id="stocktake-count" class="muted-text">Loading</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Session</th><th>Location</th><th>Status</th><th>Counted</th><th>Discrepancy</th><th>Created</th><th>Actions</th></tr></thead><tbody id="stocktake-rows"></tbody></table></div>
+        </section>
+        <section class="band" id="stocktake-detail"><h2>Session detail</h2><p class="muted-text">Select a session to enter counts or review discrepancies.</p></section>
+      </section>
+    </section>`;
+
+  document.getElementById("stocktake-refresh").addEventListener("click", loadStocktakes);
+  document.getElementById("stocktake-create-form")?.addEventListener("submit", createStocktakeSession);
+  await loadStocktakeReferenceData();
+  await loadStocktakes();
+}
+
+async function loadStocktakeReferenceData() {
+  inventoryLocations = await request("/api/v1/inventory/locations");
+  const locationSelect = document.getElementById("stocktake-location");
+  if (locationSelect) {
+    locationSelect.innerHTML = inventoryLocations.map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name)}</option>`).join("");
+  }
+  await hydrateOperationSkus();
+  inventorySkuOptions = operationSkuOptions.map((sku) => ({ id: sku.id, label: sku.label || `${sku.skuCode} - ${sku.productName}` }));
+}
+
+async function loadStocktakes() {
+  const tbody = document.getElementById("stocktake-rows");
+  const count = document.getElementById("stocktake-count");
+  if (!tbody || !count) {
+    return;
+  }
+  try {
+    const result = await request("/api/v1/stocktakes?pageSize=50");
+    count.textContent = `${result.totalCount} session(s)`;
+    tbody.innerHTML = result.items.length === 0 ? `<tr><td colspan="7">No stocktake sessions yet.</td></tr>` : result.items.map((session) => {
+      const location = inventoryLocations.find((value) => value.id === session.locationId);
+      return `<tr>
+        <td>${escapeHtml(shortId(session.id))}</td>
+        <td>${escapeHtml(location?.name || shortId(session.locationId))}</td>
+        <td>${escapeHtml(session.status)}</td>
+        <td>${escapeHtml(session.productsCounted)}</td>
+        <td>${escapeHtml(session.totalDiscrepancyUnits)}</td>
+        <td>${escapeHtml(formatDateTime(session.createdAt))}</td>
+        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button></td>
+      </tr>`;
+    }).join("");
+    tbody.querySelectorAll("[data-stocktake-detail]").forEach((button) => button.addEventListener("click", () => showStocktakeDetail(button.dataset.stocktakeDetail)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="7">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function createStocktakeSession(event) {
+  event.preventDefault();
+  clearFormError("stocktake-error");
+  const locationId = document.getElementById("stocktake-location").value;
+  if (!locationId) {
+    showFormError("stocktake-error", "Location is required.");
+    return;
+  }
+
+  try {
+    const session = await request("/api/v1/stocktakes", {
+      method: "POST",
+      body: JSON.stringify({ locationId, notes: document.getElementById("stocktake-notes").value.trim() || null })
+    });
+    notice("Stocktake session opened.", "success");
+    await loadStocktakeReferenceData();
+    await loadStocktakes();
+    await showStocktakeDetail(session.id);
+  } catch (exception) {
+    showFormError("stocktake-error", getFriendlyWorkspaceError(exception));
+  }
+}
+
+async function showStocktakeDetail(sessionId) {
+  const isAdmin = getAuth()?.user.role === "Admin";
+  const target = document.getElementById("stocktake-detail");
+  const session = await request(`/api/v1/stocktakes/${sessionId}`);
+  const location = inventoryLocations.find((value) => value.id === session.locationId);
+  const skuOptions = inventorySkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("");
+  target.innerHTML = `
+    <div class="section-head">
+      <div><h2>Session ${escapeHtml(shortId(session.id))}</h2><p class="muted-text">${escapeHtml(location?.name || shortId(session.locationId))} / ${escapeHtml(session.status)}</p></div>
+      ${isAdmin && session.status === "Draft" ? `<button id="stocktake-confirm" class="button primary" type="button">Confirm adjustments</button>` : ""}
+    </div>
+    <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Lot</th><th>Expiry</th><th>System</th><th>Physical</th><th>Delta</th><th>Note</th></tr></thead><tbody>${session.lines.length === 0
+      ? `<tr><td colspan="7">No counted lines yet.</td></tr>`
+      : session.lines.map((line) => `<tr><td>${escapeHtml(stocktakeSkuLabel(line.skuId))}</td><td>${escapeHtml(line.lotNumber || "-")}</td><td>${escapeHtml(line.expiryDate || "-")}</td><td>${escapeHtml(line.systemQtyBefore)}</td><td>${escapeHtml(line.physicalCount)}</td><td>${escapeHtml(line.delta)}</td><td>${escapeHtml(line.lineNote || "-")}</td></tr>`).join("")}</tbody></table></div>
+    ${isAdmin && session.status === "Draft" ? `
+      <form id="stocktake-lines-form" class="form wide-form compact-form">
+        <div class="form-error" id="stocktake-lines-error" hidden></div>
+        <div id="stocktake-line-editor" class="line-editor"></div>
+        <div class="form-actions"><button id="add-stocktake-line" class="button secondary" type="button">Add line</button><button class="button primary" type="submit">Save counts</button></div>
+      </form>` : ""}`;
+
+  if (isAdmin && session.status === "Draft") {
+    document.getElementById("stocktake-confirm").addEventListener("click", () => confirmStocktake(session.id));
+    const editor = document.getElementById("stocktake-line-editor");
+    const addLine = (line = {}) => {
+      const row = document.createElement("div");
+      row.className = "stocktake-line-row";
+      row.innerHTML = `
+        <div class="field"><label>SKU</label><select class="select stocktake-line-sku">${skuOptions}</select></div>
+        <div class="field"><label>Lot number</label><input class="input stocktake-line-lot" value="${escapeHtml(line.lotNumber || "")}" placeholder="Blank if none"></div>
+        <div class="field"><label>Expiry date</label><input class="input stocktake-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
+        <div class="field"><label>Physical count</label><input class="input stocktake-line-count" type="number" min="0" step="1" value="${escapeHtml(line.physicalCount ?? 0)}"></div>
+        <div class="field"><label>Note</label><input class="input stocktake-line-note" value="${escapeHtml(line.lineNote || "")}"></div>
+        <button class="button secondary" type="button" data-remove-line>Remove</button>`;
+      editor.appendChild(row);
+      row.querySelector(".stocktake-line-sku").value = line.skuId || inventorySkuOptions[0]?.id || "";
+      row.querySelector("[data-remove-line]").addEventListener("click", () => row.remove());
+    };
+    session.lines.forEach(addLine);
+    if (session.lines.length === 0) {
+      addLine();
+    }
+    document.getElementById("add-stocktake-line").addEventListener("click", () => addLine());
+    document.getElementById("stocktake-lines-form").addEventListener("submit", (event) => saveStocktakeLines(event, session.id));
+  }
+}
+
+function stocktakeSkuLabel(skuId) {
+  return inventorySkuOptions.find((sku) => sku.id === skuId)?.label || shortId(skuId);
+}
+
+async function saveStocktakeLines(event, sessionId) {
+  event.preventDefault();
+  clearFormError("stocktake-lines-error");
+  const lines = Array.from(document.querySelectorAll(".stocktake-line-row")).map((row) => ({
+    skuId: row.querySelector(".stocktake-line-sku").value,
+    lotNumber: row.querySelector(".stocktake-line-lot").value.trim() || null,
+    expiryDate: row.querySelector(".stocktake-line-expiry").value || null,
+    physicalCount: Number(row.querySelector(".stocktake-line-count").value),
+    lineNote: row.querySelector(".stocktake-line-note").value.trim() || null
+  }));
+  if (lines.some((line) => !line.skuId || !Number.isInteger(line.physicalCount) || line.physicalCount < 0)) {
+    showFormError("stocktake-lines-error", "Every stocktake line needs a SKU and non-negative whole-number count.");
+    return;
+  }
+  try {
+    await request(`/api/v1/stocktakes/${sessionId}/lines`, { method: "PUT", body: JSON.stringify({ lines }) });
+    notice("Stocktake counts saved.", "success");
+    await showStocktakeDetail(sessionId);
+    await loadStocktakes();
+  } catch (exception) {
+    showFormError("stocktake-lines-error", getFriendlyWorkspaceError(exception));
+  }
+}
+
+async function confirmStocktake(sessionId) {
+  try {
+    await request(`/api/v1/stocktakes/${sessionId}/confirm`, { method: "POST" });
+    notice("Stocktake confirmed and ledger adjustments posted.", "success");
+    await showStocktakeDetail(sessionId);
+    await loadStocktakes();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderNotifications() {
+  const auth = getAuth();
+  const isAdmin = auth?.user.role === "Admin";
+  notificationPageState = { page: 1, pageSize: 10 };
+  document.getElementById("view").innerHTML = `
+    <section class="band">
+      <div class="section-head">
+        <div>
+          <h2>Notifications</h2>
+          <p class="muted-text">Review alerts, workflow updates, targets, and linked records without losing context.</p>
+        </div>
+        <span id="notification-count" class="status-pill status-muted">Loading</span>
+      </div>
+      <div class="notification-summary">
+        <div class="metric"><span>Visible</span><strong id="notification-visible-count">-</strong></div>
+        <div class="metric"><span>Unread</span><strong id="notification-unread-count">-</strong></div>
+        <div class="metric"><span>Scope</span><strong>${escapeHtml(roleLabel(auth?.user.role || ""))}</strong></div>
+      </div>
+      <div class="toolbar notification-toolbar">
+        <select id="notification-type-filter" class="select compact-select" aria-label="Notification type">
+          <option value="">All types</option>
+        </select>
+        <label class="inline-check"><input id="notification-unread-filter" type="checkbox"> Unread only</label>
+        <button id="notifications-refresh" class="button secondary" type="button">Refresh</button>
+        <button id="mark-all-read" class="button secondary" type="button">Mark all read</button>
+      </div>
+      <div id="notification-list" class="notification-list">Loading</div>
+      <div class="pagination-bar" id="notification-pagination" hidden>
+        <button class="button secondary table-action" type="button" id="notifications-prev">Previous</button>
+        <span class="muted-text" id="notifications-page-label">Page 1 of 1</span>
+        <button class="button secondary table-action" type="button" id="notifications-next">Next</button>
+      </div>
+    </section>
+    ${isAdmin ? `
+      <section class="band">
+        <h2>Manual alert triggers</h2>
+        <p class="muted-text">Run alert scans on demand when you want to refresh operational warnings immediately.</p>
+        <div class="toolbar">
+          <button class="button secondary" type="button" data-alert-run="low-stock">Low stock</button>
+          <button class="button secondary" type="button" data-alert-run="expiry">Expiry</button>
+          <button class="button secondary" type="button" data-alert-run="unresolved-reserves">Unresolved reserves</button>
+          <button class="button secondary" type="button" data-alert-run="outstanding-balances">Outstanding remaining</button>
+        </div>
+      </section>` : ""}`;
+
+  document.getElementById("mark-all-read").addEventListener("click", markNotificationsRead);
+  document.getElementById("notifications-refresh").addEventListener("click", loadNotifications);
+  document.getElementById("notification-type-filter").addEventListener("change", () => loadNotifications(1));
+  document.getElementById("notification-unread-filter").addEventListener("change", () => loadNotifications(1));
+  document.getElementById("notifications-prev").addEventListener("click", () => loadNotifications(Math.max(1, (notificationPageState.page || 1) - 1)));
+  document.getElementById("notifications-next").addEventListener("click", () => loadNotifications((notificationPageState.page || 1) + 1));
+  document.querySelectorAll("[data-alert-run]").forEach((button) => button.addEventListener("click", () => runAlert(button.dataset.alertRun)));
+  await loadNotificationTypes();
+  await loadNotifications();
+}
+
+async function loadNotificationTypes() {
+  const select = document.getElementById("notification-type-filter");
+  if (!select) {
+    return;
+  }
+
+  const selected = select.value;
+  try {
+    const types = await request("/api/v1/notifications/types");
+    select.innerHTML = `<option value="">All types</option>${types.map((type) => `<option value="${escapeHtml(type.alertType)}">${escapeHtml(notificationTypeLabel(type.alertType))} (${escapeHtml(type.count)}${type.unreadCount ? `, ${escapeHtml(type.unreadCount)} unread` : ""})</option>`).join("")}`;
+    select.value = types.some((type) => type.alertType === selected) ? selected : "";
+  } catch {
+    select.innerHTML = `<option value="">All types</option>`;
+  }
+}
+
+async function loadNotifications(page = notificationPageState.page || 1) {
+  const list = document.getElementById("notification-list");
+  const count = document.getElementById("notification-count");
+  const visible = document.getElementById("notification-visible-count");
+  const unread = document.getElementById("notification-unread-count");
+  const pagination = document.getElementById("notification-pagination");
+  const pageLabel = document.getElementById("notifications-page-label");
+  const prev = document.getElementById("notifications-prev");
+  const next = document.getElementById("notifications-next");
+  const type = document.getElementById("notification-type-filter")?.value || "";
+  const unreadOnly = document.getElementById("notification-unread-filter")?.checked;
+  const pageSize = notificationPageState.pageSize || 10;
+  const requestedPage = Math.max(1, Number(page) || 1);
+  const params = new URLSearchParams({ page: String(requestedPage), pageSize: String(pageSize) });
+  if (type) {
+    params.set("alertType", type);
+  }
+  if (unreadOnly) {
+    params.set("unreadOnly", "true");
+  }
+  try {
+    const [result, unreadResult] = await Promise.all([
+      request(`/api/v1/notifications?${params.toString()}`),
+      request("/api/v1/notifications/unread-count")
+    ]);
+    count.textContent = `${result.totalCount} visible`;
+    visible.textContent = result.totalCount;
+    unread.textContent = unreadResult.count;
+    const totalPages = Math.max(1, Math.ceil(result.totalCount / result.pageSize));
+    if (result.items.length === 0 && result.totalCount > 0 && requestedPage > totalPages) {
+      notificationPageState = { page: totalPages, pageSize: result.pageSize };
+      await loadNotifications(totalPages);
+      return;
+    }
+    notificationPageState = { page: Math.min(result.page, totalPages), pageSize: result.pageSize };
+    list.innerHTML = result.items.length === 0
+      ? `<div class="empty-state">No notifications match the current filters.</div>`
+      : result.items.map(renderNotificationCard).join("");
+    if (pagination && pageLabel && prev && next) {
+      pagination.hidden = result.totalCount <= result.pageSize;
+      pageLabel.textContent = `Page ${notificationPageState.page} of ${totalPages}`;
+      prev.disabled = notificationPageState.page <= 1;
+      next.disabled = notificationPageState.page >= totalPages;
+    }
+    list.querySelectorAll("[data-read-notification]").forEach((button) => button.addEventListener("click", () => markNotificationRead(button.dataset.readNotification)));
+    list.querySelectorAll("[data-toggle-notification]").forEach((button) => button.addEventListener("click", () => toggleNotificationDetails(button.dataset.toggleNotification)));
+    updateNotificationBadge();
+  } catch (exception) {
+    count.textContent = "Failed";
+    list.innerHTML = `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`;
+    if (pagination) {
+      pagination.hidden = true;
+    }
+  }
+}
+
+function renderNotificationCard(item) {
+  const tone = item.isRead ? "status-muted" : "status-warning";
+  const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? `User ${shortId(item.targetUserId)}` : "Broadcast");
+  const actionUrl = notificationActionUrl(item);
+  const actionLabel = item.actionLabel || notificationActionLabel(item);
+  const actionButton = actionUrl
+    ? `<a class="button secondary table-action" href="${escapeHtml(actionUrl)}" data-notification-link="${escapeHtml(item.id)}">${escapeHtml(actionLabel)}</a>`
+    : "";
+  return `
+    <article class="notification-card ${item.isRead ? "is-read" : "is-unread"}" data-notification-card="${escapeHtml(item.id)}">
+      <div class="notification-main">
+        <div>
+          <div class="notification-title-row">
+            <span class="status-pill ${tone}">${escapeHtml(notificationTypeLabel(item.alertType))}</span>
+            <span class="muted-text">${escapeHtml(formatDateTime(item.createdAt))}</span>
+          </div>
+          <p class="notification-message">${escapeHtml(item.message)}</p>
+        </div>
+        <div class="notification-actions">
+          <button class="button secondary table-action" type="button" data-toggle-notification="${escapeHtml(item.id)}">Details</button>
+          ${actionButton}
+          ${item.isRead ? `<span class="status-pill status-muted">Read</span>` : `<button class="button primary table-action" type="button" data-read-notification="${escapeHtml(item.id)}">Mark read</button>`}
+        </div>
+      </div>
+      <div id="notification-details-${escapeHtml(item.id)}" class="notification-details" hidden>
+        <dl>
+          <div><dt>Target</dt><dd>${escapeHtml(target)}</dd></div>
+          <div><dt>Channel</dt><dd>${escapeHtml(item.channel || "-")}</dd></div>
+          <div><dt>Reference</dt><dd>${escapeHtml(item.referenceType || "-")}${item.referenceId ? ` / ${escapeHtml(shortId(item.referenceId))}` : ""}</dd></div>
+          <div><dt>Event location</dt><dd>${actionUrl ? `<a href="${escapeHtml(actionUrl)}">${escapeHtml(actionLabel)}</a>` : "-"}</dd></div>
+          <div><dt>Status</dt><dd>${item.isRead ? "Read" : "Unread"}</dd></div>
+        </dl>
+      </div>
+    </article>`;
+}
+
+function notificationActionUrl(item) {
+  if (item.actionUrl) {
+    return item.actionUrl;
+  }
+  const type = (item.referenceType || "").toLowerCase();
+  const alertType = (item.alertType || "").toLowerCase();
+  if (["stockbalance", "inventorybatch"].includes(type) || ["lowstock", "expiry"].includes(alertType)) {
+    return "#/inventory";
+  }
+  if (type === "paymentlog" || alertType.includes("payment") || alertType === "outstandingbalances") {
+    return "#/payments";
+  }
+  if (type === "operation" || alertType.includes("operation") || alertType === "unresolvedreserves") {
+    return "#/operations";
+  }
+  if (type === "stocktake" || alertType.includes("stocktake")) {
+    return "#/stocktakes";
+  }
+  if (type === "merchant") {
+    return "#/crm";
+  }
+  if (alertType.includes("report") || alertType.includes("export")) {
+    return "#/reports";
+  }
+  return "";
+}
+
+function notificationActionLabel(item) {
+  const url = notificationActionUrl(item);
+  const labels = {
+    "#/inventory": "Open inventory",
+    "#/payments": "Open payments",
+    "#/operations": "Open operations",
+    "#/stocktakes": "Open stocktakes",
+    "#/crm": "Open CRM",
+    "#/reports": "Open reports"
+  };
+  return labels[url] || "Open related page";
+}
+
+function toggleNotificationDetails(id) {
+  const details = document.getElementById(`notification-details-${id}`);
+  if (details) {
+    details.hidden = !details.hidden;
+  }
+}
+
+function notificationTypeLabel(type) {
+  const labels = {
+    LowStock: "Low stock",
+    Expiry: "Expiry",
+    UnresolvedReserves: "Unresolved reserves",
+    OutstandingBalances: "Outstanding remaining",
+    PaymentWorkflow: "Payment workflow",
+    OperationStatus: "Operation status",
+    StocktakeConfirmed: "Stocktake confirmed"
+  };
+  return labels[type] || type || "Notification";
+}
+
+async function markNotificationRead(id) {
+  await request(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
+  await loadNotificationTypes();
+  await loadNotifications();
+}
+
+async function markNotificationsRead() {
+  await request("/api/v1/notifications/read-all", { method: "PATCH" });
+  await loadNotificationTypes();
+  await loadNotifications();
+}
+
+async function runAlert(name) {
+  try {
+    const result = await request(`/api/v1/alerts/run/${name}`, { method: "POST" });
+    notice(`Alert run matched ${result.matchedItems} item(s).`, "success");
+    await loadNotificationTypes();
+    await loadNotifications();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderAdmin() {
+  document.getElementById("view").innerHTML = `
+    <section class="band">
+      <div class="section-head">
+        <div>
+          <h2>Users and access</h2>
+          <p class="muted-text">Review active accounts, assigned locations, and password resets from one controlled admin surface.</p>
+        </div>
+        <span id="admin-users-count" class="status-pill status-muted">Loading</span>
+      </div>
+      <div id="admin-users-error" class="form-error" hidden></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Location</th>
+              <th>Status</th>
+              <th>New password</th>
+              <th>Confirm</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="admin-users-rows"></tbody>
+        </table>
+      </div>
+    </section>`;
+
+  await loadAdminUsers();
+}
+
+async function loadAdminUsers() {
+  const tbody = document.getElementById("admin-users-rows");
+  const count = document.getElementById("admin-users-count");
+  const error = document.getElementById("admin-users-error");
+  if (!tbody || !count || !error) {
+    return;
+  }
+
+  error.hidden = true;
+  tbody.innerHTML = `<tr><td colspan="7">Loading users...</td></tr>`;
+
+  try {
+    const [users, locations] = await Promise.all([
+      request("/api/v1/users"),
+      request("/api/v1/inventory/locations").catch(() => [])
+    ]);
+    const locationNames = new Map(locations.map((location) => [location.id, location.name]));
+    count.textContent = `${users.length} user${users.length === 1 ? "" : "s"}`;
+    tbody.innerHTML = users.length === 0 ? `<tr><td colspan="7">No users found.</td></tr>` : users.map((user) => `
+      <tr data-admin-user-row="${escapeHtml(user.id)}">
+        <td><strong>${escapeHtml(user.username)}</strong><br><span class="muted-text">${escapeHtml(user.fullName || "-")}</span></td>
+        <td>${escapeHtml(roleLabel(user.role))}</td>
+        <td>${escapeHtml(user.locationId ? (locationNames.get(user.locationId) || "Unknown location") : "All locations")}</td>
+        <td><span class="status-pill ${user.isActive ? "status-ok" : "status-muted"}">${user.isActive ? "Active" : "Inactive"}</span></td>
+        <td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-password="${escapeHtml(user.id)}" placeholder="8+ characters"></td>
+        <td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-confirm-password="${escapeHtml(user.id)}" placeholder="Repeat"></td>
+        <td><button class="button primary table-action" type="button" data-admin-change-password="${escapeHtml(user.id)}">Change</button></td>
+      </tr>`).join("");
+
+    tbody.querySelectorAll("[data-admin-change-password]").forEach((button) => {
+      button.addEventListener("click", () => changeAdminUserPassword(button.dataset.adminChangePassword));
+    });
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="7">Could not load users.</td></tr>`;
+    error.textContent = getFriendlyWorkspaceError(exception);
+    error.hidden = false;
+  }
+}
+
+async function changeAdminUserPassword(userId) {
+  const passwordInput = [...document.querySelectorAll("[data-admin-password]")]
+    .find((input) => input.dataset.adminPassword === userId);
+  const confirmInput = [...document.querySelectorAll("[data-admin-confirm-password]")]
+    .find((input) => input.dataset.adminConfirmPassword === userId);
+  const row = [...document.querySelectorAll("[data-admin-user-row]")]
+    .find((item) => item.dataset.adminUserRow === userId);
+  const username = row?.querySelector("strong")?.textContent || "user";
+  const newPassword = passwordInput?.value || "";
+  const confirmPassword = confirmInput?.value || "";
+
+  if (newPassword.length < 8) {
+    notice("Password must be at least 8 characters.", "error");
+    passwordInput?.focus();
+    return;
+  }
+
+  if (newPassword !== confirmPassword) {
+    notice("Password confirmation does not match.", "error");
+    confirmInput?.focus();
+    return;
+  }
+
+  try {
+    await request(`/api/v1/users/${encodeURIComponent(userId)}/password`, {
+      method: "PATCH",
+      body: JSON.stringify({ newPassword })
+    });
+    if (passwordInput) {
+      passwordInput.value = "";
+    }
+    if (confirmInput) {
+      confirmInput.value = "";
+    }
+    notice(`Password changed for ${username}. Active sessions were revoked.`, "success");
+    await loadAdminUsers();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function renderListPattern(title, headers) {
+  document.getElementById("view").innerHTML = `<section class="band"><h2>${escapeHtml(title)}</h2><p class="muted-text">No rows are available for this workspace yet.</p><div class="table-wrap"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody><tr>${headers.map(() => "<td>-</td>").join("")}</tr></tbody></table></div></section>`;
+}
+
+function renderForbidden() {
+  document.getElementById("page-title").textContent = "Forbidden";
+  document.getElementById("route-label").textContent = "Authorization";
+  renderNav(getAuth());
+  renderSession(getAuth());
+  document.getElementById("view").innerHTML = `<section class="band"><h2>Access denied</h2><p>This session cannot open that workspace.</p></section>`;
+}
+
+async function logout() {
+  const auth = getAuth();
+  try {
+    if (auth?.refreshToken) {
+      await request("/api/v1/auth/logout", { method: "POST", body: JSON.stringify({ refreshToken: auth.refreshToken }) });
+    }
+  } finally {
+    clearAuth();
+    location.hash = "/login";
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
+}
+
+function roleLabel(role) {
+  return { CLevel: "C-Level", WarehouseClerk: "Warehouse Clerk" }[role] || role;
+}
+
+function formatPackHint(product) {
+  return product.piecesPerPack ? `${escapeHtml(product.sellMode || "Pack")} / ${escapeHtml(product.piecesPerPack)} pcs` : escapeHtml(product.sellMode || "-");
+}
+
+function formatPower(sku) {
+  return sku.powerValue === null || sku.powerValue === undefined ? "-" : `${sku.powerSign || ""}${sku.powerValue}`;
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatMoney(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+function getFriendlyLoginError(exception) {
+  const message = exception instanceof Error ? exception.message : "";
+  if (message.includes("Failed to fetch")) {
+    return "Cannot reach the API. Check the API base URL and whether the host is running.";
+  }
+  if (message.includes("401") || message.includes("Unauthorized")) {
+    return "Username or password is incorrect.";
+  }
+  if (message.includes("28P01")) {
+    return "The API cannot connect to PostgreSQL. Check the database connection and restart the backend if needed.";
+  }
+  return "Sign in failed. Check the account credentials and try again.";
+}
+
+function getFriendlyApiError(exception) {
+  const status = exception?.status;
+  if (status === 401) {
+    return "Session expired. Sign in again.";
+  }
+  if (status === 403) {
+    return "You do not have access to this catalog action.";
+  }
+  return "Could not load catalog data.";
+}
+
+function getFriendlyCatalogWriteError(exception) {
+  const message = exception instanceof Error ? exception.message : "";
+  if (message.includes("errors")) {
+    try {
+      const body = JSON.parse(message);
+      return Object.values(body.errors || {}).flat().join(" ") || "Check the catalog form values.";
+    } catch {
+      return "Check the catalog form values.";
+    }
+  }
+  if (exception?.status === 409 || message.includes("Conflict")) {
+    return "That SKU code already exists.";
+  }
+  if (exception?.status === 403) {
+    return "You do not have permission to change catalog data.";
+  }
+  return "Catalog change failed.";
+}
+
+function getFriendlyInventoryError(exception) {
+  const problem = parseProblemDetails(exception);
+  if (problem) {
+    return problem;
+  }
+  const status = exception?.status;
+  if (status === 401) {
+    return "Session expired. Sign in again.";
+  }
+  if (status === 403) {
+    return "You do not have access to this inventory action.";
+  }
+  if (status === 400) {
+    return "Check the inventory filters or target packs.";
+  }
+  return "Could not load inventory data.";
+}
+
+function getFriendlyWorkspaceError(exception) {
+  const problem = parseProblemDetails(exception);
+  if (problem) {
+    return problem;
+  }
+  if (exception?.status === 401) {
+    return "Session expired. Sign in again.";
+  }
+  if (exception?.status === 403) {
+    return "This account does not have permission for that action.";
+  }
+  if (exception?.status === 400) {
+    return "Check the request values.";
+  }
+  return "The workspace request failed.";
+}
+
+function parseProblemDetails(exception) {
+  const message = exception instanceof Error ? exception.message : "";
+  if (!message || !(message.includes("{") || message.includes("["))) {
+    return "";
+  }
+
+  try {
+    const body = JSON.parse(message);
+    const errors = Object.values(body.errors || {}).flat().filter(Boolean);
+    if (errors.length > 0) {
+      return errors.join(" ");
+    }
+    return body.detail || body.title || "";
+  } catch {
+    return "";
+  }
+}
+
+function debounce(callback, delay) {
+  let timeout;
+  return (...args) => {
+    window.clearTimeout(timeout);
+    timeout = window.setTimeout(() => callback(...args), delay);
+  };
+}
+
