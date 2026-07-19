@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 
@@ -75,7 +75,7 @@ public partial class CatalogDbContext : DbContext
                 table.HasCheckConstraint("chk_products_product_type", "product_type in ('Lens','Solution')");
                 table.HasCheckConstraint("chk_products_sell_mode", "sell_mode in ('SealedPackOnly','SinglePiece','Both')");
                 table.HasCheckConstraint("chk_products_pieces_per_pack", "pieces_per_pack is null or pieces_per_pack > 0");
-                table.HasCheckConstraint("chk_products_sealed_expiry_rate", "sealed_expiry_rate is null or sealed_expiry_rate in ('Daily','Monthly','Annual')");
+                table.HasCheckConstraint("chk_products_opened_expiry_rate", "opened_expiry_rate is null or opened_expiry_rate in ('Daily','Monthly','Annual')");
             });
 
             entity.HasIndex(e => e.IsActive, "idx_products_active");
@@ -105,9 +105,9 @@ public partial class CatalogDbContext : DbContext
             entity.Property(e => e.SealedExpiryDuration)
                 .HasMaxLength(50)
                 .HasColumnName("sealed_expiry_duration");
-            entity.Property(e => e.SealedExpiryRate)
+            entity.Property(e => e.OpenedExpiryRate)
                 .HasMaxLength(20)
-                .HasColumnName("sealed_expiry_rate");
+                .HasColumnName("opened_expiry_rate");
             entity.Property(e => e.OpenedExpiryDuration)
                 .HasMaxLength(50)
                 .HasColumnName("opened_expiry_duration");

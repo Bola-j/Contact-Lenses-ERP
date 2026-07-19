@@ -203,7 +203,7 @@ const items = [
           productType: "Lens",
           expiryType: "Batch",
           sealedExpiryDuration: null,
-          sealedExpiryRate: null,
+          openedExpiryRate: null,
           openedExpiryDuration: null,
           piecesPerPack: 3,
           sellMode: "Both",

@@ -180,14 +180,42 @@ public static class InventoryEndpoints
                 };
             })
             .Where(row => row.Sku is not null)
-            .GroupBy(row => new { row.Sku!.ProductId, row.Sku.ProductName })
-            .Select(group => new InventoryProductTotalResponse(
-                group.Key.ProductId,
-                group.Key.ProductName,
-                group.Select(row => row.Balance.SkuId).Distinct().Count(),
-                group.Sum(row => row.Balance.AvailableQty),
-                group.Any(row => row.AvailablePieces.HasValue) ? group.Sum(row => row.AvailablePieces ?? 0) : null))
-            .OrderBy(row => row.ProductName)
+            .GroupBy(row => new { row.Sku!.CategoryId, row.Sku.CategoryName })
+            .Select(categoryGroup => new InventoryProductCategoryTotalResponse(
+                categoryGroup.Key.CategoryId,
+                categoryGroup.Key.CategoryName,
+                categoryGroup.Select(row => row.Sku!.ProductId).Distinct().Count(),
+                categoryGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
+                categoryGroup.Sum(row => row.Balance.AvailableQty),
+                categoryGroup.Any(row => row.AvailablePieces.HasValue) ? categoryGroup.Sum(row => row.AvailablePieces ?? 0) : null,
+                categoryGroup
+                    .GroupBy(row => new { row.Sku!.ProductId, row.Sku.ProductName })
+                    .Select(group => new InventoryProductTotalResponse(
+                        group.Key.ProductId,
+                        group.Key.ProductName,
+                        group.Select(row => row.Balance.SkuId).Distinct().Count(),
+                        group.Sum(row => row.Balance.AvailableQty),
+                        group.Any(row => row.AvailablePieces.HasValue) ? group.Sum(row => row.AvailablePieces ?? 0) : null,
+                        group
+                            .GroupBy(row => new
+                            {
+                                row.Sku!.OpenedExpiryDuration,
+                                row.Sku.SealedExpiryDuration,
+                                row.Sku.OpenedExpiryRate
+                            })
+                            .Select(rateGroup => new InventoryProductRateTotalResponse(
+                                rateGroup.Key.OpenedExpiryDuration,
+                                rateGroup.Key.SealedExpiryDuration,
+                                rateGroup.Key.OpenedExpiryRate,
+                                rateGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
+                                rateGroup.Sum(row => row.Balance.AvailableQty),
+                                rateGroup.Any(row => row.AvailablePieces.HasValue) ? rateGroup.Sum(row => row.AvailablePieces ?? 0) : null))
+                            .OrderBy(row => row.OpenedExpiryRate ?? "Not set")
+                            .ThenBy(row => row.OpenedExpiryDuration ?? row.SealedExpiryDuration ?? "Not set")
+                            .ToList()))
+                    .OrderBy(row => row.ProductName)
+                    .ToList()))
+            .OrderBy(row => row.CategoryName)
             .ToList();
 
         return Results.Ok(rows);
@@ -486,7 +514,7 @@ public static class InventoryEndpoints
                 batch.LotNumber,
                 batch.ExpiryDate,
                 batch.Quantity,
-                ToPieces(batch.Quantity, new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.ProductName, sku.PiecesPerPack, sku.SellMode, true), batch.Location.LocationType),
+                ToPieces(batch.Quantity, new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.ProductName, Guid.Empty, "Uncategorized", sku.PiecesPerPack, sku.SellMode, null, null, null, true), batch.Location.LocationType),
                 null,
                 null,
                 "Expired"));
@@ -603,8 +631,9 @@ public static class InventoryEndpoints
 
         return await dbContext.Skus
             .Include(sku => sku.Product)
+            .ThenInclude(product => product.Category)
             .Where(sku => ids.Contains(sku.Id))
-            .Select(sku => new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.PiecesPerPack, sku.Product.SellMode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
+            .Select(sku => new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.CategoryId, sku.Product.Category.Name, sku.Product.PiecesPerPack, sku.Product.SellMode, sku.Product.OpenedExpiryDuration, sku.Product.SealedExpiryDuration, sku.Product.OpenedExpiryRate, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
             .ToDictionaryAsync(sku => sku.Id, cancellationToken);
     }
 
@@ -628,6 +657,7 @@ public static class InventoryEndpoints
         var locations = await locationsQuery.OrderBy(location => location.Name).ToListAsync(cancellationToken);
         var skuQuery = catalogDbContext.Skus
             .Include(sku => sku.Product)
+            .ThenInclude(product => product.Category)
             .Where(sku => sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null)
             .AsQueryable();
         if (skuId.HasValue)
@@ -637,7 +667,7 @@ public static class InventoryEndpoints
 
         var skus = await skuQuery
             .OrderBy(sku => sku.SkuCode)
-            .Select(sku => new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.PiecesPerPack, sku.Product.SellMode, true))
+            .Select(sku => new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.CategoryId, sku.Product.Category.Name, sku.Product.PiecesPerPack, sku.Product.SellMode, sku.Product.OpenedExpiryDuration, sku.Product.SealedExpiryDuration, sku.Product.OpenedExpiryRate, true))
             .ToListAsync(cancellationToken);
         var rows = new List<StockBalanceResponse>();
         foreach (var location in locations)
@@ -862,7 +892,30 @@ public sealed record StockBalanceResponse(
     int RowVersion,
     DateTime? LastUpdated);
 
-public sealed record InventoryProductTotalResponse(Guid ProductId, string ProductName, int SkuCount, int TotalPacks, int? TotalPieces);
+public sealed record InventoryProductCategoryTotalResponse(
+    Guid CategoryId,
+    string CategoryName,
+    int ProductCount,
+    int SkuCount,
+    int TotalPacks,
+    int? TotalPieces,
+    IReadOnlyList<InventoryProductTotalResponse> Products);
+
+public sealed record InventoryProductTotalResponse(
+    Guid ProductId,
+    string ProductName,
+    int SkuCount,
+    int TotalPacks,
+    int? TotalPieces,
+    IReadOnlyList<InventoryProductRateTotalResponse> RateTotals);
+
+public sealed record InventoryProductRateTotalResponse(
+    string? OpenedExpiryDuration,
+    string? SealedExpiryDuration,
+    string? OpenedExpiryRate,
+    int SkuCount,
+    int TotalPacks,
+    int? TotalPieces);
 
 public sealed record InventoryBatchResponse(
     Guid Id,
@@ -927,7 +980,7 @@ public sealed record InventoryReceiptRequest(Guid LocationId, Guid SkuId, int Pa
 
 public sealed record InventoryReceiptResponse(Guid BatchId, Guid LocationId, Guid SkuId, int BatchPackQuantity);
 
-internal sealed record SkuLookup(Guid Id, Guid ProductId, string SkuCode, string ProductName, int? PiecesPerPack, string? SellMode, bool IsActive);
+internal sealed record SkuLookup(Guid Id, Guid ProductId, string SkuCode, string ProductName, Guid CategoryId, string CategoryName, int? PiecesPerPack, string? SellMode, string? OpenedExpiryDuration, string? SealedExpiryDuration, string? OpenedExpiryRate, bool IsActive);
 
 internal sealed record InventoryOperationSnapshot(
     string OperationType,

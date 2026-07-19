@@ -100,6 +100,49 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
     }
 
     [Fact]
+    public async Task ProductTotals_ReturnsExpandableValidityBreakdown()
+    {
+        var seed = await _factory.SeedProductTotalRatesAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead);
+
+        var rows = await client.GetFromJsonAsync<IReadOnlyList<ProductCategoryTotalContract>>($"/api/v1/inventory/product-totals?locationId={seed.LocationA}");
+        var otherLocationRows = await client.GetFromJsonAsync<IReadOnlyList<ProductCategoryTotalContract>>($"/api/v1/inventory/product-totals?locationId={seed.LocationB}");
+        using var clerk = _factory.CreateClient();
+        clerk.AuthorizeAsAtLocation(LenseeRoles.WarehouseClerk, seed.LocationA, LenseePermissions.InventoryRead);
+        var forbidden = await clerk.GetAsync($"/api/v1/inventory/product-totals?locationId={seed.LocationB}");
+
+        Assert.NotNull(rows);
+        var category = Assert.Single(rows!);
+        Assert.Contains("Lenses", category.CategoryName, StringComparison.Ordinal);
+        Assert.Equal(2, category.ProductCount);
+        Assert.Equal(3, category.SkuCount);
+        Assert.Equal(11, category.TotalPacks);
+        Assert.Equal(22, category.TotalPieces);
+
+        var monthly = Assert.Single(category.Products, row => row.ProductName.Contains("3 Months", StringComparison.Ordinal));
+        Assert.Equal(2, monthly.SkuCount);
+        Assert.Equal(8, monthly.TotalPacks);
+        Assert.Equal(16, monthly.TotalPieces);
+        var monthlyRate = Assert.Single(monthly.RateTotals);
+        Assert.Equal("3 months", monthlyRate.OpenedExpiryDuration);
+        Assert.Equal("3 months", monthlyRate.SealedExpiryDuration);
+        Assert.Equal("Monthly", monthlyRate.OpenedExpiryRate);
+        Assert.Equal(2, monthlyRate.SkuCount);
+        Assert.Equal(8, monthlyRate.TotalPacks);
+        Assert.Equal(16, monthlyRate.TotalPieces);
+
+        var daily = Assert.Single(category.Products, row => row.ProductName.Contains("1 Day", StringComparison.Ordinal));
+        var dailyRate = Assert.Single(daily.RateTotals);
+        Assert.Equal("Daily", dailyRate.OpenedExpiryRate);
+        Assert.Equal(3, daily.TotalPacks);
+        Assert.Equal(6, daily.TotalPieces);
+
+        Assert.Empty(otherLocationRows!);
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+    }
+
+    [Fact]
     public async Task WarehouseClerk_ReadsOnlyAssignedLocation()
     {
         var seed = await _factory.SeedAsync();
@@ -300,6 +343,77 @@ public sealed class InventoryEndpointFactory : WebApplicationFactory<Program>
         await catalog.SaveChangesAsync();
         await inventory.SaveChangesAsync();
     }
+
+    public async Task<InventorySeed> SeedProductTotalRatesAsync()
+    {
+        using var scope = Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        var locationA = Guid.NewGuid();
+        var locationB = Guid.NewGuid();
+        var categoryId = Guid.NewGuid();
+        var brandId = Guid.NewGuid();
+        var monthlyProductId = Guid.NewGuid();
+        var dailyProductId = Guid.NewGuid();
+        var monthlySkuA = Guid.NewGuid();
+        var monthlySkuB = Guid.NewGuid();
+        var dailySku = Guid.NewGuid();
+
+        inventory.Locations.AddRange(
+            new Location { Id = locationA, Name = $"Roxy {locationA:N}", LocationType = "Online", IsActive = true },
+            new Location { Id = locationB, Name = $"Other {locationB:N}", LocationType = "Online", IsActive = true });
+        catalog.Categories.Add(new Category { Id = categoryId, Name = $"Lenses {categoryId:N}" });
+        catalog.Brands.Add(new Brand { Id = brandId, Name = $"Clear Vision {brandId:N}" });
+        catalog.Products.AddRange(
+            new Product
+            {
+                Id = monthlyProductId,
+                CategoryId = categoryId,
+                BrandId = brandId,
+                Name = $"Clear Vision Colored Lens Pack - 3 Months {monthlyProductId:N}",
+                ProductType = "Lens",
+                ExpiryType = "Batch",
+                OpenedExpiryDuration = "3 months",
+                SealedExpiryDuration = "3 months",
+                OpenedExpiryRate = "Monthly",
+                PiecesPerPack = 2,
+                SellMode = "SinglePiece",
+                ClinicalParams = "{}",
+                ExtendedAttributes = "{}",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            },
+            new Product
+            {
+                Id = dailyProductId,
+                CategoryId = categoryId,
+                BrandId = brandId,
+                Name = $"Clear Vision Colored Lens Pack - 1 Day {dailyProductId:N}",
+                ProductType = "Lens",
+                ExpiryType = "Batch",
+                OpenedExpiryDuration = "1 day",
+                SealedExpiryDuration = "1 day",
+                OpenedExpiryRate = "Daily",
+                PiecesPerPack = 2,
+                SellMode = "SinglePiece",
+                ClinicalParams = "{}",
+                ExtendedAttributes = "{}",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            });
+        catalog.Skus.AddRange(
+            new Sku { Id = monthlySkuA, ProductId = monthlyProductId, SkuCode = $"CM3-A-{monthlySkuA:N}", ColorName = "Blue", IsActive = true },
+            new Sku { Id = monthlySkuB, ProductId = monthlyProductId, SkuCode = $"CM3-B-{monthlySkuB:N}", ColorName = "Hazel", IsActive = true },
+            new Sku { Id = dailySku, ProductId = dailyProductId, SkuCode = $"CD1-{dailySku:N}", ColorName = "Gray", IsActive = true });
+        inventory.StockBalances.AddRange(
+            new StockBalance { Id = Guid.NewGuid(), LocationId = locationA, SkuId = monthlySkuA, AvailableQty = 5, LastUpdated = DateTime.UtcNow },
+            new StockBalance { Id = Guid.NewGuid(), LocationId = locationA, SkuId = monthlySkuB, AvailableQty = 3, LastUpdated = DateTime.UtcNow },
+            new StockBalance { Id = Guid.NewGuid(), LocationId = locationA, SkuId = dailySku, AvailableQty = 3, LastUpdated = DateTime.UtcNow });
+
+        await catalog.SaveChangesAsync();
+        await inventory.SaveChangesAsync();
+        return new InventorySeed(locationA, locationB, monthlySkuA);
+    }
 }
 
 internal sealed class NoOpAuditLogWriter : IAuditLogWriter
@@ -313,3 +427,9 @@ public sealed record InventorySeed(Guid LocationA, Guid LocationB, Guid SkuId);
 public sealed record LocationContract(Guid Id, string Name, string LocationType, bool IsActive);
 
 public sealed record StockBalanceContract(Guid LocationId, string LocationType, Guid SkuId, int AvailablePacks, int? AvailablePieces);
+
+public sealed record ProductCategoryTotalContract(Guid CategoryId, string CategoryName, int ProductCount, int SkuCount, int TotalPacks, int? TotalPieces, IReadOnlyList<ProductTotalContract> Products);
+
+public sealed record ProductTotalContract(Guid ProductId, string ProductName, int SkuCount, int TotalPacks, int? TotalPieces, IReadOnlyList<ProductRateTotalContract> RateTotals);
+
+public sealed record ProductRateTotalContract(string? OpenedExpiryDuration, string? SealedExpiryDuration, string? OpenedExpiryRate, int SkuCount, int TotalPacks, int? TotalPieces);

@@ -2,7 +2,10 @@ $ErrorActionPreference = "Stop"
 
 $sql = @"
 TRUNCATE TABLE
-  
+  catalog.brands,
+  catalog.categories,
+  catalog.skus,
+  catalog.products,
   crm.merchant_notes,
   crm.merchants,
   crm.representatives,

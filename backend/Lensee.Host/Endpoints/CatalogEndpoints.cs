@@ -253,7 +253,7 @@ public static class CatalogEndpoints
                 product.PiecesPerPack,
                 product.SellMode,
                 product.SealedExpiryDuration,
-                product.SealedExpiryRate,
+                product.OpenedExpiryRate,
                 product.OpenedExpiryDuration,
                 product.IsActive))
             .ToListAsync(cancellationToken);
@@ -304,7 +304,7 @@ public static class CatalogEndpoints
             ProductType = CatalogValidation.NormalizeProductType(request.ProductType),
             ExpiryType = CatalogValidation.NormalizeExpiryType(request.ExpiryType),
             SealedExpiryDuration = null,
-            SealedExpiryRate = null,
+            OpenedExpiryRate = CatalogValidation.NormalizeOpenedExpiryRate(request.OpenedExpiryRate),
             OpenedExpiryDuration = CatalogValidation.NormalizeOpenedDuration(request.OpenedExpiryDuration),
             PiecesPerPack = request.PiecesPerPack,
             SellMode = CatalogValidation.NormalizeSellMode(request.SellMode),
@@ -350,7 +350,7 @@ public static class CatalogEndpoints
         product.ProductType = CatalogValidation.NormalizeProductType(request.ProductType);
         product.ExpiryType = CatalogValidation.NormalizeExpiryType(request.ExpiryType);
         product.SealedExpiryDuration = null;
-        product.SealedExpiryRate = null;
+        product.OpenedExpiryRate = CatalogValidation.NormalizeOpenedExpiryRate(request.OpenedExpiryRate);
         product.OpenedExpiryDuration = CatalogValidation.NormalizeOpenedDuration(request.OpenedExpiryDuration);
         product.PiecesPerPack = request.PiecesPerPack;
         product.SellMode = CatalogValidation.NormalizeSellMode(request.SellMode);
@@ -567,7 +567,7 @@ public static class CatalogEndpoints
             .SingleAsync(value => value.Id == id, cancellationToken);
 
     private static ProductValidationInput ToValidationInput(ProductRequest request) =>
-        new(request.Name, request.ProductType, request.ExpiryType, request.SealedExpiryDuration, request.SealedExpiryRate, request.OpenedExpiryDuration, request.PiecesPerPack, request.SellMode, request.ClinicalParams, request.ExtendedAttributes);
+        new(request.Name, request.ProductType, request.ExpiryType, request.SealedExpiryDuration, request.OpenedExpiryRate, request.OpenedExpiryDuration, request.PiecesPerPack, request.SellMode, request.ClinicalParams, request.ExtendedAttributes);
 
     private static SkuValidationInput ToValidationInput(SkuRequest request) =>
         new(request.PowerSign, request.PowerValue, request.ColorName, request.Size);
@@ -628,7 +628,7 @@ public static class CatalogEndpoints
             product.ProductType,
             product.ExpiryType,
             product.SealedExpiryDuration,
-            product.SealedExpiryRate,
+            product.OpenedExpiryRate,
             product.OpenedExpiryDuration,
             product.PiecesPerPack,
             product.SellMode,
@@ -661,7 +661,7 @@ public sealed record ProductRequest(
     string ProductType,
     string? ExpiryType,
     string? SealedExpiryDuration,
-    string? SealedExpiryRate,
+    string? OpenedExpiryRate,
     string? OpenedExpiryDuration,
     int? PiecesPerPack,
     string? SellMode,
@@ -677,7 +677,7 @@ public sealed record ProductListResponse(
     int? PiecesPerPack,
     string? SellMode,
     string? SealedExpiryDuration,
-    string? SealedExpiryRate,
+    string? OpenedExpiryRate,
     string? OpenedExpiryDuration,
     bool IsActive);
 
@@ -691,7 +691,7 @@ public sealed record ProductDetailResponse(
     string ProductType,
     string? ExpiryType,
     string? SealedExpiryDuration,
-    string? SealedExpiryRate,
+    string? OpenedExpiryRate,
     string? OpenedExpiryDuration,
     int? PiecesPerPack,
     string? SellMode,

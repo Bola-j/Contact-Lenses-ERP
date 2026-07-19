@@ -21,7 +21,9 @@ public sealed class SkuCodeGenerator
             categoryCode,
             FormatPower(input.PowerSign, input.PowerValue),
             ToCode(input.ColorName, 12),
-            ToOptionalCode(input.Size, 8));
+            ToOptionalCode(input.Size, 8),
+            ToOpenedExpiryDurationCode(product.OpenedExpiryDuration),
+            ToOpenedExpiryRateCode(product.OpenedExpiryRate));
     }
 
     public string Preview(string brandName, string categoryName, string productType, SkuCodeInput input)
@@ -122,6 +124,36 @@ public sealed class SkuCodeGenerator
         var normalized = decimal.Round(powerValue.Value, 2).ToString("0.##", CultureInfo.InvariantCulture).Replace(".", string.Empty);
         return $"{(powerSign == "-" ? "M" : "P")}{normalized}";
     }
+
+    private static string ToOpenedExpiryDurationCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var parts = value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var amount))
+        {
+            return ToCode(value, 8);
+        }
+
+        var unit = parts[1].ToLowerInvariant();
+        var prefix = unit switch
+        {
+            "day" or "days" => "D",
+            "month" or "months" => "M",
+            "year" or "years" => "Y",
+            _ => string.Empty
+        };
+
+        return string.IsNullOrWhiteSpace(prefix)
+            ? ToCode(value, 8)
+            : $"{prefix}{amount:00}";
+    }
+
+    private static string ToOpenedExpiryRateCode(string? value) =>
+        ToOptionalCode(value, 12);
 
     private static string JoinParts(params string[] parts) =>
         string.Join("-", parts.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part.Trim('-')));

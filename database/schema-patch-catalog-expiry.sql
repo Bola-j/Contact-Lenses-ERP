@@ -5,7 +5,7 @@ alter table catalog.products
 add column if not exists sealed_expiry_duration varchar(50);
 
 alter table catalog.products
-add column if not exists sealed_expiry_rate varchar(20);
+add column if not exists opened_expiry_rate varchar(20);
 
 alter table catalog.products
 add column if not exists opened_expiry_duration varchar(50);

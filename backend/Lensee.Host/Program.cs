@@ -404,7 +404,39 @@ static async Task InitializeDevelopmentDatabaseAsync(WebApplication app)
 
 static async Task EnsurePreMigrationCompatibilityAsync(IServiceProvider services)
 {
+    var catalogDbContext = services.GetRequiredService<CatalogDbContext>();
     var operationsDbContext = services.GetRequiredService<OperationsDbContext>();
+
+    await catalogDbContext.Database.ExecuteSqlRawAsync("""
+        do $$
+        begin
+            if exists (
+                select 1
+                from information_schema.columns
+                where table_schema = 'catalog'
+                  and table_name = 'products'
+                  and column_name = 'sealed_expiry_rate'
+            ) and not exists (
+                select 1
+                from information_schema.columns
+                where table_schema = 'catalog'
+                  and table_name = 'products'
+                  and column_name = 'opened_expiry_rate'
+            ) then
+                alter table catalog.products rename column sealed_expiry_rate to opened_expiry_rate;
+            end if;
+        end $$;
+
+        alter table if exists catalog.products
+            drop constraint if exists chk_products_sealed_expiry_rate;
+
+        alter table if exists catalog.products
+            drop constraint if exists chk_products_opened_expiry_rate;
+
+        alter table if exists catalog.products
+            add constraint chk_products_opened_expiry_rate
+            check (opened_expiry_rate is null or opened_expiry_rate in ('Daily','Monthly','Annual'));
+        """);
 
     await operationsDbContext.Database.ExecuteSqlRawAsync("""
         alter table if exists operations.stocktake_adjustment_lines

@@ -87,4 +87,25 @@ public sealed class SkuCodeGeneratorTests
         Assert.Equal("CV-CM-M05-GALAXYGRAY-PACK2", galaxyGray);
         Assert.Equal("CV-CM-M05-SELENAGRAY-PACK2", selenaGray);
     }
+
+    [Theory]
+    [InlineData("1 day", "Daily", "CV-CL-M05-BLUE-PACK2-D01-DAILY")]
+    [InlineData("3 months", "Monthly", "CV-CL-M05-BLUE-PACK2-M03-MONTHLY")]
+    [InlineData("5 years", "Annual", "CV-CL-M05-BLUE-PACK2-Y05-ANNUAL")]
+    public void Generate_AppendsOpenedValidity_ForLens(string openedExpiryDuration, string openedExpiryRate, string expected)
+    {
+        var generator = new SkuCodeGenerator();
+        var product = new Product
+        {
+            ProductType = CatalogValidation.Lens,
+            OpenedExpiryDuration = openedExpiryDuration,
+            OpenedExpiryRate = openedExpiryRate,
+            Brand = new Brand { Name = "Clear Vision" },
+            Category = new Category { Name = "Colored Lenses" }
+        };
+
+        var code = generator.Generate(product, new SkuCodeInput("-", 0.50m, "Blue", "Pack 2"));
+
+        Assert.Equal(expected, code);
+    }
 }

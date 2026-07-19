@@ -530,7 +530,7 @@
             "url": "{{baseUrl}}/api/v1/catalog/products",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"categoryId\": \"{{categoryId}}\",\n  \"brandId\": \"{{brandId}}\",\n  \"name\": \"PM Lens {{runId}}\",\n  \"productType\": \"Lens\",\n  \"expiryType\": \"Batch\",\n  \"sealedExpiryDuration\": null,\n  \"sealedExpiryRate\": null,\n  \"openedExpiryDuration\": null,\n  \"piecesPerPack\": 3,\n  \"sellMode\": \"Both\",\n  \"clinicalParams\": \"{\\\"baseCurve\\\":\\\"8.6\\\",\\\"diameter\\\":\\\"14.2\\\"}\",\n  \"extendedAttributes\": \"{\\\"source\\\":\\\"postman\\\"}\"\n}",
+              "raw": "{\n  \"categoryId\": \"{{categoryId}}\",\n  \"brandId\": \"{{brandId}}\",\n  \"name\": \"PM Lens {{runId}}\",\n  \"productType\": \"Lens\",\n  \"expiryType\": \"Batch\",\n  \"sealedExpiryDuration\": null,\n  \"openedExpiryRate\": null,\n  \"openedExpiryDuration\": null,\n  \"piecesPerPack\": 3,\n  \"sellMode\": \"Both\",\n  \"clinicalParams\": \"{\\\"baseCurve\\\":\\\"8.6\\\",\\\"diameter\\\":\\\"14.2\\\"}\",\n  \"extendedAttributes\": \"{\\\"source\\\":\\\"postman\\\"}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

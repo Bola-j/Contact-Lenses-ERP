@@ -10,6 +10,7 @@ public static class CatalogValidation
     private static readonly string[] ProductTypes = [Lens, Solution];
     private static readonly string[] SellModes = ["SealedPackOnly", "SinglePiece", "Both"];
     private static readonly string[] ExpiryTypes = ["None", "Batch", "Product"];
+    private static readonly string[] OpenedExpiryRates = ["Daily", "Monthly", "Annual"];
     public static Dictionary<string, string[]> ValidateProduct(ProductValidationInput input)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
@@ -29,6 +30,12 @@ public static class CatalogValidation
         if (!string.IsNullOrWhiteSpace(input.OpenedExpiryDuration) && !IsValidDuration(input.OpenedExpiryDuration))
         {
             errors[nameof(input.OpenedExpiryDuration)] = ["Opened expiry duration must look like: 6 months. This legacy value is not used by MVP inventory or operation logic."];
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.OpenedExpiryRate) &&
+            !OpenedExpiryRates.Contains(input.OpenedExpiryRate, StringComparer.OrdinalIgnoreCase))
+        {
+            errors[nameof(input.OpenedExpiryRate)] = ["Opened expiry rate must be one of: Daily, Monthly, Annual."];
         }
 
         if (!string.IsNullOrWhiteSpace(input.SellMode) &&
@@ -89,6 +96,9 @@ public static class CatalogValidation
 
     public static string? NormalizeExpiryType(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : Normalize(value, ExpiryTypes);
+
+    public static string? NormalizeOpenedExpiryRate(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : Normalize(value, OpenedExpiryRates);
 
     public static string? NormalizeOpenedDuration(string? value)
     {
@@ -157,7 +167,7 @@ public sealed record ProductValidationInput(
     string ProductType,
     string? ExpiryType,
     string? SealedExpiryDuration,
-    string? SealedExpiryRate,
+    string? OpenedExpiryRate,
     string? OpenedExpiryDuration,
     int? PiecesPerPack,
     string? SellMode,

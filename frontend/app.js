@@ -56,6 +56,7 @@ const languageKey = "lensee.language";
 let currentLanguage = localStorage.getItem(languageKey) === "en" ? "en" : "ar";
 let applyingLanguage = false;
 let languageApplyTimer = null;
+let languageObserver = null;
 
 const arabicTranslations = Object.freeze({
   "Sign In": "تسجيل الدخول",
@@ -209,6 +210,12 @@ const arabicTranslations = Object.freeze({
   "Show": "إظهار",
   "Hide": "إخفاء",
   "Sign in to Lensee": "تسجيل الدخول إلى Lensee",
+  "Operations ERP": "نظام تشغيل موارد المؤسسة",
+  "Lensee access control": "دخول نظام Lensee",
+  "Secure ERP access for daily operations.": "دخول آمن لنظام التشغيل اليومي.",
+  "Secure entry for catalog, stock, operations, payments, and reporting workspaces.": "دخول آمن لمساحات الكتالوج والمخزون والعمليات والمدفوعات والتقارير.",
+  "Authorized session": "جلسة مصرح بها",
+  "Role and location permissions are applied after login.": "يتم تطبيق صلاحيات الدور والموقع بعد تسجيل الدخول.",
   "Sign in with your account to continue to the workspace.": "سجّل الدخول بحسابك للمتابعة إلى مساحة العمل.",
   "Required": "مطلوب",
   "No matches": "لا توجد نتائج مطابقة",
@@ -327,6 +334,7 @@ const arabicTranslations = Object.freeze({
   "Active queue": "قائمة نشطة",
   "Create and revise": "إنشاء ومراجعة",
   "record": "سجل",
+  "product": "منتج",
   "Export intent logged.": "تم تسجيل طلب التصدير.",
   "Report downloaded.": "تم تنزيل التقرير.",
   "PDF downloaded.": "تم تنزيل ملف PDF.",
@@ -366,6 +374,7 @@ const arabicTranslations = Object.freeze({
   "Cross-location access": "الوصول إلى جميع المواقع",
   "Workspace map": "خريطة مساحات العمل",
   "Cross-module administration": "إدارة شاملة لكل الوحدات",
+  "Cross-module administration. Start with open work, then move to money, stock, and reports without losing operational context.": "إدارة شاملة لكل الوحدات. ابدأ بالأعمال المفتوحة، ثم انتقل إلى الماليات والمخزون والتقارير دون فقدان سياق التشغيل.",
   "Executive oversight": "إشراف تنفيذي",
   "Payments and remaining control": "إدارة المدفوعات والمتبقي",
   "Inventory and operational execution": "تنفيذ أعمال المخزون والعمليات",
@@ -817,7 +826,61 @@ const arabicTranslations = Object.freeze({
   "Alert scope": "نطاق التنبيهات",
   "Role and location aware": "بحسب الدور والموقع",
   "Open confirmations": "الاعتمادات المعلقة",
-  "Main warehouse": "المخزن الرئيسي"
+  "Main warehouse": "المخزن الرئيسي",
+  "Operations queue": "قائمة العمليات",
+  "Create drafts, confirm movement, and inspect history.": "أنشئ المسودات، وأكد حركة المخزون، وراجع السجل.",
+  "Create the operational draft on the rail, resolve stock lines in the workspace, then move the queue through confirmation and fulfillment.": "أنشئ مسودة العملية من المسار الجانبي، ثم حدد بنود المخزون داخل مساحة العمل، وبعدها حرّك قائمة الانتظار عبر التأكيد والتنفيذ.",
+  "Check balances, batches, targets, and replenishment.": "راجع الأرصدة والدفعات والمستهدفات وإعادة التوريد.",
+  "Download operational evidence and review totals.": "نزّل مستندات التشغيل وراجع الإجماليات.",
+  "Product totals": "إجماليات المنتجات",
+  "Loading product totals": "جارٍ تحميل إجماليات المنتجات",
+  "SKU count": "عدد رموز الأصناف",
+  "Total packs": "إجمالي العبوات",
+  "Total pieces": "إجمالي القطع",
+  "Breakdown": "التفصيل",
+  "Rate": "المعدل",
+  "No validity breakdown": "لا يوجد تفصيل للصلاحية",
+  "No available stock for this location.": "لا يوجد مخزون متاح لهذا الموقع.",
+  "Search stock first or choose product attributes to resolve the SKU.": "ابحث في المخزون أولًا أو اختر خصائص المنتج لتحديد رمز الصنف.",
+  "Active operations stay compact here. Use Details to inspect versions, stock movement, and documents.": "تبقى العمليات النشطة مختصرة هنا. استخدم التفاصيل لمراجعة الإصدارات وحركة المخزون والمستندات.",
+  "Assign, use, approve, and audit payment records.": "أسند واستخدم واعتمد وراجع سجلات الدفع.",
+  "Open installment and cash confirmations that still need assignment, accountant action, or admin approval.": "الأقساط والحركات النقدية المفتوحة التي تحتاج إلى إسناد أو إجراء محاسب أو اعتماد إدارة.",
+  "One row per payment with stages, sub-logs, cash records, refunds, and adjustments inside expanded detail.": "صف واحد لكل مدفوعة مع المراحل والسجلات الفرعية والحركات النقدية والاستردادات والتسويات داخل التفاصيل الموسعة.",
+  "Stages": "المراحل",
+  "No payment confirmations are waiting.": "لا توجد تأكيدات دفع في الانتظار.",
+  "Use": "استخدام",
+  "By": "بواسطة",
+  "Healthy": "سليم",
+  "OK": "سليم",
+  "Inactive SKU": "رمز صنف غير نشط",
+  "No expiry": "بدون تاريخ انتهاء",
+  "Over by": "تجاوز بمقدار",
+  "Try another color, power, package, or source location.": "جرّب لونًا أو درجة أو عبوة أو موقع صرف آخر.",
+  "SKUs match these attributes. Refine package/size.": "توجد رموز أصناف مطابقة لهذه الخصائص. حدّد العبوة أو المقاس بدقة.",
+  "Actual total I have": "الإجمالي الفعلي لدي",
+  "Batch expiry is required for products with batch expiry tracking.": "تاريخ انتهاء الدفعة مطلوب للمنتجات التي تعتمد تتبع انتهاء الدفعات.",
+  "External": "خارجي",
+  "Cash receive receipt": "إيصال تحصيل نقدي",
+  "Download cash receipt": "تنزيل إيصال التحصيل النقدي",
+  "Loading operations": "جارٍ تحميل العمليات",
+  "Loading payments": "جارٍ تحميل المدفوعات",
+  "Loading cash payments": "جارٍ تحميل التحصيلات النقدية",
+  "Loading merchants": "جارٍ تحميل التجار",
+  "Loading replenishment": "جارٍ تحميل إعادة التوريد",
+  "Loading expired batches": "جارٍ تحميل الدفعات المنتهية",
+  "Loading batches": "جارٍ تحميل الدفعات",
+  "Loading transactions": "جارٍ تحميل الحركات",
+  "No products found": "لم يتم العثور على منتجات",
+  "No stock balances yet.": "لا توجد أرصدة مخزون بعد.",
+  "No transactions yet.": "لا توجد حركات بعد.",
+  "No batches yet.": "لا توجد دفعات بعد.",
+  "No expired batches.": "لا توجد دفعات منتهية.",
+  "No target-stock rows yet.": "لا توجد مستهدفات مخزون بعد.",
+  "No stocktake sessions yet.": "لا توجد جلسات جرد بعد.",
+  "Select product attributes to resolve SKU.": "اختر خصائص المنتج لتحديد رمز الصنف.",
+  "Select product, power, and color to resolve SKU.": "اختر المنتج والدرجة واللون لتحديد رمز الصنف.",
+  "No locations": "لا توجد مواقع",
+  "pieces not set": "عدد القطع غير محدد"
 });
 
 const translatedTextSources = new WeakMap();
@@ -849,7 +912,7 @@ function translateEnglishText(value, contextElement = null) {
   if (match) {
     const source = arabicTranslations[match[1]] || match[1];
     const destination = arabicTranslations[match[2]] || match[2];
-    return `${leadingWhitespace}${source} ← ${destination}${trailingWhitespace}`;
+    return `${leadingWhitespace}${source} <- ${destination}${trailingWhitespace}`;
   }
 
   match = text.match(/^Operation\s+(confirm|ship|receive|complete|cancel)\s+completed\.$/i);
@@ -883,10 +946,25 @@ function translateEnglishText(value, contextElement = null) {
   if (match) return `${leadingWhitespace}تحديث ${match[1]}${trailingWhitespace}`;
 
   match = text.match(/^No\.\s*(.+)$/i);
-  if (match) return `${leadingWhitespace}رقم ${match[1]}${trailingWhitespace}`;
+  if (match) return `${leadingWhitespace}المستخدم ${match[1]}${trailingWhitespace}`;
 
   match = text.match(/^User\s+(.+)$/i);
   if (match) return `${leadingWhitespace}المستخدم ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^By\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}بواسطة ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^External\s*->\s*(.+)$/i);
+  if (match) return `${leadingWhitespace}خارجي ← ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^(.+?)\s+remaining$/i);
+  if (match) return `${leadingWhitespace}${match[1]} متبقي${trailingWhitespace}`;
+
+  match = text.match(/^(.+?)\s+shortage$/i);
+  if (match) return `${leadingWhitespace}${match[1]} عجز${trailingWhitespace}`;
+
+  match = text.match(/^Over by\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}تجاوز بمقدار ${match[1]}${trailingWhitespace}`;
 
   match = text.match(/^Password changed for (.+)\. Active sessions were revoked\.$/);
   if (match) return `${leadingWhitespace}تم تغيير كلمة المرور للمستخدم ${match[1]} وإنهاء جلساته النشطة.${trailingWhitespace}`;
@@ -995,7 +1073,7 @@ function applyLanguage() {
 
   const route = routes[currentPath()];
   document.title = route
-    ? `Lensee — ${isArabic ? translateEnglishText(route.title).trim() : route.title}`
+    ? `Lensee - ${isArabic ? translateEnglishText(route.title).trim() : route.title}`
     : "Lensee";
 
   document.querySelectorAll("#language-toggle, #login-language-toggle").forEach((toggle) => {
@@ -1028,6 +1106,37 @@ function applyLanguage() {
   });
 
   applyingLanguage = false;
+}
+
+function queueLanguageApply() {
+  if (applyingLanguage || currentLanguage !== "ar") return;
+  window.clearTimeout(languageApplyTimer);
+  languageApplyTimer = window.setTimeout(() => {
+    if (!applyingLanguage && currentLanguage === "ar") {
+      applyLanguage();
+    }
+  }, 0);
+}
+
+function startLanguageObserver() {
+  if (languageObserver || !document.body) return;
+  languageObserver = new MutationObserver((mutations) => {
+    if (applyingLanguage || currentLanguage !== "ar") return;
+    const hasTranslatableChange = mutations.some((mutation) => {
+      if (mutation.type === "childList" || mutation.type === "characterData") return true;
+      return mutation.type === "attributes" && ["placeholder", "title", "aria-label"].includes(mutation.attributeName);
+    });
+    if (hasTranslatableChange) {
+      queueLanguageApply();
+    }
+  });
+  languageObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["placeholder", "title", "aria-label"]
+  });
 }
 
 function setLanguage(language) {
@@ -1110,6 +1219,17 @@ document.getElementById("logout-button").addEventListener("click", logout);
 document.getElementById("language-toggle").addEventListener("click", () => setLanguage(currentLanguage === "ar" ? "en" : "ar"));
 document.getElementById("sidebar-toggle")?.addEventListener("click", () => setSidebarOpen(!document.body.classList.contains("sidebar-open")));
 document.addEventListener("click", (event) => {
+  const segment = event.target.closest("[data-scroll-target]");
+  if (segment) {
+    const target = document.getElementById(segment.dataset.scrollTarget);
+    if (target) {
+      segment.closest(".segmented-control")?.querySelectorAll("[role='tab']").forEach((tab) => {
+        tab.setAttribute("aria-selected", tab === segment ? "true" : "false");
+      });
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   if (event.target.closest("#login-language-toggle")) {
     setLanguage(currentLanguage === "ar" ? "en" : "ar");
   }
@@ -1147,13 +1267,8 @@ window.addEventListener("storage", (event) => {
 window.addEventListener(authEventName, renderRoute);
 syncChannel?.addEventListener("message", (event) => handleExternalSync(event.data));
 checkHealth();
+startLanguageObserver();
 renderRoute();
-const languageObserver = new MutationObserver(() => {
-  if (applyingLanguage || currentLanguage !== "ar") return;
-  window.clearTimeout(languageApplyTimer);
-  languageApplyTimer = window.setTimeout(applyLanguage, 0);
-});
-languageObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
 applyLanguage();
 
 function getAuth() {
@@ -1438,7 +1553,7 @@ function emptyState(message, actionHtml = "") {
 }
 
 function segmentedControl(items) {
-  return `<div class="segmented-control" role="tablist">${items.map((item, index) => `<a href="${escapeHtml(item.href)}" role="tab" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(item.label)}</a>`).join("")}</div>`;
+  return `<div class="segmented-control" role="tablist">${items.map((item, index) => `<button type="button" data-scroll-target="${escapeHtml(item.target)}" role="tab" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(item.label)}</button>`).join("")}</div>`;
 }
 
 function notice(message, tone = "info") {
@@ -1665,13 +1780,20 @@ function renderLogin() {
   document.getElementById("view").innerHTML = `
     <section class="auth-layout">
       <div class="auth-copy">
-        <span class="brand-mark auth-mark">L</span>
-        <button class="button secondary auth-language-toggle" id="login-language-toggle" type="button">${currentLanguage === "ar" ? "English" : "العربية"}</button>
-        <h2>Sign in to Lensee</h2>
-        <p>Sign in with your account to continue to the workspace.</p>
+        <div class="auth-copy-top">
+          <span class="auth-wordmark">Lensee</span>
+          <button class="button secondary auth-language-toggle" id="login-language-toggle" type="button">${currentLanguage === "ar" ? "English" : "العربية"}</button>
+        </div>
+        <div class="auth-kicker">Operations ERP</div>
+        <h2>Lensee</h2>
+        <p>Secure ERP access for daily operations.</p>
         <div class="auth-status"><span id="login-health-dot" class="health-dot"></span><span id="login-health-text">Checking API</span></div>
       </div>
       <form class="auth-panel" id="login-form">
+        <div class="auth-panel-head">
+          <span>Authorized session</span>
+          <strong>Sign in</strong>
+        </div>
         <div class="field"><label for="username">Username</label><input class="input" id="username" name="username" autocomplete="username" required autofocus></div>
         <div class="field"><label for="password">Password</label><div class="password-field"><input class="input" id="password" name="password" type="password" autocomplete="current-password" required><button class="button secondary inline-icon password-toggle" id="toggle-password" type="button" aria-label="Show password" title="Show password">Show</button></div></div>
         <div class="login-error" id="login-error" role="alert" hidden></div>
@@ -1960,7 +2082,7 @@ function renderCatalogWritePanel() {
             <div class="field"><label for="product-pieces">Pieces per pack</label><input id="product-pieces" class="input" type="number" min="1" value="1"></div>
             <div class="field"><label for="product-expiry">Expiry source</label><select id="product-expiry" class="select"><option value="Batch">Batch expiry date</option><option value="None">No batch expiry</option></select></div>
             <div class="field"><label for="product-duration-value">Valid for</label><input id="product-duration-value" class="input" type="number" min="1" step="1" value="6"></div>
-            <div class="field"><label for="product-duration-unit">Duration unit</label><select id="product-duration-unit" class="select"><option value="Daily">Days</option><option value="Monthly" selected>Months</option><option value="Annually">Years</option></select></div>
+            <div class="field"><label for="product-duration-unit">Duration unit</label><select id="product-duration-unit" class="select"><option value="Daily">Days</option><option value="Monthly" selected>Months</option><option value="Annual">Years</option></select></div>
             <input type="hidden" id="product-clinical">
           </div>
           
@@ -2188,7 +2310,7 @@ async function loadCatalogDetail(productId) {
         <div><span>Sell mode</span><strong>${escapeHtml(product.sellMode || "Not set")}</strong></div>
         <div><span>Pieces per pack</span><strong>${escapeHtml(product.piecesPerPack || "Not set")}</strong></div>
         <div><span>Expiry</span><strong>${escapeHtml(product.expiryType || "Not set")}</strong></div>
-        <div><span>Opening validity</span><strong>Unused in MVP</strong></div>
+        <div><span>Opening validity</span><strong>${escapeHtml(formatOpeningValidity(product))}</strong></div>
       </div>
       <p class="muted-text">Batch expiry dates on inventory batches control FEFO, sales, transfers, and opened-piece expiry.</p>
       ${renderSkuSection(product, canWrite)}`;
@@ -2199,6 +2321,13 @@ async function loadCatalogDetail(productId) {
   } catch (exception) {
     detail.innerHTML = `<h2>Product detail</h2><p>${escapeHtml(getFriendlyApiError(exception))}</p>`;
   }
+}
+
+function formatOpeningValidity(product) {
+  const opened = product.openedExpiryDuration || product.sealedExpiryDuration;
+  const rate = product.openedExpiryRate;
+  if (opened && rate) return `${opened} (${rate})`;
+  return opened || rate || "Not set";
 }
 
 function renderSkuSection(product, canWrite) {
@@ -2368,6 +2497,8 @@ function readProductForm() {
   const type = document.getElementById("product-type").value;
   const pieces = document.getElementById("product-pieces").value;
   const clinicalParams = buildClinicalParamsFromForm();
+  const durationValue = document.getElementById("product-duration-value")?.value;
+  const openedExpiryRate = document.getElementById("product-duration-unit")?.value || null;
   return {
     categoryId: document.getElementById("product-category").value,
     brandId: document.getElementById("product-brand").value,
@@ -2375,8 +2506,8 @@ function readProductForm() {
     productType: type,
     expiryType: document.getElementById("product-expiry").value,
     sealedExpiryDuration: null,
-    sealedExpiryRate: null,
-    openedExpiryDuration: null,
+    openedExpiryRate: type === "Solution" ? null : openedExpiryRate,
+    openedExpiryDuration: type === "Solution" || !durationValue ? null : buildDuration(durationValue, openedExpiryRate),
     piecesPerPack: pieces ? Number(pieces) : null,
     sellMode: document.getElementById("product-sell-mode").value,
     clinicalParams,
@@ -2396,7 +2527,7 @@ function parseDurationRate(duration) {
     return "Daily";
   }
   if (unit.startsWith("year")) {
-    return "Annually";
+    return "Annual";
   }
   return "Monthly";
 }
@@ -2413,7 +2544,7 @@ function extractClinicalDurationUnit(clinicalParams) {
       return "Daily";
     }
     if (duration.startsWith("year")) {
-      return "Annually";
+      return "Annual";
     }
     if (duration.startsWith("month")) {
       return "Monthly";
@@ -2429,7 +2560,7 @@ function buildDuration(amount, rate) {
   const value = Number(amount);
   const unit = rate === "Daily"
     ? value === 1 ? "day" : "days"
-    : rate === "Annually"
+    : rate === "Annual"
       ? value === 1 ? "year" : "years"
       : value === 1 ? "month" : "months";
   return `${value} ${unit}`;
@@ -2541,7 +2672,9 @@ function generateSkuPreview(product, sku) {
     category,
     formatSkuPower(sku.powerSign, sku.powerValue),
     toCode(sku.colorName, 12),
-    toOptionalCode(sku.size, 8));
+    toOptionalCode(sku.size, 8),
+    toOpenedExpiryDurationCode(product.openedExpiryDuration),
+    toOptionalCode(product.openedExpiryRate, 12));
 }
 
 function toBrandCode(value) {
@@ -2578,6 +2711,18 @@ function toCode(value, maxLength) {
 
 function toOptionalCode(value, maxLength) {
   return String(value || "").trim() ? toCode(value, maxLength) : "";
+}
+
+function toOpenedExpiryDurationCode(value) {
+  const parts = String(value || "").trim().split(/\s+/);
+  const amount = Number.parseInt(parts[0], 10);
+  if (!Number.isFinite(amount) || parts.length < 2) {
+    return toOptionalCode(value, 8);
+  }
+
+  const unit = parts[1].toLowerCase();
+  const prefix = unit === "day" || unit === "days" ? "D" : unit === "month" || unit === "months" ? "M" : unit === "year" || unit === "years" ? "Y" : "";
+  return prefix ? `${prefix}${String(amount).padStart(2, "0")}` : toOptionalCode(value, 8);
 }
 
 function formatSkuPower(sign, value) {
@@ -2633,7 +2778,7 @@ function buildClinicalParamsFromForm() {
     return null;
   }
   const amount = durationValue === 1 ? "1" : String(durationValue);
-  const duration = durationUnit === "Daily" ? "daily" : durationUnit === "Annually" ? "annually" : "monthly";
+  const duration = durationUnit === "Daily" ? "daily" : durationUnit === "Annual" ? "annually" : "monthly";
   return JSON.stringify({ duration: `${amount} ${duration}` });
 }
 
@@ -2707,7 +2852,7 @@ function renderInventory() {
       <section class="catalog-main">
         <section class="band">
           <div class="section-head"><h2>Product totals</h2><span id="inventory-product-total-count" class="muted-text">Loading</span></div>
-          <div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU count</th><th>Total packs</th><th>Total pieces</th></tr></thead><tbody id="inventory-product-totals"><tr><td colspan="4">Loading product totals</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU count</th><th>Total packs</th><th>Total pieces</th><th>Breakdown</th></tr></thead><tbody id="inventory-product-totals"><tr><td colspan="5">Loading product totals</td></tr></tbody></table></div>
         </section>
         <section class="band">
           <div class="section-head"><h2>Stock balances</h2><span id="inventory-balance-count" class="muted-text">Loading</span></div>
@@ -2855,20 +3000,66 @@ async function loadInventoryProductTotals() {
 
   try {
     const rows = await request(`/api/v1/inventory/product-totals?${params.toString()}`);
-    count.textContent = `${rows.length} product${rows.length === 1 ? "" : "s"}`;
+    count.textContent = `${rows.length} categor${rows.length === 1 ? "y" : "ies"}`;
     tbody.innerHTML = rows.length === 0
-      ? `<tr><td colspan="4">No available stock for this location.</td></tr>`
-      : rows.map((row) => `
-        <tr>
-          <td><strong>${escapeHtml(row.productName || row.productId)}</strong></td>
+      ? `<tr><td colspan="5">No available stock for this location.</td></tr>`
+      : rows.map((row, index) => {
+        const detailId = `inventory-product-category-${index}`;
+        const products = Array.isArray(row.products) ? row.products : [row];
+        return `
+        <tr class="product-total-row">
+          <td><strong>${escapeHtml(row.categoryName || row.productName || row.categoryId || row.productId)}</strong><span class="muted-cell">${escapeHtml(row.productCount ?? products.length)} product${(row.productCount ?? products.length) === 1 ? "" : "s"}</span></td>
           <td>${escapeHtml(row.skuCount)}</td>
           <td>${escapeHtml(row.totalPacks)}</td>
           <td>${row.totalPieces == null ? "-" : escapeHtml(row.totalPieces)}</td>
-        </tr>`).join("");
+          <td><button class="button secondary table-action" type="button" data-product-total-toggle="${escapeHtml(detailId)}" aria-expanded="false">Details</button></td>
+        </tr>
+        <tr class="product-rate-row" id="${escapeHtml(detailId)}" hidden>
+          <td colspan="5">${renderCategoryProductTotals(products)}</td>
+        </tr>`;
+      }).join("");
+    tbody.querySelectorAll("[data-product-total-toggle]").forEach((button) => {
+      button.addEventListener("click", () => toggleProductTotalDetails(button));
+    });
   } catch (exception) {
     count.textContent = "Failed";
-    tbody.innerHTML = `<tr><td colspan="4">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
   }
+}
+
+function renderCategoryProductTotals(products) {
+  return `
+    <div class="table-wrap compact-table product-rate-table">
+      <table>
+        <thead><tr><th>Product</th><th>Opening validity</th><th>Rate</th><th>SKU count</th><th>Total packs</th><th>Total pieces</th></tr></thead>
+        <tbody>${products.length === 0
+          ? `<tr><td colspan="6">No validity breakdown</td></tr>`
+          : products.map((product) => {
+            const rate = Array.isArray(product.rateTotals) && product.rateTotals.length === 1
+              ? product.rateTotals[0]
+              : null;
+            return `
+            <tr>
+              <td><strong>${escapeHtml(product.productName || product.productId)}</strong></td>
+              <td>${escapeHtml(rate?.openedExpiryDuration || rate?.sealedExpiryDuration || "Not set")}</td>
+              <td>${escapeHtml(rate?.openedExpiryRate || "Not set")}</td>
+              <td>${escapeHtml(product.skuCount)}</td>
+              <td>${escapeHtml(product.totalPacks)}</td>
+              <td>${product.totalPieces == null ? "-" : escapeHtml(product.totalPieces)}</td>
+            </tr>`;
+          }).join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+function toggleProductTotalDetails(button) {
+  const row = document.getElementById(button.dataset.productTotalToggle);
+  if (!row) return;
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  button.setAttribute("aria-expanded", String(!expanded));
+  button.closest(".product-total-row")?.setAttribute("aria-expanded", String(!expanded));
+  button.textContent = expanded ? "Details" : "Hide";
+  row.hidden = expanded;
 }
 
 async function loadInventoryBalances() {
@@ -4788,7 +4979,7 @@ function renderOperationDetail(detail) {
         </tr>`).join("")}</tbody></table></div>
     <div class="operation-version-list">${versions.length === 0
       ? `<span class="muted-text">No versions.</span>`
-      : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} · ${escapeHtml(formatDateTime(version.editedAt))} · ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
+      : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} - ${escapeHtml(formatDateTime(version.editedAt))} - ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
 }
 
 function formatOperationLineSection(section) {
@@ -4961,9 +5152,9 @@ async function renderPayments() {
       `
     })}
     ${segmentedControl([
-      { href: "#payment-queue-section", label: "Queue" },
-      { href: "#payment-ledger-section", label: "Ledger" },
-      { href: "#payment-tools-section", label: "Tools" }
+      { target: "payment-queue-section", label: "Queue" },
+      { target: "payment-ledger-section", label: "Ledger" },
+      { target: "payment-tools-section", label: "Tools" }
     ])}
     <section id="payment-queue-section" class="band payment-queue-band">
       <div class="section-head">

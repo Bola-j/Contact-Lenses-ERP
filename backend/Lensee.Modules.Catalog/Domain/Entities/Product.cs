@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace Lensee.Modules.Catalog.Data;
@@ -19,7 +19,7 @@ public partial class Product
 
     public string? SealedExpiryDuration { get; set; }
 
-    public string? SealedExpiryRate { get; set; }
+    public string? OpenedExpiryRate { get; set; }
 
     public string? OpenedExpiryDuration { get; set; }
 

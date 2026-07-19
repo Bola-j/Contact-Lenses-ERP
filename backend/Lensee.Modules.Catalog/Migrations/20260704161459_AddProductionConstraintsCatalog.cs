@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -13,7 +13,7 @@ namespace Lensee.Modules.Catalog.Migrations
             migrationBuilder.Sql("alter table if exists catalog.skus drop constraint if exists chk_skus_power_sign;");
             migrationBuilder.Sql("alter table if exists catalog.products drop constraint if exists chk_products_pieces_per_pack;");
             migrationBuilder.Sql("alter table if exists catalog.products drop constraint if exists chk_products_product_type;");
-            migrationBuilder.Sql("alter table if exists catalog.products drop constraint if exists chk_products_sealed_expiry_rate;");
+            migrationBuilder.Sql("alter table if exists catalog.products drop constraint if exists chk_products_opened_expiry_rate;");
             migrationBuilder.Sql("alter table if exists catalog.products drop constraint if exists chk_products_sell_mode;");
 
             migrationBuilder.AddCheckConstraint(
@@ -35,10 +35,10 @@ namespace Lensee.Modules.Catalog.Migrations
                 sql: "product_type in ('Lens','Solution')");
 
             migrationBuilder.AddCheckConstraint(
-                name: "chk_products_sealed_expiry_rate",
+                name: "chk_products_opened_expiry_rate",
                 schema: "catalog",
                 table: "products",
-                sql: "sealed_expiry_rate is null or sealed_expiry_rate in ('Daily','Monthly','Annual')");
+                sql: "opened_expiry_rate is null or opened_expiry_rate in ('Daily','Monthly','Annual')");
 
             migrationBuilder.AddCheckConstraint(
                 name: "chk_products_sell_mode",
@@ -66,7 +66,7 @@ namespace Lensee.Modules.Catalog.Migrations
                 table: "products");
 
             migrationBuilder.DropCheckConstraint(
-                name: "chk_products_sealed_expiry_rate",
+                name: "chk_products_opened_expiry_rate",
                 schema: "catalog",
                 table: "products");
 

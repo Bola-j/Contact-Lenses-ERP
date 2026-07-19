@@ -136,6 +136,9 @@ function Get-OrCreateProduct {
         [string]$ProductType = "Lens",
         [int]$PiecesPerPack,
         [string]$SellMode,
+        [string]$SealedExpiryDuration = $null,
+        [string]$OpenedExpiryRate = $null,
+        [string]$OpenedExpiryDuration = $null,
         [string]$ClinicalParams,
         [string]$ExtendedAttributes,
         [hashtable]$Headers
@@ -151,9 +154,9 @@ function Get-OrCreateProduct {
         name = $Name
         productType = $ProductType
         expiryType = "Batch"
-        sealedExpiryDuration = $null
-        sealedExpiryRate = $null
-        openedExpiryDuration = $null
+        sealedExpiryDuration = $SealedExpiryDuration
+        openedExpiryRate = $OpenedExpiryRate
+        openedExpiryDuration = $OpenedExpiryDuration
         piecesPerPack = $PiecesPerPack
         sellMode = $SellMode
         clinicalParams = $ClinicalParams
@@ -255,9 +258,9 @@ function Disable-StaleSkus {
 
 function Disable-GlobalSeedSkuConflicts {
     param(
-        [object]$PlainBox,
-        [object]$PlainVial,
-        [object]$ColoredPack,
+        [object[]]$PlainBoxes,
+        [object[]]$PlainVials,
+        [object[]]$ColoredPacks,
         [object]$SampleSolution,
         [string[]]$Colors,
         [string[]]$SolutionSizes,
@@ -265,6 +268,9 @@ function Disable-GlobalSeedSkuConflicts {
     )
 
     $page = Invoke-LenseeApi -Method GET -Path "/api/v1/catalog/products?includeInactive=true&pageSize=1000" -Headers $Headers
+    $plainBoxIds = @($PlainBoxes | ForEach-Object { $_.id })
+    $plainVialIds = @($PlainVials | ForEach-Object { $_.id })
+    $coloredPackIds = @($ColoredPacks | ForEach-Object { $_.id })
     $deactivated = 0
     foreach ($product in @($page.items)) {
         $detail = Invoke-LenseeApi -Method GET -Path "/api/v1/catalog/products/$($product.id)" -Headers $Headers
@@ -274,8 +280,8 @@ function Disable-GlobalSeedSkuConflicts {
             }
 
             $seededCode =
-                $sku.skuCode.StartsWith("CV-PM-") -or
-                $sku.skuCode.StartsWith("CV-CM-") -or
+                $sku.skuCode.StartsWith("CV-ML-") -or
+                $sku.skuCode.StartsWith("CV-CL-") -or
                 $sku.skuCode.StartsWith("CV-PCS-") -or
                 $sku.skuCode.StartsWith("LAN-PM-")
             $seededShape =
@@ -288,9 +294,9 @@ function Disable-GlobalSeedSkuConflicts {
             }
 
             $keep =
-                ($detail.id -eq $PlainBox.id -and $sku.skuCode.StartsWith("CV-PM-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Box 3") -or
-                ($detail.id -eq $PlainVial.id -and $sku.skuCode.StartsWith("CV-PM-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Vial 1") -or
-                ($detail.id -eq $ColoredPack.id -and $sku.skuCode.StartsWith("CV-CM-") -and $Colors -contains $sku.colorName -and $sku.size -eq "Pack 2") -or
+                ($plainBoxIds -contains $detail.id -and $sku.skuCode.StartsWith("CV-ML-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Box 3") -or
+                ($plainVialIds -contains $detail.id -and $sku.skuCode.StartsWith("CV-ML-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Vial 1") -or
+                ($coloredPackIds -contains $detail.id -and $sku.skuCode.StartsWith("CV-CL-") -and $Colors -contains $sku.colorName -and $sku.size -eq "Pack 2") -or
                 ($detail.id -eq $SampleSolution.id -and $sku.skuCode.StartsWith("CV-PCS-") -and $SolutionSizes -contains $sku.size)
 
             if (-not $keep) {
@@ -318,38 +324,71 @@ $solutionCategory = Get-OrCreateNestedCategory -Path @("Solution") -Headers $hea
 $clearVision = Get-OrCreateBrand -Name "Clear Vision" -Headers $headers
 
 Write-Host "Ensuring products..."
-$plainBox = Get-OrCreateProduct `
-    -Name "Plain Medical Lens Box" `
-    -CategoryId $medicalCategory.id `
-    -BrandId $clearVision.id `
-    -ProductType "Lens" `
-    -PiecesPerPack 3 `
-    -SellMode "SealedPackOnly" `
-    -ClinicalParams '{"powerRange":"plainMedical","packaging":"Box"}' `
-    -ExtendedAttributes '{"seed":"medical-lenses-http","packageCode":"BOX3"}' `
-    -Headers $headers
+$medicalYearlySpecs = @(
+    @{ label = "1 Year"; duration = "1 year"; rate = "Annual" },
+    @{ label = "3 Years"; duration = "3 years"; rate = "Annual" },
+    @{ label = "5 Years"; duration = "5 years"; rate = "Annual" }
+)
 
-$plainVial = Get-OrCreateProduct `
-    -Name "Plain Medical Lens Vial" `
-    -CategoryId $medicalCategory.id `
-    -BrandId $clearVision.id `
-    -ProductType "Lens" `
-    -PiecesPerPack 1 `
-    -SellMode "SealedPackOnly" `
-    -ClinicalParams '{"powerRange":"plainMedical","packaging":"Vial"}' `
-    -ExtendedAttributes '{"seed":"medical-lenses-http","packageCode":"VIAL1"}' `
-    -Headers $headers
+$plainBoxValidityProducts = foreach ($spec in $medicalYearlySpecs) {
+    Get-OrCreateProduct `
+        -Name "Plain Medical Lens Box - $($spec.label)" `
+        -CategoryId $medicalCategory.id `
+        -BrandId $clearVision.id `
+        -ProductType "Lens" `
+        -PiecesPerPack 3 `
+        -SellMode "SealedPackOnly" `
+        -SealedExpiryDuration $spec.duration `
+        -OpenedExpiryRate $spec.rate `
+        -OpenedExpiryDuration $spec.duration `
+        -ClinicalParams '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}' `
+        -ExtendedAttributes ('{"seed":"medical-lenses-http","packageCode":"BOX3","validity":"' + $spec.duration + '"}') `
+        -Headers $headers
+}
 
-$coloredPack = Get-OrCreateProduct `
-    -Name "Clear Vision Colored Medical Lens Pack" `
-    -CategoryId $coloredCategory.id `
-    -BrandId $clearVision.id `
-    -ProductType "Lens" `
-    -PiecesPerPack 2 `
-    -SellMode "SinglePiece" `
-    -ClinicalParams '{"powerRange":"coloredMedical"}' `
-    -ExtendedAttributes '{"seed":"medical-lenses-http","packageCode":"PACK2"}' `
-    -Headers $headers
+$plainVialValidityProducts = foreach ($spec in $medicalYearlySpecs) {
+    Get-OrCreateProduct `
+        -Name "Plain Medical Lens Vial - $($spec.label)" `
+        -CategoryId $medicalCategory.id `
+        -BrandId $clearVision.id `
+        -ProductType "Lens" `
+        -PiecesPerPack 1 `
+        -SellMode "SealedPackOnly" `
+        -SealedExpiryDuration $spec.duration `
+        -OpenedExpiryRate $spec.rate `
+        -OpenedExpiryDuration $spec.duration `
+        -ClinicalParams '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}' `
+        -ExtendedAttributes ('{"seed":"medical-lenses-http","packageCode":"VIAL1","validity":"' + $spec.duration + '"}') `
+        -Headers $headers
+}
+
+$coloredMonthlySpecs = @(
+    @{ label = "3 Months"; duration = "3 months"; rate = "Monthly" },
+    @{ label = "6 Months"; duration = "6 months"; rate = "Monthly" },
+    @{ label = "9 Months"; duration = "9 months"; rate = "Monthly" }
+)
+
+$coloredDailySpecs = @(
+    @{ label = "1 Day"; duration = "1 day"; rate = "Daily" },
+    @{ label = "5 Days"; duration = "5 days"; rate = "Daily" },
+    @{ label = "7 Days"; duration = "7 days"; rate = "Daily" }
+)
+
+$coloredValidityProducts = foreach ($spec in @($coloredMonthlySpecs + $coloredDailySpecs)) {
+    Get-OrCreateProduct `
+        -Name "Clear Vision Colored Lens Pack - $($spec.label)" `
+        -CategoryId $coloredCategory.id `
+        -BrandId $clearVision.id `
+        -ProductType "Lens" `
+        -PiecesPerPack 2 `
+        -SellMode "SinglePiece" `
+        -SealedExpiryDuration $spec.duration `
+        -OpenedExpiryRate $spec.rate `
+        -OpenedExpiryDuration $spec.duration `
+        -ClinicalParams ('{"powerRange":"coloredMedical","duration":"' + $spec.duration + '"}') `
+        -ExtendedAttributes ('{"seed":"medical-lenses-http","packageCode":"PACK2","validity":"' + $spec.duration + '"}') `
+        -Headers $headers
+}
 
 $sampleSolution = Get-OrCreateProduct `
     -Name "Clear Vision Multi-Purpose Solution" `
@@ -382,25 +421,31 @@ $existing = 0
 $deactivated = 0
 $solutionSizes = @("60ml", "120ml", "250ml", "360ml")
 
-$deactivated += Disable-GlobalSeedSkuConflicts -PlainBox $plainBox -PlainVial $plainVial -ColoredPack $coloredPack -SampleSolution $sampleSolution -Colors $colors -SolutionSizes $solutionSizes -Headers $headers
-$deactivated += Disable-StaleSkus -Product $plainBox -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-PM-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Box 3" }
-$deactivated += Disable-StaleSkus -Product $plainVial -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-PM-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Vial 1" }
-$deactivated += Disable-StaleSkus -Product $coloredPack -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-CM-") -and $colors -contains $sku.colorName -and $sku.size -eq "Pack 2" }
+$deactivated += Disable-GlobalSeedSkuConflicts -PlainBoxes $plainBoxValidityProducts -PlainVials $plainVialValidityProducts -ColoredPacks $coloredValidityProducts -SampleSolution $sampleSolution -Colors $colors -SolutionSizes $solutionSizes -Headers $headers
+foreach ($product in $plainBoxValidityProducts) {
+    $deactivated += Disable-StaleSkus -Product $product -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-ML-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Box 3" }
+}
+foreach ($product in $plainVialValidityProducts) {
+    $deactivated += Disable-StaleSkus -Product $product -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-ML-") -and $sku.colorName -eq "Plain" -and $sku.size -eq "Vial 1" }
+}
+foreach ($product in $coloredValidityProducts) {
+    $deactivated += Disable-StaleSkus -Product $product -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-CL-") -and $colors -contains $sku.colorName -and $sku.size -eq "Pack 2" }
+}
 $deactivated += Disable-StaleSkus -Product $sampleSolution -Headers $headers -ShouldKeep { param($sku) $sku.skuCode.StartsWith("CV-PCS-") -and $solutionSizes -contains $sku.size }
 
-Write-Host "Creating plain medical Box/Vial SKUs..."
+Write-Host "Creating medical yearly validity SKUs..."
 $plainPowers = New-PowerGrid -Minimum -20.00 -Maximum 10.00
+$medicalValiditySkuSpecs = @()
+$medicalValiditySkuSpecs += $plainBoxValidityProducts | ForEach-Object { @{ product = $_; size = "Box 3" } }
+$medicalValiditySkuSpecs += $plainVialValidityProducts | ForEach-Object { @{ product = $_; size = "Vial 1" } }
 foreach ($power in $plainPowers) {
-    foreach ($productSpec in @(
-        @{ product = $plainBox; size = "Box 3" },
-        @{ product = $plainVial; size = "Vial 1" }
-    )) {
+    foreach ($spec in $medicalValiditySkuSpecs) {
         $result = Add-Sku `
-            -Product $productSpec.product `
+            -Product $spec.product `
             -PowerSign $power.sign `
             -PowerValue $power.value `
             -ColorName "Plain" `
-            -Size $productSpec.size `
+            -Size $spec.size `
             -Headers $headers
         if ($result -eq "created") { $created++ } else { $existing++ }
     }
@@ -408,16 +453,18 @@ foreach ($power in $plainPowers) {
 
 Write-Host "Creating Clear Vision colored medical SKUs..."
 $coloredPowers = New-PowerGrid -Minimum -10.00 -Maximum 10.00 -IncludeZero
-foreach ($color in $colors) {
-    foreach ($power in $coloredPowers) {
-        $result = Add-Sku `
-            -Product $coloredPack `
-            -PowerSign $power.sign `
-            -PowerValue $power.value `
-            -ColorName $color `
-            -Size "Pack 2" `
-            -Headers $headers
-        if ($result -eq "created") { $created++ } else { $existing++ }
+foreach ($product in $coloredValidityProducts) {
+    foreach ($color in $colors) {
+        foreach ($power in $coloredPowers) {
+            $result = Add-Sku `
+                -Product $product `
+                -PowerSign $power.sign `
+                -PowerValue $power.value `
+                -ColorName $color `
+                -Size "Pack 2" `
+                -Headers $headers
+            if ($result -eq "created") { $created++ } else { $existing++ }
+        }
     }
 }
 

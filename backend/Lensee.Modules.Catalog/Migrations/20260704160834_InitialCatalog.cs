@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -64,7 +64,7 @@ namespace Lensee.Modules.Catalog.Migrations
                     product_type = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: false),
                     expiry_type = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
                     sealed_expiry_duration = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
-                    sealed_expiry_rate = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
+                    opened_expiry_rate = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
                     opened_expiry_duration = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
                     pieces_per_pack = table.Column<int>(type: "integer", nullable: true),
                     sell_mode = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
