@@ -31,7 +31,7 @@ public static class AuthEndpoints
         return group;
     }
 
-    private static async Task<Results<Ok<AuthResponse>, UnauthorizedHttpResult>> LoginAsync(
+    private static async Task<Results<Ok<AuthResponse>, ValidationProblem, UnauthorizedHttpResult>> LoginAsync(
         LoginRequest request,
         IdentityDbContext dbContext,
         IPasswordHasher passwordHasher,
@@ -41,6 +41,12 @@ public static class AuthEndpoints
         IConfiguration configuration,
         CancellationToken cancellationToken)
     {
+        var errors = ValidateLogin(request);
+        if (errors.Count > 0)
+        {
+            return TypedResults.ValidationProblem(errors);
+        }
+
         var username = request.Username.Trim();
         var user = await dbContext.Users.SingleOrDefaultAsync(u => u.Username == username, cancellationToken);
 
@@ -65,7 +71,7 @@ public static class AuthEndpoints
         return TypedResults.Ok(CreateAuthResponse(user, tokenService.CreateAccessToken(user), refreshToken));
     }
 
-    private static async Task<Results<Ok<AuthResponse>, UnauthorizedHttpResult>> RefreshAsync(
+    private static async Task<Results<Ok<AuthResponse>, ValidationProblem, UnauthorizedHttpResult>> RefreshAsync(
         RefreshRequest request,
         IdentityDbContext dbContext,
         ITokenService tokenService,
@@ -74,6 +80,14 @@ public static class AuthEndpoints
         IConfiguration configuration,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(request.RefreshToken))
+        {
+            return TypedResults.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.RefreshToken)] = ["Refresh token is required."]
+            });
+        }
+
         var tokenHash = tokenService.HashRefreshToken(request.RefreshToken);
         var existingToken = await dbContext.RefreshTokens
             .Include(token => token.User)
@@ -182,6 +196,23 @@ public static class AuthEndpoints
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static Dictionary<string, string[]> ValidateLogin(LoginRequest request)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(request.Username))
+        {
+            errors[nameof(request.Username)] = ["Username is required."];
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Password))
+        {
+            errors[nameof(request.Password)] = ["Password is required."];
+        }
+
+        return errors;
     }
 
     private static AuthResponse CreateAuthResponse(User user, string accessToken, string refreshToken) =>

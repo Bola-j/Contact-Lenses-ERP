@@ -38,6 +38,7 @@ function makeRunData(prefix = "E2E") {
 async function installApiBase(page) {
   await page.addInitScript((value) => {
     window.localStorage.setItem("lensee.apiBase", value);
+    window.localStorage.setItem("lensee.language", "en");
   }, apiBaseUrl);
   page.on("pageerror", (error) => {
     throw error;

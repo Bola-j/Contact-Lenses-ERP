@@ -307,6 +307,25 @@ const arabicTranslations = Object.freeze({
   "No payment history yet.": "لا يوجد سجل لحركة المدفوعات بعد.",
   "No installment or cash confirmations are waiting.": "لا توجد أقساط أو حركات نقدية في انتظار الاعتماد.",
   "open confirmations": "اعتمادات معلقة",
+  "Daily work": "العمل اليومي",
+  "Money": "الماليات",
+  "Stock": "المخزون",
+  "Oversight": "المتابعة والإدارة",
+  "Open navigation": "فتح التنقل",
+  "Close navigation": "إغلاق التنقل",
+  "Open work": "عمل مفتوح",
+  "Open confirmations": "تأكيدات مفتوحة",
+  "Stock attention": "مخزون يحتاج متابعة",
+  "Unread alerts": "تنبيهات غير مقروءة",
+  "Operator command center": "مركز قيادة التشغيل",
+  "Queue": "قائمة الانتظار",
+  "Ledger": "السجل",
+  "Tools": "الأدوات",
+  "Confirmations queue": "قائمة التأكيدات",
+  "Payment ledger": "سجل المدفوعات",
+  "Workflow rail": "مسار العمل",
+  "Active queue": "قائمة نشطة",
+  "Create and revise": "إنشاء ومراجعة",
   "record": "سجل",
   "Export intent logged.": "تم تسجيل طلب التصدير.",
   "Report downloaded.": "تم تنزيل التقرير.",
@@ -1076,15 +1095,36 @@ const navItems = [
   ["/admin", "Admin"]
 ];
 
+const navGroups = [
+  { label: "Daily work", items: ["/dashboard", "/operations", "/notifications"] },
+  { label: "Money", items: ["/payments", "/reports"] },
+  { label: "Stock", items: ["/inventory", "/catalog", "/stocktakes"] },
+  { label: "Oversight", items: ["/crm", "/admin"] }
+];
+
 if (!sessionStorage.getItem("lensee.tabId")) {
   sessionStorage.setItem("lensee.tabId", crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
 }
 
 document.getElementById("logout-button").addEventListener("click", logout);
 document.getElementById("language-toggle").addEventListener("click", () => setLanguage(currentLanguage === "ar" ? "en" : "ar"));
+document.getElementById("sidebar-toggle")?.addEventListener("click", () => setSidebarOpen(!document.body.classList.contains("sidebar-open")));
 document.addEventListener("click", (event) => {
   if (event.target.closest("#login-language-toggle")) {
     setLanguage(currentLanguage === "ar" ? "en" : "ar");
+  }
+  if (event.target.closest("#nav a") && window.matchMedia("(max-width: 820px)").matches) {
+    setSidebarOpen(false);
+  }
+  if (document.body.classList.contains("sidebar-open") &&
+      !event.target.closest(".sidebar") &&
+      !event.target.closest("#sidebar-toggle")) {
+    setSidebarOpen(false);
+  }
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setSidebarOpen(false);
   }
 });
 window.addEventListener("hashchange", renderRoute);
@@ -1331,20 +1371,31 @@ function renderNav(auth) {
     return;
   }
 
-  for (const [href, label] of navItems) {
-    if (!routes[href].roles.includes(auth.user.role)) {
+  const itemLabels = new Map(navItems);
+  for (const group of navGroups) {
+    const visibleItems = group.items.filter((href) => routes[href]?.roles.includes(auth.user.role));
+    if (visibleItems.length === 0) {
       continue;
     }
-    const link = document.createElement("a");
-    link.href = `#${href}`;
-    link.textContent = label;
-    if (href === "/notifications") {
-      link.id = "notifications-nav-link";
+
+    const groupNode = document.createElement("section");
+    groupNode.className = "nav-group";
+    groupNode.innerHTML = `<p class="nav-group-label">${escapeHtml(group.label)}</p>`;
+
+    for (const href of visibleItems) {
+      const link = document.createElement("a");
+      link.href = `#${href}`;
+      link.textContent = itemLabels.get(href) || routes[href].label;
+      if (href === "/notifications") {
+        link.id = "notifications-nav-link";
+      }
+      if (path === href) {
+        link.setAttribute("aria-current", "page");
+      }
+      groupNode.appendChild(link);
     }
-    if (path === href) {
-      link.setAttribute("aria-current", "page");
-    }
-    nav.appendChild(link);
+
+    nav.appendChild(groupNode);
   }
 }
 
@@ -1352,6 +1403,42 @@ function renderSession(auth) {
   const session = document.getElementById("session");
   session.textContent = auth ? `${roleLabel(auth.user.role)}${auth.user.locationId ? " - Location scoped" : ""}` : "Not signed in";
   document.getElementById("logout-button").hidden = !auth;
+  document.getElementById("sidebar-toggle").hidden = !auth;
+}
+
+function setSidebarOpen(open) {
+  document.body.classList.toggle("sidebar-open", open);
+  const toggle = document.getElementById("sidebar-toggle");
+  if (!toggle) return;
+  toggle.setAttribute("aria-expanded", String(open));
+  const label = open ? "Close navigation" : "Open navigation";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+}
+
+function pageIntro({ eyebrow, title, body = "", metrics = "" }) {
+  return `
+    <section class="page-intro">
+      <div>
+        <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+        <h2>${escapeHtml(title)}</h2>
+        ${body ? `<p>${escapeHtml(body)}</p>` : ""}
+      </div>
+      ${metrics ? `<div class="rail-metrics">${metrics}</div>` : ""}
+    </section>`;
+}
+
+function statusChip(label, tone = "muted", id = null) {
+  const idAttribute = id ? ` id="${escapeHtml(id)}"` : "";
+  return `<span${idAttribute} class="status-pill status-${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function emptyState(message, actionHtml = "") {
+  return `<div class="empty-state"><span>${escapeHtml(message)}</span>${actionHtml}</div>`;
+}
+
+function segmentedControl(items) {
+  return `<div class="segmented-control" role="tablist">${items.map((item, index) => `<a href="${escapeHtml(item.href)}" role="tab" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(item.label)}</a>`).join("")}</div>`;
 }
 
 function notice(message, tone = "info") {
@@ -1672,24 +1759,45 @@ function renderDashboard() {
         "/stocktakes": "Batch-aware counts and reconciliations.",
         "/admin": "Users, passwords, and access maintenance."
       };
-      return workspaceCard(href, label, descriptions[href] || "Open workspace");
+      return workspaceCard(href, label, descriptions[href] || "Open workspace", workspaceTone(href));
     })
     .join("");
 
   document.getElementById("view").innerHTML = `
-    <section class="catalog-hero">
-      <div>
-        <p class="eyebrow">Overview</p>
-        <h2>Lensee operations control center</h2>
-      </div>
-      <div class="scenario-grid">
+    ${pageIntro({
+      eyebrow: "Overview",
+      title: "Operator command center",
+      body: `${dashboardPrimaryResponsibility(currentRole)}. Start with open work, then move to money, stock, and reports without losing operational context.`,
+      metrics: `
+        ${scenarioCard("Open work", "Loading", "status-muted", "dashboard-open-work")}
+        ${scenarioCard("Open confirmations", "Loading", "status-muted", "dashboard-open-confirmations")}
+        ${scenarioCard("Unread alerts", "Loading", "status-muted", "dashboard-unread-alerts")}
         ${scenarioCard("Total sales", "Loading", "status-muted", "dashboard-total-sales")}
         ${scenarioCard("Actual total I have", "Loading", "status-muted", "dashboard-actual-collected")}
         ${scenarioCard("Remaining", "Loading", "status-muted", "dashboard-remaining-receivable")}
-      </div>
-    </section>
+      `
+    })}
     
-    <section class="band">
+    <section class="command-grid">
+      <a class="command-tile command-tile-daily" href="#/operations">
+        <span>Daily work</span>
+        <strong>Operations queue</strong>
+        <small>Create drafts, confirm movement, and inspect history.</small>
+      </a>
+      ${routes["/payments"].roles.includes(currentRole) ? `<a class="command-tile command-tile-money" href="#/payments"><span>Money</span><strong>Confirmations queue</strong><small>Assign, use, approve, and audit payment records.</small></a>` : ""}
+      <a class="command-tile command-tile-stock" href="#/inventory">
+        <span>Stock</span>
+        <strong>Stock attention</strong>
+        <small>Check balances, batches, targets, and replenishment.</small>
+      </a>
+      <a class="command-tile command-tile-oversight" href="#/reports">
+        <span>Oversight</span>
+        <strong>Reports and exports</strong>
+        <small>Download operational evidence and review totals.</small>
+      </a>
+    </section>
+
+    <section class="band rail-band">
       <div class="section-head">
         <div>
           <h2>Workspace map</h2>
@@ -1699,6 +1807,7 @@ function renderDashboard() {
     </section>`;
 
   loadDashboardFinancialSummary();
+  loadDashboardOperationalSummary();
 }
 
 async function loadDashboardFinancialSummary() {
@@ -1770,13 +1879,59 @@ function renderCatalog() {
   refreshCatalogWorkspace();
 }
 
+async function loadDashboardOperationalSummary() {
+  const openWork = document.getElementById("dashboard-open-work");
+  const openConfirmations = document.getElementById("dashboard-open-confirmations");
+  const unreadAlerts = document.getElementById("dashboard-unread-alerts");
+  if (!openWork || !openConfirmations || !unreadAlerts) return;
+
+  const setUnavailable = () => {
+    openWork.textContent = "Unavailable";
+    openConfirmations.textContent = "Unavailable";
+    unreadAlerts.textContent = "Unavailable";
+  };
+
+  try {
+    const [operations, payments, notifications] = await Promise.all([
+      request("/api/v1/operations?pageSize=50").catch(() => null),
+      request("/api/v1/payments?pageSize=50").catch(() => null),
+      request("/api/v1/notifications?page=1&pageSize=50").catch(() => null)
+    ]);
+
+    const operationRows = operations?.items || [];
+    const paymentRows = payments?.items || [];
+    const notificationRows = notifications?.items || notifications || [];
+    const activeOperations = operationRows.filter((operation) => !["Completed", "Received", "Cancelled"].includes(operation.status)).length;
+    const queuePayments = paymentRows.filter((log) =>
+      ["Installment", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
+      ["PendingAdmin", "PendingAccountant", "PendingAdminReview"].includes(log.status)).length;
+    const unreadCount = notificationRows.filter((notification) => notification.isRead === false || notification.readAt == null).length;
+
+    openWork.textContent = String(activeOperations);
+    openConfirmations.textContent = String(queuePayments);
+    unreadAlerts.textContent = String(unreadCount);
+    openWork.className = activeOperations > 0 ? "status-warn" : "status-ok";
+    openConfirmations.className = queuePayments > 0 ? "status-warn" : "status-ok";
+    unreadAlerts.className = unreadCount > 0 ? "status-warn" : "status-ok";
+  } catch {
+    setUnavailable();
+  }
+}
+
 function scenarioCard(title, value, tone, valueId = null) {
   const idAttribute = valueId ? ` id="${escapeHtml(valueId)}"` : "";
   return `<div class="scenario-card"><span>${escapeHtml(title)}</span><strong${idAttribute} class="${escapeHtml(tone)}">${escapeHtml(value)}</strong></div>`;
 }
 
-function workspaceCard(href, title, description) {
-  return `<a class="workspace-card" href="#${escapeHtml(href)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></a>`;
+function workspaceCard(href, title, description, tone = "neutral") {
+  return `<a class="workspace-card workspace-card-${escapeHtml(tone)}" href="#${escapeHtml(href)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></a>`;
+}
+
+function workspaceTone(href) {
+  if (["/operations", "/notifications"].includes(href)) return "daily";
+  if (["/payments", "/reports"].includes(href)) return "money";
+  if (["/inventory", "/catalog", "/stocktakes"].includes(href)) return "stock";
+  return "oversight";
 }
 
 function dashboardPrimaryResponsibility(role) {
@@ -3394,41 +3549,54 @@ async function renderOperations() {
   const canWrite = ["Admin", "WarehouseClerk"].includes(auth?.user.role);
   operationsUiState.operationType = operationsUiState.operationType || "InventoryReceipt";
   document.getElementById("view").innerHTML = `
-    <section class="band">
-      <div class="section-head">
-        <div><h2>Operations control</h2></div>
-        <span id="operation-count" class="status-pill status-muted">Loading</span>
-      </div>
+    ${pageIntro({
+      eyebrow: "Operations",
+      title: "Operations control",
+      body: "Create the operational draft on the rail, resolve stock lines in the workspace, then move the queue through confirmation and fulfillment.",
+      metrics: `
+        ${scenarioCard("Workflow rail", canWrite ? "Create and revise" : "Read only", canWrite ? "status-ok" : "status-muted")}
+        ${scenarioCard("Active queue", "Loading", "status-muted", "operation-count")}
+        ${scenarioCard("Scope", auth?.user.locationId ? "Assigned location access" : "Cross-location access", "status-muted")}
+      `
+    })}
+    <section class="operations-workspace">
       ${canWrite ? `
-        <form id="operation-form" class="form grid-form">
-          <div class="full-span operation-editor-banner">
-            <div>
-              <strong id="operation-editor-title">Create draft</strong>
-              <p id="operation-editor-hint" class="muted-text">Start a new operation draft.</p>
-            </div>
-            <div class="toolbar compact-toolbar">
+        <form id="operation-form" class="form operation-form-layout">
+          <aside class="workflow-rail">
+            <div class="operation-editor-banner">
+              <div>
+                <strong id="operation-editor-title">Create draft</strong>
+                <p id="operation-editor-hint" class="muted-text">Start a new operation draft.</p>
+              </div>
               <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
+            </div>
+            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+            <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
+            <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
+            <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
+            <div class="field op-rep-field"><label for="op-representative">Representative</label><select id="op-representative" class="select"></select></div>
+            <div class="field op-buyer-field"><label for="op-buyer">Buyer name</label><input id="op-buyer" class="input" autocomplete="off"></div>
+            <div class="field op-buyer-field"><label for="op-buyer-phone">Buyer phone</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
+            <div class="field op-payment-field"><label for="op-payment">Payment method</label><select id="op-payment" class="select"><option value="">-</option><option value="CashHandToHand">Cash hand to hand</option><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option></select></div>
+            <div class="field"><label for="op-supplier">Supplier</label><input id="op-supplier" class="input" autocomplete="off" placeholder="Receipt only"></div>
+            <div class="field"><label for="op-invoice">Invoice</label><input id="op-invoice" class="input" autocomplete="off" placeholder="Used for receipt flows"></div>
+            <div class="field"><label for="op-notes">Notes</label><input id="op-notes" class="input" autocomplete="off"></div>
+            <div class="field" id="op-revision-reason-field" hidden><label for="op-revision-reason">Revision reason</label><input id="op-revision-reason" class="input" autocomplete="off" placeholder="Required for revisions"></div>
+            <div class="rail-actions">
+              <button class="button primary" id="operation-submit-button" type="submit">Save draft</button>
               <button id="operation-editor-reset" class="button secondary" type="button">Reset</button>
             </div>
-          </div>
-          <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
-          <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
-          <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
-          <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
-          <div class="field op-rep-field"><label for="op-representative">Representative</label><select id="op-representative" class="select"></select></div>
-          <div class="field op-buyer-field"><label for="op-buyer">Buyer name</label><input id="op-buyer" class="input" autocomplete="off"></div>
-          <div class="field op-buyer-field"><label for="op-buyer-phone">Buyer phone</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
-          <div class="field op-payment-field"><label for="op-payment">Payment method</label><select id="op-payment" class="select"><option value="">-</option><option value="CashHandToHand">Cash hand to hand</option><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option></select></div>
-          <div class="field"><label for="op-supplier">Supplier</label><input id="op-supplier" class="input" autocomplete="off" placeholder="Receipt only"></div>
-          <div class="field"><label for="op-invoice">Invoice</label><input id="op-invoice" class="input" autocomplete="off" placeholder="Used for receipt flows"></div>
-          <div class="field full-span"><label for="op-notes">Notes</label><input id="op-notes" class="input" autocomplete="off"></div>
-          <div class="field full-span" id="op-revision-reason-field" hidden><label for="op-revision-reason">Revision reason</label><input id="op-revision-reason" class="input" autocomplete="off" placeholder="Required for revisions"></div>
-          <div class="field full-span">
-            <div class="section-head tight-head"><label>Operation lines</label><button id="op-add-line" class="button secondary" type="button">Add line</button></div>
+          </aside>
+          <section class="band operation-line-panel">
+            <div class="section-head tight-head"><div><h2>Operation lines</h2><p>Search stock first or choose product attributes to resolve the SKU.</p></div><button id="op-add-line" class="button secondary" type="button">Add line</button></div>
             <div id="op-lines" class="line-editor"></div>
-          </div>
-          <button class="button primary" id="operation-submit-button" type="submit">Save draft</button>
+          </section>
         </form>` : `<p class="muted-text">This role can inspect operations but cannot create or revise drafts.</p>`}
+    </section>
+    <section class="band rail-band">
+      <div class="section-head">
+        <div><h2>Queue</h2><p>Active operations stay compact here. Use Details to inspect versions, stock movement, and documents.</p></div>
+      </div>
       <div class="toolbar">
         <label class="check-field"><input id="operations-show-completed" type="checkbox"><span>Show completed/received/cancelled history</span></label>
       </div>
@@ -4782,10 +4950,24 @@ async function renderPayments() {
   paymentAccountants = isAdmin ? await loadPaymentAccountants() : [];
   const accountantOptions = paymentAccountants.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName || user.username)} (${escapeHtml(user.username)})</option>`).join("");
   document.getElementById("view").innerHTML = `
-    <section class="band">
+    ${pageIntro({
+      eyebrow: "Payments",
+      title: "Payments and remaining",
+      body: "Handle open confirmations first, then use the ledger and tools for audit, entries, cash records, adjustments, and merchant remaining.",
+      metrics: `
+        ${scenarioCard("Queue", "Loading", "status-muted", "payment-count")}
+        ${scenarioCard("Ledger", "Loading", "status-muted", "payment-history-count")}
+        ${scenarioCard("Tools", canDraft || isAdmin ? "Available" : "Read only", canDraft || isAdmin ? "status-ok" : "status-muted")}
+      `
+    })}
+    ${segmentedControl([
+      { href: "#payment-queue-section", label: "Queue" },
+      { href: "#payment-ledger-section", label: "Ledger" },
+      { href: "#payment-tools-section", label: "Tools" }
+    ])}
+    <section id="payment-queue-section" class="band payment-queue-band">
       <div class="section-head">
-        <div><h2>Payments and remaining</h2><p>Total sales, actual collected money, and remaining / owe amounts stay visible across all registered and anonymous buyer sales.</p></div>
-        <span id="payment-count" class="status-pill status-muted">Loading</span>
+        <div><h2>Confirmations queue</h2><p>Open installment and cash confirmations that still need assignment, accountant action, or admin approval.</p></div>
       </div>
       <div class="toolbar">
         <button id="payments-refresh" class="button secondary" type="button">Refresh</button>
@@ -4793,15 +4975,15 @@ async function renderPayments() {
       </div>
       <div class="table-wrap"><table><thead><tr><th>Payment</th><th>Buyer</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody id="payment-rows"><tr><td colspan="9">Loading payments</td></tr></tbody></table></div>
     </section>
-    <section class="band">
+    <section id="payment-ledger-section" class="band payment-ledger-band">
       <div class="section-head">
-        <div><h2>Payment history</h2><p>Review every payment-related record created across the system, including opening logs, installment actions, cash records, approvals, refunds, and financial adjustments.</p></div>
-        <span id="payment-history-count" class="status-pill status-muted">Loading</span>
+        <div><h2>Payment ledger</h2><p>One row per payment with stages, sub-logs, cash records, refunds, and adjustments inside expanded detail.</p></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Updated</th><th>Payment</th><th>Buyer / merchant</th><th>Operation</th><th>Method</th><th>Total</th><th>Status</th><th>Actor</th><th>Stages</th></tr></thead><tbody id="payment-history-rows"><tr><td colspan="9">Loading history</td></tr></tbody></table></div>
     </section>
+    <section id="payment-tools-section" class="payment-tools-grid">
     ${canDraft ? `
-      <section class="band">
+      <section class="band compact-band payment-tool-card">
         <h2>Draft payment entry</h2>
         <form id="payment-sublog-form" class="form grid-form">
           <div class="field"><label for="payment-log-id">Payment log reference</label><input id="payment-log-id" class="input" required></div>
@@ -4813,7 +4995,7 @@ async function renderPayments() {
         </form>
       </section>` : ""}
     ${isAdmin ? `
-      <section class="band">
+      <section class="band compact-band payment-tool-card">
         <h2>Cash / refund record</h2>
         <form id="cash-record-form" class="form grid-form">
           <div class="field"><label for="cash-operation-id">Operation reference</label><input id="cash-operation-id" class="input" required></div>
@@ -4823,7 +5005,7 @@ async function renderPayments() {
           <button class="button" type="submit">Record cash</button>
         </form>
       </section>
-      <section class="band">
+      <section class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
         <p class="muted-text">Use for return/change outcomes that become merchant credit, remaining reduction, or cash refund.</p>
         <form id="financial-adjustment-form" class="form grid-form">
@@ -4836,10 +5018,11 @@ async function renderPayments() {
           <button class="button" type="submit">Save adjustment</button>
         </form>
       </section>` : ""}
-    <section class="band">
+    <section class="band compact-band payment-tool-card merchant-tool-card">
       <div class="section-head"><h2>Merchant remaining</h2><span id="merchant-balance-status" class="muted-text">Select a merchant</span></div>
       <div class="toolbar"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><button id="load-merchant-balance" class="button secondary" type="button">Load remaining</button></div>
       <div id="merchant-balance-panel" class="detail-grid"></div>
+    </section>
     </section>`;
 
   document.getElementById("payments-refresh").addEventListener("click", () => Promise.all([loadPayments(), loadPaymentHistory()]));

@@ -60,6 +60,23 @@ public sealed class CatalogValidationTests
     }
 
     [Fact]
+    public void ValidateProduct_RequiresPiecesPerPack()
+    {
+        var errors = CatalogValidation.ValidateProduct(new ProductValidationInput(
+            "Lens Solution",
+            CatalogValidation.Solution,
+            "Product",
+            "2 years",
+            "Monthly",
+            "3 months",
+            null,
+            "SinglePiece",
+            null,
+            """{"volumeMl":120}"""));
+
+        Assert.Contains(nameof(ProductValidationInput.PiecesPerPack), errors.Keys);
+    }
+    [Fact]
     public void ValidateSku_RequiresColor_ForLensSku()
     {
         var errors = CatalogValidation.ValidateSku(new SkuValidationInput(

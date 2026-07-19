@@ -31,6 +31,12 @@ public static class CrmEndpoints
         "Other"
     };
 
+    private static readonly HashSet<string> RepresentativeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "External",
+        "Internal"
+    };
+
     public static RouteGroupBuilder MapCrmEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/v1/crm").WithTags("CRM");
@@ -350,6 +356,10 @@ public static class CrmEndpoints
     private static async Task<IResult> CreateRepresentativeAsync(RepresentativeRequest request, CrmDbContext dbContext, CancellationToken cancellationToken)
     {
         var errors = ValidateRepresentative(request);
+        if (NormalizeRepresentativeType(request.Type) is null && !string.IsNullOrWhiteSpace(request.Type))
+        {
+            errors[nameof(request.Type)] = ["Representative type must be External or Internal."];
+        }
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
@@ -361,7 +371,7 @@ public static class CrmEndpoints
             Name = request.Name.Trim(),
             PhoneNumbers = NormalizePhones(request.PhoneNumbers),
             Email = TrimToNull(request.Email),
-            Type = TrimToNull(request.Type) ?? "External",
+            Type = NormalizeRepresentativeType(request.Type) ?? "External",
             AssignedLocationId = request.AssignedLocationId,
             Status = "Active",
             Notes = TrimToNull(request.Notes)
@@ -374,6 +384,10 @@ public static class CrmEndpoints
     private static async Task<IResult> UpdateRepresentativeAsync(Guid id, RepresentativeRequest request, CrmDbContext dbContext, CancellationToken cancellationToken)
     {
         var errors = ValidateRepresentative(request);
+        if (NormalizeRepresentativeType(request.Type) is null && !string.IsNullOrWhiteSpace(request.Type))
+        {
+            errors[nameof(request.Type)] = ["Representative type must be External or Internal."];
+        }
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
@@ -388,7 +402,7 @@ public static class CrmEndpoints
         rep.Name = request.Name.Trim();
         rep.PhoneNumbers = NormalizePhones(request.PhoneNumbers);
         rep.Email = TrimToNull(request.Email);
-        rep.Type = TrimToNull(request.Type) ?? rep.Type;
+        rep.Type = NormalizeRepresentativeType(request.Type) ?? rep.Type;
         rep.AssignedLocationId = request.AssignedLocationId;
         rep.Notes = TrimToNull(request.Notes);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -446,6 +460,17 @@ public static class CrmEndpoints
 
     private static string? NormalizeBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizeRepresentativeType(string? value)
+    {
+        var trimmed = TrimToNull(value);
+        if (trimmed is null)
+        {
+            return null;
+        }
+
+        return RepresentativeTypes.FirstOrDefault(type => string.Equals(type, trimmed, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static string? NormalizeBusinessType(string? value)
     {

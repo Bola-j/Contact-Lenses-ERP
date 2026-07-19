@@ -75,7 +75,7 @@ test("scenario DAY-02: admin maintains user lifecycle, password state, and dupli
   await page.locator("#username").fill(username);
   await page.locator("#password").fill(firstPassword);
   await page.locator("#login-submit").click();
-  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid/i);
+  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid|غير صحيحة/i);
 
   await login(page, { username, password: secondPassword });
   await logout(page);
@@ -90,7 +90,7 @@ test("scenario DAY-02: admin maintains user lifecycle, password state, and dupli
   await page.locator("#username").fill(username);
   await page.locator("#password").fill(secondPassword);
   await page.locator("#login-submit").click();
-  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid/i);
+  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid|غير صحيحة/i);
 
   await login(page, users.admin);
   const reactivate = await apiJson(page, "PATCH", `/api/v1/users/${created.id}/activate`);

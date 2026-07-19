@@ -18,7 +18,7 @@ test("AUTH-001/002/009/010: six seeded users login, refresh, logout, and retain 
   await page.locator("#username").fill("not-a-user");
   await page.locator("#password").fill("wrong-password");
   await page.locator("#login-submit").click();
-  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid/i);
+  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid|غير صحيحة/i);
 
   const roles = {
     admin: ["Catalog", "Inventory", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake", "Admin"],

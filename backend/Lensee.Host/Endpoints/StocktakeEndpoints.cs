@@ -1,3 +1,4 @@
+using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
 using Lensee.Modules.Operations.Data;
@@ -105,6 +106,7 @@ public static class StocktakeEndpoints
         Guid id,
         UpsertStocktakeLinesRequest request,
         OperationsDbContext operationsDbContext,
+        CatalogDbContext catalogDbContext,
         InventoryDbContext inventoryDbContext,
         CancellationToken cancellationToken)
     {
@@ -132,7 +134,31 @@ public static class StocktakeEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Lines)] = ["Each SKU + lot + expiry can appear once per stocktake session."] });
         }
 
-        var skuIds = request.Lines.Select(line => line.SkuId).ToArray();
+        if (request.Lines.Any(line => line.SkuId == Guid.Empty))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Lines)] = ["Every stocktake line requires a SKU."] });
+        }
+        if (request.Lines.Any(line => line.PhysicalCount < 0))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(StocktakeCountLineRequest.PhysicalCount)] = ["Physical count cannot be negative."] });
+        }
+
+        var skuIds = request.Lines.Select(line => line.SkuId).Distinct().ToArray();
+        var activeSkuIds = await catalogDbContext.Skus
+            .Where(sku => skuIds.Contains(sku.Id))
+            .Where(sku => sku.IsActive)
+            .Where(sku => sku.DeletedAt == null)
+            .Where(sku => sku.Product.IsActive)
+            .Where(sku => sku.Product.DeletedAt == null)
+            .Select(sku => sku.Id)
+            .ToListAsync(cancellationToken);
+
+        var missingSkuIds = skuIds.Except(activeSkuIds).ToArray();
+        if (missingSkuIds.Length > 0)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Lines)] = ["Every stocktake line SKU must exist and be active."] });
+        }
+
         var batches = await inventoryDbContext.InventoryBatches
             .Where(batch => batch.LocationId == session.LocationId && skuIds.Contains(batch.SkuId))
             .ToListAsync(cancellationToken);
@@ -143,11 +169,6 @@ public static class StocktakeEndpoints
 
         foreach (var line in request.Lines)
         {
-            if (line.PhysicalCount < 0)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(line.PhysicalCount)] = ["Physical count cannot be negative."] });
-            }
-
             var normalizedLot = NormalizeBlank(line.LotNumber);
             var systemQty = batches
                 .Where(batch =>

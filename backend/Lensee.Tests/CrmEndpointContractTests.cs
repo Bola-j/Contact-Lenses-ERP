@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using Lensee.Modules.CRM.Data;
+using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Operations.Data;
+using Lensee.Modules.Payments.Data;
 using Lensee.SharedKernel.Security;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -34,6 +36,22 @@ public sealed class CrmEndpointContractTests : IClassFixture<CrmEndpointFactory>
         {
             businessName = "Lens Partner",
             contactPersonName = ""
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Merchant_RequiresBusinessName()
+    {
+        await _factory.ResetAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/crm/merchants", new
+        {
+            businessName = "",
+            contactPersonName = "Mina"
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -94,6 +112,35 @@ public sealed class CrmEndpointContractTests : IClassFixture<CrmEndpointFactory>
     }
 
     [Fact]
+    public async Task MerchantNote_RejectsBlankNote()
+    {
+        await _factory.ResetAsync();
+        var merchantId = await _factory.CreateMerchantAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
+
+        var response = await client.PostAsJsonAsync($"/api/v1/crm/merchants/{merchantId}/notes", new { note = "" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Representative_RejectsTypeOutsideSelectList()
+    {
+        await _factory.ResetAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/crm/representatives", new
+        {
+            name = "Ramy Rep",
+            type = "Partner"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Admin_CanCreateUpdateDeactivateReactivateRepresentative()
     {
         await _factory.ResetAsync();
@@ -146,9 +193,13 @@ public sealed class CrmEndpointFactory : WebApplicationFactory<Program>
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<DbContextOptions<CrmDbContext>>();
+            services.RemoveAll<DbContextOptions<IdentityDbContext>>();
             services.RemoveAll<DbContextOptions<OperationsDbContext>>();
+            services.RemoveAll<DbContextOptions<PaymentsDbContext>>();
             services.AddDbContext<CrmDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<IdentityDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<OperationsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<PaymentsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
 
             services.AddAuthentication(options =>
             {
@@ -163,14 +214,45 @@ public sealed class CrmEndpointFactory : WebApplicationFactory<Program>
     {
         using var scope = Services.CreateScope();
         var crm = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
+        var identity = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var payments = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
+        payments.CashRecords.RemoveRange(payments.CashRecords);
+        payments.FinancialAdjustments.RemoveRange(payments.FinancialAdjustments);
+        payments.InstallmentSubLogs.RemoveRange(payments.InstallmentSubLogs);
+        payments.MainPaymentLogs.RemoveRange(payments.MainPaymentLogs);
         operations.OperationLines.RemoveRange(operations.OperationLines);
         operations.OperationLogs.RemoveRange(operations.OperationLogs);
+        identity.RefreshTokens.RemoveRange(identity.RefreshTokens);
+        identity.Users.RemoveRange(identity.Users);
         crm.MerchantNotes.RemoveRange(crm.MerchantNotes);
         crm.Merchants.RemoveRange(crm.Merchants);
         crm.Representatives.RemoveRange(crm.Representatives);
         await operations.SaveChangesAsync();
+        await identity.SaveChangesAsync();
+        await payments.SaveChangesAsync();
         await crm.SaveChangesAsync();
+    }
+
+    public async Task<Guid> CreateMerchantAsync()
+    {
+        await ResetAsync();
+        using var scope = Services.CreateScope();
+        var crm = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
+        var id = Guid.NewGuid();
+        crm.Merchants.Add(new Merchant
+        {
+            Id = id,
+            BusinessName = "Lens Partner",
+            ContactPersonName = "Mina",
+            PhoneNumbers = [],
+            BusinessType = "Merchant",
+            Status = "Active",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await crm.SaveChangesAsync();
+        return id;
     }
 }
 

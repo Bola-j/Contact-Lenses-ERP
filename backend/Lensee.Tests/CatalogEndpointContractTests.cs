@@ -72,6 +72,86 @@ public sealed class CatalogEndpointContractTests : IClassFixture<CatalogEndpoint
     }
 
     [Fact]
+    public async Task CategoryAndBrandWrite_RejectBlankNames()
+    {
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.CatalogRead, LenseePermissions.CatalogWrite);
+
+        var category = await client.PostAsJsonAsync("/api/v1/catalog/categories", new { parentId = (Guid?)null, name = "" });
+        var brand = await client.PostAsJsonAsync("/api/v1/catalog/brands", new { name = "" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, category.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, brand.StatusCode);
+    }
+
+    [Fact]
+    public async Task CategoryWrite_RejectsSelfParent()
+    {
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.CatalogRead, LenseePermissions.CatalogWrite);
+        var id = Guid.NewGuid();
+
+        var response = await client.PutAsJsonAsync($"/api/v1/catalog/categories/{id}", new { parentId = id, name = "Self Parent" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AdminWrite_RejectsMissingPiecesPerPack()
+    {
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.CatalogRead, LenseePermissions.CatalogWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/catalog/products", new
+        {
+            categoryId = Guid.Empty,
+            brandId = Guid.Empty,
+            name = "Lens Solution",
+            productType = "Solution",
+            expiryType = "Product",
+            sealedExpiryDuration = (string?)null,
+            sealedExpiryRate = (string?)null,
+            openedExpiryDuration = "3 months",
+            piecesPerPack = (int?)null,
+            sellMode = "SinglePiece",
+            clinicalParams = (string?)null,
+            extendedAttributes = """{"volumeMl":120}"""
+        });
+        var body = await response.Content.ReadFromJsonAsync<ValidationProblemContract>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("PiecesPerPack", body!.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task AdminWrite_RejectsMissingProductCategoryAndBrand()
+    {
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.CatalogRead, LenseePermissions.CatalogWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/catalog/products", new
+        {
+            categoryId = Guid.Empty,
+            brandId = Guid.Empty,
+            name = "Lens Solution",
+            productType = "Solution",
+            expiryType = "Product",
+            sealedExpiryDuration = (string?)null,
+            sealedExpiryRate = (string?)null,
+            openedExpiryDuration = "3 months",
+            piecesPerPack = 1,
+            sellMode = "SinglePiece",
+            clinicalParams = (string?)null,
+            extendedAttributes = """{"volumeMl":120}"""
+        });
+        var body = await response.Content.ReadFromJsonAsync<ValidationProblemContract>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("CategoryId", body!.Errors.Keys);
+        Assert.Contains("BrandId", body.Errors.Keys);
+    }
+
+    [Fact]
     public async Task AdminWrite_ReturnsValidationProblemShape()
     {
         using var client = _factory.CreateClient();
@@ -97,6 +177,39 @@ public sealed class CatalogEndpointContractTests : IClassFixture<CatalogEndpoint
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.NotNull(body?.Errors);
         Assert.NotEmpty(body!.Errors);
+    }
+
+    [Fact]
+    public async Task SkuWrite_RejectsMissingLensColorAndSolutionSize()
+    {
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.CatalogRead, LenseePermissions.CatalogWrite);
+        var lensProductId = await _factory.CreateProductAsync("Lens");
+        var solutionProductId = await _factory.CreateProductAsync("Solution");
+
+        var lensSku = await client.PostAsJsonAsync($"/api/v1/catalog/products/{lensProductId}/skus", new
+        {
+            skuCode = "LENS-NOCOLOR",
+            powerSign = "+",
+            powerValue = 1.25m,
+            colorName = "",
+            size = (string?)null,
+            barcode = (string?)null,
+            attributes = "{}"
+        });
+        var solutionSku = await client.PostAsJsonAsync($"/api/v1/catalog/products/{solutionProductId}/skus", new
+        {
+            skuCode = "SOL-NOSIZE",
+            powerSign = (string?)null,
+            powerValue = (decimal?)null,
+            colorName = (string?)null,
+            size = "",
+            barcode = (string?)null,
+            attributes = "{}"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, lensSku.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, solutionSku.StatusCode);
     }
 
 }
@@ -131,6 +244,35 @@ public sealed class CatalogEndpointFactory : WebApplicationFactory<Program>
                 options.DefaultForbidScheme = TestAuthHandler.TestScheme;
             }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.TestScheme, _ => { });
         });
+    }
+
+    public async Task<Guid> CreateProductAsync(string productType)
+    {
+        using var scope = Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var categoryId = Guid.NewGuid();
+        var brandId = Guid.NewGuid();
+        var productId = Guid.NewGuid();
+        dbContext.Categories.Add(new Category { Id = categoryId, Name = $"Category {categoryId:N}" });
+        dbContext.Brands.Add(new Brand { Id = brandId, Name = $"Brand {brandId:N}" });
+        dbContext.Products.Add(new Product
+        {
+            Id = productId,
+            CategoryId = categoryId,
+            BrandId = brandId,
+            Name = $"{productType} Product {productId:N}",
+            ProductType = productType,
+            ExpiryType = productType == "Lens" ? "Batch" : "Product",
+            OpenedExpiryDuration = "6 months",
+            PiecesPerPack = 1,
+            SellMode = "SinglePiece",
+            ClinicalParams = productType == "Lens" ? "{}" : null,
+            ExtendedAttributes = "{}",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        await dbContext.SaveChangesAsync();
+        return productId;
     }
 }
 

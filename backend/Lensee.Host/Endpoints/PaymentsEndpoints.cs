@@ -32,6 +32,13 @@ public static class PaymentsEndpoints
     private const string PendingAdminReview = "PendingAdminReview";
     private const string PaymentCompleted = "Completed";
 
+    private static readonly HashSet<string> PaymentMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CashHandToHand",
+        "CashTransaction",
+        "Installment"
+    };
+
     public static RouteGroupBuilder MapPaymentsEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/v1/payments").WithTags("Payments");
@@ -241,6 +248,12 @@ public static class PaymentsEndpoints
             return Results.Ok(ToDetailResponse(existing, existingCashRecords, existingAdjustments, existingLookup, existingOperationLookup));
         }
 
+        var paymentMethod = NormalizePaymentMethod(request.PaymentMethod);
+        if (paymentMethod is not null && !PaymentMethods.Contains(paymentMethod))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, or Installment."] });
+        }
+
         var now = clock.EgyptNow;
         var log = new MainPaymentLog
         {
@@ -249,7 +262,7 @@ public static class PaymentsEndpoints
             MerchantId = merchantId,
             TotalAmount = total,
             AmountPaid = 0,
-            PaymentMethod = NormalizePaymentMethod(request.PaymentMethod) ?? operation.PaymentMethod ?? "Installment",
+            PaymentMethod = paymentMethod ?? operation.PaymentMethod ?? "Installment",
             Status = PendingAdmin,
             InitializedBy = currentUser.UserId ?? Guid.Empty,
             InitializedAt = now,
@@ -334,9 +347,15 @@ public static class PaymentsEndpoints
         IClock clock,
         CancellationToken cancellationToken)
     {
-        if (request.Amount < 0)
+        if (request.Amount <= 0)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount cannot be negative."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount must be greater than zero."] });
+        }
+
+        var paymentMethod = NormalizePaymentMethod(request.PaymentMethod);
+        if (paymentMethod is not null && !PaymentMethods.Contains(paymentMethod))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, or Installment."] });
         }
 
         var log = await paymentsDbContext.MainPaymentLogs
@@ -370,7 +389,7 @@ public static class PaymentsEndpoints
             Id = Guid.NewGuid(),
             MainLogId = log.Id,
             Amount = request.Amount,
-            PaymentMethod = NormalizePaymentMethod(request.PaymentMethod) ?? log.PaymentMethod,
+            PaymentMethod = paymentMethod ?? log.PaymentMethod,
             DateReceived = request.DateReceived ?? DateOnly.FromDateTime(clock.EgyptNow),
             SubLogStatus = Draft,
             DraftedBy = currentUser.UserId ?? Guid.Empty,

@@ -21,9 +21,9 @@ public static class CatalogValidation
             errors[nameof(input.ProductType)] = ["Product type must be one of: Lens, Solution."];
         }
 
-        if (input.PiecesPerPack is <= 0)
+        if (input.PiecesPerPack is null or <= 0)
         {
-            errors[nameof(input.PiecesPerPack)] = ["Pieces per pack must be greater than zero when provided."];
+            errors[nameof(input.PiecesPerPack)] = ["Pieces per pack must be greater than zero."];
         }
 
         if (!string.IsNullOrWhiteSpace(input.OpenedExpiryDuration) && !IsValidDuration(input.OpenedExpiryDuration))

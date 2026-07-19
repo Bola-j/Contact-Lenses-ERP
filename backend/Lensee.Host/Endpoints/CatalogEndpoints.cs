@@ -284,6 +284,7 @@ public static class CatalogEndpoints
         CancellationToken cancellationToken)
     {
         var errors = CatalogValidation.ValidateProduct(ToValidationInput(request));
+        AddProductReferenceErrors(errors, request);
         if (errors.Count > 0)
         {
             return TypedResults.ValidationProblem(errors);
@@ -331,6 +332,7 @@ public static class CatalogEndpoints
         CancellationToken cancellationToken)
     {
         var errors = CatalogValidation.ValidateProduct(ToValidationInput(request));
+        AddProductReferenceErrors(errors, request);
         if (errors.Count > 0)
         {
             return TypedResults.ValidationProblem(errors);
@@ -569,6 +571,19 @@ public static class CatalogEndpoints
 
     private static SkuValidationInput ToValidationInput(SkuRequest request) =>
         new(request.PowerSign, request.PowerValue, request.ColorName, request.Size);
+
+    private static void AddProductReferenceErrors(Dictionary<string, string[]> errors, ProductRequest request)
+    {
+        if (request.CategoryId == Guid.Empty)
+        {
+            errors[nameof(request.CategoryId)] = ["Category is required."];
+        }
+
+        if (request.BrandId == Guid.Empty)
+        {
+            errors[nameof(request.BrandId)] = ["Brand is required."];
+        }
+    }
 
     private static SkuCodeInput ToSkuCodeInput(SkuRequest request) =>
         new(request.PowerSign, request.PowerValue, request.ColorName, request.Size);

@@ -142,6 +142,54 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
     }
 
     [Fact]
+    public async Task Receipt_RejectsMissingAndInvalidPayloadFields()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        {
+            locationId = Guid.Empty,
+            skuId = Guid.Empty,
+            packQuantity = 0,
+            lotNumber = new string('A', 101)
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Receipt_RejectsInactiveLocationAndSku()
+    {
+        var seed = await _factory.SeedAsync();
+        await _factory.DeactivateSeedAsync(seed.LocationA, seed.SkuId);
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        {
+            locationId = seed.LocationA,
+            skuId = seed.SkuId,
+            packQuantity = 1
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task TargetQuantity_RejectsNegativePacks()
+    {
+        var seed = await _factory.SeedAsync(withBalance: true);
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+
+        var response = await client.PutAsJsonAsync($"/api/v1/inventory/stock-balances/{seed.LocationA}/{seed.SkuId}/target", new { targetPacks = -1 });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task GenericStockTransactionPost_IsNotExposed()
     {
         using var client = _factory.CreateClient();
@@ -238,6 +286,19 @@ public sealed class InventoryEndpointFactory : WebApplicationFactory<Program>
         await catalog.SaveChangesAsync();
         await inventory.SaveChangesAsync();
         return new InventorySeed(locationA, locationB, skuId);
+    }
+
+    public async Task DeactivateSeedAsync(Guid locationId, Guid skuId)
+    {
+        using var scope = Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        var location = await inventory.Locations.FindAsync(locationId);
+        var sku = await catalog.Skus.FindAsync(skuId);
+        location!.IsActive = false;
+        sku!.IsActive = false;
+        await catalog.SaveChangesAsync();
+        await inventory.SaveChangesAsync();
     }
 }
 

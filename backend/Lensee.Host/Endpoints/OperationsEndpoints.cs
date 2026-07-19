@@ -1008,9 +1008,11 @@ public static class OperationsEndpoints
                 operation.Status = operation.OperationType is WholesaleSale or RetailSale ? Completed : Confirmed;
                 operation.ConfirmedAt = clock.EgyptNow;
                 operation.ConfirmedBy = userId;
+                await EnsureAnonymousRetailCashMerchantAsync(operation, crmDbContext, clock.EgyptNow, cancellationToken);
                 await AddVersionAsync(operationsDbContext, operation, operation.OperationType == Reserve ? "Representative received stock" : "Customer completed sale", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
             }
 
+            await crmDbContext.SaveChangesAsync(cancellationToken);
             await operationsDbContext.SaveChangesAsync(cancellationToken);
             if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Completed)
             {
@@ -1359,7 +1361,7 @@ public static class OperationsEndpoints
         {
             errors[nameof(request.Lines)] = ["Stock-consuming lines must include the selected batch expiry."];
         }
-        else if (request.Lines.Any(line => line.IsBonus == true))
+        if (operationType is not (WholesaleSale or RetailSale) && request.Lines.Any(line => line.IsBonus == true))
         {
             errors[nameof(request.Lines)] = ["Bonus lines are allowed only for sale operations."];
         }
@@ -2403,6 +2405,50 @@ public static class OperationsEndpoints
         }
 
         return null;
+    }
+
+    private static async Task EnsureAnonymousRetailCashMerchantAsync(
+        OperationLog operation,
+        CrmDbContext crmDbContext,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (operation.OperationType != RetailSale ||
+            operation.ClientId.HasValue ||
+            (!string.Equals(operation.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(operation.PaymentMethod, "CashTransaction", StringComparison.OrdinalIgnoreCase)) ||
+            string.IsNullOrWhiteSpace(operation.ClientName))
+        {
+            return;
+        }
+
+        var buyerName = operation.ClientName.Trim();
+        var merchant = await crmDbContext.Merchants
+            .FirstOrDefaultAsync(value =>
+                !value.IsDeleted &&
+                value.BusinessType == "Other" &&
+                value.BusinessName == buyerName,
+                cancellationToken);
+
+        if (merchant is null)
+        {
+            merchant = new Merchant
+            {
+                Id = Guid.NewGuid(),
+                BusinessName = buyerName,
+                ContactPersonName = buyerName,
+                PhoneNumbers = [],
+                BusinessType = "Other",
+                Status = "Active",
+                Notes = "Auto-created from anonymous cash sale.",
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            crmDbContext.Merchants.Add(merchant);
+        }
+
+        operation.ClientId = merchant.Id;
+        operation.ClientName = merchant.BusinessName;
     }
 
     private static bool ShouldSetConfirmedActorAfterRevision(string status) =>

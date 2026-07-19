@@ -32,6 +32,24 @@ public static class ReportsEndpoints
     private const string MerchantCredit = "MerchantCredit";
     private const string BalanceReduction = "BalanceReduction";
 
+    private static readonly HashSet<string> ExportReportTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "stock.csv",
+        "operations.csv",
+        "payments.csv",
+        "merchant-balances.csv",
+        "operation-bill",
+        "operation-bill.pdf",
+        "payment-receipt",
+        "payment-receipt.pdf",
+        "cash-receipt",
+        "cash-receive-receipt.pdf",
+        "merchant-statement",
+        "merchant-statement.pdf",
+        "stocktake-summary",
+        "stocktake-summary.pdf"
+    };
+
     public static RouteGroupBuilder MapReportsEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/v1/reports").WithTags("Reports");
@@ -1009,23 +1027,35 @@ public static class ReportsEndpoints
         IClock clock,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.ReportType))
+        var reportType = NormalizeExportReportType(request.ReportType);
+        if (reportType is null)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.ReportType)] = ["Report type is required."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.ReportType)] = ["Report type must be a supported report export."] });
         }
 
         var export = new ExportLog
         {
             Id = Guid.NewGuid(),
-            ReportType = request.ReportType.Trim(),
+            ReportType = reportType,
             RequestedBy = currentUser.UserId,
-            GeneratedUrl = request.GeneratedUrl ?? $"demo://reports/{request.ReportType.Trim()}",
+            GeneratedUrl = request.GeneratedUrl ?? $"demo://reports/{reportType}",
             CreatedAt = clock.EgyptNow
         };
 
         reportingDbContext.ExportLogs.Add(export);
         await reportingDbContext.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/v1/reports/exports/{export.Id}", new ExportLogResponse(export.Id, export.ReportType, export.RequestedBy, currentUser.Role, export.GeneratedUrl, export.CreatedAt));
+    }
+
+    private static string? NormalizeExportReportType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return ExportReportTypes.FirstOrDefault(type => string.Equals(type, trimmed, StringComparison.OrdinalIgnoreCase));
     }
 
     private static IResult Csv(string fileName, IReadOnlyList<string> headers, IEnumerable<IReadOnlyList<string>> rows)

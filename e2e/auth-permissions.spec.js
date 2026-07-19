@@ -20,7 +20,7 @@ test("auth: login, invalid credentials, and role-aware navigation", async ({ pag
   await page.locator("#username").fill("not_a_real_user");
   await page.locator("#password").fill("wrong-password");
   await page.locator("#login-submit").click();
-  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid/i);
+  await expect(page.locator("#login-error")).toContainText(/incorrect|failed|invalid|غير صحيحة/i);
 
   await login(page, users.admin);
   for (const label of ["Catalog", "Inventory", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake", "Admin"]) {
