@@ -1,8 +1,9 @@
-﻿const configuredApiBase = window.LENSEE_CONFIG?.apiBaseUrl?.trim();
+const configuredApiBase = window.LENSEE_CONFIG?.apiBaseUrl?.trim();
 const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 const defaultApiBase = isLocalHost ? "http://localhost:5275" : "";
 let apiBase = configuredApiBase || localStorage.getItem("lensee.apiBase") || defaultApiBase;
 const authKey = "lensee.auth";
+let activeAuth = null;
 const apiCandidates = [
   configuredApiBase,
   localStorage.getItem("lensee.apiBase"),
@@ -25,10 +26,15 @@ let operationProductOptions = [];
 let operationAvailableSkuIds = null;
 let operationMerchantOptions = [];
 let operationRepresentativeOptions = [];
+let selectedSupplyShipmentId = null;
+let supplyShipments = [];
+let supplyCurrentDetail = null;
+let supplySkuLoadPromise = null;
+let supplySkuSearchIndex = [];
 let operationsUiState = {
   mode: "create",
   operationId: null,
-  operationType: "InventoryReceipt",
+  operationType: "WarehouseTransfer",
   revisionReason: "",
   openDetailIds: []
 };
@@ -39,6 +45,7 @@ let reportOperationRows = [];
 let reportPaymentRows = [];
 let reportMerchantRows = [];
 let reportStocktakeRows = [];
+let reportSupplyRows = [];
 let selectedMerchantId = null;
 let selectedRepresentativeId = null;
 let notificationPageState = { page: 1, pageSize: 10 };
@@ -65,6 +72,7 @@ const arabicTranslations = Object.freeze({
   "Dashboard": "لوحة التحكم",
   "Catalog": "الكتالوج",
   "Inventory": "المخزون",
+  "Supply": "التوريد",
   "CRM": "إدارة العلاقات التجارية",
   "Operations": "العمليات",
   "Payments": "المدفوعات",
@@ -880,6 +888,111 @@ const arabicTranslations = Object.freeze({
   "Select product attributes to resolve SKU.": "اختر خصائص المنتج لتحديد رمز الصنف.",
   "Select product, power, and color to resolve SKU.": "اختر المنتج والدرجة واللون لتحديد رمز الصنف.",
   "No locations": "لا توجد مواقع",
+  "Stock": "المخزون",
+  "Imported shipments, landed costs, and receipts.": "الشحنات المستوردة، تكلفة الوصول، وإيصالات المخزون.",
+  "Imported shipments": "الشحنات المستوردة",
+  "Shipments": "الشحنات",
+  "Shipment": "الشحنة",
+  "Draft value": "قيمة المسودات",
+  "Ready to confirm": "جاهزة للتأكيد",
+  "Access": "الصلاحية",
+  "Read only": "قراءة فقط",
+  "Register imported shipments, allocate customs and import costs, then post controlled inventory receipts.": "سجل الشحنات المستوردة، وزع الجمارك ومصاريف الاستيراد، ثم أنشئ إيصالات مخزون مضبوطة.",
+  "Search by shipment, supplier, or invoice.": "ابحث برقم الشحنة أو المورد أو الفاتورة.",
+  "Search shipments": "بحث في الشحنات",
+  "All statuses": "كل الحالات",
+  "Draft": "مسودة",
+  "Received": "تم الاستلام",
+  "Cancelled": "ملغاة",
+  "Supplier": "المورد",
+  "Status": "الحالة",
+  "Total": "الإجمالي",
+  "No invoice": "بدون فاتورة",
+  "costs": "تكاليف",
+  "Shipment detail": "تفاصيل الشحنة",
+  "Select a shipment to review lines, cost allocation, receipt operation, and history.": "اختر شحنة لمراجعة البنود، توزيع التكلفة، عملية إيصال المخزون، وسجل الحركة.",
+  "Supply receipt": "إيصال توريد",
+  "Register incoming shipment": "تسجيل شحنة واردة",
+  "Enter supplier, SKU lines, and costs in one document, then save the draft before confirming receipt.": "أدخل بيانات المورد والبنود والتكاليف في نموذج واحد، ثم احفظ المسودة قبل تأكيد الاستلام.",
+  "New shipment": "شحنة جديدة",
+  "Shipment data": "بيانات الشحنة",
+  "Receipt draft": "مسودة استلام",
+  "Invoice number": "رقم الفاتورة",
+  "Shipment date": "تاريخ الشحنة",
+  "Destination warehouse": "مخزن الوصول",
+  "Notes": "ملاحظات",
+  "SKU lines": "بنود SKU",
+  "Prices can stay blank while drafting and must be completed before confirmation.": "يمكن ترك السعر فارغا في المسودة، ويجب إكماله قبل التأكيد.",
+  "Add line": "إضافة بند",
+  "Import cost breakdown": "تفصيل تكاليف الاستيراد",
+  "Add cost": "إضافة تكلفة",
+  "Product subtotal": "إجمالي المنتجات",
+  "Import costs": "تكاليف الاستيراد",
+  "Landed total": "الإجمالي بعد التكلفة",
+  "Confirmation readiness": "جاهزية التأكيد",
+  "Incomplete prices": "أسعار ناقصة",
+  "Find SKU": "بحث SKU",
+  "Product, color, power, SKU code": "المنتج، اللون، القوة، كود SKU",
+  "Search and select a SKU.": "ابحث واختر SKU.",
+  "Quantity": "الكمية",
+  "Unit price": "سعر الوحدة",
+  "Draft blank": "فارغ في المسودة",
+  "Required before confirmation.": "مطلوب قبل التأكيد.",
+  "Lot": "التشغيلة",
+  "Expiry": "الصلاحية",
+  "Line notes": "ملاحظات البند",
+  "Remove line": "حذف البند",
+  "Price must be greater than zero.": "السعر يجب أن يكون أكبر من صفر.",
+  "Selected SKU": "SKU محدد",
+  "Unknown SKU": "SKU غير معروف",
+  "Cost type": "نوع التكلفة",
+  "Customs": "جمارك",
+  "Freight": "شحن",
+  "Clearance": "تخليص",
+  "Handling": "مناولة",
+  "Insurance": "تأمين",
+  "Other": "أخرى",
+  "Description": "الوصف",
+  "Amount": "المبلغ",
+  "Remove cost": "حذف التكلفة",
+  "Loading shipments...": "جار تحميل الشحنات...",
+  "No supply shipments match the current filters.": "لا توجد شحنات مطابقة للفلاتر الحالية.",
+  "Failed": "فشل التحميل",
+  "Loading shipment...": "جار تحميل الشحنة...",
+  "Confirm receipt": "تأكيد الاستلام",
+  "Print receipt": "طباعة الإيصال",
+  "Products": "المنتجات",
+  "Readiness": "جاهزية التأكيد",
+  "Inventory receipt operation": "عملية إيصال المخزون",
+  "Lines": "البنود",
+  "Qty": "الكمية",
+  "Unit": "الوحدة",
+  "Line": "البند",
+  "Allocated": "الموزع",
+  "Landed unit": "تكلفة الوحدة النهائية",
+  "Batch": "التشغيلة",
+  "Blank": "فارغ",
+  "Cost breakdown": "تفصيل التكاليف",
+  "Type": "النوع",
+  "No costs.": "لا توجد تكاليف.",
+  "History": "السجل",
+  "Time": "الوقت",
+  "Summary": "الملخص",
+  "No history.": "لا يوجد سجل حتى الآن.",
+  "Supply shipment saved.": "تم حفظ شحنة التوريد.",
+  "Supply shipment received into inventory.": "تم استلام الشحنة في المخزون.",
+  "Supply shipment cancelled.": "تم إلغاء شحنة التوريد.",
+  "Review these values": "راجع هذه القيم",
+  "Supplier is required.": "اسم المورد مطلوب.",
+  "Destination warehouse is required.": "مخزن الوصول مطلوب.",
+  "At least one SKU line is required.": "يجب إضافة بند SKU واحد على الأقل.",
+  "Invalid prices": "أسعار غير صحيحة",
+  "Ready": "جاهزة",
+  "No lines": "لا توجد بنود",
+  "Only draft shipments can be confirmed.": "يمكن تأكيد الشحنات المسودة فقط.",
+  "Every SKU price must be greater than zero before confirmation.": "كل أسعار SKU يجب أن تكون أكبر من صفر قبل التأكيد.",
+  "Every SKU line needs a unit price before confirmation.": "كل بند SKU يحتاج سعر وحدة قبل التأكيد.",
+  "Ready to confirm.": "جاهزة للتأكيد.",
   "pieces not set": "عدد القطع غير محدد"
 });
 
@@ -1143,6 +1256,9 @@ function setLanguage(language) {
   currentLanguage = language === "ar" ? "ar" : "en";
   localStorage.setItem(languageKey, currentLanguage);
   applyLanguage();
+  if (currentPath() === "/supply" && getAuth()) {
+    routes["/supply"].render().then(applyLanguage).catch((exception) => notice(getFriendlyWorkspaceError(exception), "error"));
+  }
 }
 
 const systemValueAliases = Object.freeze({
@@ -1179,22 +1295,24 @@ function canonicalSelectValue(id) {
 
 const routes = {
   "/login": { title: "Sign In", label: "Identity", roles: [], render: renderLogin },
-  "/dashboard": { title: "Overview", label: "Dashboard", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderDashboard },
-  "/catalog": { title: "Catalog", label: "Catalog", roles: ["CLevel", "Admin", "WarehouseClerk"], render: renderCatalog },
-  "/inventory": { title: "Inventory", label: "Inventory", roles: ["CLevel", "Admin", "WarehouseClerk"], render: renderInventory },
-  "/crm": { title: "CRM", label: "CRM", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderCrm },
-  "/operations": { title: "Operations", label: "Operations", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderOperations },
-  "/payments": { title: "Payments", label: "Payments", roles: ["CLevel", "Admin", "Accountant"], render: renderPayments },
-  "/notifications": { title: "Notifications", label: "Notifications", roles: ["CLevel", "Admin", "Accountant", "WarehouseClerk"], render: renderNotifications },
-  "/reports": { title: "Reports", label: "Reports", roles: ["CLevel", "Admin", "Accountant"], render: renderReports },
-  "/stocktakes": { title: "Stocktake", label: "Stocktake", roles: ["CLevel", "Admin"], render: renderStocktakes },
-  "/admin": { title: "Administration", label: "Admin", roles: ["Admin"], render: renderAdmin }
+  "/dashboard": { title: "Overview", label: "Dashboard", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderDashboard },
+  "/catalog": { title: "Catalog", label: "Catalog", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderCatalog },
+  "/inventory": { title: "Inventory", label: "Inventory", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderInventory },
+  "/supply": { title: "Supply", label: "Supply", roles: ["CLevel", "Admin"], render: renderSupply },
+  "/crm": { title: "CRM", label: "CRM", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderCrm },
+  "/operations": { title: "Operations", label: "Operations", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderOperations },
+  "/payments": { title: "Payments", label: "Payments", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderPayments },
+  "/notifications": { title: "Notifications", label: "Notifications", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderNotifications },
+  "/reports": { title: "Reports", label: "Reports", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderReports },
+  "/stocktakes": { title: "Stocktake", label: "Stocktake", roles: ["CLevel", "Admin", "ERPAdmin"], render: renderStocktakes },
+  "/admin": { title: "Administration", label: "Admin", roles: ["Admin", "ERPAdmin"], render: renderAdmin }
 };
 
 const navItems = [
   ["/dashboard", "Dashboard"],
   ["/catalog", "Catalog"],
   ["/inventory", "Inventory"],
+  ["/supply", "Supply"],
   ["/crm", "CRM"],
   ["/operations", "Operations"],
   ["/payments", "Payments"],
@@ -1207,7 +1325,7 @@ const navItems = [
 const navGroups = [
   { label: "Daily work", items: ["/dashboard", "/operations", "/notifications"] },
   { label: "Money", items: ["/payments", "/reports"] },
-  { label: "Stock", items: ["/inventory", "/catalog", "/stocktakes"] },
+  { label: "Stock", items: ["/inventory", "/supply", "/catalog", "/stocktakes"] },
   { label: "Oversight", items: ["/crm", "/admin"] }
 ];
 
@@ -1268,23 +1386,24 @@ window.addEventListener(authEventName, renderRoute);
 syncChannel?.addEventListener("message", (event) => handleExternalSync(event.data));
 checkHealth();
 startLanguageObserver();
-renderRoute();
-applyLanguage();
+restoreSessionFromCookie().finally(() => {
+  renderRoute();
+  applyLanguage();
+});
 
 function getAuth() {
-  try {
-    return JSON.parse(localStorage.getItem(authKey));
-  } catch {
-    return null;
-  }
+  return activeAuth;
 }
+window.__lenseeGetAuth = getAuth;
 
 function setAuth(auth, { broadcast = true } = {}) {
-  localStorage.setItem(authKey, JSON.stringify(auth));
+  activeAuth = auth ? { accessToken: auth.accessToken, user: auth.user } : null;
+  localStorage.removeItem(authKey);
   if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
 }
 
 function clearAuth({ broadcast = true } = {}) {
+  activeAuth = null;
   localStorage.removeItem(authKey);
   if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
 }
@@ -1297,7 +1416,7 @@ function publishSync(payload) {
 function handleExternalSync(payload) {
   if (!payload || payload.source === sessionStorage.getItem("lensee.tabId")) return;
   if (payload.type === "auth") {
-    renderRoute();
+    restoreSessionFromCookie().finally(renderRoute);
     return;
   }
   if (payload.type === "mutation") {
@@ -1321,19 +1440,19 @@ function buildRequestHeaders(options = {}, auth = getAuth()) {
 async function fetchWithAuth(path, options = {}) {
   let auth = getAuth();
   let headers = buildRequestHeaders(options, auth);
-  let response = await fetch(`${apiBase}${path}`, { ...options, headers });
-  if (response.status !== 401 || !auth?.refreshToken) {
+  let response = await fetch(`${apiBase}${path}`, { ...options, headers, credentials: "include" });
+  if (response.status !== 401 || !auth?.accessToken) {
     return response;
   }
 
-  const refreshed = await refreshSession(auth.refreshToken);
+  const refreshed = await refreshSession();
   if (!refreshed) {
     return response;
   }
 
   auth = refreshed;
   headers = buildRequestHeaders(options, auth);
-  return fetch(`${apiBase}${path}`, { ...options, headers });
+  return fetch(`${apiBase}${path}`, { ...options, headers, credentials: "include" });
 }
 
 async function request(path, options = {}) {
@@ -1377,7 +1496,7 @@ async function downloadFile(path, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function refreshSession(refreshToken) {
+async function refreshSession({ broadcastFailure = true } = {}) {
   if (refreshSessionPromise) {
     return refreshSessionPromise;
   }
@@ -1389,17 +1508,18 @@ async function refreshSession(refreshToken) {
       const response = await fetch(`${apiBase}/api/v1/auth/refresh`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ refreshToken })
+        credentials: "include",
+        body: JSON.stringify({})
       });
       if (!response.ok) {
-        clearAuth();
+        clearAuth({ broadcast: broadcastFailure });
         return null;
       }
       const auth = await response.json();
       setAuth(auth);
       return auth;
     } catch {
-      clearAuth();
+      clearAuth({ broadcast: broadcastFailure });
       return null;
     } finally {
       refreshSessionPromise = null;
@@ -1407,6 +1527,15 @@ async function refreshSession(refreshToken) {
   })();
 
   return refreshSessionPromise;
+}
+
+async function restoreSessionFromCookie() {
+  try {
+    return await refreshSession({ broadcastFailure: false });
+  } catch {
+    clearAuth({ broadcast: false });
+    return null;
+  }
 }
 
 async function checkHealth() {
@@ -1723,6 +1852,9 @@ async function refreshActiveView({ reason = "manual" } = {}) {
       case "/inventory":
         await refreshInventoryTables();
         break;
+      case "/supply":
+        await loadSupplyShipments();
+        break;
       case "/crm":
         await Promise.all([loadMerchants(), loadRepresentatives()]);
         break;
@@ -1842,7 +1974,7 @@ async function login(event) {
 async function loginRequest(baseUrl, options) {
   const headers = new Headers({ "Content-Type": "application/json" });
   applyApiHeaders(headers);
-  const response = await fetch(`${baseUrl}/api/v1/auth/login`, { ...options, headers });
+  const response = await fetch(`${baseUrl}/api/v1/auth/login`, { ...options, headers, credentials: "include" });
   if (!response.ok) {
     throw new Error(await response.text() || response.statusText);
   }
@@ -1873,6 +2005,7 @@ function renderDashboard() {
       const descriptions = {
         "/catalog": "Products, SKUs, categories, and brands.",
         "/inventory": "Stock balances, batches, replenishment, and targets.",
+        "/supply": "Imported shipments, landed costs, and receipts.",
         "/crm": "Merchants, representatives, notes, and eligibility.",
         "/operations": "Receipts, transfers, sales, returns, changes, and write-offs.",
         "/payments": "Payment logs, approvals, cash records, and live remaining.",
@@ -1954,7 +2087,7 @@ async function loadDashboardFinancialSummary() {
 
 function renderCatalog() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   document.getElementById("view").innerHTML = `
     <section class="catalog-hero">
       <div>
@@ -2059,10 +2192,15 @@ function workspaceTone(href) {
 function dashboardPrimaryResponsibility(role) {
   return {
     Admin: "Cross-module administration",
+    ERPAdmin: "Cross-module administration",
     CLevel: "Executive oversight",
     Accountant: "Payments and remaining control",
     WarehouseClerk: "Inventory and operational execution"
   }[role] || "Workspace access";
+}
+
+function isSystemAdminRole(role) {
+  return role === "Admin" || role === "ERPAdmin";
 }
 
 function renderCatalogWritePanel() {
@@ -2153,7 +2291,7 @@ async function loadCatalogLookups() {
 }
 
 function refreshLookupControls() {
-  const canWrite = getAuth()?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(getAuth()?.user.role);
   if (!canWrite) {
     return;
   }
@@ -2247,7 +2385,7 @@ async function loadCatalogProducts() {
   if (!tbody || !count || !searchInput || !includeInactiveInput) {
     return;
   }
-  const canWrite = getAuth()?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(getAuth()?.user.role);
   const search = searchInput.value.trim();
   const includeInactive = includeInactiveInput.checked;
   const params = new URLSearchParams({ page: "1", pageSize: "50", includeInactive: String(includeInactive) });
@@ -2293,7 +2431,7 @@ async function editProductFromList(productId) {
 async function loadCatalogDetail(productId) {
   selectedProductId = productId;
   const detail = document.getElementById("catalog-detail");
-  const canWrite = getAuth()?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(getAuth()?.user.role);
   detail.innerHTML = `<h2>Product detail</h2><p>Loading product</p>`;
   try {
     const product = await request(`/api/v1/catalog/products/${productId}`);
@@ -2819,7 +2957,7 @@ function clearFormError(id) {
 
 function renderInventory() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   document.getElementById("view").innerHTML = `
     <section class="catalog-hero">
       <div>
@@ -3064,7 +3202,7 @@ function toggleProductTotalDetails(button) {
 
 async function loadInventoryBalances() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   const tbody = document.getElementById("inventory-balances");
   const count = document.getElementById("inventory-balance-count");
   const includeZeroStock = document.getElementById("inventory-include-zero-stock");
@@ -3342,7 +3480,7 @@ async function reserveInventoryReplenishment() {
 
 async function renderCrm() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   selectedMerchantId = null;
   selectedRepresentativeId = null;
   document.getElementById("view").innerHTML = `
@@ -3412,7 +3550,7 @@ async function renderCrm() {
 
 async function loadMerchants(search = "") {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   const tbody = document.getElementById("merchant-rows");
   const count = document.getElementById("crm-count");
   try {
@@ -3427,6 +3565,7 @@ async function loadMerchants(search = "") {
         <td><span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(merchant.status)}</span></td>
         <td>
           <button class="button secondary table-action" type="button" data-view-merchant="${escapeHtml(merchant.id)}">Detail</button>
+          <button class="button secondary table-action" type="button" data-print-report="merchant-statement" data-print-id="${escapeHtml(merchant.id)}" data-print-code="${escapeHtml(merchant.businessName)}">Print</button>
           ${canWrite ? `<button class="button secondary table-action" type="button" data-edit-merchant="${escapeHtml(merchant.id)}">Edit</button>` : ""}
           ${canWrite ? `<button class="button secondary table-action" type="button" data-status-merchant="${escapeHtml(merchant.id)}" data-next-status="${merchant.status === "Active" ? "deactivate" : "reactivate"}">${merchant.status === "Active" ? "Deactivate" : "Reactivate"}</button>` : ""}
           ${canWrite ? `<button class="button secondary table-action" type="button" data-note-merchant="${escapeHtml(merchant.id)}">Add note</button>` : ""}
@@ -3446,6 +3585,7 @@ async function loadMerchants(search = "") {
     tbody.querySelectorAll("[data-status-merchant]").forEach((button) => button.addEventListener("click", () => changeMerchantStatus(button.dataset.statusMerchant, button.dataset.nextStatus)));
     tbody.querySelectorAll("[data-note-merchant]").forEach((button) => button.addEventListener("click", () => addMerchantNote(button.dataset.noteMerchant)));
     tbody.querySelectorAll("[data-eligibility-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantEligibility(button.dataset.eligibilityMerchant)));
+    bindPrintReportButtons(tbody);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
@@ -3454,7 +3594,7 @@ async function loadMerchants(search = "") {
 
 async function loadRepresentatives() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  const canWrite = isSystemAdminRole(auth?.user.role);
   const tbody = document.getElementById("rep-rows");
   const count = document.getElementById("rep-count");
   try {
@@ -3737,8 +3877,8 @@ async function addMerchantNote(merchantId) {
 
 async function renderOperations() {
   const auth = getAuth();
-  const canWrite = ["Admin", "WarehouseClerk"].includes(auth?.user.role);
-  operationsUiState.operationType = operationsUiState.operationType || "InventoryReceipt";
+  const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
+  operationsUiState.operationType = operationsUiState.operationType === "InventoryReceipt" ? "WarehouseTransfer" : (operationsUiState.operationType || "WarehouseTransfer");
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Operations",
@@ -3761,7 +3901,7 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
             </div>
-            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
             <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
@@ -3962,7 +4102,7 @@ function addOperationLine(line = {}) {
     populateOperationAttributeOptions(row);
     resolveOperationLineSku(row);
   }
-  syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "InventoryReceipt");
+  syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "WarehouseTransfer");
   if (line.lotNumber !== undefined || line.expiryDate !== undefined) {
     row.querySelector(".op-line-lot").value = line.lotNumber || "";
     row.querySelector(".op-line-expiry").value = line.expiryDate || "";
@@ -4503,7 +4643,7 @@ function resetOperationEditorMode() {
   }
   const typeControl = document.getElementById("op-type");
   if (typeControl) {
-    typeControl.value = operationsUiState.operationType || "InventoryReceipt";
+    typeControl.value = operationsUiState.operationType || "WarehouseTransfer";
   }
   syncOperationTypeControls();
   applyOperationEditorMode();
@@ -4678,7 +4818,7 @@ async function loadOperations() {
   const tbody = document.getElementById("operation-rows");
   const count = document.getElementById("operation-count");
   const auth = getAuth();
-  const canWrite = ["Admin", "WarehouseClerk"].includes(auth?.user.role);
+  const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
   try {
     const result = await request("/api/v1/operations?pageSize=50");
     const showCompleted = document.getElementById("operations-show-completed")?.checked;
@@ -4700,6 +4840,7 @@ async function loadOperations() {
     tbody.querySelectorAll("[data-op-action]").forEach((button) => button.addEventListener("click", () => runOperationAction(button.dataset.opAction, button.dataset.opId, button)));
     tbody.querySelectorAll("[data-op-edit]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opEdit, "edit")));
     tbody.querySelectorAll("[data-op-revise]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opRevise, "revise")));
+    bindPrintReportButtons(tbody);
     for (const operationId of operationsUiState.openDetailIds) {
       const toggle = tbody.querySelector(`[data-op-toggle][data-op-id="${operationId}"]`);
       if (toggle) {
@@ -4863,8 +5004,9 @@ function operationLineUniquenessKey(type, line) {
 
 function renderOperationActions(operation, canWrite) {
   const detailButton = `<button class="button secondary table-action" type="button" data-op-toggle="details" data-op-id="${escapeHtml(operation.id)}">Details</button>`;
+  const printButton = `<button class="button secondary table-action" type="button" data-print-report="operation-bill" data-print-id="${escapeHtml(operation.id)}" data-print-code="${escapeHtml(operation.operationNumber)}">Print</button>`;
   if (!canWrite) {
-    return detailButton;
+    return `${detailButton} ${printButton}`;
   }
   const actions = [];
   if (operation.status === "Draft") {
@@ -4882,8 +5024,8 @@ function renderOperationActions(operation, canWrite) {
   }
 
   return actions.length === 0
-    ? detailButton
-    : `${detailButton} ${actions.map(([action, label]) => {
+    ? `${detailButton} ${printButton}`
+    : `${detailButton} ${printButton} ${actions.map(([action, label]) => {
       if (action === "edit-draft") {
         return `<button class="button secondary table-action" type="button" data-op-edit="${escapeHtml(operation.id)}">${label}</button>`;
       }
@@ -5134,8 +5276,8 @@ function showEligibilityGateDialog(gate) {
 
 async function renderPayments() {
   const auth = getAuth();
-  const isAdmin = auth?.user.role === "Admin";
-  const canDraft = ["Admin", "Accountant"].includes(auth?.user.role);
+  const isAdmin = isSystemAdminRole(auth?.user.role);
+  const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
   const merchants = await loadPaymentMerchants();
   paymentMerchants = merchants;
   paymentAccountants = isAdmin ? await loadPaymentAccountants() : [];
@@ -5249,9 +5391,9 @@ async function loadPayments() {
     return;
   }
   const auth = getAuth();
-  const isAdmin = auth?.user.role === "Admin";
+  const isAdmin = isSystemAdminRole(auth?.user.role);
   const isAccountant = auth?.user.role === "Accountant";
-  const canDraft = ["Admin", "Accountant"].includes(auth?.user.role);
+  const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
   try {
     let result;
     try {
@@ -5276,7 +5418,7 @@ async function loadPayments() {
           <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
           <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
           <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(log.status)}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
-          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(log.id)}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
         </tr>
         <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
@@ -5288,6 +5430,7 @@ async function loadPayments() {
     tbody.querySelectorAll("[data-payment-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentDetails(button.dataset.paymentDetail, button)));
     tbody.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", () => assignPaymentLog(button.dataset.paymentAssign)));
     tbody.querySelectorAll("[data-cash-approve]").forEach((button) => button.addEventListener("click", () => approveCashReceipt(button.dataset.cashApprove)));
+    bindPrintReportButtons(tbody);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
@@ -5317,10 +5460,11 @@ async function loadPaymentHistory() {
           <td>${escapeHtml(formatMoney(row.totalAmount))}</td>
           <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(row.status || "-")}</span></td>
           <td>${escapeHtml(row.lastModifiedByName || row.initializedByName || "-")}</td>
-          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button></td>
+          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(row.id)}">Print</button></td>
         </tr>
         <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-history-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentHistoryDetails(button.dataset.paymentHistoryDetail, button)));
+    bindPrintReportButtons(tbody);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
@@ -5386,7 +5530,7 @@ async function togglePaymentHistoryDetails(id, button) {
 }
 
 function renderPaymentDetail(detail) {
-  const isAdmin = getAuth()?.user.role === "Admin";
+  const isAdmin = isSystemAdminRole(getAuth()?.user.role);
   const subLogs = detail.subLogs || [];
   const cashRecords = detail.cashRecords || [];
   const adjustments = detail.adjustments || [];
@@ -5645,18 +5789,27 @@ async function renderReports() {
     <section class="band">
       <div class="section-head"><div><h2>Reports and exports</h2><p class="muted-text">Download operational, inventory, payment, and statement outputs in CSV and PDF formats.</p></div><button id="reports-refresh" class="button secondary" type="button">Refresh</button></div>
       <div class="report-grid">
+        <section class="report-panel">
+          <div class="section-head tight-head"><h3>Export language</h3><span class="muted-text">CSV / PDF</span></div>
+          <div class="segmented-control" role="radiogroup" aria-label="Export language">
+            <label><input type="radio" name="report-export-language" value="ar" ${currentLanguage === "ar" ? "checked" : ""}>Arabic</label>
+            <label><input type="radio" name="report-export-language" value="en" ${currentLanguage === "en" ? "checked" : ""}>English</label>
+          </div>
+        </section>
         ${canSeeStock ? `<section class="report-panel"><div class="section-head tight-head"><h3>Stock</h3><button class="button secondary table-action" type="button" data-download-report="stock.csv">CSV</button></div><div id="report-stock" class="table-wrap compact-table">Loading</div></section>` : ""}
         <section class="report-panel"><div class="section-head tight-head"><h3>Operations</h3><button class="button secondary table-action" type="button" data-download-report="operations.csv">CSV</button></div><div id="report-operations" class="table-wrap compact-table">Loading</div></section>
         <section class="report-panel"><div class="section-head tight-head"><h3>Payments</h3><button class="button secondary table-action" type="button" data-download-report="payments.csv">CSV</button></div><div id="report-payments" class="table-wrap compact-table">Loading</div></section>
+        <section class="report-panel"><div class="section-head tight-head"><h3>Supply landed cost</h3><button class="button secondary table-action" type="button" data-download-report="supply.csv">CSV</button></div><div id="report-supply" class="table-wrap compact-table">Loading</div></section>
         <section class="report-panel"><div class="section-head tight-head"><h3>Merchant remaining</h3><button class="button secondary table-action" type="button" data-download-report="merchant-balances.csv">CSV</button></div><div id="report-balances" class="table-wrap compact-table">Loading</div></section>
         <section class="report-panel report-download-panel">
           <div class="section-head tight-head"><h3>Document downloads</h3><span class="muted-text">PDF</span></div>
           <div class="download-grid">
-            <div class="field"><label for="report-operation-select">Operation bill</label><select id="report-operation-select" class="select"><option value="">Loading operations</option></select><button class="button secondary" type="button" data-pdf-report="operation-bill">Download bill</button></div>
-            <div class="field"><label for="report-payment-select">Payment receipt</label><select id="report-payment-select" class="select"><option value="">Loading payments</option></select><button class="button secondary" type="button" data-pdf-report="payment-receipt">Download receipt</button></div>
-            <div class="field"><label for="report-cash-receipt-select">Cash receive receipt</label><select id="report-cash-receipt-select" class="select"><option value="">Loading cash payments</option></select><button class="button secondary" type="button" data-pdf-report="cash-receipt">Download cash receipt</button></div>
-            <div class="field"><label for="report-merchant-select">Merchant statement</label><select id="report-merchant-select" class="select"><option value="">Loading merchants</option></select><button class="button secondary" type="button" data-pdf-report="merchant-statement">Download statement</button></div>
-            <div class="field"><label for="report-stocktake-select">Stocktake summary</label><select id="report-stocktake-select" class="select"><option value="">Loading stocktakes</option></select><button class="button secondary" type="button" data-pdf-report="stocktake-summary">Download summary</button></div>
+            ${renderReportSearchPicker("operation-bill", "Operation bill", "Search operation code, client, type", "Download bill")}
+            ${renderReportSearchPicker("payment-receipt", "Payment receipt", "Search payment code, operation, merchant", "Download receipt")}
+            ${renderReportSearchPicker("cash-receipt", "Cash receive receipt", "Search cash payment code, operation", "Download cash receipt")}
+            ${renderReportSearchPicker("supply-landed-cost", "Supply landed cost", "Search shipment, supplier, invoice", "Download landed cost")}
+            ${renderReportSearchPicker("merchant-statement", "Merchant statement", "Search merchant", "Download statement")}
+            ${renderReportSearchPicker("stocktake-summary", "Stocktake summary", "Search stocktake, location, status", "Download summary")}
           </div>
         </section>
         <section class="report-panel"><div class="section-head tight-head"><h3>Export log</h3><span id="report-export-count" class="muted-text">Loading</span></div><div id="report-exports" class="table-wrap compact-table">Loading</div></section>
@@ -5676,6 +5829,7 @@ async function loadReports() {
     canSeeStock ? loadStockReport() : Promise.resolve(),
     loadOperationsReport(),
     loadPaymentsReport(),
+    loadSupplyReport(),
     loadMerchantBalancesReport(),
     loadStocktakeReportOptions(),
     loadExportLogs()
@@ -5724,10 +5878,24 @@ async function loadPaymentsReport() {
   try {
     const rows = await request("/api/v1/reports/payments");
     reportPaymentRows = rows;
-    target.innerHTML = `<table><thead><tr><th>Payment</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th></tr></thead><tbody>${rows.length === 0
-      ? `<tr><td colspan="6">No payment logs.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(shortId(row.id))}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
+    target.innerHTML = `<table><thead><tr><th>Payment</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="7">No payment logs.</td></tr>`
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.operationNumber || row.operationId)}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
+    target.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadSupplyReport() {
+  const target = document.getElementById("report-supply");
+  try {
+    const rows = await request("/api/v1/reports/supply");
+    reportSupplyRows = rows;
+    target.innerHTML = `<table><thead><tr><th>Shipment</th><th>Supplier</th><th>Status</th><th>Qty</th><th>Landed</th><th>Receipt</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="6">No supply shipments.</td></tr>`
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td>${escapeHtml(row.supplierName)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId) : "-")}</td></tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    reportSupplyRows = [];
     target.textContent = getFriendlyWorkspaceError(exception);
   }
 }
@@ -5763,11 +5931,12 @@ async function loadStocktakeReportOptions() {
 }
 
 function renderReportDownloadSelectors() {
-  setReportSelect("report-operation-select", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${row.operationType} / ${row.status}`);
-  setReportSelect("report-payment-select", reportPaymentRows, (row) => row.id, (row) => `${shortId(row.id)} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
-  setReportSelect("report-cash-receipt-select", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${shortId(row.id)} / ${row.status} / ${formatMoney(row.totalAmount)}`);
-  setReportSelect("report-merchant-select", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
-  setReportSelect("report-stocktake-select", reportStocktakeRows, (row) => row.id, (row) => `${shortId(row.id)} / ${row.status} / ${formatDateTime(row.createdAt)}`);
+  setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${row.operationType} / ${row.status} / ${row.clientName || "-"}`);
+  setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${row.id} / ${row.operationNumber || row.operationId} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
+  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${row.id} / ${row.operationNumber || row.operationId} / ${row.status} / ${formatMoney(row.totalAmount)}`);
+  setupReportSearchPicker("supply-landed-cost", reportSupplyRows, (row) => row.id, (row) => `${row.shipmentNumber} / ${row.supplierName} / ${row.invoiceNumber || "-"} / ${formatMoney(row.landedTotal)}`);
+  setupReportSearchPicker("merchant-statement", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
+  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${row.id} / ${row.status} / ${formatDateTime(row.createdAt)}`);
 }
 
 function setReportSelect(id, rows, valueSelector, labelSelector) {
@@ -5778,6 +5947,50 @@ function setReportSelect(id, rows, valueSelector, labelSelector) {
   select.innerHTML = rows.length === 0
     ? `<option value="">No rows available</option>`
     : `<option value="">Select...</option>${rows.map((row) => `<option value="${escapeHtml(valueSelector(row))}">${escapeHtml(labelSelector(row))}</option>`).join("")}`;
+}
+
+function renderReportSearchPicker(reportType, label, placeholder, buttonLabel) {
+  const id = `report-picker-${reportType}`;
+  return `<div class="field report-search-field">
+    <label for="${id}-search">${escapeHtml(label)}</label>
+    <input id="${id}-value" type="hidden">
+    <input id="${id}-search" class="input report-picker-search" data-report-picker="${escapeHtml(reportType)}" autocomplete="off" placeholder="${escapeHtml(placeholder)}">
+    <div id="${id}-results" class="op-line-search-results report-picker-results" hidden></div>
+    <button class="button secondary" type="button" data-pdf-report="${escapeHtml(reportType)}">${escapeHtml(buttonLabel)}</button>
+  </div>`;
+}
+
+function setupReportSearchPicker(reportType, rows, valueSelector, labelSelector) {
+  const search = document.getElementById(`report-picker-${reportType}-search`);
+  const value = document.getElementById(`report-picker-${reportType}-value`);
+  const results = document.getElementById(`report-picker-${reportType}-results`);
+  if (!search || !value || !results) {
+    return;
+  }
+
+  const render = () => {
+    const term = search.value.trim().toLowerCase();
+    const matches = rows
+      .map((row) => ({ row, value: String(valueSelector(row) || ""), label: String(labelSelector(row) || "") }))
+      .filter((item) => !term || item.label.toLowerCase().includes(term) || item.value.toLowerCase().includes(term))
+      .slice(0, 12);
+
+    results.hidden = false;
+    results.innerHTML = matches.length === 0
+      ? `<button type="button" disabled>No records found.</button>`
+      : matches.map((item) => `<button class="op-line-search-result" type="button" data-report-picker-value="${escapeHtml(item.value)}" data-report-picker-label="${escapeHtml(item.label)}"><strong>${escapeHtml(item.label)}</strong><span class="muted-cell">${escapeHtml(item.value)}</span></button>`).join("");
+    results.querySelectorAll("[data-report-picker-value]").forEach((button) => button.addEventListener("click", () => {
+      value.value = button.dataset.reportPickerValue || "";
+      search.value = button.dataset.reportPickerLabel || "";
+      results.hidden = true;
+    }));
+  };
+
+  search.addEventListener("input", render);
+  search.addEventListener("focus", render);
+  search.addEventListener("blur", () => window.setTimeout(() => {
+    results.hidden = true;
+  }, 150));
 }
 
 async function loadExportLogs() {
@@ -5807,7 +6020,8 @@ async function logReportExport(reportType) {
 
 async function downloadReport(reportName) {
   try {
-    await downloadFile(`/api/v1/reports/${reportName}`, `lensee-${reportName}`);
+    const language = getReportExportLanguage();
+    await downloadFile(`/api/v1/reports/${reportName}?language=${encodeURIComponent(language)}`, `lensee-${language}-${reportName}`);
     notice("Report downloaded.", "success");
     await loadExportLogs();
   } catch (exception) {
@@ -5817,11 +6031,12 @@ async function downloadReport(reportName) {
 
 async function downloadReportPdf(reportType) {
   const selectors = {
-    "operation-bill": "report-operation-select",
-    "payment-receipt": "report-payment-select",
-    "cash-receipt": "report-cash-receipt-select",
-    "merchant-statement": "report-merchant-select",
-    "stocktake-summary": "report-stocktake-select"
+    "operation-bill": "report-picker-operation-bill-value",
+    "payment-receipt": "report-picker-payment-receipt-value",
+    "cash-receipt": "report-picker-cash-receipt-value",
+    "supply-landed-cost": "report-picker-supply-landed-cost-value",
+    "merchant-statement": "report-picker-merchant-statement-value",
+    "stocktake-summary": "report-picker-stocktake-summary-value"
   };
   const id = document.getElementById(selectors[reportType])?.value || "";
   if (!id) {
@@ -5833,12 +6048,13 @@ async function downloadReportPdf(reportType) {
     "operation-bill": `/api/v1/reports/operations/${encodeURIComponent(id.trim())}/bill.pdf`,
     "payment-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/receipt.pdf`,
     "cash-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/cash-receipt.pdf`,
+    "supply-landed-cost": `/api/v1/reports/supply/${encodeURIComponent(id.trim())}/landed-cost.pdf`,
     "merchant-statement": `/api/v1/reports/merchants/${encodeURIComponent(id.trim())}/statement.pdf`,
     "stocktake-summary": `/api/v1/reports/stocktakes/${encodeURIComponent(id.trim())}/summary.pdf`
   };
 
   try {
-    await downloadFile(`${paths[reportType]}?language=${currentLanguage}`, `lensee-${reportType}-${id.trim()}.pdf`);
+    await printReportPdf(reportType, id.trim());
     notice("PDF downloaded.", "success");
     await loadExportLogs();
   } catch (exception) {
@@ -5846,8 +6062,696 @@ async function downloadReportPdf(reportType) {
   }
 }
 
+function getReportExportLanguage() {
+  return document.querySelector('input[name="report-export-language"]:checked')?.value === "en" ? "en" : "ar";
+}
+
+async function printReportPdf(reportType, id, codeOverride = null) {
+  const paths = {
+    "operation-bill": `/api/v1/reports/operations/${encodeURIComponent(id.trim())}/bill.pdf`,
+    "payment-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/receipt.pdf`,
+    "cash-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/cash-receipt.pdf`,
+    "supply-landed-cost": `/api/v1/reports/supply/${encodeURIComponent(id.trim())}/landed-cost.pdf`,
+    "merchant-statement": `/api/v1/reports/merchants/${encodeURIComponent(id.trim())}/statement.pdf`,
+    "stocktake-summary": `/api/v1/reports/stocktakes/${encodeURIComponent(id.trim())}/summary.pdf`
+  };
+  const language = getReportExportLanguage();
+  const code = sanitizeFileCode(codeOverride || getReportFileCode(reportType, id));
+  await downloadFile(`${paths[reportType]}?language=${encodeURIComponent(language)}`, `lensee-${language}-${reportType}-${code}.pdf`);
+}
+
+function getReportFileCode(reportType, id) {
+  const cleanId = String(id || "").trim();
+  if (reportType === "operation-bill") {
+    return sanitizeFileCode(reportOperationRows.find((row) => row.id === cleanId)?.operationNumber || cleanId);
+  }
+  if (reportType === "payment-receipt" || reportType === "cash-receipt") {
+    return sanitizeFileCode(reportPaymentRows.find((row) => row.id === cleanId)?.id || cleanId);
+  }
+  if (reportType === "merchant-statement") {
+    return sanitizeFileCode(reportMerchantRows.find((row) => row.merchantId === cleanId)?.businessName || cleanId);
+  }
+  if (reportType === "supply-landed-cost") {
+    return sanitizeFileCode(reportSupplyRows.find((row) => row.id === cleanId)?.shipmentNumber || cleanId);
+  }
+  if (reportType === "stocktake-summary") {
+    return sanitizeFileCode(cleanId);
+  }
+  return sanitizeFileCode(cleanId);
+}
+
+function sanitizeFileCode(value) {
+  return String(value || "report").trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "report";
+}
+
+function bindPrintReportButtons(root = document) {
+  root.querySelectorAll("[data-print-report]").forEach((button) => button.addEventListener("click", async () => {
+    try {
+      await printReportPdf(button.dataset.printReport, button.dataset.printId, button.dataset.printCode);
+      notice("PDF downloaded.", "success");
+      if (document.getElementById("report-exports")) {
+        await loadExportLogs();
+      }
+    } catch (exception) {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
+  }));
+}
+
+function supplyStatusLabel(status) {
+  const labels = {
+    Draft: supplyText("Draft", "مسودة"),
+    Received: supplyText("Received", "تم الاستلام"),
+    Cancelled: supplyText("Cancelled", "ملغاة")
+  };
+  return labels[status] || status || "-";
+}
+
+function supplyCostTypeLabel(type) {
+  const labels = {
+    Customs: supplyText("Customs", "جمارك"),
+    Freight: supplyText("Freight", "شحن"),
+    Clearance: supplyText("Clearance", "تخليص"),
+    Handling: supplyText("Handling", "مناولة"),
+    Insurance: supplyText("Insurance", "تأمين"),
+    Other: supplyText("Other", "أخرى")
+  };
+  return labels[type] || type || "-";
+}
+
+function supplyText(english, arabic) {
+  return currentLanguage === "ar" ? arabic : english;
+}
+
+async function hydrateSupplySkus() {
+  if (operationSkuOptions.length > 0) {
+    buildSupplySkuSearchIndex();
+    return;
+  }
+  if (!supplySkuLoadPromise) {
+    supplySkuLoadPromise = hydrateOperationSkus()
+      .then(buildSupplySkuSearchIndex)
+      .finally(() => {
+        supplySkuLoadPromise = null;
+      });
+  }
+  await supplySkuLoadPromise;
+}
+
+function buildSupplySkuSearchIndex() {
+  supplySkuSearchIndex = operationSkuOptions.map((sku) => ({
+    sku,
+    searchText: `${sku.productName} ${sku.brandName} ${sku.categoryName} ${sku.skuCode} ${formatOperationPowerKey(operationPowerKey(sku))} ${sku.colorName || ""} ${sku.size || ""}`.toLowerCase()
+  }));
+}
+
+async function renderSupply() {
+  const auth = getAuth();
+  const canWrite = auth?.user.role === "Admin";
+  selectedSupplyShipmentId = null;
+  supplyCurrentDetail = null;
+  await Promise.all([
+    loadSupplyLocations(),
+    hydrateSupplySkus()
+  ]);
+
+  document.getElementById("view").innerHTML = `
+    ${pageIntro({
+      eyebrow: supplyText("Stock", "المخزون"),
+      title: supplyText("Supply", "التوريد"),
+      body: supplyText("Register imported shipments, allocate customs and import costs, then post controlled inventory receipts.", "سجل الشحنات المستوردة، وزع الجمارك ومصاريف الاستيراد، ثم أنشئ إيصالات مخزون مضبوطة."),
+      metrics: `
+        ${scenarioCard(supplyText("Shipments", "الشحنات"), supplyText("Loading", "جار التحميل"), "status-muted", "supply-count")}
+        ${scenarioCard(supplyText("Draft value", "قيمة المسودات"), supplyText("Loading", "جار التحميل"), "status-muted", "supply-draft-total")}
+        ${scenarioCard(supplyText("Ready to confirm", "جاهزة للتأكيد"), supplyText("Loading", "جار التحميل"), "status-muted", "supply-ready-count")}
+        ${scenarioCard(supplyText("Access", "الصلاحية"), canWrite ? supplyText("Admin", "مدير") : supplyText("Read only", "قراءة فقط"), canWrite ? "status-ok" : "status-muted")}
+      `
+    })}
+    <section class="catalog-layout supply-workspace">
+      <aside class="catalog-side supply-list-pane">
+        <section class="band compact-band">
+          <div class="section-head tight-head">
+            <div><h2>${supplyText("Shipments", "الشحنات")}</h2><p class="muted-text">${supplyText("Search by shipment, supplier, or invoice.", "ابحث برقم الشحنة أو المورد أو الفاتورة.")}</p></div>
+            <button id="supply-refresh" class="button secondary" type="button">${supplyText("Refresh", "تحديث")}</button>
+          </div>
+          <div class="toolbar">
+            <input id="supply-search" class="input" autocomplete="off" placeholder="${supplyText("Search shipments", "بحث في الشحنات")}">
+            <select id="supply-status" class="select compact-select">
+              <option value="">${supplyText("All statuses", "كل الحالات")}</option>
+              <option value="Draft">${supplyText("Draft", "مسودة")}</option>
+              <option value="Received">${supplyText("Received", "تم الاستلام")}</option>
+              <option value="Cancelled">${supplyText("Cancelled", "ملغاة")}</option>
+            </select>
+          </div>
+          <div class="table-wrap compact-table">
+            <table><thead><tr><th>${supplyText("Shipment", "الشحنة")}</th><th>${supplyText("Supplier", "المورد")}</th><th>${supplyText("Status", "الحالة")}</th><th>${supplyText("Total", "الإجمالي")}</th><th></th></tr></thead><tbody id="supply-rows"></tbody></table>
+          </div>
+        </section>
+      </aside>
+      <main class="supply-main-pane">
+        ${canWrite ? renderSupplyForm() : ""}
+        <section class="band supply-detail-pane" id="supply-detail">
+          <h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2>
+          <p class="muted-text">${supplyText("Select a shipment to review lines, cost allocation, receipt operation, and history.", "اختر شحنة لمراجعة البنود، توزيع التكلفة، عملية إيصال المخزون، وسجل الحركة.")}</p>
+        </section>
+      </main>
+    </section>`;
+
+  document.getElementById("supply-refresh").addEventListener("click", loadSupplyShipments);
+  document.getElementById("supply-search").addEventListener("input", debounce(loadSupplyShipments, 250));
+  document.getElementById("supply-status").addEventListener("change", loadSupplyShipments);
+  if (canWrite) {
+    wireSupplyForm();
+  }
+  await loadSupplyShipments();
+}
+
+function renderSupplyForm() {
+  const mainWarehouse = inventoryLocations.find((location) => location.locationType === "MainWarehouse") || inventoryLocations[0];
+  return `
+    <section class="supply-form-card" id="supply-form-panel">
+      <div class="supply-form-heading">
+        <div>
+          <span class="supply-form-badge">${supplyText("Supply receipt", "إيصال توريد")}</span>
+          <h2>${supplyText("Register incoming shipment", "تسجيل شحنة واردة")}</h2>
+          <p class="muted-text">${supplyText("Enter supplier, SKU lines, and costs in one document, then save the draft before confirming receipt.", "أدخل بيانات المورد والبنود والتكاليف في نموذج واحد، ثم احفظ المسودة قبل تأكيد الاستلام.")}</p>
+        </div>
+        <button id="supply-reset" class="button secondary" type="button">${supplyText("New shipment", "شحنة جديدة")}</button>
+      </div>
+      <form id="supply-form" class="form wide-form compact-form supply-receipt-form">
+        <div class="form-error" id="supply-form-error" hidden></div>
+        <div class="supply-validation-list full-span" id="supply-validation-list" hidden></div>
+        <input id="supply-id" type="hidden">
+        <section class="supply-document-block supply-header-block full-span">
+          <div class="supply-block-title"><span>${supplyText("Shipment data", "بيانات الشحنة")}</span><strong>${supplyText("Receipt draft", "مسودة استلام")}</strong></div>
+          <div class="supply-header-grid">
+            <div class="field"><label for="supply-supplier">${supplyText("Supplier", "المورد")}</label><input id="supply-supplier" class="input" maxlength="255" required></div>
+            <div class="field"><label for="supply-invoice">${supplyText("Invoice number", "رقم الفاتورة")}</label><input id="supply-invoice" class="input" maxlength="100"></div>
+            <div class="field"><label for="supply-date">${supplyText("Shipment date", "تاريخ الشحنة")}</label><input id="supply-date" class="input" type="datetime-local"></div>
+            <div class="field"><label for="supply-location">${supplyText("Destination warehouse", "مخزن الوصول")}</label><select id="supply-location" class="select">${inventoryLocations.filter((location) => location.isActive).map((location) => `<option value="${escapeHtml(location.id)}" ${location.id === mainWarehouse?.id ? "selected" : ""}>${escapeHtml(location.name)}</option>`).join("")}</select></div>
+            <div class="field full-span"><label for="supply-notes">${supplyText("Notes", "ملاحظات")}</label><textarea id="supply-notes" class="input" rows="2" maxlength="4000"></textarea></div>
+          </div>
+        </section>
+        <section class="operation-line-panel supply-document-block full-span">
+          <div class="section-head tight-head"><div><h2>${supplyText("SKU lines", "بنود SKU")}</h2><p class="muted-text">${supplyText("Prices can stay blank while drafting and must be completed before confirmation.", "يمكن ترك السعر فارغا في المسودة، ويجب إكماله قبل التأكيد.")}</p></div><button id="supply-add-line" class="button secondary" type="button">${supplyText("Add line", "إضافة بند")}</button></div>
+          <div id="supply-lines" class="line-editor"></div>
+        </section>
+        <section class="operation-line-panel supply-document-block full-span">
+          <div class="section-head tight-head"><div><h2>${supplyText("Import cost breakdown", "تفصيل تكاليف الاستيراد")}</h2></div><button id="supply-add-cost" class="button secondary" type="button">${supplyText("Add cost", "إضافة تكلفة")}</button></div>
+          <div id="supply-costs" class="line-editor"></div>
+        </section>
+        <section class="supply-summary-panel full-span" id="supply-summary-panel">
+          <div><span>${supplyText("Product subtotal", "إجمالي المنتجات")}</span><strong id="supply-form-product-total">0.00</strong></div>
+          <div><span>${supplyText("Import costs", "تكاليف الاستيراد")}</span><strong id="supply-form-cost-total">0.00</strong></div>
+          <div><span>${supplyText("Landed total", "الإجمالي بعد التكلفة")}</span><strong id="supply-form-landed-total">0.00</strong></div>
+          <div><span>${supplyText("Confirmation readiness", "جاهزية التأكيد")}</span><strong id="supply-form-readiness" class="status-warn">${supplyText("Incomplete prices", "أسعار ناقصة")}</strong></div>
+        </section>
+        <div class="form-actions full-span">
+          <button class="button primary" type="submit">${supplyText("Save draft", "حفظ المسودة")}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+function wireSupplyForm() {
+  document.getElementById("supply-form").addEventListener("submit", saveSupplyShipment);
+  document.getElementById("supply-reset").addEventListener("click", resetSupplyForm);
+  document.getElementById("supply-add-line").addEventListener("click", () => addSupplyLine());
+  document.getElementById("supply-add-cost").addEventListener("click", () => addSupplyCost());
+  document.getElementById("supply-form").addEventListener("input", updateSupplyFormSummary);
+  document.getElementById("supply-form").addEventListener("change", updateSupplyFormSummary);
+  resetSupplyForm();
+}
+
+function resetSupplyForm() {
+  const form = document.getElementById("supply-form");
+  if (!form) {
+    return;
+  }
+  form.reset();
+  document.getElementById("supply-id").value = "";
+  document.getElementById("supply-lines").innerHTML = "";
+  document.getElementById("supply-costs").innerHTML = "";
+  document.getElementById("supply-validation-list").hidden = true;
+  document.getElementById("supply-form-error").hidden = true;
+  addSupplyLine();
+  addSupplyCost({ costType: "Customs" });
+  updateSupplyFormSummary();
+}
+
+function addSupplyLine(line = {}) {
+  const container = document.getElementById("supply-lines");
+  if (!container) {
+    return;
+  }
+  const unitPriceValue = line.unitPrice ?? "";
+  const row = document.createElement("div");
+  row.className = "line-editor-row supply-line-row";
+  row.innerHTML = `
+    <input class="supply-line-sku" type="hidden" value="${escapeHtml(line.skuId || "")}">
+    <div class="field op-line-finder"><label>${supplyText("Find SKU", "بحث SKU")}</label><input class="input supply-line-search" autocomplete="off" placeholder="${supplyText("Product, color, power, SKU code", "المنتج، اللون، القوة، كود SKU")}"><div class="op-line-search-results" hidden></div></div>
+    <div class="op-line-resolved full-span"><span class="muted-text">${supplyText("Search and select a SKU.", "ابحث واختر SKU.")}</span></div>
+    <div class="field"><label>${supplyText("Quantity", "الكمية")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.quantity || 1)}" required></div>
+    <div class="field"><label>${supplyText("Unit price", "سعر الوحدة")}</label><input class="input supply-line-price" type="number" min="0.01" step="0.01" value="${escapeHtml(unitPriceValue)}" placeholder="${supplyText("Draft blank", "فارغ في المسودة")}"><span class="field-hint supply-price-hint" hidden>${supplyText("Required before confirmation.", "مطلوب قبل التأكيد.")}</span></div>
+    <div class="field"><label>${supplyText("Lot", "التشغيلة")}</label><input class="input supply-line-lot" maxlength="100" value="${escapeHtml(line.lotNumber || "")}"></div>
+    <div class="field"><label>${supplyText("Expiry", "الصلاحية")}</label><input class="input supply-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
+    <div class="field full-span"><label>${supplyText("Line notes", "ملاحظات البند")}</label><input class="input supply-line-notes" maxlength="1000" value="${escapeHtml(line.notes || "")}"></div>
+    <button class="icon-button supply-remove-line" type="button" title="${supplyText("Remove line", "حذف البند")}">x</button>`;
+  row.querySelector(".supply-line-search").addEventListener("input", () => renderSupplySkuSearchResults(row));
+  row.querySelector(".supply-line-price").addEventListener("input", () => updateSupplyLinePriceState(row));
+  row.querySelector(".supply-remove-line").addEventListener("click", () => {
+    if (container.querySelectorAll(".supply-line-row").length > 1) {
+      row.remove();
+      updateSupplyFormSummary();
+    }
+  });
+  container.appendChild(row);
+  if (line.skuId) {
+    seedSupplyLineSkuSelection(row, line.skuId);
+  }
+  updateSupplyLinePriceState(row);
+  updateSupplyFormSummary();
+}
+
+function updateSupplyLinePriceState(row) {
+  const priceInput = row.querySelector(".supply-line-price");
+  const hint = row.querySelector(".supply-price-hint");
+  const isBlank = priceInput.value.trim() === "";
+  const value = Number(priceInput.value);
+  const isInvalid = !isBlank && (!Number.isFinite(value) || value <= 0);
+  row.classList.toggle("supply-line-incomplete", isBlank);
+  row.classList.toggle("supply-line-invalid", isInvalid);
+  if (hint) {
+    hint.hidden = !isBlank && !isInvalid;
+    hint.textContent = isInvalid ? supplyText("Price must be greater than zero.", "السعر يجب أن يكون أكبر من صفر.") : supplyText("Required before confirmation.", "مطلوب قبل التأكيد.");
+  }
+  updateSupplyFormSummary();
+}
+
+function renderSupplySkuSearchResults(row) {
+  const input = row.querySelector(".supply-line-search");
+  const results = row.querySelector(".op-line-search-results");
+  const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    results.hidden = true;
+    results.innerHTML = "";
+    return;
+  }
+
+  if (supplySkuSearchIndex.length !== operationSkuOptions.length) {
+    buildSupplySkuSearchIndex();
+  }
+  const matches = supplySkuSearchIndex
+    .filter((entry) => terms.every((term) => entry.searchText.includes(term)))
+    .map((entry) => entry.sku)
+    .slice(0, 8);
+
+  results.hidden = false;
+  results.innerHTML = matches.length === 0
+    ? `<button type="button" class="op-line-search-result" disabled>${supplyText("No results", "لا توجد نتائج")}</button>`
+    : matches.map((sku) => `
+        <button type="button" class="op-line-search-result" data-supply-sku-id="${escapeHtml(sku.id)}">
+          <strong>${escapeHtml(sku.productName)}</strong>
+          <span>${escapeHtml(formatOperationPowerKey(operationPowerKey(sku)))} / ${escapeHtml(sku.colorName || "-")} / ${escapeHtml(sku.size || "-")}</span>
+          <small>${escapeHtml(sku.skuCode)}</small>
+        </button>`).join("");
+  results.querySelectorAll("[data-supply-sku-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      seedSupplyLineSkuSelection(row, button.dataset.supplySkuId);
+      input.value = "";
+      results.hidden = true;
+      results.innerHTML = "";
+      updateSupplyFormSummary();
+    });
+  });
+}
+
+function seedSupplyLineSkuSelection(row, skuId) {
+  const sku = operationSkuOptions.find((value) => value.id === skuId);
+  row.querySelector(".supply-line-sku").value = skuId || "";
+  row.querySelector(".op-line-resolved").innerHTML = sku
+    ? `<span class="status-pill status-ok">${supplyText("Selected SKU", "SKU محدد")}</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`
+    : `<span class="status-pill status-warn">${supplyText("Unknown SKU", "SKU غير معروف")}</span><span class="muted-cell">${escapeHtml(shortId(skuId))}</span>`;
+}
+
+function addSupplyCost(cost = {}) {
+  const container = document.getElementById("supply-costs");
+  if (!container) {
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "line-editor-row supply-cost-row";
+  row.innerHTML = `
+    <div class="field"><label>${supplyText("Cost type", "نوع التكلفة")}</label><select class="select supply-cost-type">
+      ${["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"].map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(supplyCostTypeLabel(item))}</option>`).join("")}
+    </select></div>
+    <div class="field"><label>${supplyText("Description", "الوصف")}</label><input class="input supply-cost-description" maxlength="255" value="${escapeHtml(cost.description || "")}"></div>
+    <div class="field"><label>${supplyText("Amount", "المبلغ")}</label><input class="input supply-cost-amount" type="number" min="0" step="0.01" value="${escapeHtml(cost.amount || 0)}"></div>
+    <button class="icon-button supply-remove-cost" type="button" title="${supplyText("Remove cost", "حذف التكلفة")}">x</button>`;
+  row.querySelector(".supply-cost-type").value = cost.costType || "Other";
+  row.querySelector(".supply-remove-cost").addEventListener("click", () => {
+    row.remove();
+    updateSupplyFormSummary();
+  });
+  container.appendChild(row);
+  updateSupplyFormSummary();
+}
+
+async function loadSupplyShipments() {
+  const tbody = document.getElementById("supply-rows");
+  const count = document.getElementById("supply-count");
+  if (!tbody) {
+    return;
+  }
+  tbody.innerHTML = `<tr><td colspan="5">${supplyText("Loading shipments...", "جار تحميل الشحنات...")}</td></tr>`;
+  const params = new URLSearchParams();
+  const search = document.getElementById("supply-search")?.value.trim();
+  const status = document.getElementById("supply-status")?.value;
+  if (search) params.set("search", search);
+  if (status) params.set("status", status);
+  try {
+    const rows = await request(`/api/v1/supply/shipments${params.toString() ? `?${params}` : ""}`);
+    supplyShipments = rows;
+    updateSupplyPageMetrics(rows);
+    if (count) {
+      count.textContent = currentLanguage === "ar" ? `${rows.length} شحنة` : `${rows.length} shipment${rows.length === 1 ? "" : "s"}`;
+    }
+    tbody.innerHTML = rows.length === 0 ? `<tr><td colspan="5">${supplyText("No supply shipments match the current filters.", "لا توجد شحنات مطابقة للفلاتر الحالية.")}</td></tr>` : rows.map((row) => `
+      <tr class="click-row ${row.id === selectedSupplyShipmentId ? "selected-row" : ""}" data-supply-id="${escapeHtml(row.id)}">
+        <td><strong>${escapeHtml(row.shipmentNumber)}</strong><span class="muted-cell">${escapeHtml(row.invoiceNumber || supplyText("No invoice", "بدون فاتورة"))}</span></td>
+        <td>${escapeHtml(row.supplierName)}<span class="muted-cell">${escapeHtml(row.destinationLocationName || "-")} / ${escapeHtml(row.quantity || 0)} ${supplyText("packs", "عبوة")}</span></td>
+        <td><span class="status-pill ${row.status === "Received" ? "status-ok" : row.status === "Cancelled" ? "status-muted" : "status-warn"}">${escapeHtml(supplyStatusLabel(row.status))}</span></td>
+        <td><strong>${escapeHtml(formatMoney(row.landedTotal))}</strong><span class="muted-cell">${escapeHtml(formatMoney(row.costSubtotal))} ${supplyText("costs", "تكاليف")}</span></td>
+        <td><button class="button secondary table-action" type="button" data-supply-detail="${escapeHtml(row.id)}">${supplyText("Details", "التفاصيل")}</button></td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-supply-detail], [data-supply-id]").forEach((element) => {
+      element.addEventListener("click", () => showSupplyDetail(element.dataset.supplyDetail || element.dataset.supplyId));
+    });
+  } catch (exception) {
+    if (count) count.textContent = supplyText("Failed", "فشل التحميل");
+    updateSupplyPageMetrics([]);
+    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function showSupplyDetail(id) {
+  selectedSupplyShipmentId = id;
+  const target = document.getElementById("supply-detail");
+  const canWrite = getAuth()?.user.role === "Admin";
+  target.innerHTML = `<h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2><p>${supplyText("Loading shipment...", "جار تحميل الشحنة...")}</p>`;
+  try {
+    const shipment = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}`);
+    supplyCurrentDetail = shipment;
+    const readiness = getSupplyShipmentReadiness(shipment);
+    target.innerHTML = `
+      <div class="section-head">
+        <div><h2>${escapeHtml(shipment.shipmentNumber)}</h2><p class="muted-text">${escapeHtml(shipment.supplierName)} / ${escapeHtml(shipment.invoiceNumber || "-")}</p></div>
+        <div class="inline-actions">
+          <span class="status-pill ${shipment.status === "Received" ? "status-ok" : shipment.status === "Cancelled" ? "status-muted" : "status-warn"}">${escapeHtml(supplyStatusLabel(shipment.status))}</span>
+          ${canWrite && shipment.status === "Draft" ? `<button class="button secondary" type="button" id="supply-edit">${supplyText("Edit", "تعديل")}</button><button class="button primary" type="button" id="supply-confirm" ${readiness.canConfirm ? "" : `disabled title="${escapeHtml(readiness.message)}"`}>${supplyText("Confirm receipt", "تأكيد الاستلام")}</button><button class="button secondary" type="button" id="supply-cancel">${supplyText("Cancel", "إلغاء")}</button>` : ""}
+          ${shipment.inventoryReceiptOperationId ? `<button class="button secondary" type="button" data-print-report="operation-bill" data-print-id="${escapeHtml(shipment.inventoryReceiptOperationId)}" data-print-code="${escapeHtml(shipment.shipmentNumber)}">${supplyText("Print receipt", "طباعة الإيصال")}</button>` : ""}
+        </div>
+      </div>
+      ${shipment.status === "Draft" && !readiness.canConfirm ? `<p class="form-error inline-warning">${escapeHtml(readiness.message)}</p>` : ""}
+      <div class="detail-grid supply-readiness-grid">
+        <div><span>${supplyText("Destination warehouse", "مخزن الوصول")}</span><strong>${escapeHtml(shipment.destinationLocationName || shortId(shipment.destinationLocationId))}</strong></div>
+        <div><span>${supplyText("Shipment date", "تاريخ الشحنة")}</span><strong>${escapeHtml(formatDateTime(shipment.shipmentDate))}</strong></div>
+        <div><span>${supplyText("Products", "المنتجات")}</span><strong>${escapeHtml(formatMoney(shipment.productSubtotal))}</strong></div>
+        <div><span>${supplyText("Import costs", "تكاليف الاستيراد")}</span><strong>${escapeHtml(formatMoney(shipment.costSubtotal))}</strong></div>
+        <div><span>${supplyText("Landed total", "الإجمالي بعد التكلفة")}</span><strong>${escapeHtml(formatMoney(shipment.landedTotal))}</strong></div>
+        <div><span>${supplyText("Readiness", "جاهزية التأكيد")}</span><strong class="${readiness.canConfirm ? "status-ok" : "status-warn"}">${escapeHtml(readiness.label)}</strong></div>
+      </div>
+      ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${supplyText("Inventory receipt operation", "عملية إيصال المخزون")}: <strong>${escapeHtml(shortId(shipment.inventoryReceiptOperationId))}</strong></p>` : ""}
+      <h3>${supplyText("Lines", "البنود")}</h3>
+      <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>${supplyText("Qty", "الكمية")}</th><th>${supplyText("Unit price", "سعر الوحدة")}</th><th>${supplyText("Line", "البند")}</th><th>${supplyText("Allocated", "الموزع")}</th><th>${supplyText("Landed unit", "تكلفة الوحدة النهائية")}</th><th>${supplyText("Batch", "التشغيلة")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
+        <tr class="${line.unitPrice == null || line.unitPrice <= 0 ? "supply-line-incomplete-row" : ""}"><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span></td><td>${escapeHtml(line.quantity)}</td><td>${line.unitPrice == null ? `<span class="status-pill status-warn">${supplyText("Blank", "فارغ")}</span>` : escapeHtml(formatMoney(line.unitPrice))}</td><td>${escapeHtml(formatMoney(line.lineSubtotal))}</td><td>${escapeHtml(formatMoney(line.allocatedCost))}</td><td>${escapeHtml(formatMoney(line.landedUnitCost))}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
+      <h3>${supplyText("Cost breakdown", "تفصيل التكاليف")}</h3>
+      <div class="table-wrap compact-table"><table><thead><tr><th>${supplyText("Type", "النوع")}</th><th>${supplyText("Description", "الوصف")}</th><th>${supplyText("Amount", "المبلغ")}</th></tr></thead><tbody>${shipment.costs.length === 0 ? `<tr><td colspan="3">${supplyText("No costs.", "لا توجد تكاليف.")}</td></tr>` : shipment.costs.map((cost) => `<tr><td>${escapeHtml(supplyCostTypeLabel(cost.costType))}</td><td>${escapeHtml(cost.description || "-")}</td><td>${escapeHtml(formatMoney(cost.amount))}</td></tr>`).join("")}</tbody></table></div>
+      <h3>${supplyText("History", "السجل")}</h3>
+      <div class="table-wrap compact-table"><table><thead><tr><th>${supplyText("Action", "الإجراء")}</th><th>${supplyText("Time", "الوقت")}</th><th>${supplyText("Summary", "الملخص")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${supplyText("No history.", "لا يوجد سجل حتى الآن.")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(item.summary || "-")}</td></tr>`).join("")}</tbody></table></div>`;
+
+    document.getElementById("supply-edit")?.addEventListener("click", () => fillSupplyForm(shipment));
+    document.getElementById("supply-confirm")?.addEventListener("click", () => confirmSupplyShipment(shipment.id));
+    document.getElementById("supply-cancel")?.addEventListener("click", () => cancelSupplyShipment(shipment.id));
+    bindPrintReportButtons(target);
+    await loadSupplyShipments();
+  } catch (exception) {
+    target.innerHTML = `<h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2><p>${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
+  }
+}
+
+function fillSupplyForm(shipment) {
+  document.getElementById("supply-id").value = shipment.id;
+  document.getElementById("supply-supplier").value = shipment.supplierName || "";
+  document.getElementById("supply-invoice").value = shipment.invoiceNumber || "";
+  document.getElementById("supply-date").value = shipment.shipmentDate ? shipment.shipmentDate.slice(0, 16) : "";
+  document.getElementById("supply-location").value = shipment.destinationLocationId;
+  document.getElementById("supply-notes").value = shipment.notes || "";
+  document.getElementById("supply-lines").innerHTML = "";
+  shipment.lines.forEach((line) => addSupplyLine(line));
+  document.getElementById("supply-costs").innerHTML = "";
+  shipment.costs.forEach((cost) => addSupplyCost(cost));
+  clearSupplyValidation();
+  updateSupplyFormSummary();
+  document.getElementById("supply-form-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function saveSupplyShipment(event) {
+  event.preventDefault();
+  const error = document.getElementById("supply-form-error");
+  error.hidden = true;
+  const id = document.getElementById("supply-id").value;
+  clearSupplyValidation();
+  const payload = collectSupplyFormPayload();
+  const validation = validateSupplyFormPayload(payload);
+  if (validation.length > 0) {
+    showSupplyValidation(validation);
+    error.textContent = supplyText("Fix the highlighted shipment values before saving.", "راجع القيم المحددة قبل حفظ الشحنة.");
+    error.hidden = false;
+    return;
+  }
+
+  try {
+    await request(id ? `/api/v1/supply/shipments/${encodeURIComponent(id)}` : "/api/v1/supply/shipments", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(stripSupplyPayloadInternals(payload))
+    });
+    notice(supplyText("Supply shipment saved.", "تم حفظ شحنة التوريد."), "success");
+    resetSupplyForm();
+    await loadSupplyShipments();
+    if (selectedSupplyShipmentId) {
+      await showSupplyDetail(selectedSupplyShipmentId);
+    }
+  } catch (exception) {
+    showSupplyValidation(problemDetailsToList(exception));
+    error.textContent = getFriendlyWorkspaceError(exception);
+    error.hidden = false;
+  }
+}
+
+async function confirmSupplyShipment(id) {
+  try {
+    await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/confirm`, { method: "POST" });
+    notice(supplyText("Supply shipment received into inventory.", "تم استلام الشحنة في المخزون."), "success");
+    await showSupplyDetail(id);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function cancelSupplyShipment(id) {
+  try {
+    await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    notice(supplyText("Supply shipment cancelled.", "تم إلغاء شحنة التوريد."), "success");
+    await showSupplyDetail(id);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function loadSupplyLocations() {
+  inventoryLocations = await request("/api/v1/inventory/locations");
+}
+
+function collectSupplyFormPayload() {
+  return {
+    supplierName: document.getElementById("supply-supplier").value.trim(),
+    invoiceNumber: document.getElementById("supply-invoice").value.trim() || null,
+    shipmentDate: document.getElementById("supply-date").value || null,
+    destinationLocationId: document.getElementById("supply-location").value,
+    notes: document.getElementById("supply-notes").value.trim() || null,
+    lines: [...document.querySelectorAll(".supply-line-row")].map((row) => {
+      const priceValue = row.querySelector(".supply-line-price").value.trim();
+      return {
+        skuId: row.querySelector(".supply-line-sku").value,
+        quantity: Number(row.querySelector(".supply-line-qty").value || 0),
+        unitPrice: priceValue === "" ? null : Number(priceValue),
+        lotNumber: row.querySelector(".supply-line-lot").value.trim() || null,
+        expiryDate: row.querySelector(".supply-line-expiry").value || null,
+        notes: row.querySelector(".supply-line-notes").value.trim() || null,
+        _row: row
+      };
+    }),
+    costs: [...document.querySelectorAll(".supply-cost-row")].map((row) => ({
+      costType: row.querySelector(".supply-cost-type").value,
+      description: row.querySelector(".supply-cost-description").value.trim() || null,
+      amount: Number(row.querySelector(".supply-cost-amount").value || 0),
+      _row: row
+    }))
+  };
+}
+
+function validateSupplyFormPayload(payload) {
+  const messages = [];
+  if (!payload.supplierName) {
+    messages.push(supplyText("Supplier is required.", "اسم المورد مطلوب."));
+  }
+  if (!payload.destinationLocationId) {
+    messages.push(supplyText("Destination warehouse is required.", "مخزن الوصول مطلوب."));
+  }
+  if (payload.lines.length === 0) {
+    messages.push(supplyText("At least one SKU line is required.", "يجب إضافة بند SKU واحد على الأقل."));
+  }
+
+  const duplicateKeys = new Set();
+  payload.lines.forEach((line, index) => {
+    line._row.classList.remove("supply-line-invalid");
+    if (!line.skuId) {
+      line._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Line ${index + 1}: select a SKU.`, `البند ${index + 1}: اختر SKU.`));
+    }
+    if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
+      line._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Line ${index + 1}: quantity must be greater than zero.`, `البند ${index + 1}: الكمية يجب أن تكون أكبر من صفر.`));
+    }
+    if (line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) {
+      line._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Line ${index + 1}: unit price must be greater than zero when entered.`, `البند ${index + 1}: سعر الوحدة يجب أن يكون أكبر من صفر عند إدخاله.`));
+    }
+    const duplicateKey = `${line.skuId}|${(line.lotNumber || "").toUpperCase()}|${line.expiryDate || ""}`;
+    if (line.skuId && duplicateKeys.has(duplicateKey)) {
+      line._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Line ${index + 1}: duplicate SKU, lot, and expiry must be combined.`, `البند ${index + 1}: يجب دمج نفس SKU مع نفس التشغيلة والصلاحية في بند واحد.`));
+    }
+    duplicateKeys.add(duplicateKey);
+  });
+
+  payload.costs.forEach((cost, index) => {
+    cost._row.classList.remove("supply-line-invalid");
+    if (!["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"].includes(cost.costType)) {
+      cost._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Cost ${index + 1}: select a valid cost type.`, `التكلفة ${index + 1}: اختر نوع تكلفة صحيح.`));
+    }
+    if (!Number.isFinite(cost.amount) || cost.amount < 0) {
+      cost._row.classList.add("supply-line-invalid");
+      messages.push(supplyText(`Cost ${index + 1}: amount cannot be negative.`, `التكلفة ${index + 1}: المبلغ لا يمكن أن يكون سالبا.`));
+    }
+  });
+
+  return messages;
+}
+
+function stripSupplyPayloadInternals(payload) {
+  return {
+    ...payload,
+    lines: payload.lines.map(({ _row, ...line }) => line),
+    costs: payload.costs.map(({ _row, ...cost }) => cost)
+  };
+}
+
+function updateSupplyFormSummary() {
+  const form = document.getElementById("supply-form");
+  if (!form) {
+    return;
+  }
+  const payload = collectSupplyFormPayload();
+  const lines = payload.lines;
+  const productTotal = lines.reduce((total, line) => total + (Number.isFinite(line.quantity) && Number.isFinite(line.unitPrice) ? line.quantity * line.unitPrice : 0), 0);
+  const costTotal = payload.costs.reduce((total, cost) => total + (Number.isFinite(cost.amount) ? Math.max(0, cost.amount) : 0), 0);
+  const incompletePrices = lines.filter((line) => line.unitPrice === null).length;
+  const invalidPrices = lines.filter((line) => line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)).length;
+  document.getElementById("supply-form-product-total").textContent = formatMoney(productTotal);
+  document.getElementById("supply-form-cost-total").textContent = formatMoney(costTotal);
+  document.getElementById("supply-form-landed-total").textContent = formatMoney(productTotal + costTotal);
+  const readiness = document.getElementById("supply-form-readiness");
+  if (invalidPrices > 0) {
+    readiness.textContent = supplyText("Invalid prices", "أسعار غير صحيحة");
+    readiness.className = "status-danger";
+  } else if (incompletePrices > 0 || lines.length === 0) {
+    readiness.textContent = supplyText(`${incompletePrices || lines.length} incomplete`, `${incompletePrices || lines.length} ناقص`);
+    readiness.className = "status-warn";
+  } else {
+    readiness.textContent = supplyText("Ready", "جاهزة");
+    readiness.className = "status-ok";
+  }
+}
+
+function updateSupplyPageMetrics(rows = supplyShipments) {
+  const draftTotal = rows.filter((row) => row.status === "Draft").reduce((sum, row) => sum + Number(row.landedTotal || 0), 0);
+  const readyCount = rows.filter((row) => row.status === "Draft" && Number(row.productSubtotal || 0) > 0).length;
+  const draftMetric = document.getElementById("supply-draft-total");
+  const readyMetric = document.getElementById("supply-ready-count");
+  if (draftMetric) {
+    draftMetric.textContent = formatMoney(draftTotal);
+    draftMetric.className = draftTotal > 0 ? "status-warn" : "status-muted";
+  }
+  if (readyMetric) {
+    readyMetric.textContent = String(readyCount);
+    readyMetric.className = readyCount > 0 ? "status-ok" : "status-muted";
+  }
+}
+
+function getSupplyShipmentReadiness(shipment) {
+  const incomplete = shipment.lines.filter((line) => line.unitPrice == null).length;
+  const invalid = shipment.lines.filter((line) => line.unitPrice != null && line.unitPrice <= 0).length;
+  if (shipment.status !== "Draft") {
+    return { canConfirm: false, label: supplyStatusLabel(shipment.status), message: supplyText("Only draft shipments can be confirmed.", "يمكن تأكيد الشحنات المسودة فقط.") };
+  }
+  if (shipment.lines.length === 0) {
+    return { canConfirm: false, label: supplyText("No lines", "لا توجد بنود"), message: supplyText("At least one SKU line is required.", "يجب إضافة بند SKU واحد على الأقل.") };
+  }
+  if (invalid > 0) {
+    return { canConfirm: false, label: supplyText("Invalid prices", "أسعار غير صحيحة"), message: supplyText("Every SKU price must be greater than zero before confirmation.", "كل أسعار SKU يجب أن تكون أكبر من صفر قبل التأكيد.") };
+  }
+  if (incomplete > 0) {
+    return { canConfirm: false, label: supplyText(`${incomplete} blank`, `${incomplete} سعر ناقص`), message: supplyText("Every SKU line needs a unit price before confirmation.", "كل بند SKU يحتاج سعر وحدة قبل التأكيد.") };
+  }
+  return { canConfirm: true, label: supplyText("Ready", "جاهزة"), message: supplyText("Ready to confirm.", "جاهزة للتأكيد.") };
+}
+
+function clearSupplyValidation() {
+  document.querySelectorAll(".supply-line-invalid").forEach((row) => row.classList.remove("supply-line-invalid"));
+  const list = document.getElementById("supply-validation-list");
+  if (list) {
+    list.hidden = true;
+    list.innerHTML = "";
+  }
+}
+
+function showSupplyValidation(messages) {
+  const list = document.getElementById("supply-validation-list");
+  if (!list || messages.length === 0) {
+    return;
+  }
+  list.innerHTML = `<strong>${supplyText("Review these values", "راجع هذه القيم")}</strong><ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`;
+  list.hidden = false;
+}
+
+function problemDetailsToList(exception) {
+  const message = exception instanceof Error ? exception.message : "";
+  if (!message || !(message.includes("{") || message.includes("["))) {
+    return [];
+  }
+  try {
+    const body = JSON.parse(message);
+    return Object.entries(body.errors || {}).flatMap(([field, errors]) => errors.map((error) => `${field}: ${error}`));
+  } catch {
+    return [];
+  }
+}
+
 async function renderStocktakes() {
-  const isAdmin = getAuth()?.user.role === "Admin";
+  const isAdmin = isSystemAdminRole(getAuth()?.user.role);
   document.getElementById("view").innerHTML = `
     <section class="catalog-layout">
       <aside class="catalog-side">
@@ -5905,10 +6809,11 @@ async function loadStocktakes() {
         <td>${escapeHtml(session.productsCounted)}</td>
         <td>${escapeHtml(session.totalDiscrepancyUnits)}</td>
         <td>${escapeHtml(formatDateTime(session.createdAt))}</td>
-        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button></td>
+        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(session.id)}">Print</button></td>
       </tr>`;
     }).join("");
     tbody.querySelectorAll("[data-stocktake-detail]").forEach((button) => button.addEventListener("click", () => showStocktakeDetail(button.dataset.stocktakeDetail)));
+    bindPrintReportButtons(tbody);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="7">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
@@ -5939,7 +6844,7 @@ async function createStocktakeSession(event) {
 }
 
 async function showStocktakeDetail(sessionId) {
-  const isAdmin = getAuth()?.user.role === "Admin";
+  const isAdmin = isSystemAdminRole(getAuth()?.user.role);
   const target = document.getElementById("stocktake-detail");
   const session = await request(`/api/v1/stocktakes/${sessionId}`);
   const location = inventoryLocations.find((value) => value.id === session.locationId);
@@ -6026,7 +6931,7 @@ async function confirmStocktake(sessionId) {
 
 async function renderNotifications() {
   const auth = getAuth();
-  const isAdmin = auth?.user.role === "Admin";
+  const isAdmin = isSystemAdminRole(auth?.user.role);
   notificationPageState = { page: 1, pageSize: 10 };
   document.getElementById("view").innerHTML = `
     <section class="band">
@@ -6272,12 +7177,13 @@ async function runAlert(name) {
 }
 
 async function renderAdmin() {
+  const canResetPasswords = getAuth()?.user.role === "Admin";
   document.getElementById("view").innerHTML = `
     <section class="band">
       <div class="section-head">
         <div>
           <h2>Users and access</h2>
-          <p class="muted-text">Review active accounts, assigned locations, and password resets from one controlled admin surface.</p>
+          <p class="muted-text">Review active accounts, assigned locations, and controlled access from one admin surface.</p>
         </div>
         <span id="admin-users-count" class="status-pill status-muted">Loading</span>
       </div>
@@ -6290,9 +7196,7 @@ async function renderAdmin() {
               <th>Role</th>
               <th>Location</th>
               <th>Status</th>
-              <th>New password</th>
-              <th>Confirm</th>
-              <th>Action</th>
+              ${canResetPasswords ? "<th>New password</th><th>Confirm</th><th>Action</th>" : ""}
             </tr>
           </thead>
           <tbody id="admin-users-rows"></tbody>
@@ -6312,7 +7216,9 @@ async function loadAdminUsers() {
   }
 
   error.hidden = true;
-  tbody.innerHTML = `<tr><td colspan="7">Loading users...</td></tr>`;
+  const canResetPasswords = getAuth()?.user.role === "Admin";
+  const colspan = canResetPasswords ? 7 : 4;
+  tbody.innerHTML = `<tr><td colspan="${colspan}">Loading users...</td></tr>`;
 
   try {
     const [users, locations] = await Promise.all([
@@ -6321,23 +7227,25 @@ async function loadAdminUsers() {
     ]);
     const locationNames = new Map(locations.map((location) => [location.id, location.name]));
     count.textContent = `${users.length} user${users.length === 1 ? "" : "s"}`;
-    tbody.innerHTML = users.length === 0 ? `<tr><td colspan="7">No users found.</td></tr>` : users.map((user) => `
+    tbody.innerHTML = users.length === 0 ? `<tr><td colspan="${colspan}">No users found.</td></tr>` : users.map((user) => `
       <tr data-admin-user-row="${escapeHtml(user.id)}">
         <td><strong>${escapeHtml(user.username)}</strong><br><span class="muted-text">${escapeHtml(user.fullName || "-")}</span></td>
         <td>${escapeHtml(roleLabel(user.role))}</td>
         <td>${escapeHtml(user.locationId ? (locationNames.get(user.locationId) || "Unknown location") : "All locations")}</td>
         <td><span class="status-pill ${user.isActive ? "status-ok" : "status-muted"}">${user.isActive ? "Active" : "Inactive"}</span></td>
-        <td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-password="${escapeHtml(user.id)}" placeholder="8+ characters"></td>
+        ${canResetPasswords ? `<td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-password="${escapeHtml(user.id)}" placeholder="8+ characters"></td>
         <td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-confirm-password="${escapeHtml(user.id)}" placeholder="Repeat"></td>
-        <td><button class="button primary table-action" type="button" data-admin-change-password="${escapeHtml(user.id)}">Change</button></td>
+        <td><button class="button primary table-action" type="button" data-admin-change-password="${escapeHtml(user.id)}">Change</button></td>` : ""}
       </tr>`).join("");
 
-    tbody.querySelectorAll("[data-admin-change-password]").forEach((button) => {
-      button.addEventListener("click", () => changeAdminUserPassword(button.dataset.adminChangePassword));
-    });
+    if (canResetPasswords) {
+      tbody.querySelectorAll("[data-admin-change-password]").forEach((button) => {
+        button.addEventListener("click", () => changeAdminUserPassword(button.dataset.adminChangePassword));
+      });
+    }
   } catch (exception) {
     count.textContent = "Failed";
-    tbody.innerHTML = `<tr><td colspan="7">Could not load users.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${colspan}">Could not load users.</td></tr>`;
     error.textContent = getFriendlyWorkspaceError(exception);
     error.hidden = false;
   }
@@ -6397,11 +7305,8 @@ function renderForbidden() {
 }
 
 async function logout() {
-  const auth = getAuth();
   try {
-    if (auth?.refreshToken) {
-      await request("/api/v1/auth/logout", { method: "POST", body: JSON.stringify({ refreshToken: auth.refreshToken }) });
-    }
+    await request("/api/v1/auth/logout", { method: "POST", body: JSON.stringify({}) });
   } finally {
     clearAuth();
     location.hash = "/login";
@@ -6413,7 +7318,7 @@ function escapeHtml(value) {
 }
 
 function roleLabel(role) {
-  return { CLevel: "C-Level", WarehouseClerk: "Warehouse Clerk" }[role] || role;
+  return { CLevel: "C-Level", ERPAdmin: "ERP Admin", WarehouseClerk: "Warehouse Clerk" }[role] || role;
 }
 
 function formatPackHint(product) {

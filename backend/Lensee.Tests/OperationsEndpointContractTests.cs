@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Identity.Data;
@@ -1189,6 +1190,166 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         Assert.Equal(HttpStatusCode.BadRequest, editConfirmed.StatusCode);
     }
 
+    [Fact]
+    public async Task SupplyDraft_AllowsBlankUnitPriceButBlocksConfirmation()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.SupplyRead, LenseePermissions.SupplyWrite);
+
+        var create = await client.PostAsJsonAsync("/api/v1/supply/shipments", new
+        {
+            supplierName = "Imported Supplier",
+            destinationLocationId = seed.MainLocationId,
+            lines = new[] { new { skuId = seed.SkuId, quantity = 5, unitPrice = (decimal?)null } },
+            costs = new[] { new { costType = "Customs", description = "Port customs", amount = 20m } }
+        });
+        var createBody = await create.Content.ReadAsStringAsync();
+        using var created = JsonDocument.Parse(createBody);
+        var shipmentId = created.RootElement.GetProperty("id").GetGuid();
+
+        var confirm = await client.PostAsync($"/api/v1/supply/shipments/{shipmentId}/confirm", null);
+        var body = await confirm.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        Assert.Equal(JsonValueKind.Null, created.RootElement.GetProperty("lines")[0].GetProperty("unitPrice").ValueKind);
+        Assert.Equal(HttpStatusCode.BadRequest, confirm.StatusCode);
+        Assert.Contains("Every SKU line needs a unit price", body);
+    }
+
+    [Fact]
+    public async Task SupplyCreate_RejectsMalformedAndOutOfRangeFields()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.SupplyRead, LenseePermissions.SupplyWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/supply/shipments", new
+        {
+            supplierName = (string?)null,
+            invoiceNumber = new string('I', 101),
+            destinationLocationId = Guid.Empty,
+            notes = new string('N', 4001),
+            lines = (object[]?)null,
+            costs = (object[]?)null
+        });
+        var body = await response.Content.ReadFromJsonAsync<ValidationProblemContract>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("SupplierName", body!.Errors.Keys);
+        Assert.Contains("InvoiceNumber", body.Errors.Keys);
+        Assert.Contains("DestinationLocationId", body.Errors.Keys);
+        Assert.Contains("Notes", body.Errors.Keys);
+        Assert.Contains("Lines", body.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task SupplyCreate_RejectsInvalidPriceCostAndDuplicateLines()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.SupplyRead, LenseePermissions.SupplyWrite);
+
+        var response = await client.PostAsJsonAsync("/api/v1/supply/shipments", new
+        {
+            supplierName = "Imported Supplier",
+            destinationLocationId = seed.MainLocationId,
+            lines = new[]
+            {
+                new { skuId = seed.SkuId, quantity = 1, unitPrice = (decimal?)0m, lotNumber = "LOT-A", expiryDate = "2028-06-01" },
+                new { skuId = seed.SkuId, quantity = 2, unitPrice = (decimal?)10m, lotNumber = "LOT-A", expiryDate = "2028-06-01" }
+            },
+            costs = new[] { new { costType = "Brokerage", description = new string('D', 256), amount = -1m } }
+        });
+        var body = await response.Content.ReadFromJsonAsync<ValidationProblemContract>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Lines[0].UnitPrice", body!.Errors.Keys);
+        Assert.Contains("Lines[1]", body.Errors.Keys);
+        Assert.Contains("Costs[0].CostType", body.Errors.Keys);
+        Assert.Contains("Costs[0].Description", body.Errors.Keys);
+        Assert.Contains("Costs[0].Amount", body.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task SupplyConfirm_WithCompletedPricesCreatesInventoryReceiptAndAllocatesCosts()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.SupplyRead, LenseePermissions.SupplyWrite, LenseePermissions.InventoryRead);
+
+        var create = await client.PostAsJsonAsync("/api/v1/supply/shipments", new
+        {
+            supplierName = "Imported Supplier",
+            invoiceNumber = "IMP-1",
+            destinationLocationId = seed.MainLocationId,
+            lines = new[] { new { skuId = seed.SkuId, quantity = 5, unitPrice = (decimal?)null } },
+            costs = new[] { new { costType = "Freight", description = "Sea freight", amount = 20m } }
+        });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var shipmentId = created.RootElement.GetProperty("id").GetGuid();
+
+        var update = await client.PutAsJsonAsync($"/api/v1/supply/shipments/{shipmentId}", new
+        {
+            supplierName = "Imported Supplier",
+            invoiceNumber = "IMP-1",
+            destinationLocationId = seed.MainLocationId,
+            lines = new[] { new { skuId = seed.SkuId, quantity = 5, unitPrice = (decimal?)100m } },
+            costs = new[] { new { costType = "Freight", description = "Sea freight", amount = 20m } }
+        });
+        var confirm = await client.PostAsync($"/api/v1/supply/shipments/{shipmentId}/confirm", null);
+        var detail = await client.GetFromJsonAsync<SupplyShipmentContract>($"/api/v1/supply/shipments/{shipmentId}");
+        var balances = await client.GetFromJsonAsync<PagedContract<OperationStockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.MainLocationId}");
+
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, update.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, confirm.StatusCode);
+        Assert.Equal("Received", detail!.Status);
+        Assert.NotNull(detail.InventoryReceiptOperationId);
+        Assert.Equal(500m, detail.ProductSubtotal);
+        Assert.Equal(20m, detail.CostSubtotal);
+        Assert.Equal(520m, detail.LandedTotal);
+        Assert.Equal(20m, detail.Lines.Single().AllocatedCost);
+        Assert.Equal(104m, detail.Lines.Single().LandedUnitCost);
+        Assert.Contains(balances!.Items, balance => balance.SkuId == seed.SkuId && balance.AvailablePacks == 5);
+        Assert.Contains(await _factory.GetInventoryTransactionTypesAsync(seed.SkuId), transactionType => transactionType == InventoryTransactionTypes.SupplyIn);
+    }
+
+    [Fact]
+    public async Task SupplyConfirm_RevalidatesActiveSkuState()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.SupplyRead, LenseePermissions.SupplyWrite);
+
+        var create = await client.PostAsJsonAsync("/api/v1/supply/shipments", new
+        {
+            supplierName = "Imported Supplier",
+            destinationLocationId = seed.MainLocationId,
+            lines = new[] { new { skuId = seed.SkuId, quantity = 5, unitPrice = (decimal?)100m } },
+            costs = Array.Empty<object>()
+        });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var shipmentId = created.RootElement.GetProperty("id").GetGuid();
+        await _factory.DeactivateProductForSkuAsync(seed.SkuId);
+
+        var confirm = await client.PostAsync($"/api/v1/supply/shipments/{shipmentId}/confirm", null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, confirm.StatusCode);
+    }
+
+    [Fact]
+    public async Task SupplyEndpoints_RejectErpAdminWithoutSupplyPermission()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.ERPAdmin, LenseePermissions.InventoryRead, LenseePermissions.OperationsRead);
+
+        var response = await client.GetAsync("/api/v1/supply/shipments");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     private static async Task<OperationDetailContract> CreateOperationAsync(HttpClient client, object request)
     {
         var response = await client.PostAsJsonAsync("/api/v1/operations", request);
@@ -1262,6 +1423,10 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         var productId = Guid.NewGuid();
         var skuId = Guid.NewGuid();
 
+        operations.SupplyShipmentHistoryLogs.RemoveRange(operations.SupplyShipmentHistoryLogs);
+        operations.SupplyShipmentCosts.RemoveRange(operations.SupplyShipmentCosts);
+        operations.SupplyShipmentLines.RemoveRange(operations.SupplyShipmentLines);
+        operations.SupplyShipments.RemoveRange(operations.SupplyShipments);
         operations.OperationVersions.RemoveRange(operations.OperationVersions);
         operations.OperationLines.RemoveRange(operations.OperationLines);
         operations.InventoryReceiptHeaders.RemoveRange(operations.InventoryReceiptHeaders);
@@ -1442,6 +1607,17 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         await crm.SaveChangesAsync();
         return id;
     }
+
+    public async Task<IReadOnlyList<string>> GetInventoryTransactionTypesAsync(Guid skuId)
+    {
+        using var scope = Services.CreateScope();
+        var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+            return await inventory.StockTransactions
+            .Where(transaction => transaction.SkuId == skuId)
+            .OrderBy(transaction => transaction.CreatedAt)
+            .Select(transaction => transaction.TransactionType)
+            .ToListAsync();
+    }
 }
 
 public sealed record OperationsSeed(Guid MainLocationId, Guid OnlineLocationId, Guid SkuId);
@@ -1472,6 +1648,20 @@ public sealed class StocktakeDetailContract
 }
 
 public sealed record StocktakeLineContract(Guid Id, Guid SkuId, int PhysicalCount);
+
+public sealed class SupplyShipmentContract
+{
+    public Guid Id { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public decimal ProductSubtotal { get; set; }
+    public decimal CostSubtotal { get; set; }
+    public decimal LandedTotal { get; set; }
+    public Guid? InventoryReceiptOperationId { get; set; }
+    public IReadOnlyList<SupplyLineContract> Lines { get; set; } = [];
+}
+
+public sealed record SupplyLineContract(decimal? UnitPrice, decimal LineSubtotal, decimal AllocatedCost, decimal LandedUnitCost);
+
 public sealed record OperationWarningContract(string WarningType, Guid SkuId, string SkuCode, string ProductName, string? LotNumber, DateOnly? ExpiryDate, int RequestedQuantity, int EligibleQuantity, string Message);
 
 public sealed record OperationWarningGateContract(string Title, string Detail, IReadOnlyList<OperationWarningContract> Warnings);

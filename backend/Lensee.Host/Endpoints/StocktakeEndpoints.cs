@@ -1,3 +1,4 @@
+using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
@@ -5,7 +6,6 @@ using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Lensee.Host.Endpoints;
 
@@ -301,44 +301,7 @@ public static class StocktakeEndpoints
         Func<Task> action,
         CancellationToken cancellationToken)
     {
-        if (!inventoryDbContext.Database.IsRelational() || !operationsDbContext.Database.IsRelational())
-        {
-            await action();
-            return;
-        }
-
-        try
-        {
-            await using var transaction = await inventoryDbContext.Database.BeginTransactionAsync(cancellationToken);
-            await operationsDbContext.Database.UseTransactionAsync(transaction.GetDbTransaction(), cancellationToken);
-            await action();
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch (InvalidOperationException exception) when (IsCrossContextTransactionAssociationError(exception))
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-            await action();
-        }
-        finally
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-        }
-    }
-
-    private static bool IsCrossContextTransactionAssociationError(InvalidOperationException exception) =>
-        exception.Message.Contains("not associated with the current connection", StringComparison.OrdinalIgnoreCase) ||
-        exception.Message.Contains("associated with the current connection", StringComparison.OrdinalIgnoreCase);
-
-    private static async Task ClearExternalTransactionAsync(OperationsDbContext operationsDbContext, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await operationsDbContext.Database.UseTransactionAsync(null, cancellationToken);
-        }
-        catch (InvalidOperationException)
-        {
-            // The context may not have accepted the external transaction in the first place.
-        }
+        await SharedDbTransaction.ExecuteAsync(inventoryDbContext, action, cancellationToken, operationsDbContext);
     }
 
     private static StocktakeDetailResponse ToDetailResponse(StocktakeSession session) =>

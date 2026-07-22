@@ -1,4 +1,14 @@
+param(
+    [switch]$Production
+)
+
 $ErrorActionPreference = "Stop"
+
+$composeFiles = if ($Production) {
+    @("-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml")
+} else {
+    @()
+}
 
 $requiredTables = @(
     "catalog.products",
@@ -38,8 +48,8 @@ where conname in ($(($requiredConstraints | ForEach-Object { "'$_'" }) -join ","
 order by conname;
 "@
 
-$tables = $tablesSql | docker compose exec -T db psql -U lensee_user -d lensee -At
-$constraints = $constraintsSql | docker compose exec -T db psql -U lensee_user -d lensee -At
+$tables = $tablesSql | docker compose @composeFiles exec -T db psql -U lensee_user -d lensee -At
+$constraints = $constraintsSql | docker compose @composeFiles exec -T db psql -U lensee_user -d lensee -At
 
 $missingTables = $requiredTables | Where-Object { $tables -notcontains $_ }
 $missingConstraints = $requiredConstraints | Where-Object { $constraints -notcontains $_ }
@@ -56,6 +66,6 @@ if ($missingTables.Count -gt 0 -or $missingConstraints.Count -gt 0) {
     exit 1
 }
 
-$historyCount = 'select count(*) from "__EFMigrationsHistory";' | docker compose exec -T db psql -U lensee_user -d lensee -At
+$historyCount = 'select count(*) from "__EFMigrationsHistory";' | docker compose @composeFiles exec -T db psql -U lensee_user -d lensee -At
 
 Write-Host "Schema verification passed. EF migrations recorded: $historyCount"

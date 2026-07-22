@@ -52,7 +52,7 @@ CREATE TABLE identity.users (
     password_hash VARCHAR(255) NOT NULL,
     full_name     VARCHAR(255) NOT NULL,
     role          VARCHAR(50)  NOT NULL
-        CONSTRAINT chk_user_role CHECK (role IN ('CLevel','Admin','Accountant','WarehouseClerk')),
+        CONSTRAINT chk_user_role CHECK (role IN ('CLevel','Admin','ERPAdmin','Accountant','WarehouseClerk')),
     location_id   UUID         REFERENCES inventory.locations(id),
     is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -306,6 +306,80 @@ CREATE TABLE operations.inventory_receipt_headers (
 );
 
 CREATE INDEX idx_receipt_headers_operation ON operations.inventory_receipt_headers(operation_id);
+
+CREATE TABLE operations.supply_shipments (
+    id                             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shipment_number                VARCHAR(50)  NOT NULL UNIQUE
+        DEFAULT ('SUP-' || TO_CHAR(NEXTVAL('operations.operation_number_seq'), 'FM000000')),
+    supplier_name                  VARCHAR(255) NOT NULL,
+    invoice_number                 VARCHAR(100),
+    shipment_date                  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    destination_location_id        UUID         NOT NULL REFERENCES inventory.locations(id),
+    status                         VARCHAR(50)  NOT NULL DEFAULT 'Draft'
+        CONSTRAINT chk_supply_shipments_status CHECK (status IN ('Draft','Received','Cancelled')),
+    notes                          TEXT,
+    product_subtotal               NUMERIC(18,4) NOT NULL DEFAULT 0
+        CONSTRAINT chk_supply_shipments_product_subtotal CHECK (product_subtotal >= 0),
+    cost_subtotal                  NUMERIC(18,4) NOT NULL DEFAULT 0
+        CONSTRAINT chk_supply_shipments_cost_subtotal CHECK (cost_subtotal >= 0),
+    landed_total                   NUMERIC(18,4) NOT NULL DEFAULT 0
+        CONSTRAINT chk_supply_shipments_landed_total CHECK (landed_total >= 0),
+    created_by                     UUID         NOT NULL REFERENCES identity.users(id),
+    created_at                     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by                     UUID         REFERENCES identity.users(id),
+    updated_at                     TIMESTAMP,
+    confirmed_by                   UUID         REFERENCES identity.users(id),
+    confirmed_at                   TIMESTAMP,
+    cancelled_by                   UUID         REFERENCES identity.users(id),
+    cancelled_at                   TIMESTAMP,
+    inventory_receipt_operation_id UUID         REFERENCES operations.operation_logs(id)
+);
+
+CREATE INDEX idx_supply_shipments_created_at ON operations.supply_shipments(created_at DESC);
+CREATE INDEX idx_supply_shipments_destination ON operations.supply_shipments(destination_location_id);
+CREATE INDEX idx_supply_shipments_operation ON operations.supply_shipments(inventory_receipt_operation_id);
+CREATE INDEX idx_supply_shipments_status ON operations.supply_shipments(status);
+
+CREATE TABLE operations.supply_shipment_lines (
+    id                    UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shipment_id           UUID          NOT NULL REFERENCES operations.supply_shipments(id) ON DELETE CASCADE,
+    sku_id                UUID          NOT NULL REFERENCES catalog.skus(id),
+    product_name_snapshot VARCHAR(255)  NOT NULL,
+    sku_code_snapshot     VARCHAR(100)  NOT NULL,
+    quantity              INTEGER       NOT NULL CONSTRAINT chk_supply_lines_quantity CHECK (quantity > 0),
+    unit_price            NUMERIC(18,4) CONSTRAINT chk_supply_lines_unit_price CHECK (unit_price IS NULL OR unit_price >= 0),
+    line_subtotal         NUMERIC(18,4) NOT NULL CONSTRAINT chk_supply_lines_line_subtotal CHECK (line_subtotal >= 0),
+    allocated_cost        NUMERIC(18,4) NOT NULL DEFAULT 0 CONSTRAINT chk_supply_lines_allocated_cost CHECK (allocated_cost >= 0),
+    landed_unit_cost      NUMERIC(18,4) NOT NULL DEFAULT 0 CONSTRAINT chk_supply_lines_landed_unit_cost CHECK (landed_unit_cost >= 0),
+    lot_number            VARCHAR(100),
+    expiry_date           DATE,
+    notes                 TEXT
+);
+
+CREATE INDEX idx_supply_lines_shipment ON operations.supply_shipment_lines(shipment_id);
+CREATE INDEX idx_supply_lines_sku ON operations.supply_shipment_lines(sku_id);
+
+CREATE TABLE operations.supply_shipment_costs (
+    id          UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shipment_id UUID          NOT NULL REFERENCES operations.supply_shipments(id) ON DELETE CASCADE,
+    cost_type   VARCHAR(50)   NOT NULL,
+    description VARCHAR(255),
+    amount      NUMERIC(18,4) NOT NULL CONSTRAINT chk_supply_costs_amount CHECK (amount >= 0)
+);
+
+CREATE INDEX idx_supply_costs_shipment ON operations.supply_shipment_costs(shipment_id);
+
+CREATE TABLE operations.supply_shipment_history (
+    id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shipment_id   UUID        NOT NULL REFERENCES operations.supply_shipments(id) ON DELETE CASCADE,
+    action        VARCHAR(50) NOT NULL,
+    actor_user_id UUID        NOT NULL REFERENCES identity.users(id),
+    created_at    TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    summary       TEXT,
+    snapshot_data JSONB
+);
+
+CREATE INDEX idx_supply_history_shipment_created ON operations.supply_shipment_history(shipment_id, created_at DESC);
 
 CREATE TABLE operations.stocktake_sessions (
     id                      UUID      PRIMARY KEY DEFAULT uuid_generate_v4(),

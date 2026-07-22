@@ -23,6 +23,14 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<StocktakeSession> StocktakeSessions { get; set; }
 
+    public virtual DbSet<SupplyShipment> SupplyShipments { get; set; }
+
+    public virtual DbSet<SupplyShipmentCost> SupplyShipmentCosts { get; set; }
+
+    public virtual DbSet<SupplyShipmentHistory> SupplyShipmentHistoryLogs { get; set; }
+
+    public virtual DbSet<SupplyShipmentLine> SupplyShipmentLines { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
@@ -305,6 +313,131 @@ public partial class OperationsDbContext : DbContext
                 .HasDefaultValueSql("'Draft'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.TotalDiscrepancyUnits).HasColumnName("total_discrepancy_units");
+        });
+
+        modelBuilder.Entity<SupplyShipment>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("supply_shipments_pkey");
+
+            entity.ToTable("supply_shipments", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_supply_shipments_status", "status in ('Draft','Received','Cancelled')");
+                table.HasCheckConstraint("chk_supply_shipments_product_subtotal", "product_subtotal >= 0");
+                table.HasCheckConstraint("chk_supply_shipments_cost_subtotal", "cost_subtotal >= 0");
+                table.HasCheckConstraint("chk_supply_shipments_landed_total", "landed_total >= 0");
+            });
+
+            entity.HasIndex(e => e.CreatedAt, "idx_supply_shipments_created_at").IsDescending();
+            entity.HasIndex(e => e.DestinationLocationId, "idx_supply_shipments_destination");
+            entity.HasIndex(e => e.InventoryReceiptOperationId, "idx_supply_shipments_operation");
+            entity.HasIndex(e => e.ShipmentNumber, "supply_shipments_shipment_number_key").IsUnique();
+            entity.HasIndex(e => e.Status, "idx_supply_shipments_status");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.CancelledAt).HasColumnType("timestamp without time zone").HasColumnName("cancelled_at");
+            entity.Property(e => e.CancelledBy).HasColumnName("cancelled_by");
+            entity.Property(e => e.ConfirmedAt).HasColumnType("timestamp without time zone").HasColumnName("confirmed_at");
+            entity.Property(e => e.ConfirmedBy).HasColumnName("confirmed_by");
+            entity.Property(e => e.CostSubtotal).HasPrecision(18, 4).HasColumnName("cost_subtotal");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP").HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.DestinationLocationId).HasColumnName("destination_location_id");
+            entity.Property(e => e.InventoryReceiptOperationId).HasColumnName("inventory_receipt_operation_id");
+            entity.Property(e => e.InvoiceNumber).HasMaxLength(100).HasColumnName("invoice_number");
+            entity.Property(e => e.LandedTotal).HasPrecision(18, 4).HasColumnName("landed_total");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProductSubtotal).HasPrecision(18, 4).HasColumnName("product_subtotal");
+            entity.Property(e => e.ShipmentDate).HasColumnType("timestamp without time zone").HasColumnName("shipment_date");
+            entity.Property(e => e.ShipmentNumber).HasMaxLength(50).HasColumnName("shipment_number");
+            entity.Property(e => e.Status).HasMaxLength(50).HasDefaultValueSql("'Draft'::character varying").HasColumnName("status");
+            entity.Property(e => e.SupplierName).HasMaxLength(255).HasColumnName("supplier_name");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.InventoryReceiptOperation).WithMany()
+                .HasForeignKey(d => d.InventoryReceiptOperationId)
+                .HasConstraintName("supply_shipments_inventory_receipt_operation_id_fkey");
+        });
+
+        modelBuilder.Entity<SupplyShipmentLine>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("supply_shipment_lines_pkey");
+
+            entity.ToTable("supply_shipment_lines", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_supply_lines_quantity", "quantity > 0");
+                table.HasCheckConstraint("chk_supply_lines_unit_price", "unit_price is null or unit_price >= 0");
+                table.HasCheckConstraint("chk_supply_lines_line_subtotal", "line_subtotal >= 0");
+                table.HasCheckConstraint("chk_supply_lines_allocated_cost", "allocated_cost >= 0");
+                table.HasCheckConstraint("chk_supply_lines_landed_unit_cost", "landed_unit_cost >= 0");
+            });
+
+            entity.HasIndex(e => e.ShipmentId, "idx_supply_lines_shipment");
+            entity.HasIndex(e => e.SkuId, "idx_supply_lines_sku");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.AllocatedCost).HasPrecision(18, 4).HasColumnName("allocated_cost");
+            entity.Property(e => e.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(e => e.LandedUnitCost).HasPrecision(18, 4).HasColumnName("landed_unit_cost");
+            entity.Property(e => e.LineSubtotal).HasPrecision(18, 4).HasColumnName("line_subtotal");
+            entity.Property(e => e.LotNumber).HasMaxLength(100).HasColumnName("lot_number");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProductNameSnapshot).HasMaxLength(255).HasColumnName("product_name_snapshot");
+            entity.Property(e => e.Quantity).HasColumnName("quantity");
+            entity.Property(e => e.ShipmentId).HasColumnName("shipment_id");
+            entity.Property(e => e.SkuCodeSnapshot).HasMaxLength(100).HasColumnName("sku_code_snapshot");
+            entity.Property(e => e.SkuId).HasColumnName("sku_id");
+            entity.Property(e => e.UnitPrice).HasPrecision(18, 4).HasColumnName("unit_price");
+
+            entity.HasOne(d => d.Shipment).WithMany(p => p.Lines)
+                .HasForeignKey(d => d.ShipmentId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("supply_shipment_lines_shipment_id_fkey");
+        });
+
+        modelBuilder.Entity<SupplyShipmentCost>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("supply_shipment_costs_pkey");
+
+            entity.ToTable("supply_shipment_costs", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_supply_costs_amount", "amount >= 0");
+            });
+
+            entity.HasIndex(e => e.ShipmentId, "idx_supply_costs_shipment");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.Amount).HasPrecision(18, 4).HasColumnName("amount");
+            entity.Property(e => e.CostType).HasMaxLength(50).HasColumnName("cost_type");
+            entity.Property(e => e.Description).HasMaxLength(255).HasColumnName("description");
+            entity.Property(e => e.ShipmentId).HasColumnName("shipment_id");
+
+            entity.HasOne(d => d.Shipment).WithMany(p => p.Costs)
+                .HasForeignKey(d => d.ShipmentId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("supply_shipment_costs_shipment_id_fkey");
+        });
+
+        modelBuilder.Entity<SupplyShipmentHistory>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("supply_shipment_history_pkey");
+
+            entity.ToTable("supply_shipment_history", "operations");
+
+            entity.HasIndex(e => new { e.ShipmentId, e.CreatedAt }, "idx_supply_history_shipment_created").IsDescending(false, true);
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.Action).HasMaxLength(50).HasColumnName("action");
+            entity.Property(e => e.ActorUserId).HasColumnName("actor_user_id");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP").HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.ShipmentId).HasColumnName("shipment_id");
+            entity.Property(e => e.SnapshotData).HasColumnType("jsonb").HasColumnName("snapshot_data");
+            entity.Property(e => e.Summary).HasColumnName("summary");
+
+            entity.HasOne(d => d.Shipment).WithMany(p => p.HistoryLogs)
+                .HasForeignKey(d => d.ShipmentId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("supply_shipment_history_shipment_id_fkey");
         });
         modelBuilder.HasSequence("operation_number_seq", "operations").StartsAt(1000L);
 

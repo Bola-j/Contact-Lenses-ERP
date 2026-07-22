@@ -10,6 +10,7 @@ const {
   ensureCoreData,
   openMerchantDetail,
   createOperationDraft,
+  createSupplyReceipt,
   runLatestOperationAction,
   createChangeDraft,
   expectDownload
@@ -29,18 +30,17 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   await gotoRoute(page, "/notifications");
   await expect(page.locator("#notification-list")).toBeVisible();
 
-  await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
-    type: "InventoryReceipt",
+  await createSupplyReceipt(page, {
     skuText: data.product,
     quantity: "20",
+    price: "75",
     lot: data.mainLot,
     expiry: data.expiry,
     supplier: `${data.runId} Supplier`,
     invoice: `${data.runId}-INV`
   });
-  await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
 
+  await gotoRoute(page, "/operations");
   await createOperationDraft(page, {
     type: "WarehouseTransfer",
     skuText: data.product,

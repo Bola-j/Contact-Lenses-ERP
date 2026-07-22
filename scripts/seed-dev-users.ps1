@@ -22,6 +22,7 @@ function Escape-SqlLiteral {
 $users = @(
     @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"; Username = "clevel"; Password = "12121212"; FullName = "C-Level Executive"; Role = "CLevel"; Location = "null" },
     @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"; Username = "accountant"; Password = "12121212"; FullName = "Lansee Accountant"; Role = "Accountant"; Location = "null" },
+    @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa7"; Username = "erp_admin"; Password = "12121212"; FullName = "ERP Admin"; Role = "ERPAdmin"; Location = "null" },
     @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4"; Username = "roxy_clerk"; Password = "12121212"; FullName = "Roxy Warehouse Clerk"; Role = "WarehouseClerk"; Location = "'11111111-1111-1111-1111-111111111111'" },
     @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa5"; Username = "retail_clerk"; Password = "12121212"; FullName = "Retail Warehouse Clerk"; Role = "WarehouseClerk"; Location = "'22222222-2222-2222-2222-222222222222'" },
     @{ Id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa6"; Username = "online_clerk"; Password = "12121212"; FullName = "Online Warehouse Clerk"; Role = "WarehouseClerk"; Location = "'33333333-3333-3333-3333-333333333333'" }

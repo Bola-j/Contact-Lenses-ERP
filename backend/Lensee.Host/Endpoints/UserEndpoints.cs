@@ -24,7 +24,7 @@ public static class UserEndpoints
             .WithName("CreateUser");
 
         group.MapPatch("/{id:guid}/password", ChangePasswordAsync)
-            .RequireAuthorization("users.write")
+            .RequireAuthorization("users.password.write")
             .WithName("ChangeUserPassword");
 
         group.MapPatch("/{id:guid}/activate", ActivateUserAsync)
@@ -216,7 +216,7 @@ public static class UserEndpoints
 
         if (NormalizeRole(request.Role) is not { Length: > 0 })
         {
-            errors[nameof(request.Role)] = ["Role must be one of: CLevel, Admin, Accountant, WarehouseClerk."];
+            errors[nameof(request.Role)] = ["Role must be one of: CLevel, Admin, ERPAdmin, Accountant, WarehouseClerk."];
         }
 
         if (NormalizeRole(request.Role) == LenseeRoles.WarehouseClerk && request.LocationId is null)

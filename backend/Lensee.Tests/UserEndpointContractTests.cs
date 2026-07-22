@@ -28,7 +28,7 @@ public sealed class UserEndpointContractTests : IClassFixture<UserEndpointFactor
     {
         await _factory.ResetAsync();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite);
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite, LenseePermissions.UsersPasswordWrite);
 
         var response = await client.PostAsJsonAsync("/api/v1/users", new
         {
@@ -52,7 +52,7 @@ public sealed class UserEndpointContractTests : IClassFixture<UserEndpointFactor
     {
         await _factory.ResetAsync();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite);
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite, LenseePermissions.UsersPasswordWrite);
 
         var response = await client.PostAsJsonAsync("/api/v1/users", new
         {
@@ -90,7 +90,7 @@ public sealed class UserEndpointContractTests : IClassFixture<UserEndpointFactor
     {
         var userId = await _factory.SeedUserAsync();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite);
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.UsersWrite, LenseePermissions.UsersPasswordWrite);
 
         var response = await client.PatchAsJsonAsync($"/api/v1/users/{userId}/password", new
         {

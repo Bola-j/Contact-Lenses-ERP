@@ -12,6 +12,7 @@ test("mobile: warehouse clerk navigation, inventory, and operations remain usabl
     await expect(page.locator(".sidebar")).toBeVisible();
     await expect(page.locator("#nav a", { hasText: "Inventory" })).toBeVisible();
     await expect(page.locator("#nav a", { hasText: "Operations" })).toBeVisible();
+    await expect(page.locator("#nav a", { hasText: "Supply" })).toHaveCount(0);
     await expect(page.locator("#nav a", { hasText: "Admin" })).toHaveCount(0);
   });
 

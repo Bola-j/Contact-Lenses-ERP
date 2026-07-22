@@ -240,6 +240,10 @@ h3 {
   color: var(--muted);
 }
 
+.status-danger {
+  color: var(--danger);
+}
+
 .icon-button {
   width: 36px;
   height: 36px;
@@ -520,6 +524,217 @@ h3 {
   background: var(--panel-soft);
 }
 
+.supply-line-incomplete {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.supply-line-invalid {
+  border-color: rgba(161, 63, 63, 0.72);
+  background: rgba(161, 63, 63, 0.07);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--warning);
+  font-size: 0.78rem;
+}
+
+.inline-warning {
+  margin: 8px 0 12px;
+}
+
+.supply-line-incomplete-row td {
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.supply-workspace {
+  grid-template-columns: minmax(420px, 0.86fr) minmax(520px, 1.14fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.supply-list-pane,
+.supply-detail-pane {
+  min-width: 0;
+}
+
+.supply-list-pane {
+  display: grid;
+  gap: 12px;
+}
+
+.supply-main-pane {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.supply-detail-pane {
+  border-top: 3px solid var(--stock);
+  box-shadow: 0 12px 28px rgba(16, 24, 40, 0.07);
+}
+
+.supply-form-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(19, 111, 99, 0.22);
+  border-radius: var(--radius);
+  border-top: 3px solid var(--stock);
+  background:
+    linear-gradient(90deg, rgba(19, 111, 99, 0.09), transparent 42%),
+    var(--panel);
+  box-shadow: 0 14px 32px rgba(16, 24, 40, 0.08);
+}
+
+.supply-form-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.supply-form-heading h2 {
+  margin: 4px 0 4px;
+}
+
+.supply-form-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid rgba(19, 111, 99, 0.24);
+  border-radius: 4px;
+  background: rgba(19, 111, 99, 0.08);
+  color: var(--stock);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.supply-receipt-form {
+  gap: 12px;
+}
+
+.supply-document-block {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.supply-header-block {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 249, 0.96)),
+    #fff;
+}
+
+.supply-block-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.supply-block-title strong {
+  color: var(--stock);
+}
+
+.supply-header-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.supply-summary-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(90deg, rgba(19, 111, 99, 0.08), transparent 38%),
+    #fff;
+}
+
+.supply-summary-panel div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.supply-summary-panel span,
+.supply-validation-list strong {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.supply-summary-panel strong {
+  overflow-wrap: anywhere;
+  font-size: 0.98rem;
+  font-weight: 900;
+}
+
+.supply-validation-list {
+  padding: 10px 12px;
+  border: 1px solid rgba(161, 63, 63, 0.34);
+  border-radius: var(--radius);
+  background: #fff6f6;
+  text-align: right;
+}
+
+.supply-validation-list ul {
+  margin: 6px 0 0;
+  padding-left: 0;
+  padding-right: 18px;
+  color: var(--danger);
+  font-size: 0.88rem;
+}
+
+.supply-readiness-grid {
+  margin-bottom: 10px;
+}
+
+.supply-line-row,
+.supply-cost-row {
+  border-inline-start: 4px solid rgba(19, 111, 99, 0.22);
+}
+
+html[dir="rtl"] .supply-workspace,
+html[dir="rtl"] .supply-line-row,
+html[dir="rtl"] .supply-cost-row {
+  direction: rtl;
+}
+
+html[dir="rtl"] .supply-line-row .op-line-search-results {
+  text-align: right;
+}
+
+.supply-line-row .op-line-search-result {
+  align-items: flex-start;
+}
+
+.supply-detail-pane h3 {
+  margin: 14px 0 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 1rem;
+}
+
 .line-editor-row > .field {
   min-width: 0;
   grid-column: span 2;
@@ -626,6 +841,28 @@ h3 {
   font-weight: 850;
 }
 
+.segmented-control label {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.segmented-control label:has(input:checked) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.segmented-control input[type="radio"] {
+  margin: 0;
+}
+
 .segmented-control button[aria-selected="true"] {
   background: var(--accent);
   color: #fff;
@@ -729,10 +966,15 @@ h3 {
 }
 
 .download-grid .field {
+  position: relative;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-soft);
+}
+
+.report-search-field {
+  gap: 8px;
 }
 
 .wide-form {
@@ -1791,6 +2033,18 @@ body.lang-ar {
     grid-template-columns: 1fr;
   }
 
+  .supply-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .supply-header-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .supply-summary-panel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .form-grid.two {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2252,6 +2506,8 @@ html[dir="rtl"] input[data-ltr] {
 
   .topbar-actions,
   .section-head,
+  .supply-form-heading,
+  .supply-block-title,
   .operation-editor-banner,
   .toolbar,
   .compact-toolbar,
@@ -2266,6 +2522,8 @@ html[dir="rtl"] input[data-ltr] {
 
   .topbar-actions > *,
   .section-head > *,
+  .supply-form-heading > *,
+  .supply-block-title > *,
   .toolbar > *,
   .compact-toolbar > *,
   .inline-actions > *,
@@ -2299,6 +2557,8 @@ html[dir="rtl"] input[data-ltr] {
   .report-grid,
   .notification-summary,
   .notification-details dl,
+  .supply-header-grid,
+  .supply-summary-panel,
   .line-editor-row,
   .stocktake-line-row {
     grid-template-columns: 1fr;

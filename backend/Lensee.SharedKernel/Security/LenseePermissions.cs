@@ -4,6 +4,7 @@ public static class LenseePermissions
 {
     public const string UsersRead = "users.read";
     public const string UsersWrite = "users.write";
+    public const string UsersPasswordWrite = "users.password.write";
     public const string CatalogRead = "catalog.read";
     public const string CatalogWrite = "catalog.write";
     public const string InventoryRead = "inventory.read";
@@ -15,6 +16,8 @@ public static class LenseePermissions
     public const string PaymentsDraft = "payments.draft";
     public const string PaymentsApprove = "payments.approve";
     public const string ReportsRead = "reports.read";
+    public const string SupplyRead = "supply.read";
+    public const string SupplyWrite = "supply.write";
     public const string AuditRead = "audit.read";
     public const string SettingsWrite = "settings.write";
 
@@ -23,9 +26,15 @@ public static class LenseePermissions
         {
             LenseeRoles.CLevel => new[]
             {
-                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, ReportsRead
+                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, ReportsRead, SupplyRead
             },
             LenseeRoles.Admin => new[]
+            {
+                UsersRead, UsersWrite, UsersPasswordWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
+                OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
+                ReportsRead, SupplyRead, SupplyWrite, AuditRead, SettingsWrite
+            },
+            LenseeRoles.ERPAdmin => new[]
             {
                 UsersRead, UsersWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,

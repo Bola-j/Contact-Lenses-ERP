@@ -17,9 +17,11 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-Lensee}
       Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
-      RateLimiting__PermitLimit: ${RATE_LIMIT_PERMIT_LIMIT:-120}
-      RateLimiting__WindowSeconds: ${RATE_LIMIT_WINDOW_SECONDS:-60}
-      RateLimiting__QueueLimit: ${RATE_LIMIT_QUEUE_LIMIT:-0}
+      Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-true}
+      Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-false}
+      RateLimiting__PermitLimit: ${RATE_LIMITING_PERMIT_LIMIT:-120}
+      RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
+      RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
 
   frontend:
     restart: always

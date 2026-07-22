@@ -25,6 +25,7 @@ $contexts = @(
 Push-Location $hostDir
 try {
     $env:ConnectionStrings__DefaultConnection = $ConnectionString
+    $env:Database__AutoMigrate = "false"
     foreach ($item in $contexts) {
         $project = Join-Path $repoRoot $item.Project
         dotnet tool run dotnet-ef database update --project $project --startup-project $hostProject --context $item.Context --connection $ConnectionString

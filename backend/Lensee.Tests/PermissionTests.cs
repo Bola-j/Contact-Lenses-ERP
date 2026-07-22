@@ -11,6 +11,30 @@ public sealed class PermissionTests
         var permissions = LenseePermissions.ForRole(LenseeRoles.Admin);
 
         Assert.Contains(LenseePermissions.UsersWrite, permissions);
+        Assert.Contains(LenseePermissions.UsersPasswordWrite, permissions);
+        Assert.Contains(LenseePermissions.SupplyWrite, permissions);
+    }
+
+    [Fact]
+    public void ErpAdmin_MatchesAdminExceptSupplyAndPasswords()
+    {
+        var permissions = LenseePermissions.ForRole(LenseeRoles.ERPAdmin);
+
+        Assert.Contains(LenseePermissions.UsersWrite, permissions);
+        Assert.Contains(LenseePermissions.InventoryWrite, permissions);
+        Assert.Contains(LenseePermissions.PaymentsWrite, permissions);
+        Assert.DoesNotContain(LenseePermissions.UsersPasswordWrite, permissions);
+        Assert.DoesNotContain(LenseePermissions.SupplyRead, permissions);
+        Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
+    }
+
+    [Fact]
+    public void CLevel_CanReadSupplyButCannotWriteSupply()
+    {
+        var permissions = LenseePermissions.ForRole(LenseeRoles.CLevel);
+
+        Assert.Contains(LenseePermissions.SupplyRead, permissions);
+        Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
     }
 
     [Fact]

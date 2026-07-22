@@ -73,21 +73,12 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddCors(options =>
 {
     var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-        ?? ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://localhost:8080"];
+        ?? ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://localhost:8080", "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:5173", "http://127.0.0.1:8080"];
     var allowedOriginSuffixes = builder.Configuration.GetSection("Cors:AllowedOriginSuffixes").Get<string[]>()
         ?? [];
 
     options.AddPolicy("Spa", policy =>
     {
-        if (builder.Environment.IsDevelopment())
-        {
-            policy.AllowAnyOrigin()
-                .AllowAnyHeader()
-                .AllowAnyMethod();
-
-            return;
-        }
-
         policy.WithOrigins(allowedOrigins)
             .SetIsOriginAllowed(origin =>
             {
@@ -105,7 +96,8 @@ builder.Services.AddCors(options =>
                     uri.Host.EndsWith(suffix.TrimStart('.'), StringComparison.OrdinalIgnoreCase));
             })
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -197,7 +189,8 @@ builder.Services.AddScoped<StockLedgerService>();
 builder.Services.AddScoped<MerchantBalanceService>();
 
 builder.Services.AddHealthChecks()
-    .AddCheck<DatabaseHealthCheck>("postgresql");
+    .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["live", "ready"])
+    .AddCheck<PendingMigrationsHealthCheck>("pending-migrations", tags: ["ready"]);
 
 var jwtSecret = builder.Configuration["Jwt:Secret"]
     ?? throw new InvalidOperationException("Jwt:Secret is not configured.");
@@ -232,6 +225,10 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("users.write", policy =>
         policy.RequireClaim("permission", LenseePermissions.UsersWrite));
 
+    options.AddPolicy("users.password.write", policy =>
+        policy.RequireRole(LenseeRoles.Admin)
+            .RequireClaim("permission", LenseePermissions.UsersPasswordWrite));
+
     options.AddPolicy("catalog.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.CatalogRead));
 
@@ -242,7 +239,7 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("permission", LenseePermissions.InventoryRead));
 
     options.AddPolicy("inventory.write", policy =>
-        policy.RequireRole(LenseeRoles.Admin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.InventoryWrite));
 
     options.AddPolicy("operations.read", policy =>
@@ -255,27 +252,35 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsRead));
 
     options.AddPolicy("payments.write", policy =>
-        policy.RequireRole(LenseeRoles.Admin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.PaymentsWrite));
 
     options.AddPolicy("payments.draft", policy =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsDraft));
 
     options.AddPolicy("payments.approve", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.Accountant)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.PaymentsApprove));
 
     options.AddPolicy("reports.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
 
-    options.AddPolicy("settings.write", policy =>
+    options.AddPolicy("supply.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel)
+            .RequireClaim("permission", LenseePermissions.SupplyRead));
+
+    options.AddPolicy("supply.write", policy =>
         policy.RequireRole(LenseeRoles.Admin)
+            .RequireClaim("permission", LenseePermissions.SupplyWrite));
+
+    options.AddPolicy("settings.write", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.SettingsWrite));
 });
 
 var app = builder.Build();
 
-await InitializeDevelopmentDatabaseAsync(app);
+await InitializeDatabaseAsync(app);
 
 app.UseExceptionHandler(errorApp =>
 {
@@ -320,6 +325,15 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.TryAdd("Referrer-Policy", "strict-origin-when-cross-origin");
+    context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
+    context.Response.Headers.TryAdd("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+    await next();
+});
+
 app.UseCors("Spa");
 app.UseAuthentication();
 app.UseRateLimiter();
@@ -327,6 +341,16 @@ app.UseAuthorization();
 
 app.MapHealthChecks("/health", new HealthCheckOptions { ResponseWriter = WriteHealthResponseAsync });
 app.MapHealthChecks("/api/v1/health", new HealthCheckOptions { ResponseWriter = WriteHealthResponseAsync });
+app.MapHealthChecks("/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = WriteHealthResponseAsync
+});
+app.MapHealthChecks("/api/v1/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = WriteHealthResponseAsync
+});
 
 app.MapGet("/api/v1", () => Results.Ok(new
 {
@@ -347,21 +371,24 @@ app.MapPaymentsEndpoints();
 app.MapNotificationsEndpoints();
 app.MapReportsEndpoints();
 app.MapStocktakeEndpoints();
+app.MapSupplyEndpoints();
 
 app.Run();
 
-static async Task InitializeDevelopmentDatabaseAsync(WebApplication app)
+static async Task InitializeDatabaseAsync(WebApplication app)
 {
-    if (!app.Environment.IsDevelopment())
-    {
-        return;
-    }
-
     using var scope = app.Services.CreateScope();
     var services = scope.ServiceProvider;
 
     var logger = services.GetRequiredService<ILoggerFactory>()
         .CreateLogger("DatabaseStartup");
+
+    var autoMigrate = app.Configuration.GetValue("Database:AutoMigrate", app.Environment.IsDevelopment());
+    if (!autoMigrate)
+    {
+        await ValidatePendingMigrationsAsync(app, services);
+        return;
+    }
 
     try
     {
@@ -380,7 +407,12 @@ static async Task InitializeDevelopmentDatabaseAsync(WebApplication app)
             create schema if not exists reporting;
         """);
 
-        await BaselineExistingDevelopmentSchemaAsync(services);
+        var baselineExistingSchema = app.Configuration.GetValue("Database:BaselineExistingSchema", app.Environment.IsDevelopment());
+        if (baselineExistingSchema)
+        {
+            await BaselineExistingSchemaAsync(services);
+        }
+
         await EnsurePreMigrationCompatibilityAsync(services);
 
         await services.GetRequiredService<IdentityDbContext>().Database.MigrateAsync();
@@ -393,12 +425,45 @@ static async Task InitializeDevelopmentDatabaseAsync(WebApplication app)
         await services.GetRequiredService<ReportingDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<SharedDbContext>().Database.MigrateAsync();
 
-        await DatabaseCompatibility.EnsureDevelopmentSchemaAsync(services, app.Environment);
+        await DatabaseCompatibility.EnsureSchemaAsync(services);
     }
     catch (Exception exception)
     {
-        logger.LogError(exception, "Failed to initialize the development database.");
+        logger.LogError(exception, "Failed to initialize the database.");
         throw;
+    }
+}
+
+static async Task ValidatePendingMigrationsAsync(WebApplication app, IServiceProvider services)
+{
+    var contexts = new (string Name, DbContext Context)[]
+    {
+        ("identity", services.GetRequiredService<IdentityDbContext>()),
+        ("catalog", services.GetRequiredService<CatalogDbContext>()),
+        ("inventory", services.GetRequiredService<InventoryDbContext>()),
+        ("crm", services.GetRequiredService<CrmDbContext>()),
+        ("operations", services.GetRequiredService<OperationsDbContext>()),
+        ("payments", services.GetRequiredService<PaymentsDbContext>()),
+        ("notifications", services.GetRequiredService<NotificationsDbContext>()),
+        ("reporting", services.GetRequiredService<ReportingDbContext>()),
+        ("shared", services.GetRequiredService<SharedDbContext>())
+    };
+
+    var pending = new List<string>();
+    foreach (var (name, context) in contexts)
+    {
+        if (!context.Database.IsRelational())
+        {
+            continue;
+        }
+
+        var migrations = await context.Database.GetPendingMigrationsAsync();
+        pending.AddRange(migrations.Select(migration => $"{name}:{migration}"));
+    }
+
+    if (pending.Count > 0)
+    {
+        throw new InvalidOperationException($"Database has pending EF migrations and Database:AutoMigrate is disabled: {string.Join(", ", pending)}.");
     }
 }
 
@@ -450,7 +515,7 @@ static async Task EnsurePreMigrationCompatibilityAsync(IServiceProvider services
     // Legacy databases are handled by post-migration compatibility.
 }
 
-static async Task BaselineExistingDevelopmentSchemaAsync(IServiceProvider services)
+static async Task BaselineExistingSchemaAsync(IServiceProvider services)
 {
     await BaselineInitialMigrationsIfObjectExistsAsync(
         services.GetRequiredService<SharedDbContext>(),
@@ -470,6 +535,10 @@ static async Task BaselineExistingDevelopmentSchemaAsync(IServiceProvider servic
     await BaselineInitialMigrationsIfObjectExistsAsync(
         services.GetRequiredService<OperationsDbContext>(),
         "operations.operation_logs");
+    await BaselineMigrationIfObjectExistsAsync(
+        services.GetRequiredService<OperationsDbContext>(),
+        "20260722170716_AddSupplyShipments",
+        "operations.supply_shipments");
     await BaselineInitialMigrationsIfObjectExistsAsync(
         services.GetRequiredService<PaymentsDbContext>(),
         "payments.main_payment_logs");
@@ -508,6 +577,23 @@ static async Task BaselineInitialMigrationsIfObjectExistsAsync(DbContext dbConte
             on conflict ("MigrationId") do nothing;
             """);
     }
+}
+
+static async Task BaselineMigrationIfObjectExistsAsync(DbContext dbContext, string migration, string markerObject)
+{
+    await dbContext.Database.ExecuteSqlRawAsync("""
+        create table if not exists "__EFMigrationsHistory" (
+            "MigrationId" character varying(150) not null primary key,
+            "ProductVersion" character varying(32) not null
+        );
+        """);
+
+    await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+        insert into "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+        select {migration}, '8.0.27'
+        where to_regclass({markerObject}) is not null
+        on conflict ("MigrationId") do nothing;
+        """);
 }
 
 static Task WriteHealthResponseAsync(HttpContext context, Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)

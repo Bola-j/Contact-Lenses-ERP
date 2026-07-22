@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Identity.Data;
@@ -11,7 +12,6 @@ using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
 using Lensee.SharedKernel.Security;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Lensee.Host.Endpoints;
 
@@ -2858,28 +2858,7 @@ public static class OperationsEndpoints
         Func<Task> action,
         CancellationToken cancellationToken)
     {
-        if (!inventoryDbContext.Database.IsRelational() || !operationsDbContext.Database.IsRelational())
-        {
-            await action();
-            return;
-        }
-
-        try
-        {
-            await using var transaction = await inventoryDbContext.Database.BeginTransactionAsync(cancellationToken);
-            await operationsDbContext.Database.UseTransactionAsync(transaction.GetDbTransaction(), cancellationToken);
-            await action();
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch (InvalidOperationException exception) when (IsCrossContextTransactionAssociationError(exception))
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-            await action();
-        }
-        finally
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-        }
+        await SharedDbTransaction.ExecuteAsync(inventoryDbContext, action, cancellationToken, operationsDbContext);
     }
 
     private static async Task ExecuteInventoryOperationTransactionAsync(
@@ -2890,50 +2869,7 @@ public static class OperationsEndpoints
         Func<Task> action,
         CancellationToken cancellationToken)
     {
-        if (!inventoryDbContext.Database.IsRelational() || !operationsDbContext.Database.IsRelational() || !paymentsDbContext.Database.IsRelational() || !crmDbContext.Database.IsRelational())
-        {
-            await action();
-            return;
-        }
-
-        try
-        {
-            await using var transaction = await inventoryDbContext.Database.BeginTransactionAsync(cancellationToken);
-            await operationsDbContext.Database.UseTransactionAsync(transaction.GetDbTransaction(), cancellationToken);
-            await paymentsDbContext.Database.UseTransactionAsync(transaction.GetDbTransaction(), cancellationToken);
-            await crmDbContext.Database.UseTransactionAsync(transaction.GetDbTransaction(), cancellationToken);
-            await action();
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch (InvalidOperationException exception) when (IsCrossContextTransactionAssociationError(exception))
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-            await ClearExternalTransactionAsync(paymentsDbContext, cancellationToken);
-            await ClearExternalTransactionAsync(crmDbContext, cancellationToken);
-            await action();
-        }
-        finally
-        {
-            await ClearExternalTransactionAsync(operationsDbContext, cancellationToken);
-            await ClearExternalTransactionAsync(paymentsDbContext, cancellationToken);
-            await ClearExternalTransactionAsync(crmDbContext, cancellationToken);
-        }
-    }
-
-    private static bool IsCrossContextTransactionAssociationError(InvalidOperationException exception) =>
-        exception.Message.Contains("not associated with the current connection", StringComparison.OrdinalIgnoreCase) ||
-        exception.Message.Contains("associated with the current connection", StringComparison.OrdinalIgnoreCase);
-
-    private static async Task ClearExternalTransactionAsync(DbContext dbContext, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await dbContext.Database.UseTransactionAsync(null, cancellationToken);
-        }
-        catch (InvalidOperationException)
-        {
-            // The context may not have accepted the external transaction in the first place.
-        }
+        await SharedDbTransaction.ExecuteAsync(inventoryDbContext, action, cancellationToken, operationsDbContext, paymentsDbContext, crmDbContext);
     }
 
     private sealed record DraftValidationResult(Dictionary<string, string[]> Errors, Location? SourceLocation, Location? DestinationLocation, Dictionary<Guid, Sku> SkusById, Merchant? Merchant, Representative? Representative);

@@ -5,7 +5,7 @@
 {$APP_DOMAIN} {
     encode zstd gzip
 
-    @api path /api/* /health /swagger* /openapi*
+    @api path /api/* /health /ready /swagger* /openapi*
     reverse_proxy @api lensee.host:8080
 
     reverse_proxy frontend:80

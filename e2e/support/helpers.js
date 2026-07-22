@@ -4,6 +4,7 @@ const apiBaseUrl = process.env.LENSEE_E2E_API_URL || "http://localhost:5000";
 
 const users = {
   admin: { username: process.env.LENSEE_E2E_ADMIN_USER || "admin", password: process.env.LENSEE_E2E_ADMIN_PASSWORD || "12121212" },
+  erpAdmin: { username: process.env.LENSEE_E2E_ERP_ADMIN_USER || "erp_admin", password: process.env.LENSEE_E2E_ERP_ADMIN_PASSWORD || "12121212" },
   clevel: { username: process.env.LENSEE_E2E_CLEVEL_USER || "clevel", password: process.env.LENSEE_E2E_CLEVEL_PASSWORD || "12121212" },
   accountant: { username: process.env.LENSEE_E2E_ACCOUNTANT_USER || "accountant", password: process.env.LENSEE_E2E_ACCOUNTANT_PASSWORD || "12121212" },
   clerk: { username: process.env.LENSEE_E2E_CLERK_USER || "roxy_clerk", password: process.env.LENSEE_E2E_CLERK_PASSWORD || "12121212" },
@@ -209,6 +210,52 @@ async function createOperationDraft(page, options) {
   return created;
 }
 
+async function createSupplyReceipt(page, options) {
+  await gotoRoute(page, "/supply");
+  await expect(page.locator("#supply-form")).toBeVisible();
+  await page.locator("#supply-reset").click();
+  await page.locator("#supply-supplier").fill(options.supplier || "E2E Supplier");
+  if (options.invoice) await page.locator("#supply-invoice").fill(options.invoice);
+  const row = page.locator(".supply-line-row").first();
+  await selectSupplyLineSku(row, options.skuText);
+  await row.locator(".supply-line-qty").fill(options.quantity || "1");
+  if (options.price) await row.locator(".supply-line-price").fill(options.price);
+  if (options.lot) await row.locator(".supply-line-lot").fill(options.lot);
+  if (options.expiry) await row.locator(".supply-line-expiry").fill(options.expiry);
+  const [createResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/v1/supply/shipments") &&
+      response.request().method() === "POST" &&
+      response.status() === 201),
+    page.locator("#supply-form button[type='submit']").click()
+  ]);
+  const shipment = await createResponse.json();
+  await expect(page.locator("#supply-rows")).toContainText(shipment.shipmentNumber, { timeout: 20_000 });
+  await page.locator("#supply-rows tr", { hasText: shipment.shipmentNumber }).first().click();
+  await expect(page.locator("#supply-detail")).toContainText(shipment.shipmentNumber);
+  await page.locator("#supply-confirm").click();
+  await expect(page.locator("#notification-area")).toContainText(/received into inventory/i);
+  await expect(page.locator("#supply-detail")).toContainText(/Received/i);
+  return shipment;
+}
+
+async function selectSupplyLineSku(row, textOrRegex) {
+  const search = row.locator(".supply-line-search");
+  const hiddenSku = row.locator(".supply-line-sku");
+  const results = row.locator(".op-line-search-results");
+  await expect(search).toBeVisible();
+  const query = textOrRegex instanceof RegExp ? textOrRegex.source.replace(/\\/g, "") : String(textOrRegex);
+  await search.fill(query);
+  await expect(results).toBeVisible();
+  const result = results.locator(".op-line-search-result:not([disabled])", { hasText: textOrRegex }).first();
+  if (await result.isVisible().catch(() => false)) {
+    await result.click();
+  } else {
+    await results.locator(".op-line-search-result:not([disabled])").first().click();
+  }
+  await expect(hiddenSku).not.toHaveValue("");
+}
+
 async function fillOperationDraftForm(page, options) {
   await page.locator("#op-type").selectOption(options.type);
   await expect(page.locator("#op-type")).toHaveValue(options.type);
@@ -369,7 +416,7 @@ async function createChangeDraft(page, data) {
 }
 
 async function getAuth(page) {
-  return await page.evaluate(() => JSON.parse(window.localStorage.getItem("lensee.auth") || "null"));
+  return await page.evaluate(() => window.__lenseeGetAuth?.() || null);
 }
 
 async function apiRequest(page, method, path, body) {
@@ -468,6 +515,7 @@ module.exports = {
   ensureCoreData,
   openMerchantDetail,
   createOperationDraft,
+  createSupplyReceipt,
   runLatestOperationAction,
   selectOperationLineSku,
   waitForStockOptions,

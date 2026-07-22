@@ -4,6 +4,7 @@ public static class LenseeRoles
 {
     public const string CLevel = "CLevel";
     public const string Admin = "Admin";
+    public const string ERPAdmin = "ERPAdmin";
     public const string Accountant = "Accountant";
     public const string WarehouseClerk = "WarehouseClerk";
 
@@ -11,6 +12,7 @@ public static class LenseeRoles
     {
         CLevel,
         Admin,
+        ERPAdmin,
         Accountant,
         WarehouseClerk
     };
@@ -23,6 +25,7 @@ public static class LenseeRoles
         {
             { } value when string.Equals(value, CLevel, StringComparison.OrdinalIgnoreCase) => CLevel,
             { } value when string.Equals(value, Admin, StringComparison.OrdinalIgnoreCase) => Admin,
+            { } value when string.Equals(value, ERPAdmin, StringComparison.OrdinalIgnoreCase) => ERPAdmin,
             { } value when string.Equals(value, Accountant, StringComparison.OrdinalIgnoreCase) => Accountant,
             { } value when string.Equals(value, WarehouseClerk, StringComparison.OrdinalIgnoreCase) => WarehouseClerk,
             _ => string.Empty
@@ -33,6 +36,7 @@ public static class LenseeRoles
         role switch
         {
             CLevel => "C-Level",
+            ERPAdmin => "ERP Admin",
             WarehouseClerk => "Warehouse Clerk",
             _ => role
         };

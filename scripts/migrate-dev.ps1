@@ -89,6 +89,7 @@ Invoke-DbSql "alter user lensee_user with password '$escapedDbPassword';"
 Push-Location $hostDir
 try {
     $env:ConnectionStrings__DefaultConnection = $defaultConnection
+    $env:Database__AutoMigrate = "false"
     $dotnetEf = Join-Path $env:USERPROFILE ".dotnet/tools/dotnet-ef.exe"
     if (-not (Test-Path -LiteralPath $dotnetEf)) {
         $dotnetEf = "dotnet-ef"
