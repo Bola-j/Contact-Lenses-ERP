@@ -38,3 +38,5 @@ postman/results/
 
 testsprite_tests\tmp\config.json
 docs/*
+output/pdf/lensee-user-manual.pdf
+
