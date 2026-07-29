@@ -20,6 +20,8 @@ public static class LenseePermissions
     public const string SupplyWrite = "supply.write";
     public const string AuditRead = "audit.read";
     public const string SettingsWrite = "settings.write";
+    public const string IntegrationsShopifyRead = "integrations.shopify.read";
+    public const string IntegrationsShopifyManage = "integrations.shopify.manage";
 
     public static IReadOnlyCollection<string> ForRole(string role) =>
         LenseeRoles.Normalize(role) switch
@@ -32,13 +34,13 @@ public static class LenseePermissions
             {
                 UsersRead, UsersWrite, UsersPasswordWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
-                ReportsRead, SupplyRead, SupplyWrite, AuditRead, SettingsWrite
+                ReportsRead, SupplyRead, SupplyWrite, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },
             LenseeRoles.ERPAdmin => new[]
             {
                 UsersRead, UsersWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
-                ReportsRead, AuditRead, SettingsWrite
+                ReportsRead, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },
             LenseeRoles.Accountant => new[]
             {
@@ -46,7 +48,7 @@ public static class LenseePermissions
             },
             LenseeRoles.WarehouseClerk => new[]
             {
-                CatalogRead, InventoryRead, OperationsRead, OperationsWrite
+                CatalogRead, InventoryRead, OperationsRead, OperationsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },
             _ => Array.Empty<string>()
         };

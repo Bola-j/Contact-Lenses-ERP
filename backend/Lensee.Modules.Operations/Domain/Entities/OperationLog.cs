@@ -25,6 +25,14 @@ public partial class OperationLog
 
     public string? PaymentMethod { get; set; }
 
+    public string SalesChannel { get; set; } = "Manual";
+
+    public string? BuyerPhone { get; set; }
+
+    public string? BuyerEmail { get; set; }
+
+    public string? ShippingAddress { get; set; }
+
     public Guid? CurrentVersionId { get; set; }
 
     public string? Notes { get; set; }
@@ -34,6 +42,8 @@ public partial class OperationLog
     public DateTime? DeletedAt { get; set; }
 
     public Guid CreatedBy { get; set; }
+
+    public string? CreatedActorName { get; set; }
 
     public Guid? ConfirmedBy { get; set; }
 
@@ -48,4 +58,6 @@ public partial class OperationLog
     public virtual ICollection<OperationLine> OperationLines { get; set; } = new List<OperationLine>();
 
     public virtual ICollection<OperationVersion> OperationVersions { get; set; } = new List<OperationVersion>();
+
+    public virtual ShopifyOrderLink? ShopifyOrderLink { get; set; }
 }

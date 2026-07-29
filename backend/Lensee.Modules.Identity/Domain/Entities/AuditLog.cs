@@ -17,11 +17,15 @@ public partial class AuditLog
 
     public int? StockDeltaApplied { get; set; }
 
-    public Guid UserId { get; set; }
+    public Guid? UserId { get; set; }
+
+    public string? ActorType { get; set; }
+
+    public string? ActorName { get; set; }
 
     public string? IpAddress { get; set; }
 
     public DateTime CreatedAt { get; set; }
 
-    public virtual User User { get; set; } = null!;
+    public virtual User? User { get; set; }
 }

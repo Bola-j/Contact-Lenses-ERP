@@ -31,6 +31,14 @@ services:
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
+      Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
+      Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
+      Shopify__StoreDomain: ${SHOPIFY_STORE_DOMAIN:-}
+      Shopify__OnlineLocationId: ${SHOPIFY_ONLINE_LOCATION_ID:-00000000-0000-0000-0000-000000000000}
+      Shopify__CodGatewayNames__0: ${SHOPIFY_COD_GATEWAY_NAME_1:-Cash on Delivery}
+      Shopify__MaxBodyBytes: ${SHOPIFY_WEBHOOK_MAX_BODY_BYTES:-262144}
+      Shopify__PayloadRetentionDays: ${SHOPIFY_PAYLOAD_RETENTION_DAYS:-30}
+      Hosting__TrustedProxyNetwork: ${HOSTING_TRUSTED_PROXY_NETWORK:-}
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
       Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-true}
       Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-true}

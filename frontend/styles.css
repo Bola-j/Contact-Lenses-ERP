@@ -1877,6 +1877,112 @@ body.lang-ar {
   gap: 10px;
 }
 
+.integration-command-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: end;
+  margin-bottom: 18px;
+  padding: 22px 24px;
+  border: 1px solid #b9d5d2;
+  border-radius: 12px;
+  background: linear-gradient(115deg, #eef8f6, #f8fcfb 62%, #edf4fb);
+}
+
+.integration-command-copy h2 {
+  margin: 5px 0 8px;
+  max-width: 720px;
+}
+
+.integration-command-copy p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.integration-event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.integration-event-card {
+  border: 1px solid var(--line);
+  border-left: 4px solid #5f9e98;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.integration-event-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  padding: 14px;
+}
+
+.integration-event-main p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.integration-event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.integration-event-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.integration-event-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.integration-event-facts dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.integration-mapping-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) minmax(140px, 0.7fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 760px) {
+  .integration-command-band,
+  .integration-event-main {
+    grid-template-columns: 1fr;
+  }
+
+  .integration-event-actions {
+    justify-content: flex-start;
+  }
+
+  .integration-event-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .integration-mapping-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .notification-card {
   border: 1px solid var(--line);
   border-radius: 10px;

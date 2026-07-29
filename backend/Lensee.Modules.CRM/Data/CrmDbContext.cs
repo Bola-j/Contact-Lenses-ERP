@@ -31,6 +31,9 @@ public partial class CrmDbContext : DbContext
             });
 
             entity.HasIndex(e => e.Status, "idx_merchants_status").HasFilter("(is_deleted = false)");
+            entity.HasIndex(e => new { e.ExternalProvider, e.ExternalCustomerId }, "uq_merchants_external_customer")
+                .IsUnique()
+                .HasFilter("(external_provider IS NOT NULL AND external_customer_id IS NOT NULL)");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -55,6 +58,8 @@ public partial class CrmDbContext : DbContext
             entity.Property(e => e.Email)
                 .HasMaxLength(255)
                 .HasColumnName("email");
+            entity.Property(e => e.ExternalCustomerId).HasMaxLength(100).HasColumnName("external_customer_id");
+            entity.Property(e => e.ExternalProvider).HasMaxLength(50).HasColumnName("external_provider");
             entity.Property(e => e.IsDeleted)
                 .HasDefaultValue(false)
                 .HasColumnName("is_deleted");

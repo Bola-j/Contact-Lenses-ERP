@@ -51,4 +51,30 @@ public sealed class AuditLogWriter : IAuditLogWriter
 
         await _identityDbContext.SaveChangesAsync(cancellationToken);
     }
+
+    public async Task WriteSystemAsync(
+        string actorName,
+        string entityType,
+        Guid entityId,
+        string action,
+        object? changedFields = null,
+        int? stockDeltaApplied = null,
+        CancellationToken cancellationToken = default)
+    {
+        _identityDbContext.AuditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            EntityType = entityType,
+            EntityId = entityId,
+            Action = action,
+            ChangedFields = changedFields is null ? null : JsonSerializer.Serialize(changedFields),
+            StockDeltaApplied = stockDeltaApplied,
+            ActorType = "Integration",
+            ActorName = actorName,
+            IpAddress = _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = _clock.EgyptNow
+        });
+
+        await _identityDbContext.SaveChangesAsync(cancellationToken);
+    }
 }

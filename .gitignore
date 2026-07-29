@@ -23,6 +23,9 @@ test-results/
 
 # Local configuration and secrets
 .env
+.env.production.example
+.env.example
+
 
 backend/Lensee.Host/appsettings.Development.json
 backend/Lensee.Host/appsettings.Testing.json
@@ -36,7 +39,10 @@ postman/results/
 .docker-compose.yml
 .vercel
 
-testsprite_tests\tmp\config.json
+testsprite_tests/tmp/config.json
 docs/*
+!docs/SHOPIFY_INTEGRATION_CONFIGURATION.md
 output/pdf/lensee-user-manual.pdf
+tmp/manual-module-gallery-preview.png
 
+tmp/pdfs/*

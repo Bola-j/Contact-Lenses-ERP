@@ -281,6 +281,7 @@ public static class OperationsEndpoints
         var request = new PageRequest(page ?? 1, pageSize ?? 25);
         var query = operationsDbContext.OperationLogs
             .Include(operation => operation.OperationLines)
+            .Include(operation => operation.ShopifyOrderLink)
             .Where(operation => !operation.IsDeleted)
             .AsQueryable();
 
@@ -368,6 +369,7 @@ public static class OperationsEndpoints
             DestinationLocationId = request.DestinationLocationId,
             ClientId = validation.Merchant?.Id,
             ClientName = validation.Merchant?.BusinessName ?? TrimToNull(request.BuyerName),
+            BuyerPhone = TrimToNull(request.BuyerPhone),
             RepresentativeId = validation.Representative?.Id,
             PaymentMethod = NormalizePaymentMethod(request.PaymentMethod),
             Notes = request.Notes,
@@ -429,12 +431,20 @@ public static class OperationsEndpoints
         {
             return Results.Forbid();
         }
+        if (operation.SalesChannel == "Shopify" && !IsShopifyAllocationOnlyUpdate(operation, request))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request)] = ["Shopify customer, route, quantities, and prices are read-only. Only batch and expiry allocation may be updated before fulfillment."]
+            });
+        }
 
         operation.OperationType = NormalizeOperationType(request.OperationType);
         operation.SourceLocationId = request.SourceLocationId;
         operation.DestinationLocationId = request.DestinationLocationId;
         operation.ClientId = validation.Merchant?.Id;
         operation.ClientName = validation.Merchant?.BusinessName ?? TrimToNull(request.BuyerName);
+        operation.BuyerPhone = TrimToNull(request.BuyerPhone);
         operation.RepresentativeId = validation.Representative?.Id;
         operation.PaymentMethod = NormalizePaymentMethod(request.PaymentMethod);
         operation.Notes = request.Notes;
@@ -485,6 +495,13 @@ public static class OperationsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 [nameof(operation.Status)] = ["Cancelled operations cannot be revised."]
+            });
+        }
+        if (operation.SalesChannel == "Shopify")
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(operation.SalesChannel)] = ["Shopify commercial data cannot be revised. Use the Shopify cancellation/refund exception workflow for commercial changes."]
             });
         }
 
@@ -924,6 +941,7 @@ public static class OperationsEndpoints
         CrmDbContext crmDbContext,
         PaymentsDbContext paymentsDbContext,
         StockLedgerService ledgerService,
+        IAppEventPublisher eventPublisher,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken cancellationToken)
@@ -1019,6 +1037,25 @@ public static class OperationsEndpoints
                 await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, userId, clock.EgyptNow, cancellationToken);
             }
         }, cancellationToken);
+
+        if (operation.OperationType is WholesaleSale or RetailSale &&
+            string.Equals(operation.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase))
+        {
+            var paymentLog = await paymentsDbContext.MainPaymentLogs
+                .FirstOrDefaultAsync(log => log.OperationId == operation.Id && !log.IsDeleted, cancellationToken);
+            if (paymentLog is not null)
+            {
+                await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                    paymentLog.Id,
+                    paymentLog.MerchantId,
+                    operation.Id,
+                    "CashReviewRequired",
+                    $"Cash sale {operation.OperationNumber} is awaiting accountant review.",
+                    null,
+                    LenseeRoles.Accountant,
+                    clock.EgyptNow), cancellationToken);
+            }
+        }
 
         return Results.NoContent();
     }
@@ -1304,12 +1341,15 @@ public static class OperationsEndpoints
             .Include(operation => operation.OperationLines)
             .Include(operation => operation.InventoryReceiptHeader)
             .Include(operation => operation.OperationVersions)
+            .Include(operation => operation.ShopifyOrderLink)
             .FirstOrDefaultAsync(operation => operation.Id == id && !operation.IsDeleted, cancellationToken);
 
     private static async Task<OperationLog?> LoadOperationForDraftUpdateAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
         await dbContext.OperationLogs
+            .Include(operation => operation.OperationLines)
             .Include(operation => operation.InventoryReceiptHeader)
             .Include(operation => operation.OperationVersions)
+            .Include(operation => operation.ShopifyOrderLink)
             .FirstOrDefaultAsync(operation => operation.Id == id && !operation.IsDeleted, cancellationToken);
 
     private static async Task<DraftValidationResult> ValidateDraftAsync(
@@ -1733,6 +1773,9 @@ public static class OperationsEndpoints
             : userId.Value.ToString();
     }
 
+    private static string? GetActorDisplayName(string? actorName, Guid? userId, IReadOnlyDictionary<Guid, User> userLookup) =>
+        !string.IsNullOrWhiteSpace(actorName) ? actorName : GetUserDisplayName(userId, userLookup);
+
     private static void AddLines(OperationLog operation, IReadOnlyDictionary<Guid, Sku> skusById, IReadOnlyList<OperationLineRequest> lines, Merchant? merchant, Representative? representative)
     {
         foreach (var line in lines)
@@ -2021,6 +2064,34 @@ public static class OperationsEndpoints
             _ => []
         };
 
+    private static bool IsShopifyAllocationOnlyUpdate(OperationLog operation, OperationRequest request)
+    {
+        if (NormalizeOperationType(request.OperationType) != operation.OperationType ||
+            request.SourceLocationId != operation.SourceLocationId ||
+            request.DestinationLocationId != operation.DestinationLocationId ||
+            request.MerchantId != operation.ClientId ||
+            request.RepresentativeId != operation.RepresentativeId ||
+            NormalizePaymentMethod(request.PaymentMethod) != operation.PaymentMethod ||
+            TrimToNull(request.BuyerName) != operation.ClientName ||
+            TrimToNull(request.BuyerPhone) != operation.BuyerPhone ||
+            TrimToNull(request.Notes) != operation.Notes ||
+            request.Lines.Count != operation.OperationLines.Count)
+        {
+            return false;
+        }
+
+        var existing = operation.OperationLines
+            .GroupBy(line => (line.SkuId, line.Section, IsBonus: line.BonusQuantity > 0, line.EntryMode, line.Quantity, line.UnitPrice))
+            .ToDictionary(group => group.Key, group => group.Count());
+        var requested = request.Lines
+            .GroupBy(line => (line.SkuId, Section: NormalizeLineSection(operation.OperationType, line.Section), IsBonus: line.IsBonus == true, EntryMode: NormalizeEntryMode(line.EntryMode), Quantity: GetLineQuantity(operation.OperationType, line), UnitPrice: line.IsBonus == true ? 0m : line.UnitPrice ?? 0m))
+            .ToDictionary(group => group.Key, group => group.Count());
+        return existing.Count == requested.Count && existing.All(item => requested.TryGetValue(item.Key, out var count) && count == item.Value);
+    }
+
+    private static bool IsAllocationPending(OperationLog operation) =>
+        operation.SalesChannel == "Shopify" && operation.OperationLines.Any(line => line.EntryMode == "Packs" && line.ExpiryDate is null);
+
     private static OperationListResponse ToListResponse(OperationLog operation, IReadOnlyDictionary<Guid, Location> locationLookup, IReadOnlyDictionary<Guid, User> userLookup) =>
         new(
             operation.Id,
@@ -2037,12 +2108,19 @@ public static class OperationsEndpoints
             operation.PaymentMethod,
             operation.CreatedAt,
             operation.ConfirmedAt,
-            GetUserDisplayName(operation.CreatedBy, userLookup),
+            GetActorDisplayName(operation.CreatedActorName, operation.CreatedBy, userLookup),
             GetUserDisplayName(operation.ConfirmedBy, userLookup),
-            operation.OperationVersions.OrderByDescending(version => version.VersionNumber).Select(version => GetUserDisplayName(version.EditedBy, userLookup)).FirstOrDefault(),
+            operation.OperationVersions.OrderByDescending(version => version.VersionNumber).Select(version => GetActorDisplayName(version.EditedActorName, version.EditedBy, userLookup)).FirstOrDefault(),
             operation.Status == Draft,
             false,
-            null);
+            null,
+            operation.SalesChannel,
+            operation.BuyerPhone,
+            operation.BuyerEmail,
+            operation.ShippingAddress,
+            operation.ShopifyOrderLink?.ShopifyOrderId,
+            operation.ShopifyOrderLink?.ShopifyOrderNumber,
+            IsAllocationPending(operation));
 
     private static OperationDetailResponse ToDetailResponse(
         OperationLog operation,
@@ -2082,9 +2160,9 @@ public static class OperationsEndpoints
             operation.Notes,
             operation.CreatedAt,
             operation.ConfirmedAt,
-            GetUserDisplayName(operation.CreatedBy, userLookup),
+            GetActorDisplayName(operation.CreatedActorName, operation.CreatedBy, userLookup),
             GetUserDisplayName(operation.ConfirmedBy, userLookup),
-            operation.OperationVersions.OrderByDescending(version => version.VersionNumber).Select(version => GetUserDisplayName(version.EditedBy, userLookup)).FirstOrDefault(),
+            operation.OperationVersions.OrderByDescending(version => version.VersionNumber).Select(version => GetActorDisplayName(version.EditedActorName, version.EditedBy, userLookup)).FirstOrDefault(),
             operation.CurrentVersion?.VersionNumber ?? operation.OperationVersions.OrderByDescending(version => version.VersionNumber).Select(version => (int?)version.VersionNumber).FirstOrDefault(),
             operation.Status == Draft,
             false,
@@ -2093,7 +2171,14 @@ public static class OperationsEndpoints
             lines,
             allocations,
             warnings ?? [],
-            versions);
+            versions,
+            operation.SalesChannel,
+            operation.BuyerPhone,
+            operation.BuyerEmail,
+            operation.ShippingAddress,
+            operation.ShopifyOrderLink?.ShopifyOrderId,
+            operation.ShopifyOrderLink?.ShopifyOrderNumber,
+            IsAllocationPending(operation));
     }
 
     private static async Task<IReadOnlyList<OperationWarningResponse>> BuildEligibilityWarningsAsync(
@@ -2187,7 +2272,7 @@ public static class OperationsEndpoints
                 current.Version.VersionNumber,
                 current.Version.Reason,
                 current.Version.EditedAt,
-                GetUserDisplayName(current.Version.EditedBy, userLookup),
+                GetActorDisplayName(current.Version.EditedActorName, current.Version.EditedBy, userLookup),
                 currentVersionId == current.Version.Id,
                 previous is not null && snapshot is not null && (previous.SourceLocationId != snapshot.SourceLocationId || previous.DestinationLocationId != snapshot.DestinationLocationId),
                 previous is not null && snapshot is not null && (previous.ClientId != snapshot.ClientId || previous.ClientName != snapshot.ClientName || previous.RepresentativeId != snapshot.RepresentativeId),
@@ -2955,7 +3040,14 @@ public sealed record OperationListResponse(
     string? LastEditedByName,
     bool CanEditDraft,
     bool CanRevise,
-    string? RevisionBlockReason);
+    string? RevisionBlockReason,
+    string SalesChannel,
+    string? BuyerPhone,
+    string? BuyerEmail,
+    string? ShippingAddress,
+    string? ShopifyOrderId,
+    string? ShopifyOrderNumber,
+    bool AllocationPending);
 
 public sealed record OperationDetailResponse(
     Guid Id,
@@ -2985,7 +3077,14 @@ public sealed record OperationDetailResponse(
     IReadOnlyList<OperationLineResponse> Lines,
     IReadOnlyList<OperationAllocationResponse> Allocations,
     IReadOnlyList<OperationWarningResponse> Warnings,
-    IReadOnlyList<OperationVersionResponse> Versions);
+    IReadOnlyList<OperationVersionResponse> Versions,
+    string SalesChannel,
+    string? BuyerPhone,
+    string? BuyerEmail,
+    string? ShippingAddress,
+    string? ShopifyOrderId,
+    string? ShopifyOrderNumber,
+    bool AllocationPending);
 
 public sealed record OperationLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, string Section, int Quantity, string EntryMode, int BonusQuantity, decimal UnitPrice, decimal LineTotal, string? LotNumber, DateOnly? ExpiryDate, string? MerchantNameSnapshot, string? RepresentativeNameSnapshot, string? Notes);
 

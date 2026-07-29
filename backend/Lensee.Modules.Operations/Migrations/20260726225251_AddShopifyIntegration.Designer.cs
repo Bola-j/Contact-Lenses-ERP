@@ -3,6 +3,7 @@ using System;
 using Lensee.Modules.Operations.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Lensee.Modules.Operations.Migrations
 {
     [DbContext(typeof(OperationsDbContext))]
-    partial class OperationsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260726225251_AddShopifyIntegration")]
+    partial class AddShopifyIntegration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -225,11 +228,6 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("confirmed_by");
 
-                    b.Property<string>("CreatedActorName")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("created_actor_name");
-
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp without time zone")
@@ -348,11 +346,6 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
-
-                    b.Property<string>("EditedActorName")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("edited_actor_name");
 
                     b.Property<DateTime>("EditedAt")
                         .ValueGeneratedOnAdd()
@@ -493,33 +486,9 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
-                    b.Property<string>("ApiVersion")
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)")
-                        .HasColumnName("api_version");
-
-                    b.Property<int>("AttemptCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("attempt_count");
-
                     b.Property<string>("Detail")
                         .HasColumnType("text")
                         .HasColumnName("detail");
-
-                    b.Property<string>("EventId")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("event_id");
-
-                    b.Property<DateTime?>("LeaseUntil")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("lease_until");
-
-                    b.Property<DateTime?>("NextAttemptAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("next_attempt_at");
 
                     b.Property<Guid?>("OperationId")
                         .HasColumnType("uuid")
@@ -531,36 +500,13 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("character varying(128)")
                         .HasColumnName("payload_hash");
 
-                    b.Property<DateTime?>("ProcessedAt")
+                    b.Property<DateTime>("ProcessedAt")
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("processed_at");
-
-                    b.Property<string>("ProtectedPayload")
-                        .HasColumnType("text")
-                        .HasColumnName("protected_payload");
 
                     b.Property<DateTime>("ReceivedAt")
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("received_at");
-
-                    b.Property<string>("ResolutionNote")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
-                        .HasColumnName("resolution_note");
-
-                    b.Property<DateTime?>("ResolvedAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("resolved_at");
-
-                    b.Property<Guid?>("ResolvedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("resolved_by");
-
-                    b.Property<string>("ShopDomain")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("shop_domain");
 
                     b.Property<string>("ShopifyOrderId")
                         .HasMaxLength(100)
@@ -579,14 +525,6 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("topic");
 
-                    b.Property<DateTime?>("TriggeredAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("triggered_at");
-
-                    b.Property<DateTime?>("VerifiedAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("verified_at");
-
                     b.Property<string>("WebhookId")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -597,8 +535,6 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasName("shopify_webhook_events_pkey");
 
                     b.HasIndex(new[] { "ShopifyOrderId" }, "idx_shopify_webhook_events_order");
-
-                    b.HasIndex(new[] { "Status", "NextAttemptAt" }, "idx_shopify_webhook_events_ready");
 
                     b.HasIndex(new[] { "WebhookId" }, "uq_shopify_webhook_events_webhook")
                         .IsUnique();

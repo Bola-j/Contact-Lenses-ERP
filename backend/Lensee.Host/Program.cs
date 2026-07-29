@@ -21,8 +21,10 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
@@ -126,6 +128,10 @@ builder.Services.AddRateLimiter(options =>
 
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
+        if (context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/webhooks"))
+        {
+            return RateLimitPartition.GetNoLimiter("shopify-webhook");
+        }
         var userId = context.User.FindFirst("userId")?.Value
             ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
@@ -144,7 +150,30 @@ builder.Services.AddRateLimiter(options =>
                 AutoReplenishment = true
             });
     });
+    options.AddFixedWindowLimiter("shopify-webhooks", limiter =>
+    {
+        limiter.PermitLimit = rateLimitOptions.GetValue("ShopifyPermitLimit", 60);
+        limiter.Window = TimeSpan.FromSeconds(rateLimitOptions.GetValue("ShopifyWindowSeconds", 60));
+        limiter.QueueLimit = 0;
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
 });
+
+var trustedProxyNetwork = builder.Configuration["Hosting:TrustedProxyNetwork"];
+Microsoft.AspNetCore.HttpOverrides.IPNetwork? trustedNetwork = null;
+if (!string.IsNullOrWhiteSpace(trustedProxyNetwork) && Microsoft.AspNetCore.HttpOverrides.IPNetwork.TryParse(trustedProxyNetwork, out var parsedTrustedNetwork))
+{
+    trustedNetwork = parsedTrustedNetwork;
+}
+var useForwardedHeaders = trustedNetwork is not null;
+if (useForwardedHeaders)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.KnownNetworks.Add(trustedNetwork!);
+    });
+}
 
 builder.Services.AddScoped(_ => new NpgsqlConnection(connectionString));
 
@@ -187,6 +216,20 @@ builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<ICatalogEventPublisher, NoOpCatalogEventPublisher>();
 builder.Services.AddScoped<StockLedgerService>();
 builder.Services.AddScoped<MerchantBalanceService>();
+builder.Services.AddDataProtection();
+builder.Services.AddOptions<ShopifyOptions>()
+    .Bind(builder.Configuration.GetSection("Shopify"))
+    .Validate(options => !options.Enabled ||
+        (!string.IsNullOrWhiteSpace(options.WebhookSecret) &&
+         !string.IsNullOrWhiteSpace(options.StoreDomain) &&
+         options.OnlineLocationId != Guid.Empty &&
+         options.MaxBodyBytes > 0 &&
+         options.PayloadRetentionDays > 0),
+        "Enabled Shopify integration requires a webhook secret, store domain, Online location, body limit, and payload retention.")
+    .ValidateOnStart();
+builder.Services.AddScoped<ShopifyIntegrationService>();
+builder.Services.AddHostedService<ShopifyWebhookWorker>();
+builder.Services.AddHostedService<ShopifyPayloadRetentionWorker>();
 
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["live", "ready"])
@@ -276,11 +319,23 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("settings.write", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.SettingsWrite));
+
+    options.AddPolicy("integrations.shopify.read", policy =>
+        policy.RequireClaim("permission", LenseePermissions.IntegrationsShopifyRead));
+
+    options.AddPolicy("integrations.shopify.manage", policy =>
+        policy.RequireClaim("permission", LenseePermissions.IntegrationsShopifyManage));
 });
 
 var app = builder.Build();
 
-await InitializeDatabaseAsync(app);
+// Contract tests replace the application DbContexts with in-memory providers after
+// the host is built. Initializing here would connect to the production-style
+// connection before those replacements are applied.
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    await InitializeDatabaseAsync(app);
+}
 
 app.UseExceptionHandler(errorApp =>
 {
@@ -323,6 +378,19 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
+
+if (!app.Environment.IsDevelopment() && !app.Environment.IsEnvironment("Testing"))
+{
+    app.UseHsts();
+}
+if (useForwardedHeaders)
+{
+    app.UseForwardedHeaders();
+}
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.UseHttpsRedirection();
 }
 
 app.Use(async (context, next) =>
@@ -368,6 +436,7 @@ app.MapCrmEndpoints();
 app.MapInventoryEndpoints();
 app.MapOperationsEndpoints();
 app.MapPaymentsEndpoints();
+app.MapShopifyEndpoints();
 app.MapNotificationsEndpoints();
 app.MapReportsEndpoints();
 app.MapStocktakeEndpoints();
@@ -387,6 +456,7 @@ static async Task InitializeDatabaseAsync(WebApplication app)
     if (!autoMigrate)
     {
         await ValidatePendingMigrationsAsync(app, services);
+        await ValidateShopifyStartupConfigurationAsync(services);
         return;
     }
 
@@ -426,11 +496,28 @@ static async Task InitializeDatabaseAsync(WebApplication app)
         await services.GetRequiredService<SharedDbContext>().Database.MigrateAsync();
 
         await DatabaseCompatibility.EnsureSchemaAsync(services);
+        await ValidateShopifyStartupConfigurationAsync(services);
     }
     catch (Exception exception)
     {
         logger.LogError(exception, "Failed to initialize the database.");
         throw;
+    }
+}
+
+static async Task ValidateShopifyStartupConfigurationAsync(IServiceProvider services)
+{
+    var options = services.GetRequiredService<IOptions<ShopifyOptions>>().Value;
+    if (!options.Enabled)
+    {
+        return;
+    }
+
+    var locationIsReady = await services.GetRequiredService<InventoryDbContext>().Locations
+        .AnyAsync(location => location.Id == options.OnlineLocationId && location.IsActive && location.LocationType == "Online");
+    if (!locationIsReady)
+    {
+        throw new InvalidOperationException("Shopify:OnlineLocationId must identify an active Online inventory location before the enabled integration can start.");
     }
 }
 

@@ -31,6 +31,12 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<SupplyShipmentLine> SupplyShipmentLines { get; set; }
 
+    public virtual DbSet<ShopifyOrderLink> ShopifyOrderLinks { get; set; }
+
+    public virtual DbSet<ShopifyVariantMapping> ShopifyVariantMappings { get; set; }
+
+    public virtual DbSet<ShopifyWebhookEvent> ShopifyWebhookEvents { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
@@ -167,6 +173,8 @@ public partial class OperationsDbContext : DbContext
 
             entity.HasIndex(e => e.OperationNumber, "operation_logs_operation_number_key").IsUnique();
 
+            entity.HasIndex(e => e.SalesChannel, "idx_op_logs_sales_channel");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -174,6 +182,8 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.ClientName)
                 .HasMaxLength(255)
                 .HasColumnName("client_name");
+            entity.Property(e => e.BuyerEmail).HasMaxLength(255).HasColumnName("buyer_email");
+            entity.Property(e => e.BuyerPhone).HasMaxLength(50).HasColumnName("buyer_phone");
             entity.Property(e => e.ConfirmedAt)
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("confirmed_at");
@@ -183,6 +193,7 @@ public partial class OperationsDbContext : DbContext
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("created_at");
             entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.CreatedActorName).HasMaxLength(100).HasColumnName("created_actor_name");
             entity.Property(e => e.CurrentVersionId).HasColumnName("current_version_id");
             entity.Property(e => e.DeletedAt)
                 .HasColumnType("timestamp without time zone")
@@ -202,6 +213,8 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.PaymentMethod)
                 .HasMaxLength(50)
                 .HasColumnName("payment_method");
+            entity.Property(e => e.SalesChannel).HasMaxLength(50).HasDefaultValue("Manual").HasColumnName("sales_channel");
+            entity.Property(e => e.ShippingAddress).HasColumnName("shipping_address");
             entity.Property(e => e.RepresentativeId).HasColumnName("representative_id");
             entity.Property(e => e.SourceLocationId).HasColumnName("source_location_id");
             entity.Property(e => e.Status)
@@ -212,6 +225,68 @@ public partial class OperationsDbContext : DbContext
             entity.HasOne(d => d.CurrentVersion).WithMany(p => p.OperationLogs)
                 .HasForeignKey(d => d.CurrentVersionId)
                 .HasConstraintName("fk_current_version");
+        });
+
+        modelBuilder.Entity<ShopifyOrderLink>(entity =>
+        {
+            entity.HasKey(e => e.OperationId).HasName("shopify_order_links_pkey");
+            entity.ToTable("shopify_order_links", "operations");
+            entity.HasIndex(e => e.ShopifyOrderId, "uq_shopify_order_links_order").IsUnique();
+            entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
+            entity.Property(e => e.ShopifyOrderNumber).HasMaxLength(100).HasColumnName("shopify_order_number");
+            entity.Property(e => e.PaymentReference).HasMaxLength(255).HasColumnName("payment_reference");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+            entity.HasOne(e => e.Operation).WithOne(e => e.ShopifyOrderLink)
+                .HasForeignKey<ShopifyOrderLink>(e => e.OperationId).OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("shopify_order_links_operation_id_fkey");
+        });
+
+        modelBuilder.Entity<ShopifyVariantMapping>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_variant_mappings_pkey");
+            entity.ToTable("shopify_variant_mappings", "operations");
+            entity.HasIndex(e => e.ShopifyVariantId, "uq_shopify_variant_mappings_variant").IsUnique();
+            entity.HasIndex(e => e.SkuId, "idx_shopify_variant_mappings_sku");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.ShopifyVariantId).HasMaxLength(100).HasColumnName("shopify_variant_id");
+            entity.Property(e => e.SkuId).HasColumnName("sku_id");
+            entity.Property(e => e.EntryMode).HasMaxLength(20).HasDefaultValue("Packs").HasColumnName("entry_mode");
+            entity.Property(e => e.IsActive).HasDefaultValue(true).HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<ShopifyWebhookEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_webhook_events_pkey");
+            entity.ToTable("shopify_webhook_events", "operations");
+            entity.HasIndex(e => e.WebhookId, "uq_shopify_webhook_events_webhook").IsUnique();
+            entity.HasIndex(e => e.ShopifyOrderId, "idx_shopify_webhook_events_order");
+            entity.HasIndex(e => new { e.Status, e.NextAttemptAt }, "idx_shopify_webhook_events_ready");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.WebhookId).HasMaxLength(100).HasColumnName("webhook_id");
+            entity.Property(e => e.Topic).HasMaxLength(100).HasColumnName("topic");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.EventId).HasMaxLength(100).HasColumnName("event_id");
+            entity.Property(e => e.ApiVersion).HasMaxLength(30).HasColumnName("api_version");
+            entity.Property(e => e.PayloadHash).HasMaxLength(128).HasColumnName("payload_hash");
+            entity.Property(e => e.ProtectedPayload).HasColumnName("protected_payload");
+            entity.Property(e => e.Status).HasMaxLength(50).HasColumnName("status");
+            entity.Property(e => e.Detail).HasColumnName("detail");
+            entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
+            entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.ReceivedAt).HasColumnType("timestamp without time zone").HasColumnName("received_at");
+            entity.Property(e => e.VerifiedAt).HasColumnType("timestamp without time zone").HasColumnName("verified_at");
+            entity.Property(e => e.TriggeredAt).HasColumnType("timestamp without time zone").HasColumnName("triggered_at");
+            entity.Property(e => e.ProcessedAt).HasColumnType("timestamp without time zone").HasColumnName("processed_at");
+            entity.Property(e => e.NextAttemptAt).HasColumnType("timestamp without time zone").HasColumnName("next_attempt_at");
+            entity.Property(e => e.LeaseUntil).HasColumnType("timestamp without time zone").HasColumnName("lease_until");
+            entity.Property(e => e.AttemptCount).HasDefaultValue(0).HasColumnName("attempt_count");
+            entity.Property(e => e.ResolvedAt).HasColumnType("timestamp without time zone").HasColumnName("resolved_at");
+            entity.Property(e => e.ResolvedBy).HasColumnName("resolved_by");
+            entity.Property(e => e.ResolutionNote).HasMaxLength(1000).HasColumnName("resolution_note");
         });
 
         modelBuilder.Entity<OperationVersion>(entity =>
@@ -232,6 +307,7 @@ public partial class OperationsDbContext : DbContext
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("edited_at");
             entity.Property(e => e.EditedBy).HasColumnName("edited_by");
+            entity.Property(e => e.EditedActorName).HasMaxLength(100).HasColumnName("edited_actor_name");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.Reason)
                 .HasDefaultValueSql("'Initial'::text")

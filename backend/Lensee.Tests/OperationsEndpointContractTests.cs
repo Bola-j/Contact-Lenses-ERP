@@ -1362,6 +1362,11 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
 public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName = $"operations-contracts-{Guid.NewGuid()}";
+    private readonly Guid _shopifyOnlineLocationId = Guid.NewGuid();
+    public const string ShopifyWebhookSecret = "ShopifyContractWebhookSecret123!";
+    public const string ShopifyStoreDomain = "lensee-contracts.myshopify.com";
+
+    public Guid ShopifyOnlineLocationId => _shopifyOnlineLocationId;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -1373,7 +1378,12 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
                 ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=lensee_operations_contract_tests;Username=test;Password=test",
                 ["Jwt:Secret"] = "OperationsContractTestsNeedASecret123!",
                 ["Jwt:Issuer"] = "Lensee",
-                ["Jwt:Audience"] = "Lensee.App"
+                ["Jwt:Audience"] = "Lensee.App",
+                ["Shopify:Enabled"] = "true",
+                ["Shopify:WebhookSecret"] = ShopifyWebhookSecret,
+                ["Shopify:OnlineLocationId"] = _shopifyOnlineLocationId.ToString(),
+                ["Shopify:StoreDomain"] = ShopifyStoreDomain,
+                ["Shopify:CodGatewayNames:0"] = "Cash on Delivery"
             });
         });
 
@@ -1417,7 +1427,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         var payments = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
         var ledger = scope.ServiceProvider.GetRequiredService<StockLedgerService>();
         var mainLocationId = Guid.NewGuid();
-        var onlineLocationId = Guid.NewGuid();
+        var onlineLocationId = _shopifyOnlineLocationId;
         var categoryId = Guid.NewGuid();
         var brandId = Guid.NewGuid();
         var productId = Guid.NewGuid();
@@ -1428,6 +1438,9 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         operations.SupplyShipmentLines.RemoveRange(operations.SupplyShipmentLines);
         operations.SupplyShipments.RemoveRange(operations.SupplyShipments);
         operations.OperationVersions.RemoveRange(operations.OperationVersions);
+        operations.ShopifyOrderLinks.RemoveRange(operations.ShopifyOrderLinks);
+        operations.ShopifyWebhookEvents.RemoveRange(operations.ShopifyWebhookEvents);
+        operations.ShopifyVariantMappings.RemoveRange(operations.ShopifyVariantMappings);
         operations.OperationLines.RemoveRange(operations.OperationLines);
         operations.InventoryReceiptHeaders.RemoveRange(operations.InventoryReceiptHeaders);
         operations.OperationLogs.RemoveRange(operations.OperationLogs);

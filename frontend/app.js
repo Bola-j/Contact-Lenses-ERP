@@ -49,6 +49,7 @@ let reportSupplyRows = [];
 let selectedMerchantId = null;
 let selectedRepresentativeId = null;
 let notificationPageState = { page: 1, pageSize: 10 };
+let shopifyIntegrationPageState = { page: 1, pageSize: 25 };
 let activeRefreshTimer = null;
 let activeRefreshController = null;
 let activeRefreshInFlight = false;
@@ -1303,6 +1304,7 @@ const routes = {
   "/operations": { title: "Operations", label: "Operations", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderOperations },
   "/payments": { title: "Payments", label: "Payments", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderPayments },
   "/notifications": { title: "Notifications", label: "Notifications", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderNotifications },
+  "/integrations": { title: "Online intake", label: "Online intake", roles: ["Admin", "ERPAdmin", "WarehouseClerk"], render: renderShopifyIntegration },
   "/reports": { title: "Reports", label: "Reports", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderReports },
   "/stocktakes": { title: "Stocktake", label: "Stocktake", roles: ["CLevel", "Admin", "ERPAdmin"], render: renderStocktakes },
   "/admin": { title: "Administration", label: "Admin", roles: ["Admin", "ERPAdmin"], render: renderAdmin }
@@ -1317,6 +1319,7 @@ const navItems = [
   ["/operations", "Operations"],
   ["/payments", "Payments"],
   ["/notifications", "Notifications"],
+  ["/integrations", "Online intake"],
   ["/reports", "Reports"],
   ["/stocktakes", "Stocktake"],
   ["/admin", "Admin"]
@@ -1326,7 +1329,7 @@ const navGroups = [
   { label: "Daily work", items: ["/dashboard", "/operations", "/notifications"] },
   { label: "Money", items: ["/payments", "/reports"] },
   { label: "Stock", items: ["/inventory", "/supply", "/catalog", "/stocktakes"] },
-  { label: "Oversight", items: ["/crm", "/admin"] }
+  { label: "Oversight", items: ["/crm", "/integrations", "/admin"] }
 ];
 
 if (!sessionStorage.getItem("lensee.tabId")) {
@@ -4590,7 +4593,9 @@ function applyOperationEditorMode() {
 
   if (operationsUiState.mode === "edit") {
     title.textContent = "Edit draft";
-    hint.textContent = "Update the existing draft without changing its operation type.";
+    hint.textContent = document.getElementById("operation-form")?.dataset.shopifyDraft === "true"
+      ? "Shopify commercial data is read-only. Select the required batch and expiry, then fulfill the draft."
+      : "Update the existing draft without changing its operation type.";
     mode.textContent = "Draft edit";
     submit.textContent = "Save draft changes";
     typeControl.disabled = true;
@@ -4600,6 +4605,7 @@ function applyOperationEditorMode() {
     if (revisionInput) {
       revisionInput.value = "";
     }
+    applyShopifyCommercialLocks();
     return;
   }
 
@@ -4626,6 +4632,21 @@ function applyOperationEditorMode() {
   if (revisionInput) {
     revisionInput.value = "";
   }
+  applyShopifyCommercialLocks();
+}
+
+function applyShopifyCommercialLocks() {
+  const form = document.getElementById("operation-form");
+  const locked = operationsUiState.mode === "edit" && form?.dataset.shopifyDraft === "true";
+  ["op-source", "op-destination", "op-merchant", "op-representative", "op-buyer", "op-buyer-phone", "op-payment", "op-supplier", "op-invoice", "op-notes", "op-add-line"].forEach((id) => {
+    const control = document.getElementById(id);
+    if (control) control.disabled = locked;
+  });
+  document.querySelectorAll(".line-editor-row").forEach((row) => {
+    row.querySelectorAll(".op-line-search, .op-line-product, .op-line-power, .op-line-color, .op-line-size, .op-line-section, .op-line-entry-mode, .op-line-qty, .op-line-price, .op-line-bonus, .op-line-lot, .op-line-expiry, .op-remove-line").forEach((control) => {
+      control.disabled = locked;
+    });
+  });
 }
 
 function resetOperationEditorMode() {
@@ -4635,6 +4656,7 @@ function resetOperationEditorMode() {
   const form = document.getElementById("operation-form");
   if (form) {
     form.reset();
+    delete form.dataset.shopifyDraft;
   }
   const lines = document.getElementById("op-lines");
   if (lines) {
@@ -4828,7 +4850,7 @@ async function loadOperations() {
     count.textContent = showCompleted ? `${result.totalCount} operations` : `${items.length} active`;
     tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">No active operations.</td></tr>` : items.map((operation) => `
       <tr>
-        <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
+        <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">Allocation pending</span>` : ""}</td>
         <td>${escapeHtml(operation.operationType)}</td>
         <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operation.status)}</span></td>
         <td>${escapeHtml(formatOperationRoute(operation))}</td>
@@ -5011,7 +5033,7 @@ function renderOperationActions(operation, canWrite) {
   const actions = [];
   if (operation.status === "Draft") {
     actions.push(["edit-draft", "Edit"]);
-  } else if (getAuth()?.user?.role === "Admin" && operation.status !== "Cancelled") {
+  } else if (getAuth()?.user?.role === "Admin" && operation.status !== "Cancelled" && operation.salesChannel !== "Shopify") {
     actions.push(["revise", "Revise"]);
   }
   const shippingOperationTypes = ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve"];
@@ -5088,6 +5110,10 @@ function renderOperationDetail(detail) {
       <div class="metric"><span>Merchant / buyer</span><strong>${escapeHtml(detail.clientName || "-")}</strong></div>
       <div class="metric"><span>Representative</span><strong>${escapeHtml(detail.representativeName || "-")}</strong></div>
       <div class="metric"><span>Payment</span><strong>${escapeHtml(detail.paymentMethod || "-")}</strong></div>
+      <div class="metric"><span>Channel</span><strong>${escapeHtml(detail.salesChannel || "Manual")}${detail.shopifyOrderNumber ? ` / ${escapeHtml(detail.shopifyOrderNumber)}` : ""}</strong></div>
+      <div class="metric"><span>Buyer contact</span><strong>${escapeHtml([detail.buyerPhone, detail.buyerEmail].filter(Boolean).join(" / ") || "-")}</strong></div>
+      ${detail.shippingAddress ? `<div class="metric"><span>Shipping address</span><strong>${escapeHtml(detail.shippingAddress)}</strong></div>` : ""}
+      ${detail.allocationPending ? `<div class="metric"><span>Allocation</span><strong><span class="status-pill status-warn">Batch allocation pending</span></strong></div>` : ""}
       <div class="metric"><span>Current version</span><strong>${escapeHtml(detail.currentVersionNumber || "-")}</strong></div>
     </div>
     ${detail.notes ? `<p class="muted-text">${escapeHtml(detail.notes)}</p>` : ""}
@@ -6289,6 +6315,7 @@ function resetSupplyForm() {
     return;
   }
   form.reset();
+  form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
   document.getElementById("supply-id").value = "";
   document.getElementById("supply-lines").innerHTML = "";
   document.getElementById("supply-costs").innerHTML = "";
@@ -7319,6 +7346,138 @@ function escapeHtml(value) {
 
 function roleLabel(role) {
   return { CLevel: "C-Level", ERPAdmin: "ERP Admin", WarehouseClerk: "Warehouse Clerk" }[role] || role;
+}
+
+async function renderShopifyIntegration() {
+  shopifyIntegrationPageState = { page: 1, pageSize: 25 };
+  document.getElementById("view").innerHTML = `
+    ${pageIntro({
+      eyebrow: "Online intake",
+      title: "Shopify intake desk",
+      body: "Review verified online orders, repair mappings, and resolve exceptions before they reach warehouse fulfillment.",
+      metrics: `${scenarioCard("Receiver", "Checking", "status-muted", "shopify-receiver-state")}${scenarioCard("Queue", "Loading", "status-muted", "shopify-queue-count")}${scenarioCard("Payload access", "Protected", "status-ok")}`
+    })}
+    <section class="integration-command-band">
+      <div class="integration-command-copy"><span class="eyebrow">Verified delivery queue</span><h2>Protect the commercial record. Allocate stock only after review.</h2><p>Webhook content is never shown here. This desk exposes only the operational facts needed to repair an online order.</p></div>
+      <button id="shopify-refresh" class="button primary" type="button">Refresh intake</button>
+    </section>
+    <section class="band">
+      <div class="section-head tight-head"><div><h2>Integration events</h2><p>Queued events process automatically. Exceptions require a deliberate retry or resolution note.</p></div><select id="shopify-event-status" class="select compact-select"><option value="">All states</option><option value="Queued">Queued</option><option value="Processing">Processing</option><option value="Retrying">Retrying</option><option value="RequiresAttention">Needs review</option><option value="Resolved">Resolved</option><option value="Succeeded">Succeeded</option><option value="Imported">Imported</option></select></div>
+      <div id="shopify-event-list" class="integration-event-list">Loading integration events…</div>
+    </section>
+    <section class="band">
+      <div class="section-head tight-head"><div><h2>Variant mapping</h2><p>Connect each Shopify variant to the exact active Lensee SKU before online intake can create a draft.</p></div></div>
+      <form id="shopify-mapping-form" class="integration-mapping-form">
+        <div class="field"><label for="shopify-variant-id">Shopify variant ID</label><input id="shopify-variant-id" class="input" required autocomplete="off" placeholder="Variant ID"></div>
+        <div class="field"><label for="shopify-sku-id">Lensee SKU</label><select id="shopify-sku-id" class="select" required><option value="">Loading active SKUs…</option></select></div>
+        <div class="field"><label for="shopify-entry-mode">Fulfillment mode</label><select id="shopify-entry-mode" class="select"><option value="Packs">Packs</option><option value="Pieces">Pieces</option></select></div>
+        <button class="button secondary" type="submit">Save mapping</button>
+      </form>
+      <div id="shopify-mapping-list" class="table-wrap compact-table">Loading mappings…</div>
+    </section>`;
+  document.getElementById("shopify-refresh").addEventListener("click", () => loadShopifyIntegration());
+  document.getElementById("shopify-event-status").addEventListener("change", () => loadShopifyEvents());
+  document.getElementById("shopify-mapping-form").addEventListener("submit", saveShopifyMapping);
+  await loadShopifyIntegration();
+}
+
+async function loadShopifyIntegration() {
+  const receiver = document.getElementById("shopify-receiver-state");
+  try {
+    const status = await request("/api/v1/integrations/shopify/status");
+    receiver.textContent = status.isConfigured ? "Ready" : "Configuration required";
+    receiver.className = `status-pill ${status.isConfigured ? "status-ok" : "status-warn"}`;
+  } catch (exception) {
+    receiver.textContent = "Unavailable";
+    receiver.className = "status-pill status-warn";
+  }
+  await Promise.all([loadShopifyEvents(), loadShopifyMappings(), loadShopifySkuOptions()]);
+}
+
+async function loadShopifyEvents() {
+  const list = document.getElementById("shopify-event-list");
+  const count = document.getElementById("shopify-queue-count");
+  if (!list) return;
+  const status = document.getElementById("shopify-event-status")?.value || "";
+  const params = new URLSearchParams({ page: "1", pageSize: String(shopifyIntegrationPageState.pageSize) });
+  if (status) params.set("status", status);
+  try {
+    const result = await request(`/api/v1/integrations/shopify/events?${params}`);
+    count.textContent = `${result.totalCount} events`;
+    list.innerHTML = result.items.length === 0 ? `<div class="empty-state">No verified Shopify events match this view.</div>` : result.items.map(renderShopifyEvent).join("");
+    list.querySelectorAll("[data-shopify-retry]").forEach((button) => button.addEventListener("click", () => retryShopifyEvent(button.dataset.shopifyRetry)));
+    list.querySelectorAll("[data-shopify-resolve]").forEach((button) => button.addEventListener("click", () => resolveShopifyEvent(button.dataset.shopifyResolve)));
+  } catch (exception) {
+    count.textContent = "Unavailable";
+    list.innerHTML = `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`;
+  }
+}
+
+function renderShopifyEvent(event) {
+  const statusClass = event.status === "RequiresAttention" ? "status-warn" : (event.status === "Imported" || event.status === "Succeeded" ? "status-ok" : "status-muted");
+  const actions = event.status === "RequiresAttention"
+    ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>Retry</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">Resolve</button>`
+    : "";
+  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(event.detail || "Verified delivery accepted for processing.")}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
+}
+
+async function retryShopifyEvent(id) {
+  try {
+    await request(`/api/v1/integrations/shopify/events/${id}/retry`, { method: "POST" });
+    notice("Shopify event queued for retry.", "success");
+    await loadShopifyEvents();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function resolveShopifyEvent(id) {
+  const note = window.prompt("Resolution note");
+  if (!note?.trim()) return;
+  try {
+    await request(`/api/v1/integrations/shopify/events/${id}/resolve`, { method: "POST", body: JSON.stringify({ note: note.trim() }) });
+    notice("Shopify event resolved.", "success");
+    await loadShopifyEvents();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function loadShopifySkuOptions() {
+  const select = document.getElementById("shopify-sku-id");
+  if (!select) return;
+  try {
+    if (operationSkuOptions.length === 0) await loadOperationReferences();
+    select.innerHTML = `<option value="">Select active SKU</option>${operationSkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("")}`;
+  } catch {
+    select.innerHTML = `<option value="">SKU list unavailable</option>`;
+  }
+}
+
+async function loadShopifyMappings() {
+  const list = document.getElementById("shopify-mapping-list");
+  if (!list) return;
+  try {
+    const mappings = await request("/api/v1/integrations/shopify/variant-mappings");
+    list.innerHTML = `<table><thead><tr><th>Shopify variant</th><th>Lensee SKU</th><th>Mode</th><th>State</th></tr></thead><tbody>${mappings.length === 0 ? `<tr><td colspan="4">No variant mappings yet.</td></tr>` : mappings.map((mapping) => `<tr><td><strong>${escapeHtml(mapping.shopifyVariantId)}</strong></td><td>${escapeHtml(mapping.skuCode || shortId(mapping.skuId))}</td><td>${escapeHtml(mapping.entryMode)}</td><td><span class="status-pill ${mapping.isActive ? "status-ok" : "status-muted"}">${mapping.isActive ? "Active" : "Inactive"}</span></td></tr>`).join("")}</tbody></table>`;
+  } catch (exception) {
+    list.innerHTML = `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`;
+  }
+}
+
+async function saveShopifyMapping(event) {
+  event.preventDefault();
+  const variantId = document.getElementById("shopify-variant-id").value.trim();
+  const skuId = document.getElementById("shopify-sku-id").value;
+  const entryMode = document.getElementById("shopify-entry-mode").value;
+  try {
+    await request("/api/v1/integrations/shopify/variant-mappings", { method: "POST", body: JSON.stringify({ shopifyVariantId: variantId, skuId, entryMode, isActive: true }) });
+    event.currentTarget.reset();
+    notice("Shopify variant mapping saved.", "success");
+    await loadShopifyMappings();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
 }
 
 function formatPackHint(product) {

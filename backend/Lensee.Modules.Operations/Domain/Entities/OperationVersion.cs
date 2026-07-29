@@ -17,6 +17,8 @@ public partial class OperationVersion
 
     public Guid EditedBy { get; set; }
 
+    public string? EditedActorName { get; set; }
+
     public DateTime EditedAt { get; set; }
 
     public virtual OperationLog Operation { get; set; } = null!;

@@ -420,6 +420,9 @@ internal sealed class NoOpAuditLogWriter : IAuditLogWriter
 {
     public Task WriteAsync(string entityType, Guid entityId, string action, object? changedFields = null, int? stockDeltaApplied = null, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+
+    public Task WriteSystemAsync(string actorName, string entityType, Guid entityId, string action, object? changedFields = null, int? stockDeltaApplied = null, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }
 
 public sealed record InventorySeed(Guid LocationA, Guid LocationB, Guid SkuId);

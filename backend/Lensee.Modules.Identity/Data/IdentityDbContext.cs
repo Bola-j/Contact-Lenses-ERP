@@ -57,6 +57,8 @@ public partial class IdentityDbContext : DbContext
                 .HasColumnName("ip_address");
             entity.Property(e => e.StockDeltaApplied).HasColumnName("stock_delta_applied");
             entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.ActorType).HasMaxLength(50).HasColumnName("actor_type");
+            entity.Property(e => e.ActorName).HasMaxLength(100).HasColumnName("actor_name");
 
             entity.HasOne(d => d.User).WithMany(p => p.AuditLogs)
                 .HasForeignKey(d => d.UserId)

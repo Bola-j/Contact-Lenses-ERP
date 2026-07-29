@@ -23,6 +23,10 @@ public partial class Merchant
 
     public string? Notes { get; set; }  
 
+    public string? ExternalProvider { get; set; }
+
+    public string? ExternalCustomerId { get; set; }
+
     public bool IsDeleted { get; set; }
 
     public DateTime? DeletedAt { get; set; }
