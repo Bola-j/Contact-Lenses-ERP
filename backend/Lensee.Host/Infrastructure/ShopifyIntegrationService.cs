@@ -19,6 +19,7 @@ public sealed class ShopifyOptions
 {
     public bool Enabled { get; init; }
     public string? WebhookSecret { get; init; }
+    public string? LegacyWebhookPathSecret { get; init; }
     public string? StoreDomain { get; init; }
     public Guid OnlineLocationId { get; init; }
     public string[] CodGatewayNames { get; init; } = [];
@@ -27,7 +28,7 @@ public sealed class ShopifyOptions
 }
 
 public sealed record ShopifyWebhookResult(int StatusCode, string Status, string? Detail = null, Guid? OperationId = null);
-public sealed record ShopifyWebhookEnvelope(string WebhookId, string Topic, string? ShopDomain, string? EventId, string? ApiVersion, string? TriggeredAt);
+public sealed record ShopifyWebhookEnvelope(string WebhookId, string Topic, string? ShopDomain, string? EventId, string? ApiVersion, string? TriggeredAt, string VerificationMode);
 
 public sealed class ShopifyIntegrationService
 {
@@ -76,11 +77,16 @@ public sealed class ShopifyIntegrationService
         _auditLogWriter = auditLogWriter;
     }
 
-    public bool IsConfigured =>
+    private bool IsBaseConfigured =>
         _options.Enabled &&
-        !string.IsNullOrWhiteSpace(_options.WebhookSecret) &&
         !string.IsNullOrWhiteSpace(_options.StoreDomain) &&
         _options.OnlineLocationId != Guid.Empty;
+
+    public bool IsConfigured => IsBaseConfigured && !string.IsNullOrWhiteSpace(_options.WebhookSecret);
+
+    public bool IsLegacyWebhookConfigured => IsBaseConfigured && IsValidLegacyPathSecret(_options.LegacyWebhookPathSecret);
+
+    public bool IsIntakeConfigured => IsConfigured || IsLegacyWebhookConfigured;
 
     public int MaxBodyBytes => Math.Max(1, _options.MaxBodyBytes);
 
@@ -104,9 +110,23 @@ public sealed class ShopifyIntegrationService
         }
     }
 
+    public bool VerifyLegacyPathSecret(string? pathSecret)
+    {
+        if (!IsLegacyWebhookConfigured || string.IsNullOrWhiteSpace(pathSecret)) return false;
+        var expected = Encoding.UTF8.GetBytes(_options.LegacyWebhookPathSecret!);
+        var received = Encoding.UTF8.GetBytes(pathSecret);
+        return expected.Length == received.Length && CryptographicOperations.FixedTimeEquals(expected, received);
+    }
+
     public async Task<ShopifyWebhookResult> ReceiveAsync(ShopifyWebhookEnvelope envelope, byte[] body, CancellationToken cancellationToken)
     {
-        if (!IsConfigured)
+        var acceptsMode = envelope.VerificationMode switch
+        {
+            "Hmac" => IsConfigured,
+            "LegacyPath" => IsLegacyWebhookConfigured,
+            _ => false
+        };
+        if (!acceptsMode)
         {
             return new ShopifyWebhookResult(StatusCodes.Status503ServiceUnavailable, "Disabled", "Shopify integration is not fully configured.");
         }
@@ -139,6 +159,7 @@ public sealed class ShopifyIntegrationService
             WebhookId = envelope.WebhookId.Trim(),
             Topic = topic,
             ShopDomain = envelope.ShopDomain.Trim().ToLowerInvariant(),
+            VerificationMode = envelope.VerificationMode,
             EventId = TrimToNull(envelope.EventId),
             ApiVersion = TrimToNull(envelope.ApiVersion),
             PayloadHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant(),
@@ -146,7 +167,7 @@ public sealed class ShopifyIntegrationService
             Status = status,
             Detail = status == "Ignored" ? $"Unsupported Shopify topic '{envelope.Topic}'." : null,
             ReceivedAt = now,
-            VerifiedAt = now,
+            VerifiedAt = envelope.VerificationMode == "Hmac" ? now : null,
             TriggeredAt = ParseTriggeredAt(envelope.TriggeredAt),
             NextAttemptAt = status == "Queued" ? now : null
         };
@@ -574,6 +595,11 @@ public sealed class ShopifyIntegrationService
         DateTimeOffset.TryParse(value, out var parsed) ? parsed.UtcDateTime : null;
 
     private static string? TrimToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool IsValidLegacyPathSecret(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length is >= 32 and <= 128 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     private bool IsCod(JsonElement root)
     {

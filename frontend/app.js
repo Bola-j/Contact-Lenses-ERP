@@ -7354,11 +7354,11 @@ async function renderShopifyIntegration() {
     ${pageIntro({
       eyebrow: "Online intake",
       title: "Shopify intake desk",
-      body: "Review verified online orders, repair mappings, and resolve exceptions before they reach warehouse fulfillment.",
+      body: "Review online orders, repair mappings, and resolve exceptions before they reach warehouse fulfillment.",
       metrics: `${scenarioCard("Receiver", "Checking", "status-muted", "shopify-receiver-state")}${scenarioCard("Queue", "Loading", "status-muted", "shopify-queue-count")}${scenarioCard("Payload access", "Protected", "status-ok")}`
     })}
     <section class="integration-command-band">
-      <div class="integration-command-copy"><span class="eyebrow">Verified delivery queue</span><h2>Protect the commercial record. Allocate stock only after review.</h2><p>Webhook content is never shown here. This desk exposes only the operational facts needed to repair an online order.</p></div>
+      <div class="integration-command-copy"><span class="eyebrow">Delivery queue</span><h2>Protect the commercial record. Allocate stock only after review.</h2><p>Webhook content is never shown here. Temporary legacy-path deliveries are explicitly marked until you upgrade to signed webhooks.</p></div>
       <button id="shopify-refresh" class="button primary" type="button">Refresh intake</button>
     </section>
     <section class="band">
@@ -7385,7 +7385,7 @@ async function loadShopifyIntegration() {
   const receiver = document.getElementById("shopify-receiver-state");
   try {
     const status = await request("/api/v1/integrations/shopify/status");
-    receiver.textContent = status.isConfigured ? "Ready" : "Configuration required";
+    receiver.textContent = status.isConfigured ? "Signed receiver ready" : (status.isLegacyWebhookConfigured ? "Temporary legacy receiver" : "Configuration required");
     receiver.className = `status-pill ${status.isConfigured ? "status-ok" : "status-warn"}`;
   } catch (exception) {
     receiver.textContent = "Unavailable";
@@ -7404,7 +7404,7 @@ async function loadShopifyEvents() {
   try {
     const result = await request(`/api/v1/integrations/shopify/events?${params}`);
     count.textContent = `${result.totalCount} events`;
-    list.innerHTML = result.items.length === 0 ? `<div class="empty-state">No verified Shopify events match this view.</div>` : result.items.map(renderShopifyEvent).join("");
+    list.innerHTML = result.items.length === 0 ? `<div class="empty-state">No Shopify events match this view.</div>` : result.items.map(renderShopifyEvent).join("");
     list.querySelectorAll("[data-shopify-retry]").forEach((button) => button.addEventListener("click", () => retryShopifyEvent(button.dataset.shopifyRetry)));
     list.querySelectorAll("[data-shopify-resolve]").forEach((button) => button.addEventListener("click", () => resolveShopifyEvent(button.dataset.shopifyResolve)));
   } catch (exception) {
@@ -7418,7 +7418,8 @@ function renderShopifyEvent(event) {
   const actions = event.status === "RequiresAttention"
     ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>Retry</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">Resolve</button>`
     : "";
-  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(event.detail || "Verified delivery accepted for processing.")}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
+  const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
+  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(event.detail || "Delivery accepted for processing.")}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Trust</dt><dd>${escapeHtml(trust)}</dd></div><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
 }
 
 async function retryShopifyEvent(id) {

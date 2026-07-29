@@ -22,7 +22,7 @@ public sealed class ShopifyWebhookWorker : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
                 var integration = scope.ServiceProvider.GetRequiredService<ShopifyIntegrationService>();
-                if (integration.IsConfigured)
+                if (integration.IsIntakeConfigured)
                 {
                     foreach (var eventId in await integration.ClaimDueEventsAsync(stoppingToken))
                     {

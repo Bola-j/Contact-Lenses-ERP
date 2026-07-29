@@ -128,7 +128,8 @@ builder.Services.AddRateLimiter(options =>
 
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
-        if (context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/webhooks"))
+        if (context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/webhooks") ||
+            context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/legacy-webhooks"))
         {
             return RateLimitPartition.GetNoLimiter("shopify-webhook");
         }
@@ -154,6 +155,13 @@ builder.Services.AddRateLimiter(options =>
     {
         limiter.PermitLimit = rateLimitOptions.GetValue("ShopifyPermitLimit", 60);
         limiter.Window = TimeSpan.FromSeconds(rateLimitOptions.GetValue("ShopifyWindowSeconds", 60));
+        limiter.QueueLimit = 0;
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    options.AddFixedWindowLimiter("shopify-legacy-webhooks", limiter =>
+    {
+        limiter.PermitLimit = rateLimitOptions.GetValue("ShopifyLegacyPermitLimit", 20);
+        limiter.Window = TimeSpan.FromSeconds(rateLimitOptions.GetValue("ShopifyLegacyWindowSeconds", 60));
         limiter.QueueLimit = 0;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
@@ -220,12 +228,13 @@ builder.Services.AddDataProtection();
 builder.Services.AddOptions<ShopifyOptions>()
     .Bind(builder.Configuration.GetSection("Shopify"))
     .Validate(options => !options.Enabled ||
-        (!string.IsNullOrWhiteSpace(options.WebhookSecret) &&
+        ((!string.IsNullOrWhiteSpace(options.WebhookSecret) ||
+          (!string.IsNullOrWhiteSpace(options.LegacyWebhookPathSecret) && options.LegacyWebhookPathSecret.Length is >= 32 and <= 128 && options.LegacyWebhookPathSecret.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'))) &&
          !string.IsNullOrWhiteSpace(options.StoreDomain) &&
          options.OnlineLocationId != Guid.Empty &&
          options.MaxBodyBytes > 0 &&
          options.PayloadRetentionDays > 0),
-        "Enabled Shopify integration requires a webhook secret, store domain, Online location, body limit, and payload retention.")
+        "Enabled Shopify integration requires either a webhook secret or a 32-128 character legacy path secret, plus store domain, Online location, body limit, and payload retention.")
     .ValidateOnStart();
 builder.Services.AddScoped<ShopifyIntegrationService>();
 builder.Services.AddHostedService<ShopifyWebhookWorker>();

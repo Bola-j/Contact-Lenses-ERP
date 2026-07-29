@@ -13,6 +13,7 @@ public static class ShopifyEndpoints
     {
         var group = routes.MapGroup("/api/v1/integrations/shopify").WithTags("Shopify");
         group.MapPost("/webhooks", ReceiveWebhookAsync).AllowAnonymous().RequireRateLimiting("shopify-webhooks");
+        group.MapPost("/legacy-webhooks/{pathSecret}", ReceiveLegacyWebhookAsync).AllowAnonymous().RequireRateLimiting("shopify-legacy-webhooks");
         group.MapGet("/status", GetStatusAsync).RequireAuthorization("integrations.shopify.read");
         group.MapGet("/events", ListEventsAsync).RequireAuthorization("integrations.shopify.read");
         group.MapPost("/events/{id:guid}/retry", RetryEventAsync).RequireAuthorization("integrations.shopify.manage");
@@ -50,7 +51,38 @@ public static class ShopifyEndpoints
             request.Headers["X-Shopify-Shop-Domain"].FirstOrDefault(),
             request.Headers["X-Shopify-Event-Id"].FirstOrDefault(),
             request.Headers["X-Shopify-API-Version"].FirstOrDefault(),
-            request.Headers["X-Shopify-Triggered-At"].FirstOrDefault()), body, cancellationToken);
+            request.Headers["X-Shopify-Triggered-At"].FirstOrDefault(), "Hmac"), body, cancellationToken);
+        return Results.Json(new ShopifyWebhookResponse(result.Status, result.Detail, result.OperationId), statusCode: result.StatusCode);
+    }
+
+    private static async Task<IResult> ReceiveLegacyWebhookAsync(string pathSecret, HttpRequest request, ShopifyIntegrationService integration, CancellationToken cancellationToken)
+    {
+        if (!integration.IsLegacyWebhookConfigured)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "Temporary Shopify legacy webhook intake is not configured.");
+        }
+        if (!integration.VerifyLegacyPathSecret(pathSecret)) return Results.NotFound();
+        if (request.ContentLength is > 0 && request.ContentLength > integration.MaxBodyBytes)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Webhook body is too large.");
+        }
+        var body = await ReadBodyWithinLimitAsync(request.Body, integration.MaxBodyBytes, cancellationToken);
+        if (body is null)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Webhook body is too large.");
+        }
+        var topic = request.Headers["X-Shopify-Topic"].FirstOrDefault() ?? string.Empty;
+        var receivedWebhookId = request.Headers["X-Shopify-Webhook-Id"].FirstOrDefault();
+        var webhookId = string.IsNullOrWhiteSpace(receivedWebhookId)
+            ? $"legacy:{topic}:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant()}"
+            : receivedWebhookId;
+        var result = await integration.ReceiveAsync(new ShopifyWebhookEnvelope(
+            webhookId,
+            topic,
+            request.Headers["X-Shopify-Shop-Domain"].FirstOrDefault(),
+            request.Headers["X-Shopify-Event-Id"].FirstOrDefault(),
+            request.Headers["X-Shopify-API-Version"].FirstOrDefault(),
+            request.Headers["X-Shopify-Triggered-At"].FirstOrDefault(), "LegacyPath"), body, cancellationToken);
         return Results.Json(new ShopifyWebhookResponse(result.Status, result.Detail, result.OperationId), statusCode: result.StatusCode);
     }
 
@@ -68,7 +100,7 @@ public static class ShopifyEndpoints
     }
 
     private static IResult GetStatusAsync(ShopifyIntegrationService integration) =>
-        Results.Ok(new ShopifyIntegrationStatusResponse(integration.IsConfigured, integration.MaxBodyBytes));
+        Results.Ok(new ShopifyIntegrationStatusResponse(integration.IsConfigured, integration.IsLegacyWebhookConfigured, integration.MaxBodyBytes));
 
     private static async Task<IResult> ListEventsAsync(int? page, int? pageSize, string? status, OperationsDbContext operations, CancellationToken cancellationToken)
     {
@@ -163,12 +195,12 @@ public static class ShopifyEndpoints
 
     private static ShopifyVariantMappingResponse ToResponse(ShopifyVariantMapping mapping, Sku? sku) => new(mapping.Id, mapping.ShopifyVariantId, mapping.SkuId, sku?.SkuCode, mapping.EntryMode, mapping.IsActive, mapping.UpdatedAt);
 
-    private static ShopifyWebhookEventResponse ToEventResponse(ShopifyWebhookEvent value) => new(value.Id, value.Topic, value.ShopDomain, value.EventId, value.ApiVersion, value.Status, value.Detail, value.ShopifyOrderId, value.OperationId, value.ReceivedAt, value.TriggeredAt, value.ProcessedAt, value.NextAttemptAt, value.AttemptCount, value.ResolvedAt, value.ResolutionNote, value.ProtectedPayload is not null);
+    private static ShopifyWebhookEventResponse ToEventResponse(ShopifyWebhookEvent value) => new(value.Id, value.Topic, value.ShopDomain, value.VerificationMode, value.EventId, value.ApiVersion, value.Status, value.Detail, value.ShopifyOrderId, value.OperationId, value.ReceivedAt, value.TriggeredAt, value.ProcessedAt, value.NextAttemptAt, value.AttemptCount, value.ResolvedAt, value.ResolutionNote, value.ProtectedPayload is not null);
 }
 
 public sealed record ShopifyWebhookResponse(string Status, string? Detail, Guid? OperationId);
 public sealed record ShopifyVariantMappingRequest(string ShopifyVariantId, Guid SkuId, string EntryMode, bool IsActive = true);
 public sealed record ShopifyVariantMappingResponse(Guid Id, string ShopifyVariantId, Guid SkuId, string? SkuCode, string EntryMode, bool IsActive, DateTime UpdatedAt);
-public sealed record ShopifyIntegrationStatusResponse(bool IsConfigured, int MaxBodyBytes);
+public sealed record ShopifyIntegrationStatusResponse(bool IsConfigured, bool IsLegacyWebhookConfigured, int MaxBodyBytes);
 public sealed record ShopifyEventResolutionRequest(string Note);
-public sealed record ShopifyWebhookEventResponse(Guid Id, string Topic, string ShopDomain, string? EventId, string? ApiVersion, string Status, string? Detail, string? ShopifyOrderId, Guid? OperationId, DateTime ReceivedAt, DateTime? TriggeredAt, DateTime? ProcessedAt, DateTime? NextAttemptAt, int AttemptCount, DateTime? ResolvedAt, string? ResolutionNote, bool PayloadAvailable);
+public sealed record ShopifyWebhookEventResponse(Guid Id, string Topic, string ShopDomain, string VerificationMode, string? EventId, string? ApiVersion, string Status, string? Detail, string? ShopifyOrderId, Guid? OperationId, DateTime ReceivedAt, DateTime? TriggeredAt, DateTime? ProcessedAt, DateTime? NextAttemptAt, int AttemptCount, DateTime? ResolvedAt, string? ResolutionNote, bool PayloadAvailable);

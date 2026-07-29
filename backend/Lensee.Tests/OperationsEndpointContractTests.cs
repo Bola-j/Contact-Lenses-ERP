@@ -1364,6 +1364,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
     private readonly string _databaseName = $"operations-contracts-{Guid.NewGuid()}";
     private readonly Guid _shopifyOnlineLocationId = Guid.NewGuid();
     public const string ShopifyWebhookSecret = "ShopifyContractWebhookSecret123!";
+    public const string ShopifyLegacyWebhookPathSecret = "ShopifyContractLegacyPathSecret123456";
     public const string ShopifyStoreDomain = "lensee-contracts.myshopify.com";
 
     public Guid ShopifyOnlineLocationId => _shopifyOnlineLocationId;
@@ -1381,6 +1382,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
                 ["Jwt:Audience"] = "Lensee.App",
                 ["Shopify:Enabled"] = "true",
                 ["Shopify:WebhookSecret"] = ShopifyWebhookSecret,
+                ["Shopify:LegacyWebhookPathSecret"] = ShopifyLegacyWebhookPathSecret,
                 ["Shopify:OnlineLocationId"] = _shopifyOnlineLocationId.ToString(),
                 ["Shopify:StoreDomain"] = ShopifyStoreDomain,
                 ["Shopify:CodGatewayNames:0"] = "Cash on Delivery"

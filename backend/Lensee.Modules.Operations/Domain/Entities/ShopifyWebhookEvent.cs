@@ -6,6 +6,7 @@ public partial class ShopifyWebhookEvent
     public string WebhookId { get; set; } = null!;
     public string Topic { get; set; } = null!;
     public string ShopDomain { get; set; } = null!;
+    public string VerificationMode { get; set; } = null!;
     public string? EventId { get; set; }
     public string? ApiVersion { get; set; }
     public string PayloadHash { get; set; } = null!;

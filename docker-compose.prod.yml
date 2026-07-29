@@ -18,6 +18,7 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
       Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
       Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
+      Shopify__LegacyWebhookPathSecret: ${SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET:-}
       Shopify__StoreDomain: ${SHOPIFY_STORE_DOMAIN:-}
       Shopify__OnlineLocationId: ${SHOPIFY_ONLINE_LOCATION_ID:-00000000-0000-0000-0000-000000000000}
       Shopify__CodGatewayNames__0: ${SHOPIFY_COD_GATEWAY_NAME_1:-Cash on Delivery}

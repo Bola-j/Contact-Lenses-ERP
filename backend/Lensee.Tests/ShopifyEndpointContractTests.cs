@@ -58,6 +58,37 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     }
 
     [Fact]
+    public async Task OrdinaryWebhook_UsesTemporaryLegacyPathAndIsExplicitlyMarked()
+    {
+        var seed = await _factory.SeedAsync();
+        await AddMappingAsync("v-legacy", seed.SkuId);
+        using var client = _factory.CreateClient();
+        using var request = CreateLegacyWebhookRequest("orders/create", "webhook-legacy", OrderPayload("legacy", "v-legacy"));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await ProcessQueuedEventsAsync();
+        using var scope = _factory.Services.CreateScope();
+        var eventRecord = await scope.ServiceProvider.GetRequiredService<OperationsDbContext>().ShopifyWebhookEvents.SingleAsync();
+        Assert.Equal("LegacyPath", eventRecord.VerificationMode);
+        Assert.Null(eventRecord.VerifiedAt);
+        Assert.Equal("Imported", eventRecord.Status);
+    }
+
+    [Fact]
+    public async Task OrdinaryWebhook_RejectsIncorrectTemporaryPath()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        using var request = CreateLegacyWebhookRequest("orders/create", "webhook-legacy-invalid", OrderPayload("legacy-invalid", "v-legacy"), "wrong-path");
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task CreateWebhook_IsIdempotent_AndPreservesShopifyCustomerSnapshot()
     {
         var seed = await _factory.SeedAsync();
@@ -155,6 +186,19 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         request.Headers.Add("X-Shopify-Webhook-Id", webhookId);
         request.Headers.Add("X-Shopify-Topic", topic);
         request.Headers.Add("X-Shopify-Shop-Domain", shopDomain ?? OperationsEndpointFactory.ShopifyStoreDomain);
+        return request;
+    }
+
+    private static HttpRequestMessage CreateLegacyWebhookRequest(string topic, string webhookId, string payload, string? pathSecret = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/integrations/shopify/legacy-webhooks/{pathSecret ?? OperationsEndpointFactory.ShopifyLegacyWebhookPathSecret}")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(payload))
+        };
+        request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        request.Headers.Add("X-Shopify-Webhook-Id", webhookId);
+        request.Headers.Add("X-Shopify-Topic", topic);
+        request.Headers.Add("X-Shopify-Shop-Domain", OperationsEndpointFactory.ShopifyStoreDomain);
         return request;
     }
 

@@ -269,6 +269,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.WebhookId).HasMaxLength(100).HasColumnName("webhook_id");
             entity.Property(e => e.Topic).HasMaxLength(100).HasColumnName("topic");
             entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.VerificationMode).HasMaxLength(30).HasDefaultValue("Hmac").HasColumnName("verification_mode");
             entity.Property(e => e.EventId).HasMaxLength(100).HasColumnName("event_id");
             entity.Property(e => e.ApiVersion).HasMaxLength(30).HasColumnName("api_version");
             entity.Property(e => e.PayloadHash).HasMaxLength(128).HasColumnName("payload_hash");
