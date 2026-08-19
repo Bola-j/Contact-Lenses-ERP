@@ -23,6 +23,10 @@ public partial class OperationLog
 
     public Guid? RepresentativeId { get; set; }
 
+    public Guid? MerchantExpiryRecallId { get; set; }
+
+    public string? AutomationType { get; set; }
+
     public string? PaymentMethod { get; set; }
 
     public string SalesChannel { get; set; } = "Manual";
@@ -60,4 +64,6 @@ public partial class OperationLog
     public virtual ICollection<OperationVersion> OperationVersions { get; set; } = new List<OperationVersion>();
 
     public virtual ShopifyOrderLink? ShopifyOrderLink { get; set; }
+
+    public virtual MerchantExpiryRecall? MerchantExpiryRecall { get; set; }
 }

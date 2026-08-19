@@ -18,4 +18,14 @@ public interface IAuditLogWriter
         object? changedFields = null,
         int? stockDeltaApplied = null,
         CancellationToken cancellationToken = default);
+
+    Task WriteForUserAsync(
+        Guid actorUserId,
+        string actorName,
+        string entityType,
+        Guid entityId,
+        string action,
+        object? changedFields = null,
+        int? stockDeltaApplied = null,
+        CancellationToken cancellationToken = default);
 }

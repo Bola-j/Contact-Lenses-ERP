@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
@@ -14,13 +13,7 @@ public static class CrmEndpoints
 {
     private const string WholesaleSale = "WholesaleSale";
     private const string RetailSale = "RetailSale";
-    private const string Return = "Return";
-    private const string Change = "Change";
-    private const string ChangeOut = "ChangeOut";
     private const string Completed = "Completed";
-    private const string Confirmed = "Confirmed";
-
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private static readonly HashSet<string> MerchantBusinessTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -48,7 +41,7 @@ public static class CrmEndpoints
         group.MapPatch("/merchants/{id:guid}/deactivate", SetMerchantInactiveAsync).RequireAuthorization("operations.write");
         group.MapPatch("/merchants/{id:guid}/reactivate", SetMerchantActiveAsync).RequireAuthorization("operations.write");
         group.MapPost("/merchants/{id:guid}/notes", AddMerchantNoteAsync).RequireAuthorization("operations.write");
-        group.MapGet("/merchants/{id:guid}/eligibility", GetMerchantEligibilityAsync).RequireAuthorization("operations.read");
+        group.MapGet("/merchants/{id:guid}/batch-history", GetMerchantBatchHistoryAsync).RequireAuthorization("merchant-recalls.read");
         group.MapGet("/representatives", ListRepresentativesAsync).RequireAuthorization("operations.read");
         group.MapPost("/representatives", CreateRepresentativeAsync).RequireAuthorization("operations.write");
         group.MapPut("/representatives/{id:guid}", UpdateRepresentativeAsync).RequireAuthorization("operations.write");
@@ -124,7 +117,7 @@ public static class CrmEndpoints
 
         return Results.Ok(new MerchantDetailResponse(
             ToResponse(merchant),
-            new MerchantSummaryResponse(operationCount, sold.Where(line => line.EntryMode == "Packs").Sum(line => line.Quantity), sold.Where(line => line.EntryMode == "Pieces").Sum(line => line.Quantity), balance.Balance, 0),
+            new MerchantSummaryResponse(operationCount, sold.Where(line => line.EntryMode == "Packs").Sum(line => line.Quantity), sold.Where(line => line.EntryMode == "Pieces").Sum(line => line.Quantity), balance.Balance),
             recentOperations,
             merchant.MerchantNotes.OrderByDescending(note => note.CreatedAt).Select(note => new MerchantNoteResponse(note.Id, note.Note, note.AddedBy, note.CreatedAt)).ToList()));
     }
@@ -227,86 +220,45 @@ public static class CrmEndpoints
         return Results.Created($"/api/v1/crm/merchants/{id}/notes/{note.Id}", new MerchantNoteResponse(note.Id, note.Note, note.AddedBy, note.CreatedAt));
     }
 
-    private static async Task<IResult> GetMerchantEligibilityAsync(
+    private static async Task<IResult> GetMerchantBatchHistoryAsync(
         Guid id,
-        OperationsDbContext operationsDbContext,
+        CrmDbContext crmDbContext,
         CatalogDbContext catalogDbContext,
+        MerchantBatchHistoryService historyService,
+        IClock clock,
         CancellationToken cancellationToken)
     {
-        var operations = await operationsDbContext.OperationLogs
-            .Include(operation => operation.OperationLines)
-            .Include(operation => operation.OperationVersions)
-            .Where(operation =>
-                operation.ClientId == id &&
-                !operation.IsDeleted &&
-                (operation.Status == Completed || operation.Status == Confirmed) &&
-                (operation.OperationType == WholesaleSale ||
-                    operation.OperationType == RetailSale ||
-                    operation.OperationType == Return ||
-                    operation.OperationType == Change))
-            .ToListAsync(cancellationToken);
-
-        var sold = new Dictionary<MerchantEligibilityKey, int>();
-        var returned = new Dictionary<MerchantEligibilityKey, int>();
-        foreach (var operation in operations)
+        if (!await crmDbContext.Merchants.AsNoTracking().AnyAsync(merchant => merchant.Id == id && !merchant.IsDeleted, cancellationToken))
         {
-            if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Completed)
-            {
-                var allocations = ReadAllocations(operation);
-                foreach (var allocation in allocations)
-                {
-                    foreach (var batch in allocation.Allocations)
-                    {
-                        AddQuantity(sold, new MerchantEligibilityKey(allocation.SkuId, NormalizeBlank(batch.LotNumber), batch.ExpiryDate), batch.Quantity);
-                    }
-                }
-                if (allocations.Count == 0)
-                {
-                    foreach (var line in operation.OperationLines.Where(line => line.EntryMode == "Packs"))
-                    {
-                        AddQuantity(sold, new MerchantEligibilityKey(line.SkuId, NormalizeBlank(line.LotNumber), line.ExpiryDate), line.Quantity);
-                    }
-                }
-            }
-            else if (operation.OperationType == Return && operation.Status == Confirmed)
-            {
-                foreach (var line in operation.OperationLines)
-                {
-                    AddQuantity(returned, new MerchantEligibilityKey(line.SkuId, NormalizeBlank(line.LotNumber), line.ExpiryDate), line.Quantity);
-                }
-            }
-            else if (operation.OperationType == Change && operation.Status == Confirmed)
-            {
-                foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeOut))
-                {
-                    AddQuantity(returned, new MerchantEligibilityKey(line.SkuId, NormalizeBlank(line.LotNumber), line.ExpiryDate), line.Quantity);
-                }
-            }
+            return Results.NotFound();
         }
 
-        var keys = sold.Keys.Concat(returned.Keys).Distinct().ToList();
-        var skuIds = keys.Select(key => key.SkuId).Distinct().ToArray();
+        var history = await historyService.LoadAsync(id, cancellationToken: cancellationToken);
+        var skuIds = history.Select(row => row.Key.SkuId).Distinct().ToArray();
         var skus = await catalogDbContext.Skus
             .Include(sku => sku.Product)
             .Where(sku => skuIds.Contains(sku.Id))
             .ToDictionaryAsync(sku => sku.Id, cancellationToken);
-
-        var rows = keys
-            .Select(pair =>
+        var today = DateOnly.FromDateTime(clock.EgyptNow);
+        var rows = history
+            .Select(row =>
             {
-                sold.TryGetValue(pair, out var soldQty);
-                returned.TryGetValue(pair, out var returnedQty);
-                skus.TryGetValue(pair.SkuId, out var sku);
-                return new MerchantEligibilityResponse(
-                    pair.SkuId,
+                skus.TryGetValue(row.Key.SkuId, out var sku);
+                var expiryStatus = row.Key.ExpiryDate switch
+                {
+                    null => "NoExpiry",
+                    var expiry when expiry.Value < today => "Expired",
+                    _ => "Valid"
+                };
+                return new MerchantBatchHistoryResponse(
+                    row.Key.SkuId,
                     sku?.SkuCode,
                     sku?.Product.Name,
-                    pair.LotNumber,
-                    pair.ExpiryDate,
-                    soldQty,
-                    Math.Max(soldQty - returnedQty, 0),
-                    returnedQty,
-                    Math.Max(returnedQty - soldQty, 0));
+                    row.Key.LotNumber,
+                    row.Key.ExpiryDate,
+                    row.SoldQuantity,
+                    row.ReturnedQuantity,
+                    expiryStatus);
             })
             .OrderBy(row => row.SkuCode ?? row.SkuId.ToString())
             .ThenBy(row => row.ExpiryDate)
@@ -314,32 +266,6 @@ public static class CrmEndpoints
             .ToList();
 
         return Results.Ok(rows);
-    }
-
-    private static IReadOnlyList<TransferAllocationSnapshot> ReadAllocations(OperationLog operation)
-    {
-        var snapshot = operation.OperationVersions
-            .OrderByDescending(version => version.VersionNumber)
-            .Select(version =>
-            {
-                try
-                {
-                    return JsonSerializer.Deserialize<OperationSnapshot>(version.SnapshotData, JsonOptions);
-                }
-                catch
-                {
-                    return null;
-                }
-            })
-            .FirstOrDefault(value => value?.TransferAllocations.Count > 0);
-
-        return snapshot?.TransferAllocations ?? [];
-    }
-
-    private static void AddQuantity(Dictionary<MerchantEligibilityKey, int> values, MerchantEligibilityKey key, int quantity)
-    {
-        values.TryGetValue(key, out var current);
-        values[key] = current + quantity;
     }
 
     private static async Task<IResult> ListRepresentativesAsync(bool? includeInactive, CrmDbContext dbContext, CancellationToken cancellationToken)
@@ -489,21 +415,6 @@ public static class CrmEndpoints
     private static RepresentativeResponse ToResponse(Representative rep) =>
         new(rep.Id, rep.Name, rep.PhoneNumbers, rep.Email, rep.Type, rep.AssignedLocationId, rep.Status, rep.Notes);
 
-    private sealed record MerchantEligibilityKey(Guid SkuId, string? LotNumber, DateOnly? ExpiryDate);
-
-    private sealed record OperationSnapshot(
-        string OperationType,
-        string Status,
-        Guid? SourceLocationId,
-        Guid? DestinationLocationId,
-        IReadOnlyList<OperationLineSnapshot> Lines,
-        IReadOnlyList<TransferAllocationSnapshot> TransferAllocations);
-
-    private sealed record OperationLineSnapshot(Guid SkuId, string SkuCode, string ProductName, string Section, int PackQuantity, string? LotNumber, DateOnly? ExpiryDate);
-
-    private sealed record TransferAllocationSnapshot(Guid SkuId, IReadOnlyList<BatchAllocationSnapshot> Allocations);
-
-    private sealed record BatchAllocationSnapshot(Guid BatchId, int Quantity, string? LotNumber = null, DateOnly? ExpiryDate = null);
 }
 
 public sealed record MerchantRequest(string BusinessName, string ContactPersonName, IReadOnlyList<string>? PhoneNumbers, string? Email, string? Address, string? BusinessType, string? Notes);
@@ -512,7 +423,7 @@ public sealed record MerchantResponse(Guid Id, string BusinessName, string Conta
 
 public sealed record MerchantDetailResponse(MerchantResponse Merchant, MerchantSummaryResponse Summary, IReadOnlyList<MerchantOperationResponse> RecentOperations, IReadOnlyList<MerchantNoteResponse> Notes);
 
-public sealed record MerchantSummaryResponse(int OperationCount, int SoldPacks, int SoldPieces, decimal Balance, int ReturnEligibilityPlaceholder)
+public sealed record MerchantSummaryResponse(int OperationCount, int SoldPacks, int SoldPieces, decimal Balance)
 {
     public decimal BalancePlaceholder => Balance;
 }
@@ -521,7 +432,7 @@ public sealed record MerchantOperationResponse(Guid Id, string OperationNumber, 
 
 public sealed record MerchantNoteResponse(Guid Id, string Note, Guid AddedBy, DateTime CreatedAt);
 
-public sealed record MerchantEligibilityResponse(Guid SkuId, string? SkuCode, string? ProductName, string? LotNumber, DateOnly? ExpiryDate, int SoldQty, int ReturnableQty, int ReturnedQty, int OverReturnedQty);
+public sealed record MerchantBatchHistoryResponse(Guid SkuId, string? SkuCode, string? ProductName, string? LotNumber, DateOnly? ExpiryDate, int SoldQuantity, int ReturnedQuantity, string ExpiryStatus);
 
 public sealed record NoteRequest(string Note);
 

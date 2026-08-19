@@ -5,6 +5,7 @@ public static class LenseePermissions
     public const string UsersRead = "users.read";
     public const string UsersWrite = "users.write";
     public const string UsersPasswordWrite = "users.password.write";
+    public const string UsersDelete = "users.delete";
     public const string CatalogRead = "catalog.read";
     public const string CatalogWrite = "catalog.write";
     public const string InventoryRead = "inventory.read";
@@ -28,11 +29,11 @@ public static class LenseePermissions
         {
             LenseeRoles.CLevel => new[]
             {
-                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, ReportsRead, SupplyRead
+                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, ReportsRead, SupplyRead, IntegrationsShopifyRead
             },
             LenseeRoles.Admin => new[]
             {
-                UsersRead, UsersWrite, UsersPasswordWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
+                UsersRead, UsersWrite, UsersPasswordWrite, UsersDelete, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
                 ReportsRead, SupplyRead, SupplyWrite, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },

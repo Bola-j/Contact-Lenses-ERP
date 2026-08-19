@@ -36,6 +36,7 @@ let operationsUiState = {
   operationId: null,
   operationType: "WarehouseTransfer",
   revisionReason: "",
+  revisionFingerprint: null,
   openDetailIds: []
 };
 let paymentMerchants = [];
@@ -48,8 +49,10 @@ let reportStocktakeRows = [];
 let reportSupplyRows = [];
 let selectedMerchantId = null;
 let selectedRepresentativeId = null;
+let auditPageState = { page: 1, pageSize: 50 };
 let notificationPageState = { page: 1, pageSize: 10 };
 let shopifyIntegrationPageState = { page: 1, pageSize: 25 };
+let shopifySkuPageState = { page: 1, pageSize: 50 };
 let activeRefreshTimer = null;
 let activeRefreshController = null;
 let activeRefreshInFlight = false;
@@ -57,8 +60,15 @@ let notificationBadgeInFlight = false;
 let refreshSessionPromise = null;
 let noticeSequence = 0;
 const mutationLocks = new Set();
+const displayReferenceCache = new Map();
+let visibleIdentifierObserver = null;
 
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("lensee-sync") : null;
+const syncStorageKey = "lensee.sync";
+const refreshLockName = "lensee-auth-refresh";
+const refreshLockStorageKey = "lensee.refresh.lock";
+const refreshLockLeaseMs = 30000;
+const refreshLockWaitMs = 35000;
 
 const languageKey = "lensee.language";
 let currentLanguage = localStorage.getItem(languageKey) === "en" ? "en" : "ar";
@@ -124,7 +134,6 @@ const arabicTranslations = Object.freeze({
   "Create merchant": "إضافة تاجر",
   "Update merchant": "تعديل بيانات التاجر",
   "Add note": "إضافة ملاحظة",
-  "Eligibility": "أهلية المرتجع والاستبدال",
   "Deactivate": "إيقاف",
   "Reactivate": "إعادة تفعيل",
   "Active": "نشط",
@@ -291,7 +300,6 @@ const arabicTranslations = Object.freeze({
   "Unknown SKU": "رمز صنف غير معروف",
   "SKU conflict": "تعارض في رمز الصنف",
   "No matching SKU": "لا يوجد رمز صنف مطابق",
-  "Eligibility ledger": "سجل أهلية المرتجع والاستبدال",
   "Cash received": "تحصيل نقدي",
   "Cash refund": "استرداد نقدي",
   "Financial adjustment": "تسوية مالية",
@@ -368,7 +376,6 @@ const arabicTranslations = Object.freeze({
   "Lensee operations control center": "مركز التحكم في عمليات Lensee",
   "Products, SKUs, categories, and brands.": "المنتجات ورموز الأصناف والتصنيفات والعلامات التجارية.",
   "Stock balances, batches, replenishment, and targets.": "أرصدة المخزون والدفعات وإعادة التوريد والمستهدفات.",
-  "Merchants, representatives, notes, and eligibility.": "التجار والمندوبون والملاحظات وأهلية المرتجع والاستبدال.",
   "Receipts, transfers, sales, returns, changes, and write-offs.": "الاستلامات والتحويلات والمبيعات والمرتجعات والاستبدالات والتسويات.",
   "Payment logs, approvals, cash records, and live remaining.": "سجلات الدفع والاعتمادات والحركات النقدية والمتبقي الحالي.",
   "Workflow alerts, stock alerts, and operational updates.": "تنبيهات سير العمل والمخزون والتحديثات التشغيلية.",
@@ -465,7 +472,6 @@ const arabicTranslations = Object.freeze({
   "Needed": "المطلوب",
   "Updated": "آخر تحديث",
   "Loading stock": "جارٍ تحميل المخزون",
-  "Online and retail targets are topped up from MainWarehouse through reserved warehouse transfers.": "تُستكمل مستهدفات الأونلاين ونقاط البيع من المخزن الرئيسي عبر تحويلات مخزون محجوزة.",
   "Destination": "الوجهة",
   "Incoming": "الوارد",
   "Main available": "المتاح في المخزن الرئيسي",
@@ -535,8 +541,6 @@ const arabicTranslations = Object.freeze({
   "Merchant reactivated.": "تمت إعادة تفعيل التاجر.",
   "Representative deactivated.": "تم إيقاف المندوب.",
   "Representative reactivated.": "تمت إعادة تفعيل المندوب.",
-  "No merchant eligibility ledger rows yet.": "لا توجد حركات في سجل أهلية المرتجع والاستبدال لهذا التاجر.",
-  "Eligibility ledger loaded.": "تم تحميل سجل أهلية المرتجع والاستبدال.",
   "Add Merchant Note": "إضافة ملاحظة للتاجر",
   "Write a short note for this merchant profile.": "اكتب ملاحظة قصيرة في ملف التاجر.",
   "Note added.": "تمت إضافة الملاحظة.",
@@ -552,10 +556,8 @@ const arabicTranslations = Object.freeze({
   "No notes yet.": "لا توجد ملاحظات حتى الآن.",
   "Merchant return/change reference": "مرجع مرتجع أو استبدال التاجر",
   "Sold": "المباع",
-  "Returnable": "المتاح للمرتجع أو الاستبدال",
   "Alert": "تنبيه",
   "No confirmed merchant sales or returns yet.": "لا توجد مبيعات أو مرتجعات مؤكدة لهذا التاجر حتى الآن.",
-  "Over by": "تجاوز بمقدار",
   "OK": "سليم",
   "Select a merchant": "اختر تاجرًا",
   "Add representative": "إضافة مندوب",
@@ -623,22 +625,16 @@ const arabicTranslations = Object.freeze({
   "Complete": "إكمال",
   "Working": "جارٍ التنفيذ",
   "Confirmation cancelled. The operation is still a draft.": "تم إلغاء التأكيد، وما زالت العملية مسودة.",
-  "Return/change eligibility warning": "تنبيه أهلية المرتجع أو الاستبدال",
-  "Eligibility warning": "تنبيه أهلية المرتجع والاستبدال",
-  "This return/change exceeds the merchant eligibility ledger.": "تتجاوز هذه العملية الكمية المتاحة في سجل أهلية المرتجع أو الاستبدال للتاجر.",
   "Confirm anyway": "تأكيد رغم التحذير",
   "Keep as draft": "الإبقاء كمسودة",
   "This exception will be recorded as a business decision. Check the SKU, lot, and batch expiry before continuing.": "سيُسجل هذا الاستثناء كقرار إداري. راجع رمز الصنف ورقم الدفعة وتاريخ الانتهاء قبل المتابعة.",
   "Requested": "المطلوب",
-  "Eligible": "المؤهل",
   "Operation code": "رمز العملية",
   "Created by": "أنشأها",
   "Confirmed by": "اعتمدها",
   "Last edited by": "آخر تعديل بواسطة",
   "Merchant / buyer": "التاجر / العميل",
   "Current version": "الإصدار الحالي",
-  "Eligibility warning: review before confirming": "تنبيه أهلية: راجع البيانات قبل التأكيد",
-  "Lot / Expiry / Requested / Eligible": "رقم الدفعة / الانتهاء / المطلوب / المؤهل",
   "No lines.": "لا توجد بنود.",
   "Allocated SKU": "رمز الصنف المخصّص",
   "No batch allocation snapshot.": "لا توجد لقطة لتخصيص دفعات المخزون.",
@@ -746,7 +742,6 @@ const arabicTranslations = Object.freeze({
   "Manual alert triggers": "تشغيل التنبيهات يدويًا",
   "Run alert scans on demand when you want to refresh operational warnings immediately.": "شغّل فحص التنبيهات يدويًا لتحديث التحذيرات التشغيلية فورًا.",
   "Unresolved reserves": "حجوزات غير محسومة",
-  "Outstanding remaining": "مبالغ متبقية مستحقة",
   "No notifications match the current filters.": "لا توجد تنبيهات تطابق عوامل التصفية الحالية.",
   "Broadcast": "إرسال عام",
   "Open inventory": "فتح المخزون",
@@ -763,6 +758,19 @@ const arabicTranslations = Object.freeze({
   "Channel": "القناة",
   "Event location": "موقع الحدث",
   "Review active accounts, assigned locations, and password resets from one controlled admin surface.": "راجع الحسابات النشطة والمواقع المعيّنة وعمليات إعادة تعيين كلمات المرور من شاشة إدارية واحدة.",
+  "Review employee accounts, assigned locations, and controlled access from one admin surface.": "راجع حسابات الموظفين والمواقع المعيّنة والتحكم في الوصول من شاشة إدارية واحدة.",
+  "Create employee account": "إنشاء حساب موظف",
+  "Set the employee's sign-in name, temporary password, role, and warehouse scope.": "حدّد اسم دخول الموظف وكلمة المرور المؤقتة والدور ونطاق المخزن.",
+  "Full name": "الاسم الكامل",
+  "Administrator": "مدير النظام",
+  "ERP administrator": "مدير ERP",
+  "Warehouse clerk": "موظف المخزن",
+  "Warehouse location": "موقع المخزن",
+  "Loading locations...": "جارٍ تحميل المواقع...",
+  "Select warehouse location": "اختر موقع المخزن",
+  "Temporary password": "كلمة المرور المؤقتة",
+  "Full name and username are required.": "الاسم الكامل واسم المستخدم مطلوبان.",
+  "Warehouse clerks must be assigned to a warehouse location.": "يجب تعيين موظفي المخزن إلى موقع مخزن.",
   "Confirm password": "تأكيد كلمة المرور",
   "Reset password": "إعادة تعيين كلمة المرور",
   "Password must be at least 8 characters.": "يجب ألا تقل كلمة المرور عن 8 أحرف.",
@@ -778,14 +786,51 @@ const arabicTranslations = Object.freeze({
   "Daily": "يومي",
   "Monthly": "شهري",
   "Annually": "سنوي",
-  "This operation contains returned SKU, lot, or expiry quantities that exceed this merchant's sale eligibility. Review carefully before confirming.": "تحتوي هذه العملية على كميات مرتجعة تتجاوز أهلية مبيعات التاجر حسب رمز الصنف أو رقم الدفعة أو تاريخ الانتهاء. راجعها بعناية قبل التأكيد.",
   "Unknown location": "موقع غير معروف",
   "8+ characters": "8 أحرف على الأقل",
   "Repeat": "أعد إدخال كلمة المرور",
   "Alert run": "تشغيل التنبيه",
+  "Batch history": "سجل الدفعات",
+  "Merchant Batch History": "سجل دفعات التاجر",
+  "Batch history and notes": "سجل الدفعات والملاحظات",
+  "Recorded sales and confirmed returns": "المبيعات المسجلة والمرتجعات المؤكدة",
+  "Recorded sales and confirmed returns by SKU, lot, and expiry": "المبيعات المسجلة والمرتجعات المؤكدة حسب رمز الصنف والدفعة والانتهاء",
+  "No merchant batch history yet.": "لا يوجد سجل دفعات لهذا التاجر حتى الآن.",
+  "Merchant batch history loaded.": "تم تحميل سجل دفعات التاجر.",
+  "Expiry status": "حالة الصلاحية",
+  "Merchant expiry recalls": "استدعاءات دفعات التجار لقرب الانتهاء",
+  "Start Return": "بدء مرتجع",
+  "No Stock at Merchant": "لا يوجد مخزون لدى التاجر",
+  "Physical quantity": "الكمية الفعلية",
+  "Receiving location": "موقع الاستلام",
+  "Approaching expiry": "يقترب من الانتهاء",
+  "Read only": "للقراءة فقط",
+  "Daily scan active": "الفحص اليومي مفعّل",
+  "Sold merchant batches inside the configured expiry window, ordered by earliest expiry.": "دفعات مباعة للتجار داخل نافذة قرب الانتهاء المحددة، مرتبة حسب الأقرب انتهاءً.",
+  "Global expiry window (months)": "نافذة قرب الانتهاء العامة (بالأشهر)",
+  "Save recall settings": "حفظ إعدادات الاستدعاء",
+  "No active merchant expiry recalls.": "لا توجد استدعاءات نشطة لدفعات التجار.",
+  "Start merchant return": "بدء مرتجع من التاجر",
+  "Select a location": "اختر موقعًا",
+  "Create return draft": "إنشاء مسودة مرتجع",
+  "Recorded sales warning": "تحذير بخصوص المبيعات المسجلة",
+  "One or more returned batch quantities are above the recorded sales balance. Review the batch facts before continuing.": "كمية مرتجع تشغيلة واحدة أو أكثر أكبر من رصيد المبيعات المسجل. راجع بيانات التشغيلات قبل المتابعة.",
+  "Sold to merchant": "المباع للتاجر",
+  "Already returned": "المرتجع سابقًا",
+  "Requested now": "المطلوب الآن",
+  "Above recorded balance": "الزيادة عن الرصيد المسجل",
+  "Exception reason": "سبب الاستثناء",
+  "Explain why this return should continue": "وضّح سبب متابعة هذا المرتجع",
+  "Confirm with exception": "تأكيد مع استثناء",
+  "Close": "إغلاق",
+  "This account can review the warning but cannot bypass it.": "يمكن لهذا الحساب مراجعة التحذير، لكن لا يمكنه تجاوزه.",
+  "Exception reason is required.": "سبب الاستثناء مطلوب.",
+  "Explain how the physical stock was checked.": "اشرح كيفية التحقق من المخزون الفعلي لدى التاجر.",
+  "Merchant recall closed as no stock.": "تم إغلاق الاستدعاء لعدم وجود مخزون لدى التاجر.",
+  "Merchant recall settings saved.": "تم حفظ إعدادات استدعاء دفعات التجار.",
+  "Merchant expiry recall": "استدعاء دفعة تاجر لقرب الانتهاء",
   "LowStock": "مخزون منخفض",
   "UnresolvedReserves": "حجوزات غير محسومة",
-  "OutstandingBalances": "أرصدة مستحقة",
   "PaymentWorkflow": "سير عمل المدفوعات",
   "OperationStatus": "حالة العملية",
   "StocktakeConfirmed": "تم اعتماد الجرد",
@@ -817,7 +862,6 @@ const arabicTranslations = Object.freeze({
   "Blocked": "محظور",
   "Can edit CRM records": "يمكنه تعديل بيانات العلاقات التجارية",
   "Merchant context": "بيانات التاجر",
-  "Eligibility and notes": "أهلية المرتجع والاستبدال والملاحظات",
   "Operations link": "الربط بالعمليات",
   "Shared across workflows": "مشترك بين مسارات العمل",
   "No lot": "بدون رقم دفعة",
@@ -863,7 +907,6 @@ const arabicTranslations = Object.freeze({
   "OK": "سليم",
   "Inactive SKU": "رمز صنف غير نشط",
   "No expiry": "بدون تاريخ انتهاء",
-  "Over by": "تجاوز بمقدار",
   "Try another color, power, package, or source location.": "جرّب لونًا أو درجة أو عبوة أو موقع صرف آخر.",
   "SKUs match these attributes. Refine package/size.": "توجد رموز أصناف مطابقة لهذه الخصائص. حدّد العبوة أو المقاس بدقة.",
   "Actual total I have": "الإجمالي الفعلي لدي",
@@ -1077,11 +1120,11 @@ function translateEnglishText(value, contextElement = null) {
   match = text.match(/^(.+?)\s+shortage$/i);
   if (match) return `${leadingWhitespace}${match[1]} عجز${trailingWhitespace}`;
 
-  match = text.match(/^Over by\s+(.+)$/i);
-  if (match) return `${leadingWhitespace}تجاوز بمقدار ${match[1]}${trailingWhitespace}`;
-
   match = text.match(/^Password changed for (.+)\. Active sessions were revoked\.$/);
   if (match) return `${leadingWhitespace}تم تغيير كلمة المرور للمستخدم ${match[1]} وإنهاء جلساته النشطة.${trailingWhitespace}`;
+
+  match = text.match(/^Employee account created for (.+)\.$/);
+  if (match) return `${leadingWhitespace}تم إنشاء حساب الموظف ${match[1]}.${trailingWhitespace}`;
 
   match = text.match(/^Alert run matched (\d+) item\(s\)\.$/);
   if (match) return `${leadingWhitespace}اكتمل فحص التنبيه وطابق ${match[1]} عنصر.${trailingWhitespace}`;
@@ -1304,9 +1347,10 @@ const routes = {
   "/operations": { title: "Operations", label: "Operations", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderOperations },
   "/payments": { title: "Payments", label: "Payments", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderPayments },
   "/notifications": { title: "Notifications", label: "Notifications", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderNotifications },
-  "/integrations": { title: "Online intake", label: "Online intake", roles: ["Admin", "ERPAdmin", "WarehouseClerk"], render: renderShopifyIntegration },
+  "/integrations": { title: "Online intake", label: "Online intake", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderShopifyIntegration },
   "/reports": { title: "Reports", label: "Reports", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderReports },
   "/stocktakes": { title: "Stocktake", label: "Stocktake", roles: ["CLevel", "Admin", "ERPAdmin"], render: renderStocktakes },
+  "/audit": { title: "Audit history", label: "Audit history", roles: ["Admin", "ERPAdmin"], render: renderAudit },
   "/admin": { title: "Administration", label: "Admin", roles: ["Admin", "ERPAdmin"], render: renderAdmin }
 };
 
@@ -1322,6 +1366,7 @@ const navItems = [
   ["/integrations", "Online intake"],
   ["/reports", "Reports"],
   ["/stocktakes", "Stocktake"],
+  ["/audit", "Audit history"],
   ["/admin", "Admin"]
 ];
 
@@ -1329,12 +1374,13 @@ const navGroups = [
   { label: "Daily work", items: ["/dashboard", "/operations", "/notifications"] },
   { label: "Money", items: ["/payments", "/reports"] },
   { label: "Stock", items: ["/inventory", "/supply", "/catalog", "/stocktakes"] },
-  { label: "Oversight", items: ["/crm", "/integrations", "/admin"] }
+  { label: "Oversight", items: ["/crm", "/integrations", "/audit", "/admin"] }
 ];
 
 if (!sessionStorage.getItem("lensee.tabId")) {
   sessionStorage.setItem("lensee.tabId", crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
 }
+const tabId = sessionStorage.getItem("lensee.tabId");
 
 document.getElementById("logout-button").addEventListener("click", logout);
 document.getElementById("language-toggle").addEventListener("click", () => setLanguage(currentLanguage === "ar" ? "en" : "ar"));
@@ -1363,6 +1409,23 @@ document.addEventListener("click", (event) => {
     setSidebarOpen(false);
   }
 });
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  form.querySelectorAll("input, textarea").forEach((input) => {
+    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || input.type === "password") return;
+    const name = `${input.name} ${input.id}`.toLowerCase();
+    if (/(token|secret|payload|password)/.test(name)) return;
+    if (input instanceof HTMLTextAreaElement) {
+      input.value = input.value.replace(/\r\n/g, "\n").trim();
+    } else if (/username|sku/.test(name)) {
+      input.value = input.value.trim();
+    } else if (["text", "search", "email", "tel", "url"].includes(input.type)) {
+      input.value = input.value.trim().replace(/\s+/g, " ");
+    }
+  });
+}, true);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     setSidebarOpen(false);
@@ -1378,7 +1441,7 @@ window.addEventListener(mutationEventName, () => {
   updateNotificationBadge();
 });
 window.addEventListener("storage", (event) => {
-  if (event.key === "lensee.sync" && event.newValue) {
+  if (!syncChannel && event.key === syncStorageKey && event.newValue) {
     try { handleExternalSync(JSON.parse(event.newValue)); } catch { /* Ignore malformed sync payloads. */ }
   }
   if (event.key === authKey) {
@@ -1402,24 +1465,33 @@ window.__lenseeGetAuth = getAuth;
 function setAuth(auth, { broadcast = true } = {}) {
   activeAuth = auth ? { accessToken: auth.accessToken, user: auth.user } : null;
   localStorage.removeItem(authKey);
-  if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
+  if (broadcast) publishSync({ type: "auth-signed-in", source: tabId });
 }
 
 function clearAuth({ broadcast = true } = {}) {
   activeAuth = null;
   localStorage.removeItem(authKey);
-  if (broadcast) publishSync({ type: "auth", source: sessionStorage.getItem("lensee.tabId") });
+  if (broadcast) publishSync({ type: "auth-signed-out", source: tabId });
 }
 
 function publishSync(payload) {
-  syncChannel?.postMessage(payload);
-  localStorage.setItem("lensee.sync", JSON.stringify({ ...payload, at: Date.now() }));
+  const message = { ...payload, id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, at: Date.now() };
+  if (syncChannel) {
+    syncChannel.postMessage(message);
+  } else {
+    localStorage.setItem(syncStorageKey, JSON.stringify(message));
+  }
 }
 
 function handleExternalSync(payload) {
-  if (!payload || payload.source === sessionStorage.getItem("lensee.tabId")) return;
-  if (payload.type === "auth") {
+  if (!payload || payload.source === tabId) return;
+  if (payload.type === "auth-signed-in") {
     restoreSessionFromCookie().finally(renderRoute);
+    return;
+  }
+  if (payload.type === "auth-signed-out") {
+    clearAuth({ broadcast: false });
+    renderRoute();
     return;
   }
   if (payload.type === "mutation") {
@@ -1499,6 +1571,61 @@ async function downloadFile(path, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function readRefreshLockLease() {
+  try {
+    const value = localStorage.getItem(refreshLockStorageKey);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function releaseRefreshLockLease(owner) {
+  const lease = readRefreshLockLease();
+  if (lease?.owner === owner) {
+    localStorage.removeItem(refreshLockStorageKey);
+  }
+}
+
+async function withRefreshLockFallback(action) {
+  const owner = `${tabId}:${crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+  const deadline = Date.now() + refreshLockWaitMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const currentLease = readRefreshLockLease();
+      if (!currentLease || currentLease.expiresAt <= Date.now()) {
+        localStorage.setItem(refreshLockStorageKey, JSON.stringify({ owner, expiresAt: Date.now() + refreshLockLeaseMs }));
+        if (readRefreshLockLease()?.owner === owner) {
+          try {
+            return await action();
+          } finally {
+            releaseRefreshLockLease(owner);
+          }
+        }
+      }
+    } catch {
+      return null;
+    }
+
+    await delay(75 + Math.floor(Math.random() * 75));
+  }
+
+  return null;
+}
+
+async function withRefreshLock(action) {
+  if (navigator.locks?.request) {
+    return navigator.locks.request(refreshLockName, { mode: "exclusive" }, action);
+  }
+
+  return withRefreshLockFallback(action);
+}
+
 async function refreshSession({ broadcastFailure = true } = {}) {
   if (refreshSessionPromise) {
     return refreshSessionPromise;
@@ -1506,23 +1633,32 @@ async function refreshSession({ broadcastFailure = true } = {}) {
 
   refreshSessionPromise = (async () => {
     try {
-      const headers = new Headers({ "Content-Type": "application/json" });
-      applyApiHeaders(headers);
-      const response = await fetch(`${apiBase}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers,
-        credentials: "include",
-        body: JSON.stringify({})
+      const result = await withRefreshLock(async () => {
+        const headers = new Headers({ "Content-Type": "application/json" });
+        applyApiHeaders(headers);
+        const response = await fetch(`${apiBase}/api/v1/auth/refresh`, {
+          method: "POST",
+          headers,
+          credentials: "include",
+          body: JSON.stringify({})
+        });
+        if (!response.ok) {
+          return { auth: null, terminal: response.status < 500 };
+        }
+        return { auth: await response.json(), terminal: false };
       });
-      if (!response.ok) {
-        clearAuth({ broadcast: broadcastFailure });
+      if (!result) {
+        clearAuth({ broadcast: false });
         return null;
       }
-      const auth = await response.json();
-      setAuth(auth);
-      return auth;
+      if (!result.auth) {
+        clearAuth({ broadcast: broadcastFailure && result.terminal });
+        return null;
+      }
+      setAuth(result.auth, { broadcast: false });
+      return result.auth;
     } catch {
-      clearAuth({ broadcast: broadcastFailure });
+      clearAuth({ broadcast: false });
       return null;
     } finally {
       refreshSessionPromise = null;
@@ -1545,7 +1681,7 @@ async function checkHealth() {
   const pill = document.getElementById("health-pill");
   try {
     const healthBase = await resolveApiBase();
-    const health = await fetch(`${healthBase}/health`, { headers: apiHeaders() }).then((response) => response.json());
+    const health = await fetchHealth(healthBase).then((response) => response.json());
     pill.textContent = health.status === "Healthy" ? "API healthy" : "API degraded";
     pill.className = `status-pill ${health.status === "Healthy" ? "status-ok" : "status-warn"}`;
   } catch {
@@ -1554,12 +1690,16 @@ async function checkHealth() {
   }
 }
 
+function fetchHealth(baseUrl) {
+  return fetch(`${baseUrl}/health`, { headers: apiHeaders(), cache: "no-store" });
+}
+
 async function resolveApiBase(preferred = apiBase) {
   const candidates = [preferred, ...apiCandidates].filter((value, index, values) => value && values.indexOf(value) === index);
   for (const candidate of candidates) {
     try {
       const normalized = candidate.replace(/\/$/, "");
-      const response = await fetch(`${normalized}/health`, { headers: apiHeaders() });
+      const response = await fetchHealth(normalized);
       if (response.ok) {
         apiBase = normalized;
         localStorage.setItem("lensee.apiBase", apiBase);
@@ -1573,10 +1713,16 @@ async function resolveApiBase(preferred = apiBase) {
 }
 
 function currentPath() {
-  return location.hash.replace("#", "") || "/dashboard";
+  const hash = location.hash.replace(/^#/, "");
+  return (hash.split("?")[0] || "/dashboard").replace(/\/$/, "") || "/dashboard";
 }
 
-function renderRoute() {
+function currentRouteQuery() {
+  const queryIndex = location.hash.indexOf("?");
+  return new URLSearchParams(queryIndex >= 0 ? location.hash.slice(queryIndex + 1) : "");
+}
+
+async function renderRoute() {
   const auth = getAuth();
   const path = currentPath();
   const route = routes[path];
@@ -1598,15 +1744,73 @@ function renderRoute() {
     renderForbidden();
     return;
   }
+  if (auth && path === "/integrations" && auth.user.role === "WarehouseClerk" && auth.user.locationType !== "Online") {
+    renderForbidden();
+    return;
+  }
 
   document.getElementById("page-title").textContent = route.title;
   document.getElementById("route-label").textContent = route.label;
   renderNav(auth);
   renderSession(auth);
   updateNotificationBadge();
-  route.render();
+  await route.render();
   applyLanguage();
+  startVisibleIdentifierMasking();
+  sanitizeVisibleIdentifiers(document.getElementById("view"));
   scheduleRouteRefresh(path);
+  await applyNotificationFocus();
+  sanitizeVisibleIdentifiers(document.getElementById("view"));
+}
+
+async function applyNotificationFocus() {
+  const query = currentRouteQuery();
+  const reference = query.get("ref");
+  if (reference) {
+    try {
+      const destination = await request(`/api/v1/navigation-references/${encodeURIComponent(reference)}/resolve`);
+      const destinationPath = String(destination.route || "").replace(/^#/, "");
+      if (!destinationPath || destinationPath !== currentPath()) {
+        location.hash = `${destination.route}?ref=${encodeURIComponent(reference)}`;
+        return;
+      }
+      await applyResolvedFocus(destination.focus, destination.recordId);
+    } catch {
+      notice("This secure link is unavailable or has expired.", "warning");
+    }
+    return;
+  }
+
+  // Legacy links are stripped once opened. New links contain opaque, server-issued references only.
+  const id = query.get("id");
+  const focus = query.get("focus");
+  if (!id || !focus) return;
+
+  try {
+    await applyResolvedFocus(focus, id);
+    history.replaceState(null, "", `#${currentPath()}`);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function applyResolvedFocus(focus, id) {
+  if (focus === "merchant") await showMerchantDetail(id);
+  if (focus === "supply-shipment") await showSupplyDetail(id);
+  if (focus === "stocktake") await showStocktakeDetail(id);
+  if (focus === "operation") {
+    const button = document.querySelector(`[data-op-toggle][data-op-id="${CSS.escape(id)}"]`);
+    if (button) await toggleOperationDetails(id, button, true);
+  }
+  if (focus === "payment") {
+    const button = document.querySelector(`[data-payment-detail="${CSS.escape(id)}"]`);
+    if (button) await togglePaymentDetails(id, button);
+  }
+  if (focus === "merchant-expiry-recall") {
+    const row = document.querySelector(`[data-merchant-recall-row="${CSS.escape(id)}"]`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+    row?.classList.add("focus-highlight");
+  }
 }
 
 function renderNav(auth) {
@@ -1620,7 +1824,8 @@ function renderNav(auth) {
 
   const itemLabels = new Map(navItems);
   for (const group of navGroups) {
-    const visibleItems = group.items.filter((href) => routes[href]?.roles.includes(auth.user.role));
+    const visibleItems = group.items.filter((href) => routes[href]?.roles.includes(auth.user.role)
+      && (href !== "/integrations" || auth.user.role !== "WarehouseClerk" || auth.user.locationType === "Online"));
     if (visibleItems.length === 0) {
       continue;
     }
@@ -1695,7 +1900,7 @@ function notice(message, tone = "info") {
   node.className = `notice notice-${tone}`;
   node.id = id;
   node.setAttribute("role", tone === "error" ? "alert" : "status");
-  node.innerHTML = `<span>${escapeHtml(message)}</span><button class="notice-close" type="button" aria-label="Dismiss notice">x</button>`;
+  node.innerHTML = `<span>${escapeHtml(displaySafeText(message))}</span><button class="notice-close" type="button" aria-label="Dismiss notice">x</button>`;
   node.querySelector("button").addEventListener("click", () => node.remove());
   area.appendChild(node);
   window.setTimeout(() => {
@@ -1834,7 +2039,7 @@ function scheduleRouteRefresh(path) {
   activeRefreshTimer = window.setInterval(() => {
     refreshActiveView({ reason: "timer" });
     updateNotificationBadge();
-  }, 15000);
+  }, 30000);
 }
 
 async function refreshActiveView({ reason = "manual" } = {}) {
@@ -1868,7 +2073,10 @@ async function refreshActiveView({ reason = "manual" } = {}) {
         await Promise.all([loadPayments(), loadPaymentHistory()]);
         break;
       case "/notifications":
-        await loadNotifications();
+        await Promise.all([
+          loadNotifications(),
+          ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user.role) ? loadMerchantExpiryRecalls() : Promise.resolve()
+        ]);
         break;
       case "/reports":
         await loadReports();
@@ -1989,7 +2197,7 @@ async function checkLoginHealth() {
   const text = document.getElementById("login-health-text");
   try {
     const healthBase = await resolveApiBase(apiBase);
-    const health = await fetch(`${healthBase}/health`, { headers: apiHeaders() }).then((response) => response.json());
+    const health = await fetchHealth(healthBase).then((response) => response.json());
     dot.className = `health-dot ${health.status === "Healthy" ? "health-ok" : "health-warn"}`;
     text.textContent = health.status === "Healthy" ? "API healthy" : "API degraded";
   } catch {
@@ -2009,7 +2217,7 @@ function renderDashboard() {
         "/catalog": "Products, SKUs, categories, and brands.",
         "/inventory": "Stock balances, batches, replenishment, and targets.",
         "/supply": "Imported shipments, landed costs, and receipts.",
-        "/crm": "Merchants, representatives, notes, and eligibility.",
+        "/crm": "Merchants, representatives, notes, and batch history.",
         "/operations": "Receipts, transfers, sales, returns, changes, and write-offs.",
         "/payments": "Payment logs, approvals, cash records, and live remaining.",
         "/notifications": "Workflow alerts, stock alerts, and operational updates.",
@@ -2980,7 +3188,11 @@ function renderInventory() {
         <section class="band compact-band">
           <div class="section-head"><h2>Filters</h2><button id="inventory-refresh" class="button secondary" type="button">Refresh</button></div>
           <div class="field"><label for="inventory-location">Location</label><select id="inventory-location" class="select"><option value="">All available</option></select></div>
-          <div class="field"><label for="inventory-sku">SKU</label><select id="inventory-sku" class="select"><option value="">All SKUs</option></select></div>
+          <div class="field inventory-sku-picker"><label for="inventory-sku-search">SKU</label>
+            <input id="inventory-sku" type="hidden" value="">
+            <input id="inventory-sku-search" class="input" type="search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="inventory-sku-results" placeholder="Search product, color, power, or SKU">
+            <div id="inventory-sku-results" class="op-line-search-results" role="listbox" hidden></div>
+          </div>
           <label class="check-field"><input id="inventory-include-zero-stock" type="checkbox"><span>Show zero-stock SKUs</span></label>
           <label class="check-field"><input id="inventory-include-empty" type="checkbox"><span>Show empty batches</span></label>
         </section>
@@ -3001,7 +3213,7 @@ function renderInventory() {
         </section>
         <section class="band">
           <div class="section-head">
-            <div><h2>Daily replenishment</h2><p>Online and retail targets are topped up from MainWarehouse through reserved warehouse transfers.</p></div>
+            <div><h2>Daily replenishment</h2><p>Online and retail targets are topped up from MainWarehouse through Draft warehouse transfers awaiting confirmation.</p></div>
             <div class="inline-actions">
               <span id="inventory-replenishment-count" class="muted-text">Loading</span>
               ${canWrite ? `<button id="reserve-replenishment" class="button secondary" type="button">Run replenishment</button>` : ""}
@@ -3034,8 +3246,26 @@ function renderInventory() {
     selectedInventoryLocationId = document.getElementById("inventory-location").value;
     refreshInventoryTables();
   });
-  document.getElementById("inventory-sku").addEventListener("input", debounce(refreshInventoryTables, 300));
-  document.getElementById("inventory-sku").addEventListener("change", refreshInventoryTables);
+  document.getElementById("inventory-sku-search").addEventListener("input", () => {
+    const search = document.getElementById("inventory-sku-search");
+    const filter = document.getElementById("inventory-sku");
+    const selected = inventorySkuOptions.find((sku) => sku.id === filter.value);
+    if (!search.value.trim() && filter.value) {
+      clearInventorySkuFilter();
+      return;
+    }
+    if (selected && search.value !== selected.label) {
+      filter.value = "";
+      refreshInventoryTables();
+    }
+    renderInventorySkuSearchResults();
+  });
+  document.getElementById("inventory-sku-search").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideInventorySkuSearchResults();
+      event.currentTarget.blur();
+    }
+  });
   document.getElementById("inventory-include-zero-stock").addEventListener("change", loadInventoryBalances);
   document.getElementById("inventory-include-empty").addEventListener("change", loadInventoryBatches);
   document.getElementById("reserve-replenishment")?.addEventListener("click", reserveInventoryReplenishment);
@@ -3090,6 +3320,7 @@ async function loadInventoryLocations() {
 
 async function loadInventorySkuOptions() {
   const filter = document.getElementById("inventory-sku");
+  const search = document.getElementById("inventory-sku-search");
   try {
     const products = [];
     let page = 1;
@@ -3108,23 +3339,200 @@ async function loadInventorySkuOptions() {
         if (sku.isActive) {
           options.push({
             id: sku.id,
+            productName: detail.name,
+            brandName: detail.brandName,
+            categoryName: detail.categoryName,
+            skuCode: sku.skuCode,
+            powerSign: sku.powerSign,
+            powerValue: sku.powerValue,
+            colorName: sku.colorName,
+            size: sku.size,
             label: `${sku.skuCode} - ${detail.name}`
           });
         }
       }
     }
     inventorySkuOptions = options.sort((left, right) => left.label.localeCompare(right.label));
-    const optionsHtml = inventorySkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("");
     if (filter) {
       const current = filter.value;
-      filter.innerHTML = `<option value="">All SKUs</option>${optionsHtml}`;
-      filter.value = current;
+      filter.value = inventorySkuOptions.some((sku) => sku.id === current) ? current : "";
+      updateInventorySkuSearchLabel();
     }
   } catch (exception) {
     if (filter) {
-      filter.innerHTML = `<option value="">Catalog unavailable</option>`;
+      filter.value = "";
+    }
+    if (search) {
+      search.value = "";
+      search.placeholder = "Catalog unavailable";
     }
   }
+}
+
+function merchantRecallReturnDialog(locations, recall) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-overlay";
+    overlay.innerHTML = `
+      <form class="dialog-card" novalidate>
+        <div class="section-head tight-head"><div><h2>Start merchant return</h2><p class="muted-text">${escapeHtml(recall.merchantName)} / ${escapeHtml(recall.skuCode || recall.productName || "SKU")}</p></div></div>
+        <div class="field"><label>Receiving location</label><select class="select" data-recall-location required><option value="">Select a location</option>${locations.filter((location) => location.isActive !== false).map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Physical quantity</label><input class="input" data-recall-quantity type="number" min="1" step="1" required></div>
+        <div class="field"><label>Notes</label><textarea class="input" data-recall-notes rows="3"></textarea></div>
+        <div class="form-error" data-recall-error hidden></div>
+        <div class="form-actions"><button class="button primary" type="submit">Create return draft</button><button class="button secondary" type="button" data-dialog-cancel>Cancel</button></div>
+      </form>`;
+    document.body.appendChild(overlay);
+    const close = (value) => { overlay.remove(); resolve(value); };
+    overlay.querySelector("[data-dialog-cancel]").addEventListener("click", () => close(null));
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) close(null); });
+    overlay.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const receivingLocationId = overlay.querySelector("[data-recall-location]").value;
+      const quantity = Number(overlay.querySelector("[data-recall-quantity]").value);
+      const notes = overlay.querySelector("[data-recall-notes]").value.trim();
+      const error = overlay.querySelector("[data-recall-error]");
+      if (!receivingLocationId || !Number.isInteger(quantity) || quantity <= 0) {
+        error.textContent = "Select a receiving location and enter a positive whole quantity.";
+        error.hidden = false;
+        return;
+      }
+      close({ receivingLocationId, quantity, notes: notes || null });
+    });
+    overlay.querySelector("[data-recall-location]").focus();
+  });
+}
+
+function parseMerchantSalesVarianceGate(exception) {
+  if (exception?.status !== 409 || !(exception instanceof Error)) return null;
+  try {
+    const body = JSON.parse(exception.message || "");
+    return body?.code === "MerchantSalesVariance" && Array.isArray(body.warnings) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+function merchantSalesVarianceDialog(gate) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-overlay";
+    const warningRows = (gate.warnings || []).map((warning) => `
+      <tr>
+        <td><strong>${escapeHtml(warning.skuCode || "SKU")}</strong><div class="muted-cell">${escapeHtml(warning.productName || "-")}</div></td>
+        <td>${escapeHtml(warning.lotNumber || "-")}</td>
+        <td>${escapeHtml(warning.expiryDate || "-")}</td>
+        <td>${escapeHtml(String(warning.soldQuantity ?? 0))}</td>
+        <td>${escapeHtml(String(warning.returnedQuantity ?? 0))}</td>
+        <td>${escapeHtml(String(warning.requestedQuantity ?? 0))}</td>
+        <td><strong>${escapeHtml(String(warning.excessQuantity ?? 0))}</strong></td>
+      </tr>`).join("");
+    overlay.innerHTML = `
+      <form class="dialog-card confirm-dialog confirm-dialog-warning sales-variance-dialog" role="dialog" aria-modal="true" aria-labelledby="merchant-sales-variance-title">
+        <div class="section-head tight-head"><div><h2 id="merchant-sales-variance-title">${escapeHtml(gate.title || "Recorded sales warning")}</h2><p class="muted-text">${escapeHtml(gate.detail || "Review the recorded merchant sales before continuing.")}</p></div></div>
+        <div class="table-wrap sales-variance-dialog-table"><table><thead><tr><th>SKU</th><th>Lot</th><th>Expiry</th><th>Sold to merchant</th><th>Already returned</th><th>Requested now</th><th>Above recorded balance</th></tr></thead><tbody>${warningRows}</tbody></table></div>
+        ${gate.canBypass ? `
+          <div class="field"><label for="merchant-sales-variance-reason">Exception reason</label><textarea id="merchant-sales-variance-reason" class="input" rows="3" maxlength="500" placeholder="Explain why this return should continue" required></textarea></div>
+          <div class="form-error" data-variance-error hidden></div>` : `<p class="form-error">This account can review the warning but cannot bypass it.</p>`}
+        <div class="form-actions">
+          ${gate.canBypass ? `<button class="button primary" type="submit" data-dialog-confirm>Confirm with exception</button>` : ""}
+          <button class="button secondary" type="button" data-dialog-cancel>${gate.canBypass ? "Cancel" : "Close"}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(overlay);
+    applyLanguage();
+    const close = (value) => { overlay.remove(); resolve(value); };
+    overlay.querySelector("[data-dialog-cancel]").addEventListener("click", () => close(null));
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) close(null); });
+    if (gate.canBypass) {
+      const reason = overlay.querySelector("#merchant-sales-variance-reason");
+      reason.focus();
+      overlay.querySelector("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value = reason.value.trim();
+        const error = overlay.querySelector("[data-variance-error]");
+        if (!value) {
+          error.textContent = "Exception reason is required.";
+          error.hidden = false;
+          applyLanguage();
+          return;
+        }
+        close({ acknowledgeSalesVariance: true, salesVarianceReason: value });
+      });
+    }
+  });
+}
+
+function inventorySkuSearchHaystack(sku) {
+  return `${sku.productName || ""} ${sku.brandName || ""} ${sku.categoryName || ""} ${sku.skuCode || ""} ${formatOperationPowerKey(operationPowerKey(sku))} ${sku.colorName || ""} ${sku.size || ""}`.toLowerCase();
+}
+
+function updateInventorySkuSearchLabel() {
+  const filter = document.getElementById("inventory-sku");
+  const search = document.getElementById("inventory-sku-search");
+  if (!filter || !search) {
+    return;
+  }
+
+  const selected = inventorySkuOptions.find((sku) => sku.id === filter.value);
+  search.value = selected ? selected.label : "";
+}
+
+function hideInventorySkuSearchResults() {
+  const results = document.getElementById("inventory-sku-results");
+  const search = document.getElementById("inventory-sku-search");
+  if (results) {
+    results.hidden = true;
+    results.innerHTML = "";
+  }
+  search?.setAttribute("aria-expanded", "false");
+}
+
+function clearInventorySkuFilter() {
+  const filter = document.getElementById("inventory-sku");
+  const search = document.getElementById("inventory-sku-search");
+  if (filter) filter.value = "";
+  if (search) search.value = "";
+  hideInventorySkuSearchResults();
+  refreshInventoryTables();
+}
+
+function renderInventorySkuSearchResults() {
+  const filter = document.getElementById("inventory-sku");
+  const search = document.getElementById("inventory-sku-search");
+  const results = document.getElementById("inventory-sku-results");
+  if (!filter || !search || !results) {
+    return;
+  }
+
+  const query = search.value.trim().toLowerCase();
+  if (!query) {
+    hideInventorySkuSearchResults();
+    return;
+  }
+
+  const terms = query.split(/\s+/).filter(Boolean);
+  const matches = inventorySkuOptions
+    .filter((sku) => terms.every((term) => inventorySkuSearchHaystack(sku).includes(term)))
+    .slice(0, 8);
+  setupAdaptiveSearchResultDismissal();
+  collapseAdaptiveSearchResults(results);
+  results.hidden = false;
+  search.setAttribute("aria-expanded", "true");
+  results.innerHTML = matches.length === 0
+    ? `<button type="button" class="op-line-search-result" disabled>No matching SKU</button>`
+    : matches.map((sku) => `
+        <button type="button" class="op-line-search-result" role="option" data-inventory-sku-id="${escapeHtml(sku.id)}">
+          <strong>${escapeHtml(sku.productName)}</strong>
+          <span>${escapeHtml(formatOperationPowerKey(operationPowerKey(sku)))} / ${escapeHtml(sku.colorName || "-")} / ${escapeHtml(sku.size || "-")}</span>
+          <small>${escapeHtml(sku.skuCode)}</small>
+        </button>`).join("");
+  results.querySelectorAll("[data-inventory-sku-id]").forEach((button) => button.addEventListener("click", () => {
+    filter.value = button.dataset.inventorySkuId || "";
+    updateInventorySkuSearchLabel();
+    hideInventorySkuSearchResults();
+    refreshInventoryTables();
+  }));
 }
 
 async function loadInventoryProductTotals() {
@@ -3149,7 +3557,7 @@ async function loadInventoryProductTotals() {
         const products = Array.isArray(row.products) ? row.products : [row];
         return `
         <tr class="product-total-row">
-          <td><strong>${escapeHtml(row.categoryName || row.productName || row.categoryId || row.productId)}</strong><span class="muted-cell">${escapeHtml(row.productCount ?? products.length)} product${(row.productCount ?? products.length) === 1 ? "" : "s"}</span></td>
+          <td><strong>${escapeHtml(row.categoryName || row.productName || shortId(row.categoryId || row.productId, row.categoryId ? "CAT" : "PRD"))}</strong><span class="muted-cell">${escapeHtml(row.productCount ?? products.length)} product${(row.productCount ?? products.length) === 1 ? "" : "s"}</span></td>
           <td>${escapeHtml(row.skuCount)}</td>
           <td>${escapeHtml(row.totalPacks)}</td>
           <td>${row.totalPieces == null ? "-" : escapeHtml(row.totalPieces)}</td>
@@ -3181,7 +3589,7 @@ function renderCategoryProductTotals(products) {
               : null;
             return `
             <tr>
-              <td><strong>${escapeHtml(product.productName || product.productId)}</strong></td>
+              <td><strong>${escapeHtml(product.productName || shortId(product.productId, "PRD"))}</strong></td>
               <td>${escapeHtml(rate?.openedExpiryDuration || rate?.sealedExpiryDuration || "Not set")}</td>
               <td>${escapeHtml(rate?.openedExpiryRate || "Not set")}</td>
               <td>${escapeHtml(product.skuCount)}</td>
@@ -3223,7 +3631,7 @@ async function loadInventoryBalances() {
       : result.items.map((balance) => `
         <tr>
           <td>${escapeHtml(balance.locationName)}</td>
-          <td><strong>${escapeHtml(balance.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(balance.skuIsActive)}<span class="muted-cell">${escapeHtml(balance.productName || balance.skuId)}</span></td>
+          <td><strong>${escapeHtml(balance.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(balance.skuIsActive)}<span class="muted-cell">${escapeHtml(balance.productName || shortId(balance.skuId, "SKU"))}</span></td>
           <td>${quantityStack(balance.availablePacks, balance.availablePieces, balance.locationType)}</td>
           <td>${quantityStack(balance.reservedInWarehousePacks + balance.reservedWithRepPacks, addNullable(balance.reservedInWarehousePieces, balance.reservedWithRepPieces), balance.locationType)}</td>
           <td>${quantityStack(balance.targetPacks, balance.targetPieces, balance.locationType)}</td>
@@ -3256,7 +3664,7 @@ async function loadInventoryReplenishment() {
       : rows.map((row) => `
         <tr>
           <td>${escapeHtml(row.destinationLocationName)}</td>
-          <td><strong>${escapeHtml(row.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(row.productName || row.skuId)}</span></td>
+          <td><strong>${escapeHtml(row.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(row.productName || shortId(row.skuId, "SKU"))}</span></td>
           <td>${quantityStack(row.availablePacks, row.availablePieces, row.destinationLocationType)}</td>
           <td>${quantityStack(row.incomingPacks, row.incomingPieces, row.destinationLocationType)}</td>
           <td>${quantityStack(row.targetPacks, row.targetPieces, row.destinationLocationType)}</td>
@@ -3284,7 +3692,7 @@ async function loadInventoryBatches() {
         <tr>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
           <td>${escapeHtml(batch.locationName)}</td>
-          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || batch.skuId)}</span></td>
+          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
           <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
           <td>${escapeHtml(batch.notes || "-")}</td>
@@ -3311,7 +3719,7 @@ async function loadTransferBlockedBatches() {
       : rows.map((batch) => `
         <tr>
           <td>${escapeHtml(batch.locationName)}</td>
-          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(batch.productName || batch.skuId)}</span></td>
+          <td><strong>${escapeHtml(batch.skuCode || "Unknown SKU")}</strong><span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
           <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
@@ -3337,7 +3745,7 @@ async function loadInventoryTransactions() {
         <tr>
           <td>${escapeHtml(transaction.transactionType)}</td>
           <td>${escapeHtml(transaction.locationName)}</td>
-          <td><strong>${escapeHtml(transaction.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || transaction.skuId)}</span></td>
+          <td><strong>${escapeHtml(transaction.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || shortId(transaction.skuId, "SKU"))}</span></td>
           <td>${quantityStack(transaction.packChange, transaction.pieceChange, transaction.locationType)}</td>
           <td>${escapeHtml(formatDateTime(transaction.createdAt))}</td>
         </tr>`).join("");
@@ -3474,7 +3882,7 @@ async function reserveInventoryReplenishment() {
     const alertText = result.alerts?.length
       ? ` Alert: ${result.alerts.map((alert) => `${alert.skuCode || alert.skuId} at ${alert.destinationLocationName}: ${alert.message}`).join(" | ")}`
       : "";
-    notice(`Reserved ${result.createdOperations} replenishment transfer(s). ${result.unfilledPacks} pack(s) still uncovered.${alertText}`, result.unfilledPacks > 0 ? "info" : "success");
+    notice(`Created ${result.createdOperations} Draft replenishment transfer(s). ${result.unfilledPacks} pack(s) still uncovered.${alertText}`, result.unfilledPacks > 0 ? "info" : "success");
     await refreshInventoryTables();
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
@@ -3495,7 +3903,7 @@ async function renderCrm() {
       </div>
       <div class="scenario-grid">
         ${scenarioCard("Role", canWrite ? "Can edit CRM records" : "Read only", canWrite ? "status-ok" : "status-muted")}
-        ${scenarioCard("Merchant context", "Eligibility and notes", "status-muted")}
+        ${scenarioCard("Merchant context", "Batch history and notes", "status-muted")}
         ${scenarioCard("Operations link", "Shared across workflows", "status-muted")}
       </div>
     </section>
@@ -3554,6 +3962,7 @@ async function renderCrm() {
 async function loadMerchants(search = "") {
   const auth = getAuth();
   const canWrite = isSystemAdminRole(auth?.user.role);
+  const canReadBatchHistory = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
   const tbody = document.getElementById("merchant-rows");
   const count = document.getElementById("crm-count");
   try {
@@ -3572,7 +3981,7 @@ async function loadMerchants(search = "") {
           ${canWrite ? `<button class="button secondary table-action" type="button" data-edit-merchant="${escapeHtml(merchant.id)}">Edit</button>` : ""}
           ${canWrite ? `<button class="button secondary table-action" type="button" data-status-merchant="${escapeHtml(merchant.id)}" data-next-status="${merchant.status === "Active" ? "deactivate" : "reactivate"}">${merchant.status === "Active" ? "Deactivate" : "Reactivate"}</button>` : ""}
           ${canWrite ? `<button class="button secondary table-action" type="button" data-note-merchant="${escapeHtml(merchant.id)}">Add note</button>` : ""}
-          <button class="button secondary table-action" type="button" data-eligibility-merchant="${escapeHtml(merchant.id)}">Eligibility</button>
+          ${canReadBatchHistory ? `<button class="button secondary table-action" type="button" data-batch-history-merchant="${escapeHtml(merchant.id)}">Batch history</button>` : ""}
         </td>
       </tr>`).join("");
     tbody.querySelectorAll("[data-view-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantDetail(button.dataset.viewMerchant)));
@@ -3587,7 +3996,7 @@ async function loadMerchants(search = "") {
     }));
     tbody.querySelectorAll("[data-status-merchant]").forEach((button) => button.addEventListener("click", () => changeMerchantStatus(button.dataset.statusMerchant, button.dataset.nextStatus)));
     tbody.querySelectorAll("[data-note-merchant]").forEach((button) => button.addEventListener("click", () => addMerchantNote(button.dataset.noteMerchant)));
-    tbody.querySelectorAll("[data-eligibility-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantEligibility(button.dataset.eligibilityMerchant)));
+    tbody.querySelectorAll("[data-batch-history-merchant]").forEach((button) => button.addEventListener("click", () => showMerchantBatchHistory(button.dataset.batchHistoryMerchant)));
     bindPrintReportButtons(tbody);
   } catch (exception) {
     count.textContent = "Failed";
@@ -3788,7 +4197,8 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
     const notes = detail.notes || [];
     const operations = detail.recentOperations || [];
     const balance = summary.balance ?? summary.balancePlaceholder ?? 0;
-    const eligibilityRows = await request(`/api/v1/crm/merchants/${merchantId}/eligibility`);
+    const canReadBatchHistory = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user.role);
+    const batchRows = canReadBatchHistory ? await request(`/api/v1/crm/merchants/${merchantId}/batch-history`) : [];
     panel.innerHTML = `
       <div class="section-head tight-head">
         <div><h3>${escapeHtml(merchant.businessName)}</h3><p>${escapeHtml(merchant.contactPersonName)} ${merchant.phoneNumbers?.length ? `- ${escapeHtml(merchant.phoneNumbers.join(", "))}` : ""}</p></div>
@@ -3812,8 +4222,8 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
             <td>${escapeHtml(formatMoney(operation.total || 0))}</td>
             <td>${escapeHtml(formatDateTime(operation.createdAt))}</td>
           </tr>`).join("")}</tbody></table></div>
-      <div class="section-head tight-head"><h3>Eligibility ledger</h3><span class="muted-text">Sold minus returned by SKU, lot, and batch expiry</span></div>
-      ${renderMerchantEligibilityTable(eligibilityRows)}
+      ${canReadBatchHistory ? `<div class="section-head tight-head"><h3>Merchant Batch History</h3><span class="muted-text">Recorded sales and confirmed returns by SKU, lot, and expiry</span></div>
+      ${renderMerchantBatchHistoryTable(batchRows)}` : ""}
       <div class="table-wrap compact-table"><table><thead><tr><th>Latest notes</th><th>Created</th></tr></thead><tbody>${notes.length === 0
         ? `<tr><td colspan="2">No notes yet.</td></tr>`
         : notes.map((note) => `<tr><td>${escapeHtml(note.note)}</td><td>${escapeHtml(formatDateTime(note.createdAt))}</td></tr>`).join("")}</tbody></table></div>`;
@@ -3823,39 +4233,35 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
   }
 }
 
-async function showMerchantEligibility(merchantId) {
+async function showMerchantBatchHistory(merchantId) {
   try {
     const panel = document.getElementById("merchant-detail-panel");
-    const rows = await request(`/api/v1/crm/merchants/${merchantId}/eligibility`);
+    const rows = await request(`/api/v1/crm/merchants/${merchantId}/batch-history`);
     if (panel) {
       panel.hidden = false;
       panel.innerHTML = `
-        <div class="section-head tight-head"><h3>Eligibility ledger</h3><span class="muted-text">Merchant return/change reference</span></div>
-        ${renderMerchantEligibilityTable(rows)}`;
+        <div class="section-head tight-head"><h3>Merchant Batch History</h3><span class="muted-text">Recorded sales and confirmed returns</span></div>
+        ${renderMerchantBatchHistoryTable(rows)}`;
     }
-    notice(rows.length === 0 ? "No merchant eligibility ledger rows yet." : "Eligibility ledger loaded.", "info");
+    notice(rows.length === 0 ? "No merchant batch history yet." : "Merchant batch history loaded.", "info");
     await loadMerchants();
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
 }
 
-function renderMerchantEligibilityTable(rows) {
-  return `<div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Lot</th><th>Batch expiry</th><th>Sold</th><th>Returned</th><th>Returnable</th><th>Alert</th></tr></thead><tbody>${rows.length === 0
-    ? `<tr><td colspan="8">No confirmed merchant sales or returns yet.</td></tr>`
-    : rows.map((row) => {
-        const overReturned = row.overReturnedQty || Math.max((row.returnedQty || 0) - (row.soldQty || 0), 0);
-        return `<tr>
-          <td><strong>${escapeHtml(row.skuCode || row.skuId)}</strong></td>
+function renderMerchantBatchHistoryTable(rows) {
+  return `<div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Lot</th><th>Batch expiry</th><th>Sold</th><th>Returned</th><th>Expiry status</th></tr></thead><tbody>${rows.length === 0
+    ? `<tr><td colspan="7">No confirmed merchant sales or returns yet.</td></tr>`
+    : rows.map((row) => `<tr>
+          <td><strong>${escapeHtml(row.skuCode || shortId(row.skuId, "SKU"))}</strong></td>
           <td>${escapeHtml(row.productName || "-")}</td>
           <td>${escapeHtml(row.lotNumber || "-")}</td>
           <td>${row.expiryDate ? expiryBadge(row.expiryDate) : `<span class="status-pill status-muted">-</span>`}</td>
-          <td>${escapeHtml(row.soldQty || 0)}</td>
-          <td>${escapeHtml(row.returnedQty || 0)}</td>
-          <td>${escapeHtml(row.returnableQty || 0)}</td>
-          <td>${overReturned > 0 ? `<span class="status-pill status-warn">Over by ${escapeHtml(overReturned)}</span>` : `<span class="status-pill status-ok">OK</span>`}</td>
-        </tr>`;
-      }).join("")}</tbody></table></div>`;
+          <td>${escapeHtml(row.soldQuantity || 0)}</td>
+          <td>${escapeHtml(row.returnedQuantity || 0)}</td>
+          <td><span class="status-pill ${row.expiryStatus === "Expired" ? "status-warn" : "status-muted"}">${escapeHtml(row.expiryStatus || "-")}</span></td>
+        </tr>`).join("")}</tbody></table></div>`;
 }
 
 async function addMerchantNote(merchantId) {
@@ -4057,6 +4463,7 @@ function addOperationLine(line = {}) {
 
   const row = document.createElement("div");
   row.className = "line-editor-row";
+  row.dataset.operationLineId = line.operationLineId || "";
   row.innerHTML = `
     <input class="op-line-sku" type="hidden" value="">
     <div class="field op-line-finder"><label>Find stock</label><input class="input op-line-search" autocomplete="off" placeholder="Product, color, power, SKU"><div class="op-line-search-results" hidden></div></div>
@@ -4261,7 +4668,7 @@ function seedOperationLineSkuSelection(row, skuId) {
   const sku = operationSkuOptions.find((value) => value.id === skuId);
   if (!sku) {
     row.querySelector(".op-line-sku").value = skuId || "";
-    row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-warn">Unknown SKU</span><span class="muted-cell">${escapeHtml(shortId(skuId))}</span>`;
+    row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-warn">Unknown SKU</span><span class="muted-cell">${escapeHtml(shortId(skuId, "SKU"))}</span>`;
     return;
   }
 
@@ -4294,6 +4701,8 @@ function renderOperationSkuSearchResults(row) {
     })
     .slice(0, 8);
 
+  setupAdaptiveSearchResultDismissal();
+  collapseAdaptiveSearchResults(results);
   results.hidden = false;
   results.innerHTML = matches.length === 0
     ? `<button type="button" class="op-line-search-result" disabled>No matches</button>`
@@ -4643,7 +5052,7 @@ function applyShopifyCommercialLocks() {
     if (control) control.disabled = locked;
   });
   document.querySelectorAll(".line-editor-row").forEach((row) => {
-    row.querySelectorAll(".op-line-search, .op-line-product, .op-line-power, .op-line-color, .op-line-size, .op-line-section, .op-line-entry-mode, .op-line-qty, .op-line-price, .op-line-bonus, .op-line-lot, .op-line-expiry, .op-remove-line").forEach((control) => {
+    row.querySelectorAll(".op-line-search, .op-line-product, .op-line-power, .op-line-color, .op-line-size, .op-line-section, .op-line-entry-mode, .op-line-qty, .op-line-price, .op-line-bonus, .op-remove-line").forEach((control) => {
       control.disabled = locked;
     });
   });
@@ -4652,6 +5061,7 @@ function applyShopifyCommercialLocks() {
 function resetOperationEditorMode() {
   operationsUiState.mode = "create";
   operationsUiState.operationId = null;
+  operationsUiState.revisionFingerprint = null;
   operationsUiState.revisionReason = "";
   const form = document.getElementById("operation-form");
   if (form) {
@@ -4675,12 +5085,26 @@ function seedOperationEditor(detail, mode) {
   operationsUiState.mode = mode;
   operationsUiState.operationId = detail.id;
   operationsUiState.operationType = detail.operationType;
+  operationsUiState.revisionFingerprint = mode === "revise" ? canonicalOperationPayload({
+    operationType: detail.operationType,
+    sourceLocationId: detail.sourceLocationId,
+    destinationLocationId: detail.destinationLocationId,
+    merchantId: detail.clientId,
+    representativeId: detail.representativeId,
+    buyerName: detail.clientId ? null : detail.clientName,
+    buyerPhone: detail.buyerPhone,
+    paymentMethod: detail.paymentMethod,
+    notes: detail.notes,
+    receipt: detail.receipt,
+    lines: (detail.lines || []).map((line) => ({ skuId: line.skuId, packQuantity: line.entryMode === "Pieces" ? 0 : line.quantity, pieceQuantity: line.entryMode === "Pieces" ? line.quantity : null, entryMode: line.entryMode, section: line.section, unitPrice: line.unitPrice, isBonus: (line.bonusQuantity || 0) > 0, lotNumber: line.lotNumber, expiryDate: line.expiryDate, notes: line.notes }))
+  }) : null;
   const form = document.getElementById("operation-form");
   if (!form) {
     return;
   }
 
   form.reset();
+  form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
   document.getElementById("op-type").value = detail.operationType;
   syncOperationTypeControls();
   document.getElementById("op-source").value = detail.sourceLocationId || "";
@@ -4721,6 +5145,7 @@ function seedOperationEditor(detail, mode) {
   const lines = document.getElementById("op-lines");
   lines.innerHTML = "";
   (detail.lines || []).forEach((line) => addOperationLine({
+    operationLineId: line.id,
     skuId: line.skuId,
     entryMode: line.entryMode,
     pieceQuantity: line.entryMode === "Pieces" ? getOperationLinePrefillQuantity(line) : null,
@@ -4880,6 +5305,25 @@ async function submitOperationEditor(event) {
   event.preventDefault();
   const type = document.getElementById("op-type").value;
   const lines = readOperationLines(type);
+  const isShopifyDraft = operationsUiState.mode === "edit" && document.getElementById("operation-form")?.dataset.shopifyDraft === "true";
+  if (isShopifyDraft && operationsUiState.operationId) {
+    if (lines.some((line) => !line.operationLineId || !line.expiryDate || !line.stockOptionSelected)) {
+      notice("Select a batch and expiry for every Shopify line.", "error");
+      return;
+    }
+    try {
+      await request(`/api/v1/operations/${operationsUiState.operationId}/shopify-allocation`, {
+        method: "PUT",
+        body: JSON.stringify({ lines: lines.map((line) => ({ operationLineId: line.operationLineId, lotNumber: line.lotNumber, expiryDate: line.expiryDate })) })
+      });
+      notice("Shopify batch allocation saved.", "success");
+      resetOperationEditorMode();
+      await loadOperations();
+    } catch (exception) {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
+    return;
+  }
   const validationMessage = validateOperationForm(type, lines);
   if (validationMessage) {
     notice(validationMessage, "error");
@@ -4929,6 +5373,7 @@ async function submitOperationEditor(event) {
 
 function readOperationLines(type) {
   return Array.from(document.querySelectorAll(".line-editor-row")).map((row) => ({
+    operationLineId: row.dataset.operationLineId || null,
     skuId: row.querySelector(".op-line-sku").value,
     packQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? 0 : Number(row.querySelector(".op-line-qty").value),
     pieceQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? Number(row.querySelector(".op-line-qty").value) : null,
@@ -5094,7 +5539,6 @@ async function toggleOperationDetails(operationId, button, forceOpen = false) {
 function renderOperationDetail(detail) {
   const lines = detail.lines || [];
   const allocations = dedupeOperationAllocations(detail.allocations || []);
-  const warnings = detail.warnings || [];
   const versions = detail.versions || [];
   return `
     <div class="operation-detail-grid">
@@ -5117,17 +5561,13 @@ function renderOperationDetail(detail) {
       <div class="metric"><span>Current version</span><strong>${escapeHtml(detail.currentVersionNumber || "-")}</strong></div>
     </div>
     ${detail.notes ? `<p class="muted-text">${escapeHtml(detail.notes)}</p>` : ""}
-    ${warnings.length ? `<div class="warning-panel"><strong>Eligibility warning: review before confirming</strong>${warnings.map((warning) => `
-      <div>
-        <strong>${escapeHtml(warning.skuCode || warning.skuId)}</strong>
-        <span>${escapeHtml(warning.message)}</span>
-        <span class="muted-cell">Lot ${escapeHtml(warning.lotNumber || "-")} / Expiry ${escapeHtml(warning.expiryDate || "-")} / Requested ${escapeHtml(warning.requestedQuantity)} / Eligible ${escapeHtml(warning.eligibleQuantity)}</span>
-      </div>`).join("")}</div>` : ""}
-    <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Side</th><th>Quantity</th><th>Bonus</th><th>Unit price</th><th>Total</th><th>Lot</th><th>Batch expiry</th><th>Notes</th></tr></thead><tbody>${lines.length === 0
-      ? `<tr><td colspan="10">No lines.</td></tr>`
+    <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Product</th><th>Shopify line</th><th>Wear cycle</th><th>Side</th><th>Quantity</th><th>Bonus</th><th>Unit price</th><th>Total</th><th>Lot</th><th>Batch expiry</th><th>Notes</th></tr></thead><tbody>${lines.length === 0
+      ? `<tr><td colspan="12">No lines.</td></tr>`
       : lines.map((line) => `<tr>
           <td><strong>${escapeHtml(line.skuCode)}</strong></td>
           <td>${escapeHtml(line.productName)}</td>
+          <td>${renderShopifyLineMetadata(line)}</td>
+          <td>${renderWearCycle(line.wearCycle, line.wearDuration)}</td>
           <td>${escapeHtml(formatOperationLineSection(line.section))}</td>
           <td>${escapeHtml(line.quantity)} ${escapeHtml(line.entryMode || "Packs")}</td>
           <td>${line.bonusQuantity ? `<span class="status-pill status-warn">${escapeHtml(line.bonusQuantity)}</span>` : "-"}</td>
@@ -5140,7 +5580,7 @@ function renderOperationDetail(detail) {
     <div class="table-wrap compact-table"><table><thead><tr><th>Allocated SKU</th><th>Quantity</th><th>Lot</th><th>Batch expiry</th></tr></thead><tbody>${allocations.length === 0
       ? `<tr><td colspan="4">No batch allocation snapshot.</td></tr>`
       : allocations.map((allocation) => `<tr>
-          <td><strong>${escapeHtml(allocation.skuCode || allocation.skuId)}</strong>${allocation.productName ? `<span class="muted-cell"> / ${escapeHtml(allocation.productName)}</span>` : ""}</td>
+          <td><strong>${escapeHtml(allocation.skuCode || shortId(allocation.skuId, "SKU"))}</strong>${allocation.productName ? `<span class="muted-cell"> / ${escapeHtml(allocation.productName)}</span>` : ""}</td>
           <td>${escapeHtml(allocation.quantity)} pack(s)</td>
           <td>${escapeHtml(allocation.lotNumber || "-")}</td>
           <td>${allocation.expiryDate ? expiryBadge(allocation.expiryDate) : `<span class="status-pill status-muted">No expiry</span>`}</td>
@@ -5148,6 +5588,19 @@ function renderOperationDetail(detail) {
     <div class="operation-version-list">${versions.length === 0
       ? `<span class="muted-text">No versions.</span>`
       : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} - ${escapeHtml(formatDateTime(version.editedAt))} - ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
+}
+
+function renderShopifyLineMetadata(line) {
+  if (!line.shopifyLineItemId) return "-";
+  let properties = [];
+  try {
+    properties = JSON.parse(line.shopifyProperties || "[]");
+  } catch {
+    properties = [];
+  }
+  const label = [line.shopifyTitle, line.shopifyVariantTitle].filter(Boolean).join(" / ");
+  const propertyText = properties.map((property) => `${property.name}: ${property.value}`).join(" / ");
+  return `<strong>${escapeHtml(line.shopifySku || "-")}</strong><div class="muted-cell">${escapeHtml(label || `Line ${line.shopifyLineItemId}`)}</div>${propertyText ? `<div class="muted-cell">${escapeHtml(propertyText)}</div>` : ""}`;
 }
 
 function formatOperationLineSection(section) {
@@ -5202,39 +5655,28 @@ async function runOperationAction(action, operationId, button, options = {}) {
     }
 
     try {
-      if (action === "confirm" && !options.body?.overrideEligibilityWarnings) {
-        const canContinue = await confirmEligibilityWarningsBeforeAction(operationId);
-        if (!canContinue) {
-          notice("Confirmation cancelled. The operation is still a draft.", "info");
+      const path = `/api/v1/operations/${operationId}/${action}`;
+      try {
+        await request(path, {
+          method: "POST",
+          body: options.body ? JSON.stringify(options.body) : undefined
+        });
+      } catch (exception) {
+        const gate = action === "confirm" ? parseMerchantSalesVarianceGate(exception) : null;
+        if (!gate) throw exception;
+        const bypass = await merchantSalesVarianceDialog(gate);
+        if (!bypass) {
           await loadOperations();
           return;
         }
-        options.body = { ...(options.body || {}), overrideEligibilityWarnings: true };
+        await request(path, { method: "POST", body: JSON.stringify(bypass) });
       }
-
-      const overrideQuery = options.body?.overrideEligibilityWarnings ? "?overrideEligibilityWarnings=true" : "";
-      await request(`/api/v1/operations/${operationId}/${action}${overrideQuery}`, {
-        method: "POST",
-        body: options.body ? JSON.stringify(options.body) : undefined
-      });
       notice(`Operation ${action} completed.`, "success");
       await Promise.all([
         loadOperations(),
         currentPath() === "/inventory" ? refreshInventoryTables() : Promise.resolve()
       ]);
     } catch (exception) {
-      if (action === "confirm" && exception.status === 409) {
-        const gate = parseJsonError(exception);
-        if (gate?.warnings?.length) {
-          if (await showEligibilityGateDialog(gate)) {
-            await runOperationAction(action, operationId, button, { body: { overrideEligibilityWarnings: true } });
-            return;
-          }
-          notice("Confirmation cancelled. The operation is still a draft.", "info");
-          await loadOperations();
-          return;
-        }
-      }
       notice(getFriendlyWorkspaceError(exception), "error");
       await loadOperations();
     } finally {
@@ -5242,61 +5684,6 @@ async function runOperationAction(action, operationId, button, options = {}) {
         button.textContent = previousLabel;
       }
     }
-  });
-}
-
-async function confirmEligibilityWarningsBeforeAction(operationId) {
-  const detail = await request(`/api/v1/operations/${operationId}`);
-  if (!["Return", "Change"].includes(detail.operationType)) {
-    return true;
-  }
-
-  const warnings = detail.warnings || [];
-  if (warnings.length === 0) {
-    return true;
-  }
-
-  return showEligibilityGateDialog({
-    title: "Return/change eligibility warning",
-    detail: "This operation contains returned SKU, lot, or expiry quantities that exceed this merchant's sale eligibility. Review carefully before confirming.",
-    warnings
-  });
-}
-
-function parseJsonError(exception) {
-  try {
-    return JSON.parse(exception.message || "{}");
-  } catch {
-    return null;
-  }
-}
-
-function showEligibilityGateDialog(gate) {
-  const rows = (gate.warnings || []).map((warning) => `
-    <tr>
-      <td><strong>${escapeHtml(warning.skuCode || shortId(warning.skuId))}</strong><span class="muted-cell">${escapeHtml(warning.productName || "")}</span></td>
-      <td>${escapeHtml(warning.lotNumber || "No lot")}</td>
-      <td>${escapeHtml(warning.expiryDate || "No expiry")}</td>
-      <td>${escapeHtml(warning.requestedQuantity)}</td>
-      <td>${escapeHtml(warning.eligibleQuantity)}</td>
-      <td>${escapeHtml(warning.message)}</td>
-    </tr>`).join("");
-  return confirmDialog({
-    title: gate.title || "Eligibility warning",
-    message: gate.detail || "This return/change exceeds the merchant eligibility ledger.",
-    confirmLabel: "Confirm anyway",
-    cancelLabel: "Keep as draft",
-    tone: "warning",
-    bodyHtml: `
-      <div class="eligibility-dialog-note">
-        This exception will be recorded as a business decision. Check the SKU, lot, and batch expiry before continuing.
-      </div>
-      <div class="table-wrap compact-table eligibility-dialog-table">
-        <table>
-          <thead><tr><th>SKU</th><th>Lot</th><th>Batch expiry</th><th>Requested</th><th>Eligible</th><th>Reason</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`
   });
 }
 
@@ -5436,15 +5823,15 @@ async function loadPayments() {
       ? `<tr><td colspan="9">No payment confirmations are waiting.</td></tr>`
       : queueItems.map((log) => `
         <tr>
-          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}">Use</button>` : ""}<strong>${escapeHtml(shortId(log.id))}</strong></td>
-          <td><strong>${escapeHtml(log.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(log.merchantId))}</div></td>
-          <td><strong>${escapeHtml(log.operationNumber || shortId(log.operationId))}</strong><div class="muted-cell">${escapeHtml(log.operationType || "-")}</div></td>
+          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}">Use</button>` : ""}<strong>${escapeHtml(shortId(log.id, "PAY"))}</strong></td>
+          <td><strong>${escapeHtml(log.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(log.merchantId, "MER"))}</div></td>
+          <td><strong>${escapeHtml(log.operationNumber || shortId(log.operationId, "OP"))}</strong><div class="muted-cell">${escapeHtml(log.operationType || "-")}</div></td>
           <td>${escapeHtml(log.paymentMethod)}</td>
           <td>${escapeHtml(formatMoney(log.totalAmount))}</td>
           <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
           <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
           <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(log.status)}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
-          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(log.id)}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(shortId(log.id, "PAY"))}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
         </tr>
         <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
@@ -5479,14 +5866,14 @@ async function loadPaymentHistory() {
       : paymentHistoryRows.map((row) => `
         <tr>
           <td>${escapeHtml(formatDateTime(row.lastModifiedAt))}</td>
-          <td><strong>${escapeHtml(shortId(row.id))}</strong><div class="muted-cell">${escapeHtml(row.status || "-")}</div></td>
-          <td><strong>${escapeHtml(row.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(row.merchantId))}</div></td>
-          <td><strong>${escapeHtml(row.operationNumber || shortId(row.operationId))}</strong><div class="muted-cell">${escapeHtml(row.operationType || "-")}</div></td>
+          <td><strong>${escapeHtml(shortId(row.id, "PAY"))}</strong><div class="muted-cell">${escapeHtml(row.status || "-")}</div></td>
+          <td><strong>${escapeHtml(row.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(row.merchantId, "MER"))}</div></td>
+          <td><strong>${escapeHtml(row.operationNumber || shortId(row.operationId, "OP"))}</strong><div class="muted-cell">${escapeHtml(row.operationType || "-")}</div></td>
           <td>${escapeHtml(row.paymentMethod || "-")}</td>
           <td>${escapeHtml(formatMoney(row.totalAmount))}</td>
           <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(row.status || "-")}</span></td>
           <td>${escapeHtml(row.lastModifiedByName || row.initializedByName || "-")}</td>
-          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(row.id)}">Print</button></td>
+          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(shortId(row.id, "PAY"))}">Print</button></td>
         </tr>
         <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-history-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentHistoryDetails(button.dataset.paymentHistoryDetail, button)));
@@ -5804,8 +6191,60 @@ async function loadMerchantBalance() {
   }
 }
 
-function shortId(value) {
-  return String(value || "").slice(0, 8);
+function shortId(value, prefix = "REF") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(raw)) {
+    return raw;
+  }
+
+  const safePrefix = /^[A-Z]{2,4}$/.test(String(prefix || "").toUpperCase()) ? String(prefix).toUpperCase() : "REF";
+  const cacheKey = `${safePrefix}:${raw.toLowerCase()}`;
+  const cached = displayReferenceCache.get(cacheKey);
+  if (cached) return cached;
+
+  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  let remaining = BigInt(`0x${raw.replaceAll("-", "").slice(-20)}`);
+  let encoded = "";
+  for (let index = 0; index < 16; index += 1) {
+    encoded = `${alphabet[Number(remaining & 31n)]}${encoded}`;
+    remaining >>= 5n;
+  }
+  const reference = `${safePrefix}-${encoded.slice(0, 4)}-${encoded.slice(4, 8)}-${encoded.slice(8, 12)}-${encoded.slice(12)}`;
+  displayReferenceCache.set(cacheKey, reference);
+  return reference;
+}
+
+function displaySafeText(value, prefix = "REF") {
+  return String(value ?? "").replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, (id) => shortId(id, prefix));
+}
+
+function sanitizeVisibleIdentifiers(root) {
+  if (!root || !document.createTreeWalker) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach((node) => {
+    const safeText = displaySafeText(node.nodeValue);
+    if (safeText !== node.nodeValue) node.nodeValue = safeText;
+  });
+}
+
+function startVisibleIdentifierMasking() {
+  if (visibleIdentifierObserver) return;
+  const root = document.getElementById("view");
+  if (!root || !window.MutationObserver) return;
+  visibleIdentifierObserver = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => mutation.addedNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const safeText = displaySafeText(node.nodeValue);
+        if (safeText !== node.nodeValue) node.nodeValue = safeText;
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        sanitizeVisibleIdentifiers(node);
+      }
+    }));
+  });
+  visibleIdentifierObserver.observe(root, { childList: true, subtree: true });
 }
 
 async function renderReports() {
@@ -5906,10 +6345,17 @@ async function loadPaymentsReport() {
     reportPaymentRows = rows;
     target.innerHTML = `<table><thead><tr><th>Payment</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="7">No payment logs.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.operationNumber || row.operationId)}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(shortId(row.id, "PAY"))}</td><td>${escapeHtml(row.operationNumber || shortId(row.operationId, "OP"))}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     target.textContent = getFriendlyWorkspaceError(exception);
   }
+}
+
+function renderWearCycle(cycle, duration) {
+  if (!cycle) return `<span class="status-pill status-warn">Needs setup</span>`;
+  if (cycle === "NotApplicable") return `<span class="status-pill status-muted">Not applicable</span>`;
+  const label = cycle === "Annual" ? "Yearly" : cycle;
+  return `<span class="status-pill status-ok">${escapeHtml(label)}</span>${duration ? `<span class="muted-cell"> ${escapeHtml(duration)}</span>` : ""}`;
 }
 
 async function loadSupplyReport() {
@@ -5919,7 +6365,7 @@ async function loadSupplyReport() {
     reportSupplyRows = rows;
     target.innerHTML = `<table><thead><tr><th>Shipment</th><th>Supplier</th><th>Status</th><th>Qty</th><th>Landed</th><th>Receipt</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="6">No supply shipments.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td>${escapeHtml(row.supplierName)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId) : "-")}</td></tr>`).join("")}</tbody></table>`;
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td>${escapeHtml(row.supplierName)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId, "OP") : "-")}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     reportSupplyRows = [];
     target.textContent = getFriendlyWorkspaceError(exception);
@@ -5958,11 +6404,11 @@ async function loadStocktakeReportOptions() {
 
 function renderReportDownloadSelectors() {
   setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${row.operationType} / ${row.status} / ${row.clientName || "-"}`);
-  setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${row.id} / ${row.operationNumber || row.operationId} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
-  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${row.id} / ${row.operationNumber || row.operationId} / ${row.status} / ${formatMoney(row.totalAmount)}`);
+  setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${shortId(row.id, "PAY")} / ${row.operationNumber || shortId(row.operationId, "OP")} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
+  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${shortId(row.id, "PAY")} / ${row.operationNumber || shortId(row.operationId, "OP")} / ${row.status} / ${formatMoney(row.totalAmount)}`);
   setupReportSearchPicker("supply-landed-cost", reportSupplyRows, (row) => row.id, (row) => `${row.shipmentNumber} / ${row.supplierName} / ${row.invoiceNumber || "-"} / ${formatMoney(row.landedTotal)}`);
   setupReportSearchPicker("merchant-statement", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
-  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${row.id} / ${row.status} / ${formatDateTime(row.createdAt)}`);
+  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${shortId(row.id, "STK")} / ${row.status} / ${formatDateTime(row.createdAt)}`);
 }
 
 function setReportSelect(id, rows, valueSelector, labelSelector) {
@@ -5980,8 +6426,8 @@ function renderReportSearchPicker(reportType, label, placeholder, buttonLabel) {
   return `<div class="field report-search-field">
     <label for="${id}-search">${escapeHtml(label)}</label>
     <input id="${id}-value" type="hidden">
-    <input id="${id}-search" class="input report-picker-search" data-report-picker="${escapeHtml(reportType)}" autocomplete="off" placeholder="${escapeHtml(placeholder)}">
-    <div id="${id}-results" class="op-line-search-results report-picker-results" hidden></div>
+    <input id="${id}-search" class="input report-picker-search" data-report-picker="${escapeHtml(reportType)}" type="search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-results" placeholder="${escapeHtml(placeholder)}">
+    <div id="${id}-results" class="op-line-search-results report-picker-results" role="listbox" hidden></div>
     <button class="button secondary" type="button" data-pdf-report="${escapeHtml(reportType)}">${escapeHtml(buttonLabel)}</button>
   </div>`;
 }
@@ -5994,29 +6440,82 @@ function setupReportSearchPicker(reportType, rows, valueSelector, labelSelector)
     return;
   }
 
+  setupAdaptiveSearchResultDismissal();
+
   const render = () => {
     const term = search.value.trim().toLowerCase();
+    if (term.length < 2) {
+      hideAdaptiveSearchResults(results, search);
+      return;
+    }
+
     const matches = rows
       .map((row) => ({ row, value: String(valueSelector(row) || ""), label: String(labelSelector(row) || "") }))
       .filter((item) => !term || item.label.toLowerCase().includes(term) || item.value.toLowerCase().includes(term))
       .slice(0, 12);
 
+    collapseAdaptiveSearchResults(results);
     results.hidden = false;
+    search.setAttribute("aria-expanded", "true");
     results.innerHTML = matches.length === 0
-      ? `<button type="button" disabled>No records found.</button>`
-      : matches.map((item) => `<button class="op-line-search-result" type="button" data-report-picker-value="${escapeHtml(item.value)}" data-report-picker-label="${escapeHtml(item.label)}"><strong>${escapeHtml(item.label)}</strong><span class="muted-cell">${escapeHtml(item.value)}</span></button>`).join("");
+      ? `<button class="op-line-search-result" type="button" disabled>No matching records.</button>`
+      : matches.map((item) => `<button class="op-line-search-result" type="button" role="option" data-report-picker-value="${escapeHtml(item.value)}" data-report-picker-label="${escapeHtml(item.label)}"><strong>${escapeHtml(item.label)}</strong><span class="muted-cell">${escapeHtml(item.value)}</span></button>`).join("");
     results.querySelectorAll("[data-report-picker-value]").forEach((button) => button.addEventListener("click", () => {
       value.value = button.dataset.reportPickerValue || "";
       search.value = button.dataset.reportPickerLabel || "";
-      results.hidden = true;
+      hideAdaptiveSearchResults(results, search);
     }));
   };
 
-  search.addEventListener("input", render);
-  search.addEventListener("focus", render);
+  search.addEventListener("input", () => {
+    value.value = "";
+    render();
+  });
+  search.addEventListener("focus", () => {
+    collapseAdaptiveSearchResults(results);
+    if (search.value.trim().length >= 2) render();
+  });
+  search.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideAdaptiveSearchResults(results, search);
+      search.blur();
+    }
+  });
   search.addEventListener("blur", () => window.setTimeout(() => {
-    results.hidden = true;
+    hideAdaptiveSearchResults(results, search);
   }, 150));
+}
+
+let adaptiveSearchResultDismissalReady = false;
+
+function setupAdaptiveSearchResultDismissal() {
+  if (adaptiveSearchResultDismissalReady) return;
+  adaptiveSearchResultDismissalReady = true;
+
+  document.addEventListener("focusin", (event) => {
+    const owner = event.target.closest?.(".op-line-finder, .inventory-sku-picker, .report-search-field");
+    collapseAdaptiveSearchResults(owner?.querySelector(".op-line-search-results") || null);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest?.(".op-line-finder, .inventory-sku-picker, .report-search-field")) {
+      collapseAdaptiveSearchResults();
+    }
+  });
+}
+
+function hideAdaptiveSearchResults(results, control = null) {
+  if (!results) return;
+  results.hidden = true;
+  results.innerHTML = "";
+  control?.setAttribute("aria-expanded", "false");
+}
+
+function collapseAdaptiveSearchResults(exceptResults = null) {
+  document.querySelectorAll(".op-line-search-results").forEach((results) => {
+    if (results !== exceptResults) {
+      hideAdaptiveSearchResults(results, results.parentElement?.querySelector('[role="combobox"]'));
+    }
+  });
 }
 
 async function loadExportLogs() {
@@ -6112,7 +6611,7 @@ function getReportFileCode(reportType, id) {
     return sanitizeFileCode(reportOperationRows.find((row) => row.id === cleanId)?.operationNumber || cleanId);
   }
   if (reportType === "payment-receipt" || reportType === "cash-receipt") {
-    return sanitizeFileCode(reportPaymentRows.find((row) => row.id === cleanId)?.id || cleanId);
+    return sanitizeFileCode(shortId(reportPaymentRows.find((row) => row.id === cleanId)?.id || cleanId, "PAY"));
   }
   if (reportType === "merchant-statement") {
     return sanitizeFileCode(reportMerchantRows.find((row) => row.merchantId === cleanId)?.businessName || cleanId);
@@ -6121,7 +6620,7 @@ function getReportFileCode(reportType, id) {
     return sanitizeFileCode(reportSupplyRows.find((row) => row.id === cleanId)?.shipmentNumber || cleanId);
   }
   if (reportType === "stocktake-summary") {
-    return sanitizeFileCode(cleanId);
+    return sanitizeFileCode(shortId(cleanId, "STK"));
   }
   return sanitizeFileCode(cleanId);
 }
@@ -6213,8 +6712,10 @@ async function renderSupply() {
         ${scenarioCard(supplyText("Access", "الصلاحية"), canWrite ? supplyText("Admin", "مدير") : supplyText("Read only", "قراءة فقط"), canWrite ? "status-ok" : "status-muted")}
       `
     })}
-    <section class="catalog-layout supply-workspace">
-      <aside class="catalog-side supply-list-pane">
+    <section class="supply-workspace">
+      <main class="supply-main-pane">
+        ${canWrite ? renderSupplyForm() : ""}
+        <section class="supply-list-pane">
         <section class="band compact-band">
           <div class="section-head tight-head">
             <div><h2>${supplyText("Shipments", "الشحنات")}</h2><p class="muted-text">${supplyText("Search by shipment, supplier, or invoice.", "ابحث برقم الشحنة أو المورد أو الفاتورة.")}</p></div>
@@ -6233,9 +6734,7 @@ async function renderSupply() {
             <table><thead><tr><th>${supplyText("Shipment", "الشحنة")}</th><th>${supplyText("Supplier", "المورد")}</th><th>${supplyText("Status", "الحالة")}</th><th>${supplyText("Total", "الإجمالي")}</th><th></th></tr></thead><tbody id="supply-rows"></tbody></table>
           </div>
         </section>
-      </aside>
-      <main class="supply-main-pane">
-        ${canWrite ? renderSupplyForm() : ""}
+        </section>
         <section class="band supply-detail-pane" id="supply-detail">
           <h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2>
           <p class="muted-text">${supplyText("Select a shipment to review lines, cost allocation, receipt operation, and history.", "اختر شحنة لمراجعة البنود، توزيع التكلفة، عملية إيصال المخزون، وسجل الحركة.")}</p>
@@ -6315,7 +6814,6 @@ function resetSupplyForm() {
     return;
   }
   form.reset();
-  form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
   document.getElementById("supply-id").value = "";
   document.getElementById("supply-lines").innerHTML = "";
   document.getElementById("supply-costs").innerHTML = "";
@@ -6393,6 +6891,8 @@ function renderSupplySkuSearchResults(row) {
     .map((entry) => entry.sku)
     .slice(0, 8);
 
+  setupAdaptiveSearchResultDismissal();
+  collapseAdaptiveSearchResults(results);
   results.hidden = false;
   results.innerHTML = matches.length === 0
     ? `<button type="button" class="op-line-search-result" disabled>${supplyText("No results", "لا توجد نتائج")}</button>`
@@ -6418,7 +6918,7 @@ function seedSupplyLineSkuSelection(row, skuId) {
   row.querySelector(".supply-line-sku").value = skuId || "";
   row.querySelector(".op-line-resolved").innerHTML = sku
     ? `<span class="status-pill status-ok">${supplyText("Selected SKU", "SKU محدد")}</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`
-    : `<span class="status-pill status-warn">${supplyText("Unknown SKU", "SKU غير معروف")}</span><span class="muted-cell">${escapeHtml(shortId(skuId))}</span>`;
+    : `<span class="status-pill status-warn">${supplyText("Unknown SKU", "SKU غير معروف")}</span><span class="muted-cell">${escapeHtml(shortId(skuId, "SKU"))}</span>`;
 }
 
 function addSupplyCost(cost = {}) {
@@ -6501,14 +7001,14 @@ async function showSupplyDetail(id) {
       </div>
       ${shipment.status === "Draft" && !readiness.canConfirm ? `<p class="form-error inline-warning">${escapeHtml(readiness.message)}</p>` : ""}
       <div class="detail-grid supply-readiness-grid">
-        <div><span>${supplyText("Destination warehouse", "مخزن الوصول")}</span><strong>${escapeHtml(shipment.destinationLocationName || shortId(shipment.destinationLocationId))}</strong></div>
+        <div><span>${supplyText("Destination warehouse", "مخزن الوصول")}</span><strong>${escapeHtml(shipment.destinationLocationName || shortId(shipment.destinationLocationId, "LOC"))}</strong></div>
         <div><span>${supplyText("Shipment date", "تاريخ الشحنة")}</span><strong>${escapeHtml(formatDateTime(shipment.shipmentDate))}</strong></div>
         <div><span>${supplyText("Products", "المنتجات")}</span><strong>${escapeHtml(formatMoney(shipment.productSubtotal))}</strong></div>
         <div><span>${supplyText("Import costs", "تكاليف الاستيراد")}</span><strong>${escapeHtml(formatMoney(shipment.costSubtotal))}</strong></div>
         <div><span>${supplyText("Landed total", "الإجمالي بعد التكلفة")}</span><strong>${escapeHtml(formatMoney(shipment.landedTotal))}</strong></div>
         <div><span>${supplyText("Readiness", "جاهزية التأكيد")}</span><strong class="${readiness.canConfirm ? "status-ok" : "status-warn"}">${escapeHtml(readiness.label)}</strong></div>
       </div>
-      ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${supplyText("Inventory receipt operation", "عملية إيصال المخزون")}: <strong>${escapeHtml(shortId(shipment.inventoryReceiptOperationId))}</strong></p>` : ""}
+      ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${supplyText("Inventory receipt operation", "عملية إيصال المخزون")}: <strong>${escapeHtml(shortId(shipment.inventoryReceiptOperationId, "OP"))}</strong></p>` : ""}
       <h3>${supplyText("Lines", "البنود")}</h3>
       <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>${supplyText("Qty", "الكمية")}</th><th>${supplyText("Unit price", "سعر الوحدة")}</th><th>${supplyText("Line", "البند")}</th><th>${supplyText("Allocated", "الموزع")}</th><th>${supplyText("Landed unit", "تكلفة الوحدة النهائية")}</th><th>${supplyText("Batch", "التشغيلة")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
         <tr class="${line.unitPrice == null || line.unitPrice <= 0 ? "supply-line-incomplete-row" : ""}"><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span></td><td>${escapeHtml(line.quantity)}</td><td>${line.unitPrice == null ? `<span class="status-pill status-warn">${supplyText("Blank", "فارغ")}</span>` : escapeHtml(formatMoney(line.unitPrice))}</td><td>${escapeHtml(formatMoney(line.lineSubtotal))}</td><td>${escapeHtml(formatMoney(line.allocatedCost))}</td><td>${escapeHtml(formatMoney(line.landedUnitCost))}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
@@ -6830,13 +7330,13 @@ async function loadStocktakes() {
     tbody.innerHTML = result.items.length === 0 ? `<tr><td colspan="7">No stocktake sessions yet.</td></tr>` : result.items.map((session) => {
       const location = inventoryLocations.find((value) => value.id === session.locationId);
       return `<tr>
-        <td>${escapeHtml(shortId(session.id))}</td>
-        <td>${escapeHtml(location?.name || shortId(session.locationId))}</td>
+        <td>${escapeHtml(shortId(session.id, "STK"))}</td>
+        <td>${escapeHtml(location?.name || shortId(session.locationId, "LOC"))}</td>
         <td>${escapeHtml(session.status)}</td>
         <td>${escapeHtml(session.productsCounted)}</td>
         <td>${escapeHtml(session.totalDiscrepancyUnits)}</td>
         <td>${escapeHtml(formatDateTime(session.createdAt))}</td>
-        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(session.id)}">Print</button></td>
+        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(shortId(session.id, "STK"))}">Print</button></td>
       </tr>`;
     }).join("");
     tbody.querySelectorAll("[data-stocktake-detail]").forEach((button) => button.addEventListener("click", () => showStocktakeDetail(button.dataset.stocktakeDetail)));
@@ -6878,7 +7378,7 @@ async function showStocktakeDetail(sessionId) {
   const skuOptions = inventorySkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("");
   target.innerHTML = `
     <div class="section-head">
-      <div><h2>Session ${escapeHtml(shortId(session.id))}</h2><p class="muted-text">${escapeHtml(location?.name || shortId(session.locationId))} / ${escapeHtml(session.status)}</p></div>
+      <div><h2>Session ${escapeHtml(shortId(session.id, "STK"))}</h2><p class="muted-text">${escapeHtml(location?.name || shortId(session.locationId, "LOC"))} / ${escapeHtml(session.status)}</p></div>
       ${isAdmin && session.status === "Draft" ? `<button id="stocktake-confirm" class="button primary" type="button">Confirm adjustments</button>` : ""}
     </div>
     <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Lot</th><th>Expiry</th><th>System</th><th>Physical</th><th>Delta</th><th>Note</th></tr></thead><tbody>${session.lines.length === 0
@@ -6918,7 +7418,7 @@ async function showStocktakeDetail(sessionId) {
 }
 
 function stocktakeSkuLabel(skuId) {
-  return inventorySkuOptions.find((sku) => sku.id === skuId)?.label || shortId(skuId);
+  return inventorySkuOptions.find((sku) => sku.id === skuId)?.label || shortId(skuId, "SKU");
 }
 
 async function saveStocktakeLines(event, sessionId) {
@@ -6959,6 +7459,7 @@ async function confirmStocktake(sessionId) {
 async function renderNotifications() {
   const auth = getAuth();
   const isAdmin = isSystemAdminRole(auth?.user.role);
+  const canReadRecalls = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
   notificationPageState = { page: 1, pageSize: 10 };
   document.getElementById("view").innerHTML = `
     <section class="band">
@@ -6989,6 +7490,12 @@ async function renderNotifications() {
         <button class="button secondary table-action" type="button" id="notifications-next">Next</button>
       </div>
     </section>
+    ${canReadRecalls ? `
+      <section class="band" id="merchant-expiry-recalls-section">
+        <div class="section-head"><div><h2>Merchant expiry recalls</h2><p class="muted-text">Sold merchant batches inside the configured expiry window, ordered by earliest expiry.</p></div><span id="merchant-recall-count" class="status-pill status-muted">Loading</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>SKU / product</th><th>Lot</th><th>Expiry</th><th>Sold</th><th>Returned</th><th>Status</th><th>Actions</th></tr></thead><tbody id="merchant-recall-rows"><tr><td colspan="8">Loading recalls</td></tr></tbody></table></div>
+        ${isAdmin ? `<form id="merchant-recall-config" class="form grid-form band-subtle"><div class="field"><label for="merchant-recall-months">Global expiry window (months)</label><input id="merchant-recall-months" class="input" type="number" min="1" max="120" value="24" required></div><label class="inline-check"><input id="merchant-recall-active" type="checkbox"> Daily scan active</label><div class="form-actions"><button class="button secondary" type="submit">Save recall settings</button></div></form>` : ""}
+      </section>` : ""}
     ${isAdmin ? `
       <section class="band">
         <h2>Manual alert triggers</h2>
@@ -6997,7 +7504,7 @@ async function renderNotifications() {
           <button class="button secondary" type="button" data-alert-run="low-stock">Low stock</button>
           <button class="button secondary" type="button" data-alert-run="expiry">Expiry</button>
           <button class="button secondary" type="button" data-alert-run="unresolved-reserves">Unresolved reserves</button>
-          <button class="button secondary" type="button" data-alert-run="outstanding-balances">Outstanding remaining</button>
+          <button class="button secondary" type="button" data-alert-run="open-payment-summary">Generate weekly open-payment summary</button>
         </div>
       </section>` : ""}`;
 
@@ -7008,8 +7515,89 @@ async function renderNotifications() {
   document.getElementById("notifications-prev").addEventListener("click", () => loadNotifications(Math.max(1, (notificationPageState.page || 1) - 1)));
   document.getElementById("notifications-next").addEventListener("click", () => loadNotifications((notificationPageState.page || 1) + 1));
   document.querySelectorAll("[data-alert-run]").forEach((button) => button.addEventListener("click", () => runAlert(button.dataset.alertRun)));
-  await loadNotificationTypes();
-  await loadNotifications();
+  document.getElementById("merchant-recall-config")?.addEventListener("submit", saveMerchantRecallConfig);
+  await Promise.all([
+    loadNotificationTypes(),
+    loadNotifications(),
+    canReadRecalls ? loadMerchantExpiryRecalls() : Promise.resolve(),
+    isAdmin ? loadMerchantRecallConfig() : Promise.resolve()
+  ]);
+}
+
+async function loadMerchantExpiryRecalls() {
+  const tbody = document.getElementById("merchant-recall-rows");
+  const count = document.getElementById("merchant-recall-count");
+  if (!tbody || !count) return;
+  const canManage = isSystemAdminRole(getAuth()?.user.role);
+  try {
+    const recalls = await request("/api/v1/merchant-expiry-recalls?status=Active");
+    count.textContent = `${recalls.length} active`;
+    tbody.innerHTML = recalls.length === 0 ? `<tr><td colspan="8">No active merchant expiry recalls.</td></tr>` : recalls.map((recall) => `
+      <tr data-merchant-recall-row="${escapeHtml(recall.id)}">
+        <td><strong>${escapeHtml(recall.merchantName)}</strong></td>
+        <td><strong>${escapeHtml(recall.skuCode || shortId(recall.skuId, "SKU"))}</strong><span class="muted-cell">${escapeHtml(recall.productName || "-")}</span></td>
+        <td>${escapeHtml(recall.lotNumber || "-")}</td>
+        <td>${expiryBadge(recall.expiryDate)}</td>
+        <td>${escapeHtml(recall.soldQuantity)}</td>
+        <td>${escapeHtml(recall.returnedQuantity)}</td>
+        <td><span class="status-pill ${recall.daysToExpiry < 0 ? "status-warn" : "status-muted"}">${recall.daysToExpiry < 0 ? "Expired" : "Approaching expiry"}</span></td>
+        <td>${canManage ? `<button class="button primary table-action" type="button" data-recall-return="${escapeHtml(recall.id)}">Start Return</button><button class="button secondary table-action" type="button" data-recall-no-stock="${escapeHtml(recall.id)}">No Stock at Merchant</button>` : `<span class="muted-text">Read only</span>`}</td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-recall-return]").forEach((button) => button.addEventListener("click", () => startMerchantRecallReturn(recalls.find((recall) => recall.id === button.dataset.recallReturn))));
+    tbody.querySelectorAll("[data-recall-no-stock]").forEach((button) => button.addEventListener("click", () => closeMerchantRecallNoStock(button.dataset.recallNoStock, button)));
+  } catch (exception) {
+    count.textContent = "Failed";
+    tbody.innerHTML = `<tr><td colspan="8">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+  }
+}
+
+async function startMerchantRecallReturn(recall) {
+  if (!recall) return;
+  try {
+    const locations = await request("/api/v1/inventory/locations");
+    const values = await merchantRecallReturnDialog(locations, recall);
+    if (!values) return;
+    const draft = await request(`/api/v1/merchant-expiry-recalls/${recall.id}/return-draft`, { method: "POST", body: JSON.stringify(values) });
+    notice(`Return draft ${draft.operationNumber} created.`, "success");
+    location.hash = "#/operations";
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function closeMerchantRecallNoStock(recallId, button) {
+  const note = await promptDialog({ title: "No Stock at Merchant", label: "Explain how the physical stock was checked.", required: true, multiline: true });
+  if (!note) return;
+  try {
+    await withMutationGuard(`merchant-recall:${recallId}:no-stock`, button, () => request(`/api/v1/merchant-expiry-recalls/${recallId}/no-stock`, { method: "POST", body: JSON.stringify({ note }) }));
+    notice("Merchant recall closed as no stock.", "success");
+    await Promise.all([loadMerchantExpiryRecalls(), loadNotifications(), loadNotificationTypes()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function loadMerchantRecallConfig() {
+  const months = document.getElementById("merchant-recall-months");
+  const active = document.getElementById("merchant-recall-active");
+  if (!months || !active) return;
+  try {
+    const config = await request("/api/v1/alerts/config/merchant-expiry-recall");
+    months.value = config.thresholdValue || 24;
+    active.checked = Boolean(config.isActive);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function saveMerchantRecallConfig(event) {
+  event.preventDefault();
+  try {
+    await request("/api/v1/alerts/config/merchant-expiry-recall", { method: "PUT", body: JSON.stringify({ thresholdValue: Number(document.getElementById("merchant-recall-months").value), thresholdUnit: "Months", isActive: document.getElementById("merchant-recall-active").checked }) });
+    notice("Merchant recall settings saved.", "success");
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
 }
 
 async function loadNotificationTypes() {
@@ -7074,6 +7662,7 @@ async function loadNotifications(page = notificationPageState.page || 1) {
     }
     list.querySelectorAll("[data-read-notification]").forEach((button) => button.addEventListener("click", () => markNotificationRead(button.dataset.readNotification)));
     list.querySelectorAll("[data-toggle-notification]").forEach((button) => button.addEventListener("click", () => toggleNotificationDetails(button.dataset.toggleNotification)));
+    list.querySelectorAll("[data-resolve-notification]").forEach((button) => button.addEventListener("click", () => resolveNotificationDestination(button.dataset.resolveNotification)));
     updateNotificationBadge();
   } catch (exception) {
     count.textContent = "Failed";
@@ -7086,11 +7675,10 @@ async function loadNotifications(page = notificationPageState.page || 1) {
 
 function renderNotificationCard(item) {
   const tone = item.isRead ? "status-muted" : "status-warning";
-  const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? `User ${shortId(item.targetUserId)}` : "Broadcast");
-  const actionUrl = notificationActionUrl(item);
+  const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? `User ${shortId(item.targetUserId, "USR")}` : "Broadcast");
   const actionLabel = item.actionLabel || notificationActionLabel(item);
-  const actionButton = actionUrl
-    ? `<a class="button secondary table-action" href="${escapeHtml(actionUrl)}" data-notification-link="${escapeHtml(item.id)}">${escapeHtml(actionLabel)}</a>`
+  const actionButton = item.referenceId
+    ? `<button class="button secondary table-action" type="button" data-resolve-notification="${escapeHtml(item.id)}">${escapeHtml(actionLabel)}</button>`
     : "";
   return `
     <article class="notification-card ${item.isRead ? "is-read" : "is-unread"}" data-notification-card="${escapeHtml(item.id)}">
@@ -7101,6 +7689,7 @@ function renderNotificationCard(item) {
             <span class="muted-text">${escapeHtml(formatDateTime(item.createdAt))}</span>
           </div>
           <p class="notification-message">${escapeHtml(item.message)}</p>
+          ${item.referenceCode ? `<p class="muted-text notification-record-code">${escapeHtml(item.referenceCode)}${item.referenceTitle ? ` / ${escapeHtml(item.referenceTitle)}` : ""}</p>` : ""}
         </div>
         <div class="notification-actions">
           <button class="button secondary table-action" type="button" data-toggle-notification="${escapeHtml(item.id)}">Details</button>
@@ -7112,8 +7701,8 @@ function renderNotificationCard(item) {
         <dl>
           <div><dt>Target</dt><dd>${escapeHtml(target)}</dd></div>
           <div><dt>Channel</dt><dd>${escapeHtml(item.channel || "-")}</dd></div>
-          <div><dt>Reference</dt><dd>${escapeHtml(item.referenceType || "-")}${item.referenceId ? ` / ${escapeHtml(shortId(item.referenceId))}` : ""}</dd></div>
-          <div><dt>Event location</dt><dd>${actionUrl ? `<a href="${escapeHtml(actionUrl)}">${escapeHtml(actionLabel)}</a>` : "-"}</dd></div>
+          <div><dt>Reference</dt><dd>${escapeHtml(item.referenceCode || item.referenceType || "-")}${item.referenceId && !item.referenceCode ? ` / ${escapeHtml(shortId(item.referenceId, referencePrefix(item.referenceType)))}` : ""}</dd></div>
+          <div><dt>Event location</dt><dd>${item.referenceId ? escapeHtml(actionLabel) : "-"}</dd></div>
           <div><dt>Status</dt><dd>${item.isRead ? "Read" : "Unread"}</dd></div>
         </dl>
       </div>
@@ -7141,6 +7730,9 @@ function notificationActionUrl(item) {
   if (type === "merchant") {
     return "#/crm";
   }
+  if (type === "merchantexpiryrecall") {
+    return "#/notifications";
+  }
   if (alertType.includes("report") || alertType.includes("export")) {
     return "#/reports";
   }
@@ -7148,16 +7740,35 @@ function notificationActionUrl(item) {
 }
 
 function notificationActionLabel(item) {
-  const url = notificationActionUrl(item);
   const labels = {
-    "#/inventory": "Open inventory",
-    "#/payments": "Open payments",
-    "#/operations": "Open operations",
-    "#/stocktakes": "Open stocktakes",
-    "#/crm": "Open CRM",
-    "#/reports": "Open reports"
+    stockbalance: "Open inventory balance",
+    inventorybatch: "Open inventory batch",
+    paymentlog: "Open payment",
+    operation: "Open operation",
+    stocktake: "Open stocktake",
+    supplyshipment: "Open shipment",
+    merchant: "Open merchant",
+    merchantexpiryrecall: "Open merchant recall",
+    exportlog: "Open export"
   };
-  return labels[url] || "Open related page";
+  return labels[(item.referenceType || "").toLowerCase()] || "Open related record";
+}
+
+async function resolveNotificationDestination(id) {
+  try {
+    const destination = await request(`/api/v1/notifications/${encodeURIComponent(id)}/resolve`);
+    if (destination.status !== "Ready") {
+      notice(destination.message || "This record is not available.", destination.status === "Forbidden" ? "error" : "warning");
+      return;
+    }
+    if (!destination.navigationReference) {
+      notice("This secure link could not be created.", "warning");
+      return;
+    }
+    location.hash = `${destination.route}?ref=${encodeURIComponent(destination.navigationReference)}`;
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
 }
 
 function toggleNotificationDetails(id) {
@@ -7172,10 +7783,11 @@ function notificationTypeLabel(type) {
     LowStock: "Low stock",
     Expiry: "Expiry",
     UnresolvedReserves: "Unresolved reserves",
-    OutstandingBalances: "Outstanding remaining",
+    OpenPaymentWeeklySummary: "Open-payment weekly summary",
     PaymentWorkflow: "Payment workflow",
     OperationStatus: "Operation status",
-    StocktakeConfirmed: "Stocktake confirmed"
+    StocktakeConfirmed: "Stocktake confirmed",
+    MerchantExpiryRecall: "Merchant expiry recall"
   };
   return labels[type] || type || "Notification";
 }
@@ -7204,32 +7816,85 @@ async function runAlert(name) {
 }
 
 async function renderAdmin() {
-  const canResetPasswords = getAuth()?.user.role === "Admin";
+  const isAdministrator = getAuth()?.user.role === "Admin";
+  const canResetPasswords = isAdministrator;
   document.getElementById("view").innerHTML = `
     <section class="band">
       <div class="section-head">
         <div>
           <h2>Users and access</h2>
-          <p class="muted-text">Review active accounts, assigned locations, and controlled access from one admin surface.</p>
+          <p class="muted-text">Review employee accounts, assigned locations, and controlled access from one admin surface.</p>
         </div>
         <span id="admin-users-count" class="status-pill status-muted">Loading</span>
       </div>
+      ${isAdministrator ? `
+        <form id="admin-create-user-form" class="admin-create-user-form band-subtle" novalidate>
+          <div class="section-head tight-head">
+            <div>
+              <h3>Create employee account</h3>
+              <p class="muted-text">Set the employee's sign-in name, temporary password, role, and warehouse scope.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="admin-user-full-name">Full name</label><input class="input" id="admin-user-full-name" name="fullName" autocomplete="name" required></div>
+            <div class="field"><label for="admin-user-username">Username</label><input class="input" id="admin-user-username" name="username" autocomplete="username" required></div>
+            <div class="field"><label for="admin-user-role">Role</label><select class="select" id="admin-user-role" name="role" required>
+              <option value="Admin">Administrator</option>
+              <option value="ERPAdmin">ERP administrator</option>
+              <option value="CLevel">C-Level</option>
+              <option value="Accountant">Accountant</option>
+              <option value="WarehouseClerk">Warehouse clerk</option>
+            </select></div>
+            <div class="field" id="admin-user-location-field" hidden><label for="admin-user-location">Warehouse location</label><select class="select" id="admin-user-location" name="locationId" disabled><option value="">Loading locations...</option></select></div>
+            <div class="field"><label for="admin-user-password">Temporary password</label><input class="input" id="admin-user-password" name="password" type="password" autocomplete="new-password" minlength="8" required></div>
+            <div class="field"><label for="admin-user-confirm-password">Confirm password</label><input class="input" id="admin-user-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></div>
+          </div>
+          <div class="form-actions"><button class="button primary" type="submit">Create employee account</button></div>
+        </form>
+        <form id="admin-create-location-form" class="admin-create-user-form band-subtle" novalidate hidden>
+          <div class="section-head tight-head">
+            <div>
+              <h3>Add warehouse</h3>
+              <p class="muted-text">Only the primary Administrator can add an active warehouse location.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label for="admin-location-name">Warehouse name</label><input class="input" id="admin-location-name" name="name" autocomplete="off" required></div>
+            <div class="field"><label for="admin-location-type">Location type</label><select class="select" id="admin-location-type" name="locationType" required>
+              <option value="SubWarehouse">Sub-warehouse</option>
+              <option value="Retail">Retail</option>
+              <option value="Online">Online</option>
+              <option value="MainWarehouse">Main warehouse</option>
+            </select></div>
+          </div>
+          <p class="muted-text">There can be only one active Main warehouse.</p>
+          <div class="form-actions"><button class="button primary" type="submit">Add warehouse</button></div>
+        </form>` : ""}
       <div id="admin-users-error" class="form-error" hidden></div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>User</th>
+              <th>Username / full name</th>
               <th>Role</th>
               <th>Location</th>
               <th>Status</th>
-              ${canResetPasswords ? "<th>New password</th><th>Confirm</th><th>Action</th>" : ""}
+              ${canResetPasswords ? "<th>New password</th><th>Confirm</th><th>Password</th><th>Account</th>" : ""}
             </tr>
           </thead>
           <tbody id="admin-users-rows"></tbody>
         </table>
       </div>
     </section>`;
+
+  if (isAdministrator) {
+    const form = document.getElementById("admin-create-user-form");
+    const role = document.getElementById("admin-user-role");
+    role?.addEventListener("change", syncAdminCreateUserLocation);
+    form?.addEventListener("submit", createAdminUser);
+    document.getElementById("admin-create-location-form")?.addEventListener("submit", createAdminLocation);
+    syncAdminCreateUserLocation();
+  }
 
   await loadAdminUsers();
 }
@@ -7244,7 +7909,7 @@ async function loadAdminUsers() {
 
   error.hidden = true;
   const canResetPasswords = getAuth()?.user.role === "Admin";
-  const colspan = canResetPasswords ? 7 : 4;
+  const colspan = canResetPasswords ? 8 : 4;
   tbody.innerHTML = `<tr><td colspan="${colspan}">Loading users...</td></tr>`;
 
   try {
@@ -7253,21 +7918,41 @@ async function loadAdminUsers() {
       request("/api/v1/inventory/locations").catch(() => [])
     ]);
     const locationNames = new Map(locations.map((location) => [location.id, location.name]));
+    const currentUserId = getAuth()?.user?.userId;
+    const isCurrentPrimaryAdmin = users.some((user) => user.id === currentUserId && user.isPrimaryAdmin);
+    const createLocationForm = document.getElementById("admin-create-location-form");
+    if (createLocationForm) createLocationForm.hidden = !isCurrentPrimaryAdmin;
+    populateAdminCreateUserLocations(locations);
     count.textContent = `${users.length} user${users.length === 1 ? "" : "s"}`;
     tbody.innerHTML = users.length === 0 ? `<tr><td colspan="${colspan}">No users found.</td></tr>` : users.map((user) => `
       <tr data-admin-user-row="${escapeHtml(user.id)}">
         <td><strong>${escapeHtml(user.username)}</strong><br><span class="muted-text">${escapeHtml(user.fullName || "-")}</span></td>
-        <td>${escapeHtml(roleLabel(user.role))}</td>
+        <td>${escapeHtml(roleLabel(user.role))}${user.isPrimaryAdmin ? '<br><span class="status-pill status-info">Primary Admin</span>' : ""}</td>
         <td>${escapeHtml(user.locationId ? (locationNames.get(user.locationId) || "Unknown location") : "All locations")}</td>
-        <td><span class="status-pill ${user.isActive ? "status-ok" : "status-muted"}">${user.isActive ? "Active" : "Inactive"}</span></td>
+        <td><span class="status-pill ${user.isActive ? "status-ok" : "status-muted"}">${user.isActive ? "Active" : "Inactive"}</span>
+          ${isCurrentPrimaryAdmin && user.id !== currentUserId && !user.isPrimaryAdmin ? `<br><button class="button secondary table-action" type="button" data-admin-set-active="${escapeHtml(user.id)}" data-admin-next-active="${String(!user.isActive)}">${user.isActive ? "Deactivate" : "Reactivate"}</button>` : ""}
+        </td>
         ${canResetPasswords ? `<td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-password="${escapeHtml(user.id)}" placeholder="8+ characters"></td>
         <td><input class="input compact-input" type="password" autocomplete="new-password" data-admin-confirm-password="${escapeHtml(user.id)}" placeholder="Repeat"></td>
-        <td><button class="button primary table-action" type="button" data-admin-change-password="${escapeHtml(user.id)}">Change</button></td>` : ""}
+        <td><button class="button primary table-action" type="button" data-admin-change-password="${escapeHtml(user.id)}">Change</button></td>
+        <td>
+          ${isCurrentPrimaryAdmin && user.isActive && user.role === "Admin" && !user.isPrimaryAdmin ? `<button class="button secondary table-action" type="button" data-admin-transfer-primary="${escapeHtml(user.id)}">Make primary</button>` : ""}
+          ${user.canDelete ? `<button class="button secondary table-action" type="button" data-admin-delete-user="${escapeHtml(user.id)}">Delete</button>` : `<button class="button secondary table-action" type="button" disabled title="${escapeHtml(user.deletionBlockedReason || "This account cannot be deleted.")}">Protected</button>`}
+        </td>` : ""}
       </tr>`).join("");
 
     if (canResetPasswords) {
       tbody.querySelectorAll("[data-admin-change-password]").forEach((button) => {
         button.addEventListener("click", () => changeAdminUserPassword(button.dataset.adminChangePassword));
+      });
+      tbody.querySelectorAll("[data-admin-delete-user]").forEach((button) => {
+        button.addEventListener("click", () => deleteAdminUser(button.dataset.adminDeleteUser));
+      });
+      tbody.querySelectorAll("[data-admin-transfer-primary]").forEach((button) => {
+        button.addEventListener("click", () => transferPrimaryAdmin(button.dataset.adminTransferPrimary));
+      });
+      tbody.querySelectorAll("[data-admin-set-active]").forEach((button) => {
+        button.addEventListener("click", () => setAdminUserActiveStatus(button.dataset.adminSetActive, button.dataset.adminNextActive === "true"));
       });
     }
   } catch (exception) {
@@ -7276,6 +7961,114 @@ async function loadAdminUsers() {
     error.textContent = getFriendlyWorkspaceError(exception);
     error.hidden = false;
   }
+}
+
+function syncAdminCreateUserLocation() {
+  const role = document.getElementById("admin-user-role");
+  const locationField = document.getElementById("admin-user-location-field");
+  const location = document.getElementById("admin-user-location");
+  const needsLocation = role?.value === "WarehouseClerk";
+
+  if (locationField) locationField.hidden = !needsLocation;
+  if (location) {
+    location.disabled = !needsLocation;
+    location.required = needsLocation;
+    if (!needsLocation) location.value = "";
+  }
+}
+
+function populateAdminCreateUserLocations(locations) {
+  const location = document.getElementById("admin-user-location");
+  if (!location) return;
+
+  const selectedId = location.value;
+  location.innerHTML = `<option value="">Select warehouse location</option>${locations
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`)
+    .join("")}`;
+  location.value = locations.some((item) => item.id === selectedId) ? selectedId : "";
+}
+
+async function createAdminUser(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const username = String(values.get("username") || "").trim();
+  const fullName = String(values.get("fullName") || "").trim();
+  const password = String(values.get("password") || "");
+  const confirmPassword = String(values.get("confirmPassword") || "");
+  const role = String(values.get("role") || "");
+  const locationId = String(values.get("locationId") || "");
+
+  if (!fullName || !username) {
+    notice("Full name and username are required.", "error");
+    (!fullName ? document.getElementById("admin-user-full-name") : document.getElementById("admin-user-username"))?.focus();
+    return;
+  }
+  if (password.length < 8) {
+    notice("Password must be at least 8 characters.", "error");
+    document.getElementById("admin-user-password")?.focus();
+    return;
+  }
+  if (password !== confirmPassword) {
+    notice("Password confirmation does not match.", "error");
+    document.getElementById("admin-user-confirm-password")?.focus();
+    return;
+  }
+  if (role === "WarehouseClerk" && !locationId) {
+    notice("Warehouse clerks must be assigned to a warehouse location.", "error");
+    document.getElementById("admin-user-location")?.focus();
+    return;
+  }
+
+  const submit = form.querySelector("button[type='submit']");
+  await withMutationGuard("admin-create-user", submit, async () => {
+    try {
+      const user = await request("/api/v1/users", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          fullName,
+          password,
+          role,
+          locationId: role === "WarehouseClerk" ? locationId : null
+        })
+      });
+      form.reset();
+      syncAdminCreateUserLocation();
+      notice(`Employee account created for ${user.fullName}.`, "success");
+      await loadAdminUsers();
+    } catch (exception) {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
+  });
+}
+
+async function createAdminLocation(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const name = String(values.get("name") || "").trim();
+  const locationType = String(values.get("locationType") || "");
+  if (!name) {
+    notice("Warehouse name is required.", "error");
+    document.getElementById("admin-location-name")?.focus();
+    return;
+  }
+
+  const submit = form.querySelector("button[type='submit']");
+  await withMutationGuard("admin-create-location", submit, async () => {
+    try {
+      const location = await request("/api/v1/inventory/locations", {
+        method: "POST",
+        body: JSON.stringify({ name, locationType })
+      });
+      form.reset();
+      notice(`${location.name} was added as an active warehouse.`, "success");
+      await loadAdminUsers();
+    } catch (exception) {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
+  });
 }
 
 async function changeAdminUserPassword(userId) {
@@ -7348,8 +8141,190 @@ function roleLabel(role) {
   return { CLevel: "C-Level", ERPAdmin: "ERP Admin", WarehouseClerk: "Warehouse Clerk" }[role] || role;
 }
 
+function referencePrefix(type) {
+  const prefixes = {
+    paymentlog: "PAY", paymentsublog: "PAY", cashrecord: "PAY", financialadjustment: "PAY",
+    stocktake: "STK", operation: "OP", supplyshipment: "SUP", sku: "SKU", inventorybatch: "BAT",
+    stockbalance: "STK", location: "LOC", user: "USR", merchant: "MER", representative: "REP",
+    notification: "NTF", audit: "AUD", category: "CAT", product: "PRD", brand: "BRD"
+  };
+
+  if (operationsUiState.mode === "revise" && operationsUiState.operationId && operationsUiState.revisionFingerprint === canonicalOperationPayload(body)) {
+    notice("No changes detected; operation was not revised.", "success");
+    resetOperationEditorMode();
+    return;
+  }
+  return prefixes[String(type || "").replace(/[^a-z]/gi, "").toLowerCase()] || "REF";
+}
+
+function canonicalOperationPayload(body) {
+  const type = canonicalSystemValue(body.operationType);
+  const lines = (body.lines || []).map((line) => {
+    const entryMode = canonicalSystemValue(line.entryMode || "Packs");
+    const quantity = entryMode === "Pieces" ? Number(line.pieceQuantity ?? line.packQuantity ?? 0) : Number(line.packQuantity ?? 0);
+    const bonus = ["WholesaleSale", "RetailSale"].includes(type) && line.isBonus === true;
+    return { skuId: line.skuId, section: type === "Change" ? canonicalSystemValue(line.section || "ChangeOut") : "Standard", entryMode, quantity, bonusQuantity: bonus ? quantity : 0, unitPrice: bonus ? 0 : Number(line.unitPrice || 0), lotNumber: String(line.lotNumber || "").trim() || null, expiryDate: line.expiryDate || null, notes: String(line.notes || "").trim() || null };
+  }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify({ operationType: type, sourceLocationId: body.sourceLocationId || null, destinationLocationId: body.destinationLocationId || null, merchantId: body.merchantId || null, buyerName: body.merchantId ? null : String(body.buyerName || "").trim() || null, representativeId: body.representativeId || null, paymentMethod: canonicalSystemValue(body.paymentMethod || "") || null, buyerPhone: String(body.buyerPhone || "").trim() || null, notes: String(body.notes || "").trim() || null, receipt: body.receipt ? { supplierName: String(body.receipt.supplierName || "Supplier").trim() || "Supplier", invoiceNumber: String(body.receipt.invoiceNumber || "").trim() || null } : null, lines });
+}
+
+async function deleteAdminUser(userId) {
+  const row = [...document.querySelectorAll("[data-admin-user-row]")]
+    .find((item) => item.dataset.adminUserRow === userId);
+  const username = row?.querySelector("strong")?.textContent || "this user";
+  const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
+  const accountLabel = fullName ? `${username} (${fullName})` : username;
+  if (!window.confirm(`Delete account ${accountLabel}? This cannot be undone.`)) return;
+
+  try {
+    await request(`/api/v1/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    notice(`Account ${accountLabel} deleted.`, "success");
+    await loadAdminUsers();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function setAdminUserActiveStatus(userId, isActive) {
+  const row = [...document.querySelectorAll("[data-admin-user-row]")]
+    .find((item) => item.dataset.adminUserRow === userId);
+  const username = row?.querySelector("strong")?.textContent || "this user";
+  const action = isActive ? "reactivate" : "deactivate";
+  if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} account ${username}?`)) return;
+
+  try {
+    await request(`/api/v1/users/${encodeURIComponent(userId)}/${isActive ? "activate" : "deactivate"}`, { method: "PATCH", body: JSON.stringify({}) });
+    notice(`${username} is now ${isActive ? "active" : "inactive"}.`, "success");
+    await loadAdminUsers();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function transferPrimaryAdmin(userId) {
+  const row = [...document.querySelectorAll("[data-admin-user-row]")]
+    .find((item) => item.dataset.adminUserRow === userId);
+  const username = row?.querySelector("strong")?.textContent || "this Administrator";
+  const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
+  const accountLabel = fullName ? `${fullName} (${username})` : username;
+  if (!window.confirm(`Make ${accountLabel} the primary Administrator? You will no longer be able to delete Administrator accounts.`)) return;
+
+  try {
+    await request(`/api/v1/users/${encodeURIComponent(userId)}/transfer-primary`, { method: "POST", body: JSON.stringify({}) });
+    notice(`${accountLabel} is now the primary Administrator.`, "success");
+    await loadAdminUsers();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function renderAudit() {
+  auditPageState = { page: 1, pageSize: 50 };
+  document.getElementById("view").innerHTML = `
+    ${pageIntro({
+      eyebrow: "Oversight",
+      title: "Audit history",
+      body: "Review successful system activity by person, time, section, and related record.",
+      metrics: scenarioCard("Events", "Loading", "status-muted", "audit-count")
+    })}
+    <section class="band">
+      <div class="section-head"><div><h2>System activity</h2><p class="muted-text">The trail remains available even when the original account or record has been removed.</p></div><button class="button secondary" id="audit-refresh" type="button">Refresh</button></div>
+      <div class="form-grid audit-filters">
+        <div class="field"><label for="audit-search">Find activity</label><input class="input" id="audit-search" placeholder="Person, record name, action, or saved value"></div>
+        <div class="field"><label for="audit-section">Area</label><select class="select" id="audit-section"><option value="">All areas</option><option value="User">Employee accounts</option><option value="Product">Catalog</option><option value="Operation">Operations</option><option value="Payment">Payments</option><option value="SupplyShipment">Supply</option><option value="Stocktake">Stocktake</option><option value="ShopifyWebhookEvent">Online intake</option></select></div>
+        <div class="field"><label for="audit-from">From</label><input class="input" id="audit-from" type="date"></div>
+        <div class="field"><label for="audit-to">To</label><input class="input" id="audit-to" type="date"></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Full name &amp; role</th><th>Activity</th><th>Record</th><th>Area</th><th></th></tr></thead><tbody id="audit-rows"><tr><td colspan="6">Loading audit history</td></tr></tbody></table></div>
+      <div class="pagination-bar" id="audit-pagination"></div>
+    </section>
+    <section class="band" id="audit-detail"><h2>Event detail</h2><p class="muted-text">Select an event to inspect the recorded details.</p></section>`;
+
+  document.getElementById("audit-refresh").addEventListener("click", () => loadAuditHistory());
+  document.getElementById("audit-search").addEventListener("input", debounce(() => { auditPageState.page = 1; loadAuditHistory(); }, 300));
+  ["audit-section", "audit-from", "audit-to"].forEach((id) => document.getElementById(id).addEventListener("change", () => { auditPageState.page = 1; loadAuditHistory(); }));
+  await loadAuditHistory();
+}
+
+async function loadAuditHistory() {
+  const rows = document.getElementById("audit-rows");
+  const count = document.getElementById("audit-count");
+  if (!rows || !count) return;
+  const params = new URLSearchParams({ page: String(auditPageState.page), pageSize: String(auditPageState.pageSize) });
+  const search = document.getElementById("audit-search")?.value.trim();
+  const entityType = document.getElementById("audit-section")?.value;
+  const from = document.getElementById("audit-from")?.value;
+  const to = document.getElementById("audit-to")?.value;
+  if (search) params.set("search", search);
+  if (entityType) params.set("entityType", entityType);
+  if (from) params.set("from", `${from}T00:00:00`);
+  if (to) params.set("to", `${to}T23:59:59`);
+  rows.innerHTML = `<tr><td colspan="6">Loading audit history</td></tr>`;
+  try {
+    const result = await request(`/api/v1/audit?${params}`);
+    count.textContent = `${result.totalCount} event${result.totalCount === 1 ? "" : "s"}`;
+    rows.innerHTML = result.items.length ? result.items.map((event) => `
+      <tr><td>${escapeHtml(formatDateTime(event.happenedAt))}</td><td><strong>${escapeHtml(displaySafeText(event.actorName || "Historical actor unavailable", "USR"))}</strong><br><span class="muted-text">${escapeHtml(auditActorRole(event.actorType))}</span></td><td><strong>${escapeHtml(displaySafeText(event.summary || auditSummaryFallback(event), "AUD"))}</strong></td><td>${escapeHtml(displaySafeText(event.recordName || "Related record", referencePrefix(event.entityType)))}</td><td>${escapeHtml(auditSectionLabel(event.section))}</td><td><button class="button secondary table-action" type="button" data-audit-detail="${escapeHtml(event.id)}">View details</button><button class="button secondary table-action" type="button" data-audit-source="${escapeHtml(event.id)}">Open record</button></td></tr>`).join("") : `<tr><td colspan="6">No audit events match these filters.</td></tr>`;
+    rows.querySelectorAll("[data-audit-detail]").forEach((button) => button.addEventListener("click", () => showAuditDetail(button.dataset.auditDetail)));
+    rows.querySelectorAll("[data-audit-source]").forEach((button) => button.addEventListener("click", () => openAuditSource(button.dataset.auditSource)));
+    renderAuditPagination(result);
+  } catch (exception) {
+    count.textContent = "Failed";
+    rows.innerHTML = `<tr><td colspan="6">Could not load audit history.</td></tr>`;
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function renderAuditPagination(result) {
+  const area = document.getElementById("audit-pagination");
+  if (!area) return;
+  const totalPages = Math.max(1, Math.ceil(result.totalCount / result.pageSize));
+  area.innerHTML = `<span>Page ${result.page} of ${totalPages}</span><div><button class="button secondary table-action" type="button" id="audit-previous" ${result.page <= 1 ? "disabled" : ""}>Previous</button><button class="button secondary table-action" type="button" id="audit-next" ${result.page >= totalPages ? "disabled" : ""}>Next</button></div>`;
+  document.getElementById("audit-previous")?.addEventListener("click", () => { auditPageState.page -= 1; loadAuditHistory(); });
+  document.getElementById("audit-next")?.addEventListener("click", () => { auditPageState.page += 1; loadAuditHistory(); });
+}
+
+async function showAuditDetail(id) {
+  const detail = document.getElementById("audit-detail");
+  if (!detail) return;
+  detail.innerHTML = `<h2>Event detail</h2><p>Loading event</p>`;
+  try {
+    const event = await request(`/api/v1/audit/${encodeURIComponent(id)}`);
+    const changes = Array.isArray(event.changes) ? event.changes : [];
+    const savedValues = changes.length ? `<div class="audit-change-list">${changes.map((change) => `<article class="audit-change"><strong>${escapeHtml(change.field)}</strong>${change.before ? `<span>Was: ${escapeHtml(displaySafeText(change.before, "AUD"))}</span>` : ""}<span>${change.before ? "Now" : "Saved"}: ${escapeHtml(displaySafeText(change.after || "Cleared", "AUD"))}</span></article>`).join("")}</div>` : `<p class="muted-text audit-empty-values">No individual field values were saved for this event.</p>`;
+    detail.innerHTML = `<div class="section-head"><div><p class="eyebrow">Recorded activity</p><h2>${escapeHtml(event.summary || auditSummaryFallback(event))}</h2><p class="muted-text">${escapeHtml(formatDateTime(event.happenedAt))} by ${escapeHtml(event.actorName)}</p></div><button class="button secondary" type="button" id="audit-open-detail-source">Open related record</button></div><div class="detail-grid"><div><span>Record</span><strong>${escapeHtml(event.recordName || "Related record")}</strong></div><div><span>Performed by</span><strong>${escapeHtml(event.actorName || "Historical actor unavailable")} · ${escapeHtml(auditActorRole(event.actorType))}</strong></div><div><span>Area</span><strong>${escapeHtml(auditSectionLabel(event.section))}</strong></div><div><span>Time</span><strong>${escapeHtml(formatDateTime(event.happenedAt))}</strong></div></div><section class="audit-saved-values"><h3>Saved values</h3><p class="muted-text">These are the values recorded when the activity was completed.</p>${savedValues}</section>`;
+    document.getElementById("audit-open-detail-source")?.addEventListener("click", () => openAuditSource(event.id));
+  } catch (exception) {
+    detail.innerHTML = `<h2>Event detail</h2><p class="form-error">${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
+  }
+}
+
+function auditSummaryFallback(event) {
+  return `${String(event.action || "Changed").replace(/([a-z])([A-Z])/g, "$1 $2")} ${String(event.entityType || "record").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}.`;
+}
+
+function auditSectionLabel(section) {
+  const labels = { admin: "Administration", catalog: "Catalog", crm: "CRM", inventory: "Inventory", operations: "Operations", payments: "Payments", supply: "Supply", stocktakes: "Stocktake", notifications: "Notifications", integrations: "Online intake", reports: "Reports", dashboard: "System" };
+  return labels[String(section || "").toLowerCase()] || "System";
+}
+
+function auditActorRole(actorType) {
+  const value = String(actorType || "").trim();
+  return value && value !== "User" ? value : "Role not recorded";
+}
+
+async function openAuditSource(auditEventId) {
+  try {
+    const destination = await request(`/api/v1/audit/${encodeURIComponent(auditEventId)}/navigation-reference`);
+    location.hash = `${destination.route}?ref=${encodeURIComponent(destination.navigationReference)}`;
+  } catch {
+    notice("The related record is unavailable or no longer permitted.", "warning");
+  }
+}
+
 async function renderShopifyIntegration() {
   shopifyIntegrationPageState = { page: 1, pageSize: 25 };
+  shopifySkuPageState = { page: 1, pageSize: 50 };
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Online intake",
@@ -7366,18 +8341,41 @@ async function renderShopifyIntegration() {
       <div id="shopify-event-list" class="integration-event-list">Loading integration events…</div>
     </section>
     <section class="band">
-      <div class="section-head tight-head"><div><h2>Variant mapping</h2><p>Connect each Shopify variant to the exact active Lensee SKU before online intake can create a draft.</p></div></div>
-      <form id="shopify-mapping-form" class="integration-mapping-form">
-        <div class="field"><label for="shopify-variant-id">Shopify variant ID</label><input id="shopify-variant-id" class="input" required autocomplete="off" placeholder="Variant ID"></div>
-        <div class="field"><label for="shopify-sku-id">Lensee SKU</label><select id="shopify-sku-id" class="select" required><option value="">Loading active SKUs…</option></select></div>
-        <div class="field"><label for="shopify-entry-mode">Fulfillment mode</label><select id="shopify-entry-mode" class="select"><option value="Packs">Packs</option><option value="Pieces">Pieces</option></select></div>
-        <button class="button secondary" type="submit">Save mapping</button>
-      </form>
-      <div id="shopify-mapping-list" class="table-wrap compact-table">Loading mappings…</div>
+      <div class="section-head tight-head"><div><h2>ERP SKUs for Shopify</h2><p>Copy the ERP SKU into each Shopify variant. Orders match SKU only; each quantity is an individual lens piece.</p></div></div>
+      <div class="integration-mapping-form">
+        <div class="field"><label for="shopify-sku-search">Find SKU or product</label><input id="shopify-sku-search" class="input" autocomplete="off" placeholder="SKU or product name"></div>
+        <div class="field"><label for="shopify-sku-product">Product</label><select id="shopify-sku-product" class="select"><option value="">All catalog products</option></select></div>
+        <div class="field"><label for="shopify-sku-wear-cycle">Wear cycle</label><select id="shopify-sku-wear-cycle" class="select"><option value="">All wear cycles</option><option value="Daily">Daily</option><option value="Monthly">Monthly</option><option value="Annual">Annual</option></select></div>
+        <div class="field"><label for="shopify-sku-status">Readiness</label><select id="shopify-sku-status" class="select"><option value="">All active SKUs</option><option value="Ready">Ready to publish</option><option value="NeedsWearCycle">Set Lens cycle</option><option value="PieceSaleDisabled">Piece sale disabled</option><option value="UnsupportedProduct">Unsupported product</option></select></div>
+        <button id="shopify-sku-search-button" class="button secondary" type="button">Check catalog</button>
+      </div>
+      <div id="shopify-sku-readiness" class="table-wrap compact-table">Loading ERP SKU readiness…</div>
+      <div class="pagination-bar" id="shopify-sku-pagination" hidden>
+        <label class="muted-text" for="shopify-sku-page-size">Rows per page</label>
+        <select id="shopify-sku-page-size" class="select compact-select" aria-label="ERP SKUs per page">
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+        <span class="muted-text" id="shopify-sku-page-label">Showing 0 ERP SKUs</span>
+        <button class="button secondary table-action" type="button" id="shopify-sku-prev">Previous</button>
+        <button class="button secondary table-action" type="button" id="shopify-sku-next">Next</button>
+      </div>
     </section>`;
   document.getElementById("shopify-refresh").addEventListener("click", () => loadShopifyIntegration());
   document.getElementById("shopify-event-status").addEventListener("change", () => loadShopifyEvents());
-  document.getElementById("shopify-mapping-form").addEventListener("submit", saveShopifyMapping);
+  document.getElementById("shopify-sku-search-button").addEventListener("click", () => loadShopifySkuReadiness(1));
+  document.getElementById("shopify-sku-search").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadShopifySkuReadiness(1);
+  });
+  document.getElementById("shopify-sku-product").addEventListener("change", () => loadShopifySkuReadiness(1));
+  document.getElementById("shopify-sku-wear-cycle").addEventListener("change", () => loadShopifySkuReadiness(1));
+  document.getElementById("shopify-sku-status").addEventListener("change", () => loadShopifySkuReadiness(1));
+  document.getElementById("shopify-sku-page-size").addEventListener("change", (event) => {
+    shopifySkuPageState.pageSize = Number(event.target.value) || 50;
+    loadShopifySkuReadiness(1);
+  });
+  document.getElementById("shopify-sku-prev").addEventListener("click", () => loadShopifySkuReadiness(Math.max(1, shopifySkuPageState.page - 1)));
+  document.getElementById("shopify-sku-next").addEventListener("click", () => loadShopifySkuReadiness(shopifySkuPageState.page + 1));
   await loadShopifyIntegration();
 }
 
@@ -7391,7 +8389,7 @@ async function loadShopifyIntegration() {
     receiver.textContent = "Unavailable";
     receiver.className = "status-pill status-warn";
   }
-  await Promise.all([loadShopifyEvents(), loadShopifyMappings(), loadShopifySkuOptions()]);
+  await Promise.all([loadShopifyEvents(), loadShopifySkuProducts(), loadShopifySkuReadiness()]);
 }
 
 async function loadShopifyEvents() {
@@ -7415,11 +8413,12 @@ async function loadShopifyEvents() {
 
 function renderShopifyEvent(event) {
   const statusClass = event.status === "RequiresAttention" ? "status-warn" : (event.status === "Imported" || event.status === "Succeeded" ? "status-ok" : "status-muted");
-  const actions = event.status === "RequiresAttention"
+  const canManage = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role) || (getAuth()?.user?.role === "WarehouseClerk" && getAuth()?.user?.locationType === "Online");
+  const actions = canManage && event.status === "RequiresAttention"
     ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>Retry</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">Resolve</button>`
     : "";
   const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
-  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(event.detail || "Delivery accepted for processing.")}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Trust</dt><dd>${escapeHtml(trust)}</dd></div><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
+  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(displaySafeText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId, "OP"))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Trust</dt><dd>${escapeHtml(trust)}</dd></div><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(displaySafeText(event.resolutionNote))}</dd></div>` : ""}</dl></article>`;
 }
 
 async function retryShopifyEvent(id) {
@@ -7444,40 +8443,75 @@ async function resolveShopifyEvent(id) {
   }
 }
 
-async function loadShopifySkuOptions() {
-  const select = document.getElementById("shopify-sku-id");
+async function loadShopifySkuProducts() {
+  const select = document.getElementById("shopify-sku-product");
   if (!select) return;
+
+  const selected = select.value;
   try {
-    if (operationSkuOptions.length === 0) await loadOperationReferences();
-    select.innerHTML = `<option value="">Select active SKU</option>${operationSkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("")}`;
+    const products = await request("/api/v1/integrations/shopify/sku-readiness/products");
+    select.innerHTML = `<option value="">All catalog products</option>${products.map((product) => `<option value="${escapeHtml(product.id)}">${escapeHtml(product.name)}</option>`).join("")}`;
+    select.value = products.some((product) => product.id === selected) ? selected : "";
   } catch {
-    select.innerHTML = `<option value="">SKU list unavailable</option>`;
+    select.innerHTML = `<option value="">Product list unavailable</option>`;
   }
 }
 
-async function loadShopifyMappings() {
-  const list = document.getElementById("shopify-mapping-list");
+async function loadShopifySkuReadiness(page = shopifySkuPageState.page || 1) {
+  const list = document.getElementById("shopify-sku-readiness");
+  const pagination = document.getElementById("shopify-sku-pagination");
+  const pageLabel = document.getElementById("shopify-sku-page-label");
+  const previous = document.getElementById("shopify-sku-prev");
+  const next = document.getElementById("shopify-sku-next");
   if (!list) return;
+  const requestedPage = Math.max(1, Number(page) || 1);
   try {
-    const mappings = await request("/api/v1/integrations/shopify/variant-mappings");
-    list.innerHTML = `<table><thead><tr><th>Shopify variant</th><th>Lensee SKU</th><th>Mode</th><th>State</th></tr></thead><tbody>${mappings.length === 0 ? `<tr><td colspan="4">No variant mappings yet.</td></tr>` : mappings.map((mapping) => `<tr><td><strong>${escapeHtml(mapping.shopifyVariantId)}</strong></td><td>${escapeHtml(mapping.skuCode || shortId(mapping.skuId))}</td><td>${escapeHtml(mapping.entryMode)}</td><td><span class="status-pill ${mapping.isActive ? "status-ok" : "status-muted"}">${mapping.isActive ? "Active" : "Inactive"}</span></td></tr>`).join("")}</tbody></table>`;
+    const search = document.getElementById("shopify-sku-search")?.value.trim() || "";
+    const productId = document.getElementById("shopify-sku-product")?.value || "";
+    const wearCycle = document.getElementById("shopify-sku-wear-cycle")?.value || "";
+    const status = document.getElementById("shopify-sku-status")?.value || "";
+    const query = new URLSearchParams({ page: String(requestedPage), pageSize: String(shopifySkuPageState.pageSize || 50) });
+    if (search) query.set("search", search);
+    if (productId) query.set("productId", productId);
+    if (wearCycle) query.set("wearCycle", wearCycle);
+    if (status) query.set("status", status);
+    const result = await request(`/api/v1/integrations/shopify/sku-readiness?${query}`);
+    const totalPages = Math.max(1, Math.ceil(result.totalCount / result.pageSize));
+    if (result.items.length === 0 && result.totalCount > 0 && requestedPage > totalPages) {
+      shopifySkuPageState.page = totalPages;
+      await loadShopifySkuReadiness(totalPages);
+      return;
+    }
+    shopifySkuPageState = { page: Math.min(result.page, totalPages), pageSize: result.pageSize };
+    list.innerHTML = `<table><thead><tr><th>ERP SKU</th><th>Product / attributes</th><th>Wear cycle</th><th>Pieces per pack</th><th>Sell mode</th><th>Readiness</th><th></th></tr></thead><tbody>${result.items.length === 0 ? `<tr><td colspan="7">No active ERP SKUs match this view.</td></tr>` : result.items.map((sku) => `<tr><td><strong>${escapeHtml(sku.skuCode)}</strong></td><td>${escapeHtml(sku.productName)}<div class="muted-cell">${escapeHtml([formatPower(sku), sku.colorName, sku.size].filter(Boolean).join(" / ") || "No variant attributes")}</div></td><td>${renderWearCycle(sku.wearCycle, sku.wearDuration)}</td><td>${escapeHtml(sku.piecesPerPack || "-")}</td><td>${escapeHtml(sku.sellMode || "Not set")}</td><td>${renderShopifySkuReadiness(sku.status)}</td><td><button class="button secondary table-action" type="button" data-copy-shopify-sku="${escapeHtml(sku.skuCode)}">Copy SKU</button></td></tr>`).join("")}</tbody></table>`;
+    if (pagination && pageLabel && previous && next) {
+      const first = result.totalCount === 0 ? 0 : ((shopifySkuPageState.page - 1) * result.pageSize) + 1;
+      const last = Math.min(shopifySkuPageState.page * result.pageSize, result.totalCount);
+      pagination.hidden = result.totalCount <= result.pageSize;
+      pageLabel.textContent = `Showing ${first}–${last} of ${result.totalCount} ERP SKUs · Page ${shopifySkuPageState.page} of ${totalPages}`;
+      previous.disabled = shopifySkuPageState.page <= 1;
+      next.disabled = shopifySkuPageState.page >= totalPages;
+    }
+    list.querySelectorAll("[data-copy-shopify-sku]").forEach((button) => button.addEventListener("click", () => copyShopifySku(button.dataset.copyShopifySku)));
   } catch (exception) {
     list.innerHTML = `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`;
+    if (pagination) pagination.hidden = true;
   }
 }
 
-async function saveShopifyMapping(event) {
-  event.preventDefault();
-  const variantId = document.getElementById("shopify-variant-id").value.trim();
-  const skuId = document.getElementById("shopify-sku-id").value;
-  const entryMode = document.getElementById("shopify-entry-mode").value;
+function renderShopifySkuReadiness(status) {
+  if (status === "Ready") return `<span class="status-pill status-ok">Ready</span>`;
+  if (status === "NeedsWearCycle") return `<span class="status-pill status-warn">Set Lens cycle</span>`;
+  if (status === "PieceSaleDisabled") return `<span class="status-pill status-warn">Enable piece sales</span>`;
+  return `<span class="status-pill status-muted">Lens products only</span>`;
+}
+
+async function copyShopifySku(sku) {
   try {
-    await request("/api/v1/integrations/shopify/variant-mappings", { method: "POST", body: JSON.stringify({ shopifyVariantId: variantId, skuId, entryMode, isActive: true }) });
-    event.currentTarget.reset();
-    notice("Shopify variant mapping saved.", "success");
-    await loadShopifyMappings();
-  } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
+    await navigator.clipboard.writeText(sku);
+    notice("ERP SKU copied. Paste it into the Shopify variant SKU field.", "success");
+  } catch {
+    notice("Could not copy the SKU. Copy it manually from the table.", "error");
   }
 }
 
@@ -7591,9 +8625,9 @@ function parseProblemDetails(exception) {
     const body = JSON.parse(message);
     const errors = Object.values(body.errors || {}).flat().filter(Boolean);
     if (errors.length > 0) {
-      return errors.join(" ");
+      return displaySafeText(errors.join(" "));
     }
-    return body.detail || body.title || "";
+    return displaySafeText(body.detail || body.message || body.title || "");
   } catch {
     return "";
   }

@@ -41,9 +41,11 @@ services:
       Shopify__PayloadRetentionDays: ${SHOPIFY_PAYLOAD_RETENTION_DAYS:-30}
       Hosting__TrustedProxyNetwork: ${HOSTING_TRUSTED_PROXY_NETWORK:-}
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
+      Cors__AllowedOrigins__1: ${CORS_ALLOWED_ORIGIN_LOOPBACK:-http://127.0.0.1:3001}
       Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-true}
       Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-true}
-      RateLimiting__PermitLimit: ${RATE_LIMITING_PERMIT_LIMIT:-120}
+      RateLimiting__AnonymousPermitLimit: ${RATE_LIMITING_ANONYMOUS_PERMIT_LIMIT:-60}
+      RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
     depends_on:

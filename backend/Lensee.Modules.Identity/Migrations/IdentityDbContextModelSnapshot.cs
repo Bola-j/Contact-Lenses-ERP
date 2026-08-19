@@ -197,6 +197,10 @@ namespace Lensee.Modules.Identity.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid?>("CreatedByAdminId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_admin_id");
+
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -208,6 +212,12 @@ namespace Lensee.Modules.Identity.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
+
+                    b.Property<bool>("IsPrimaryAdmin")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_primary_admin");
 
                     b.Property<Guid?>("LocationId")
                         .HasColumnType("uuid")
@@ -238,8 +248,13 @@ namespace Lensee.Modules.Identity.Migrations
 
                     b.HasIndex(new[] { "Role" }, "idx_users_role");
 
-                    b.HasIndex(new[] { "Username" }, "users_username_key")
-                        .IsUnique();
+                    b.HasIndex(new[] { "CreatedByAdminId" }, "idx_users_created_by_admin");
+
+                    b.HasIndex(new[] { "IsPrimaryAdmin" }, "uq_users_primary_admin")
+                        .IsUnique()
+                        .HasFilter("is_primary_admin");
+
+                    b.HasCheckConstraint("chk_users_primary_admin_role", "not is_primary_admin or role = 'Admin'");
 
                     b.ToTable("users", "identity");
                 });
@@ -279,7 +294,13 @@ namespace Lensee.Modules.Identity.Migrations
                 });
 
             modelBuilder.Entity("Lensee.Modules.Identity.Data.User", b =>
-                {
+            {
+                b.HasOne("Lensee.Modules.Identity.Data.User", null)
+                    .WithMany()
+                    .HasForeignKey("CreatedByAdminId")
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .HasConstraintName("users_created_by_admin_id_fkey");
+
                     b.Navigation("AuditLogs");
 
                     b.Navigation("RefreshTokens");

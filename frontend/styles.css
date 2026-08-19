@@ -458,6 +458,16 @@ h3 {
   gap: 12px;
 }
 
+.admin-create-user-form {
+  display: grid;
+  max-width: none;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
 .operations-workspace {
   min-width: 0;
 }
@@ -550,7 +560,8 @@ h3 {
 }
 
 .supply-workspace {
-  grid-template-columns: minmax(420px, 0.86fr) minmax(520px, 1.14fr);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 14px;
 }
@@ -749,6 +760,10 @@ html[dir="rtl"] .supply-line-row .op-line-search-results {
   position: relative;
 }
 
+.inventory-sku-picker {
+  position: relative;
+}
+
 .line-editor-row .check-field {
   align-self: end;
   min-width: 0;
@@ -778,6 +793,10 @@ html[dir="rtl"] .supply-line-row .op-line-search-results {
   border-radius: var(--radius);
   background: #fff;
   box-shadow: var(--shadow);
+}
+
+.op-line-search-results[hidden] {
+  display: none;
 }
 
 .op-line-search-result {
@@ -1377,7 +1396,7 @@ tr:last-child td {
 }
 
 .section-head > * {
-  min-width: 0;
+  min-width: auto;
 }
 
 .section-head p {
@@ -1487,7 +1506,11 @@ tr:last-child td {
   gap: 12px;
 }
 
-.eligibility-dialog-note {
+.sales-variance-dialog {
+  width: min(980px, 100%);
+}
+
+.sales-variance-dialog-note {
   padding: 10px 12px;
   border: 1px solid #e6cf9a;
   border-radius: var(--radius);
@@ -1496,12 +1519,12 @@ tr:last-child td {
   font-size: 14px;
 }
 
-.eligibility-dialog-table {
+.sales-variance-dialog-table {
   max-height: min(360px, 52vh);
   overflow: auto;
 }
 
-.eligibility-dialog-table table {
+.sales-variance-dialog-table table {
   min-width: 720px;
 }
 
@@ -2064,6 +2087,50 @@ body.lang-ar {
   opacity: 0.5;
 }
 
+.audit-filters {
+  margin: 0 0 14px;
+}
+
+.audit-saved-values {
+  margin-top: 18px;
+}
+
+.audit-saved-values h3 {
+  margin: 0;
+}
+
+.audit-saved-values > .muted-text {
+  margin: 5px 0 12px;
+}
+
+.audit-change-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.audit-change {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.audit-change strong {
+  color: var(--ink);
+}
+
+.audit-change span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-empty-values {
+  margin: 12px 0 0;
+}
+
 .button,
 .icon-button,
 .status-pill,
@@ -2302,7 +2369,7 @@ body.lang-ar {
   }
 
   .compact-table table,
-  .eligibility-dialog-table table {
+  .sales-variance-dialog-table table {
     min-width: 520px;
   }
 
@@ -2737,7 +2804,7 @@ html[dir="rtl"] input[data-ltr] {
   }
 
   .compact-table table,
-  .eligibility-dialog-table table {
+  .sales-variance-dialog-table table {
     min-width: 480px;
   }
 
@@ -2791,7 +2858,7 @@ html[dir="rtl"] input[data-ltr] {
   }
 
   .compact-table table,
-  .eligibility-dialog-table table {
+  .sales-variance-dialog-table table {
     min-width: 420px;
   }
 }

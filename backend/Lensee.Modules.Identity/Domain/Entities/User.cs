@@ -21,6 +21,10 @@ public partial class User
 
     public DateTime CreatedAt { get; set; }
 
+    public Guid? CreatedByAdminId { get; set; }
+
+    public bool IsPrimaryAdmin { get; set; }
+
     public virtual ICollection<AuditLog> AuditLogs { get; set; } = new List<AuditLog>();
 
     public virtual ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();

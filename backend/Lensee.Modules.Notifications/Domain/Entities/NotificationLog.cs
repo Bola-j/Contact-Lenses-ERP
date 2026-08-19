@@ -15,6 +15,14 @@ public partial class NotificationLog
 
     public string? ReferenceType { get; set; }
 
+    public string? ReferenceCode { get; set; }
+
+    public string? ReferenceTitle { get; set; }
+
+    public string? ReferenceContextJson { get; set; }
+
+    public string NotificationNumber { get; set; } = null!;
+
     public Guid? TargetUserId { get; set; }
 
     public string? TargetRole { get; set; }

@@ -135,13 +135,19 @@ public partial class IdentityDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("users_pkey");
 
-            entity.ToTable("users", "identity");
+            entity.ToTable("users", "identity", table => table.HasCheckConstraint(
+                "chk_users_primary_admin_role",
+                "not is_primary_admin or role = 'Admin'"));
 
             entity.HasIndex(e => e.LocationId, "idx_users_location");
 
             entity.HasIndex(e => e.Role, "idx_users_role");
 
-            entity.HasIndex(e => e.Username, "users_username_key").IsUnique();
+            entity.HasIndex(e => e.CreatedByAdminId, "idx_users_created_by_admin");
+
+            entity.HasIndex(e => e.IsPrimaryAdmin, "uq_users_primary_admin")
+                .IsUnique()
+                .HasFilter("is_primary_admin");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -150,12 +156,16 @@ public partial class IdentityDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("created_at");
+            entity.Property(e => e.CreatedByAdminId).HasColumnName("created_by_admin_id");
             entity.Property(e => e.FullName)
                 .HasMaxLength(255)
                 .HasColumnName("full_name");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
+            entity.Property(e => e.IsPrimaryAdmin)
+                .HasDefaultValue(false)
+                .HasColumnName("is_primary_admin");
             entity.Property(e => e.LocationId).HasColumnName("location_id");
             entity.Property(e => e.PasswordHash)
                 .HasMaxLength(255)
@@ -166,6 +176,12 @@ public partial class IdentityDbContext : DbContext
             entity.Property(e => e.Username)
                 .HasMaxLength(100)
                 .HasColumnName("username");
+
+            entity.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(e => e.CreatedByAdminId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("users_created_by_admin_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

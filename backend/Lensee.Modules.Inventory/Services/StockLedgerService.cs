@@ -87,6 +87,60 @@ public sealed class StockLedgerService
             cancellationToken);
     }
 
+    public async Task<InventoryBatch> ReceiveExpiredReturnAndWriteOffAsync(
+        Guid locationId,
+        Guid skuId,
+        int quantity,
+        Guid userId,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        Guid? referenceOperationId = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(quantity, nameof(quantity));
+        var today = DateOnly.FromDateTime(_clock.EgyptNow);
+        if (expiryDate is null || expiryDate >= today)
+        {
+            throw new InvalidOperationException("Only expired merchant returns can be written off during receipt.");
+        }
+
+        var now = _clock.EgyptNow;
+        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+        if (batch is null)
+        {
+            batch = new InventoryBatch
+            {
+                Id = Guid.NewGuid(),
+                LocationId = locationId,
+                SkuId = skuId,
+                LotNumber = NormalizeBlank(lotNumber),
+                ExpiryDate = expiryDate,
+                Quantity = 0,
+                Notes = NormalizeBlank(notes),
+                CreatedFrom = referenceOperationId,
+                CreatedBy = userId,
+                CreatedAt = now
+            };
+            _dbContext.InventoryBatches.Add(batch);
+        }
+        else if (!string.IsNullOrWhiteSpace(notes))
+        {
+            batch.Notes = notes.Trim();
+        }
+
+        var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
+        batch.Quantity += quantity;
+        ApplyAvailableDelta(balance, quantity, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReturnIn, quantity, userId, referenceOperationId, now);
+
+        batch.Quantity -= quantity;
+        ApplyAvailableDelta(balance, -quantity, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.WriteOff, -quantity, userId, referenceOperationId, now);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return batch;
+    }
+
     public async Task<InventoryBatch> ReceiveChangeOutAsync(
         Guid locationId,
         Guid skuId,

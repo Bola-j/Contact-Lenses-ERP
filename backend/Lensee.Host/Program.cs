@@ -17,6 +17,7 @@ using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
@@ -104,7 +105,8 @@ builder.Services.AddCors(options =>
 });
 
 var rateLimitOptions = builder.Configuration.GetSection("RateLimiting");
-var permitLimit = rateLimitOptions.GetValue("PermitLimit", 120);
+var anonymousPermitLimit = rateLimitOptions.GetValue("AnonymousPermitLimit", 60);
+var authenticatedPermitLimit = rateLimitOptions.GetValue("AuthenticatedPermitLimit", 600);
 var windowSeconds = rateLimitOptions.GetValue("WindowSeconds", 60);
 var queueLimit = rateLimitOptions.GetValue("QueueLimit", 0);
 
@@ -128,17 +130,23 @@ builder.Services.AddRateLimiter(options =>
 
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
-        if (context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/webhooks") ||
+        if (context.Request.Path.StartsWithSegments("/health") ||
+            context.Request.Path.StartsWithSegments("/ready") ||
+            context.Request.Path.StartsWithSegments("/api/v1/health") ||
+            context.Request.Path.StartsWithSegments("/api/v1/ready") ||
+            context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/webhooks") ||
             context.Request.Path.StartsWithSegments("/api/v1/integrations/shopify/legacy-webhooks"))
         {
-            return RateLimitPartition.GetNoLimiter("shopify-webhook");
+            return RateLimitPartition.GetNoLimiter("health-or-webhook");
         }
         var userId = context.User.FindFirst("userId")?.Value
             ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
-        var partitionKey = !string.IsNullOrWhiteSpace(userId)
+        var isAuthenticated = !string.IsNullOrWhiteSpace(userId);
+        var partitionKey = isAuthenticated
             ? $"user:{userId}"
             : $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
+        var permitLimit = isAuthenticated ? authenticatedPermitLimit : anonymousPermitLimit;
 
         return RateLimitPartition.GetFixedWindowLimiter(
             partitionKey,
@@ -224,7 +232,13 @@ builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<ICatalogEventPublisher, NoOpCatalogEventPublisher>();
 builder.Services.AddScoped<StockLedgerService>();
 builder.Services.AddScoped<MerchantBalanceService>();
+builder.Services.AddScoped<MerchantBatchHistoryService>();
+builder.Services.AddScoped<MerchantExpiryRecallService>();
+builder.Services.AddScoped<TargetReplenishmentService>();
+builder.Services.AddScoped<OperationalAlertScheduler>();
+builder.Services.AddScoped<IAuthorizationHandler, OnlineIntakeAuthorizationHandler>();
 builder.Services.AddDataProtection();
+builder.Services.AddSingleton<NavigationReferenceService>();
 builder.Services.AddOptions<ShopifyOptions>()
     .Bind(builder.Configuration.GetSection("Shopify"))
     .Validate(options => !options.Enabled ||
@@ -239,6 +253,11 @@ builder.Services.AddOptions<ShopifyOptions>()
 builder.Services.AddScoped<ShopifyIntegrationService>();
 builder.Services.AddHostedService<ShopifyWebhookWorker>();
 builder.Services.AddHostedService<ShopifyPayloadRetentionWorker>();
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<MerchantExpiryRecallWorker>();
+    builder.Services.AddHostedService<OperationalScheduleWorker>();
+}
 
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["live", "ready"])
@@ -267,6 +286,26 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var userIdValue = context.Principal?.FindFirst(LenseeClaims.UserId)?.Value;
+                if (!Guid.TryParse(userIdValue, out var userId))
+                {
+                    context.Fail("The access token does not identify a user.");
+                    return;
+                }
+
+                var identityDbContext = context.HttpContext.RequestServices.GetRequiredService<IdentityDbContext>();
+                var accountIsActive = await identityDbContext.Users.AsNoTracking()
+                    .AnyAsync(user => user.Id == userId && user.IsActive, context.HttpContext.RequestAborted);
+                if (!accountIsActive)
+                {
+                    context.Fail("The account is no longer active.");
+                }
+            }
+        };
     });
 
 builder.Services.AddAuthorization(options =>
@@ -277,9 +316,21 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("users.write", policy =>
         policy.RequireClaim("permission", LenseePermissions.UsersWrite));
 
+    options.AddPolicy("users.create", policy =>
+        policy.RequireRole(LenseeRoles.Admin)
+            .RequireClaim("permission", LenseePermissions.UsersWrite));
+
     options.AddPolicy("users.password.write", policy =>
         policy.RequireRole(LenseeRoles.Admin)
             .RequireClaim("permission", LenseePermissions.UsersPasswordWrite));
+
+    options.AddPolicy("users.delete", policy =>
+        policy.RequireRole(LenseeRoles.Admin)
+            .RequireClaim("permission", LenseePermissions.UsersDelete));
+
+    options.AddPolicy("primary-admin", policy =>
+        policy.RequireRole(LenseeRoles.Admin)
+            .RequireClaim("permission", LenseePermissions.UsersWrite));
 
     options.AddPolicy("catalog.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.CatalogRead));
@@ -300,6 +351,14 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("operations.write", policy =>
         policy.RequireClaim("permission", LenseePermissions.OperationsWrite));
 
+    options.AddPolicy("merchant-recalls.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
+            .RequireClaim("permission", LenseePermissions.OperationsRead));
+
+    options.AddPolicy("merchant-recalls.manage", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.OperationsWrite));
+
     options.AddPolicy("payments.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsRead));
 
@@ -317,6 +376,10 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("reports.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
 
+    options.AddPolicy("audit.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.AuditRead));
+
     options.AddPolicy("supply.read", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel)
             .RequireClaim("permission", LenseePermissions.SupplyRead));
@@ -330,10 +393,10 @@ builder.Services.AddAuthorization(options =>
             .RequireClaim("permission", LenseePermissions.SettingsWrite));
 
     options.AddPolicy("integrations.shopify.read", policy =>
-        policy.RequireClaim("permission", LenseePermissions.IntegrationsShopifyRead));
+        policy.Requirements.Add(new OnlineIntakeRequirement(manage: false)));
 
     options.AddPolicy("integrations.shopify.manage", policy =>
-        policy.RequireClaim("permission", LenseePermissions.IntegrationsShopifyManage));
+        policy.Requirements.Add(new OnlineIntakeRequirement(manage: true)));
 });
 
 var app = builder.Build();
@@ -415,6 +478,7 @@ app.UseCors("Spa");
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
+app.UseMiddleware<AuditMutationMiddleware>();
 
 app.MapHealthChecks("/health", new HealthCheckOptions { ResponseWriter = WriteHealthResponseAsync });
 app.MapHealthChecks("/api/v1/health", new HealthCheckOptions { ResponseWriter = WriteHealthResponseAsync });
@@ -439,9 +503,12 @@ app.MapGet("/api/v1", () => Results.Ok(new
 .WithTags("Platform");
 
 app.MapAuthEndpoints();
+app.MapNavigationReferenceEndpoints();
+app.MapAuditEndpoints();
 app.MapUserEndpoints();
 app.MapCatalogEndpoints();
 app.MapCrmEndpoints();
+app.MapMerchantExpiryRecallEndpoints();
 app.MapInventoryEndpoints();
 app.MapOperationsEndpoints();
 app.MapPaymentsEndpoints();
@@ -695,6 +762,9 @@ static async Task BaselineMigrationIfObjectExistsAsync(DbContext dbContext, stri
 static Task WriteHealthResponseAsync(HttpContext context, Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)
 {
     context.Response.ContentType = "application/json";
+    context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate, proxy-revalidate";
+    context.Response.Headers.Pragma = "no-cache";
+    context.Response.Headers.Expires = "0";
 
     var payload = new
     {

@@ -77,10 +77,10 @@ public sealed class PaymentWorkflowNotificationHandler : IAppEventHandler<Paymen
     private static string BuildPaymentMessage(PaymentWorkflowChangedEvent appEvent)
     {
         var context = appEvent.OperationId.HasValue
-            ? $" Operation {appEvent.OperationId.Value.ToString()[..8]} is linked."
+            ? $" Operation {AuditEventPayload.FriendlyReference("Operation", appEvent.OperationId.Value)} is linked."
             : string.Empty;
         var merchant = appEvent.MerchantId.HasValue
-            ? $" Merchant {appEvent.MerchantId.Value.ToString()[..8]} is affected."
+            ? $" Merchant {AuditEventPayload.FriendlyReference("Merchant", appEvent.MerchantId.Value)} is affected."
             : string.Empty;
 
         return $"{appEvent.Message}{merchant}{context} Open Payments to review assignment, approval state, paid amount, and remaining effect.";

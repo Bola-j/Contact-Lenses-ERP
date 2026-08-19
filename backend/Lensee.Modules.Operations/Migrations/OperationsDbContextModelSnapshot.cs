@@ -64,6 +64,93 @@ namespace Lensee.Modules.Operations.Migrations
                     b.ToTable("inventory_receipt_headers", "operations");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.MerchantExpiryRecall", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateOnly>("ExpiryDate")
+                        .HasColumnType("date")
+                        .HasColumnName("expiry_date");
+
+                    b.Property<string>("LotNumber")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("")
+                        .HasColumnName("lot_number");
+
+                    b.Property<Guid>("MerchantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_id");
+
+                    b.Property<string>("ResolutionNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("resolution_note");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<Guid?>("ResolvedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolved_by");
+
+                    b.Property<int?>("ResolvedSoldQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("resolved_sold_quantity");
+
+                    b.Property<int>("ReturnedQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("returned_quantity");
+
+                    b.Property<Guid>("SkuId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("sku_id");
+
+                    b.Property<int>("SoldQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("sold_quantity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Active")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("merchant_expiry_recalls_pkey");
+
+                    b.HasIndex(new[] { "MerchantId" }, "idx_merchant_expiry_recall_merchant");
+
+                    b.HasIndex(new[] { "Status", "ExpiryDate" }, "idx_merchant_expiry_recall_status_expiry");
+
+                    b.HasIndex(new[] { "MerchantId", "SkuId", "LotNumber", "ExpiryDate" }, "uq_merchant_expiry_recall_batch")
+                        .IsUnique();
+
+                    b.ToTable("merchant_expiry_recalls", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_expiry_recall_quantities", "sold_quantity >= 0 and returned_quantity >= 0");
+
+                            t.HasCheckConstraint("chk_merchant_expiry_recall_status", "status in ('Active','Completed','NoStock')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLine", b =>
                 {
                     b.Property<Guid>("Id")
@@ -136,6 +223,35 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("section")
                         .HasDefaultValueSql("'Standard'::character varying");
 
+                    b.Property<string>("ShopifyLineItemId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("shopify_line_item_id");
+
+                    b.Property<string>("ShopifyPropertiesSnapshot")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("shopify_properties_snapshot");
+
+                    b.Property<string>("ShopifySkuSnapshot")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("shopify_sku_snapshot");
+
+                    b.Property<string>("ShopifyTitleSnapshot")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("shopify_title_snapshot");
+
+                    b.Property<string>("ShopifyVariantId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("shopify_variant_id");
+
+                    b.Property<string>("ShopifyVariantTitleSnapshot")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("shopify_variant_title_snapshot");
+
                     b.Property<string>("SkuCodeSnapshot")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -198,6 +314,11 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
+                    b.Property<string>("AutomationType")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("automation_type");
+
                     b.Property<string>("BuyerEmail")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
@@ -257,6 +378,10 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("is_deleted");
+
+                    b.Property<Guid?>("MerchantExpiryRecallId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_expiry_recall_id");
 
                     b.Property<string>("Notes")
                         .HasColumnType("text")
@@ -321,6 +446,8 @@ namespace Lensee.Modules.Operations.Migrations
                         .IsDescending();
 
                     b.HasIndex(new[] { "CreatedBy" }, "idx_op_logs_created_by");
+
+                    b.HasIndex(new[] { "MerchantExpiryRecallId" }, "idx_op_logs_merchant_expiry_recall");
 
                     b.HasIndex(new[] { "SalesChannel" }, "idx_op_logs_sales_channel");
 
@@ -395,6 +522,61 @@ namespace Lensee.Modules.Operations.Migrations
                     b.ToTable("operation_versions", "operations");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.ReplenishmentRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateOnly>("CairoDate")
+                        .HasColumnType("date")
+                        .HasColumnName("cairo_date");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<int>("CreatedOperations")
+                        .HasColumnType("integer")
+                        .HasColumnName("created_operations");
+
+                    b.Property<string>("RunKey")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("run_key");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("trigger");
+
+                    b.Property<int>("UncoveredQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("uncovered_quantity");
+
+                    b.HasKey("Id")
+                        .HasName("replenishment_runs_pkey");
+
+                    b.HasIndex(new[] { "RunKey" }, "uq_replenishment_runs_run_key")
+                        .IsUnique();
+
+                    b.ToTable("replenishment_runs", "operations");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.ShopifyOrderLink", b =>
                 {
                     b.Property<Guid>("OperationId")
@@ -432,57 +614,6 @@ namespace Lensee.Modules.Operations.Migrations
                         .IsUnique();
 
                     b.ToTable("shopify_order_links", "operations");
-                });
-
-            modelBuilder.Entity("Lensee.Modules.Operations.Data.ShopifyVariantMapping", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id")
-                        .HasDefaultValueSql("uuid_generate_v4()");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("EntryMode")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasDefaultValue("Packs")
-                        .HasColumnName("entry_mode");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("is_active");
-
-                    b.Property<string>("ShopifyVariantId")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("shopify_variant_id");
-
-                    b.Property<Guid>("SkuId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("sku_id");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp without time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("Id")
-                        .HasName("shopify_variant_mappings_pkey");
-
-                    b.HasIndex(new[] { "SkuId" }, "idx_shopify_variant_mappings_sku");
-
-                    b.HasIndex(new[] { "ShopifyVariantId" }, "uq_shopify_variant_mappings_variant")
-                        .IsUnique();
-
-                    b.ToTable("shopify_variant_mappings", "operations");
                 });
 
             modelBuilder.Entity("Lensee.Modules.Operations.Data.ShopifyWebhookEvent", b =>
@@ -1057,7 +1188,15 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasForeignKey("CurrentVersionId")
                         .HasConstraintName("fk_current_version");
 
+                    b.HasOne("Lensee.Modules.Operations.Data.MerchantExpiryRecall", "MerchantExpiryRecall")
+                        .WithMany()
+                        .HasForeignKey("MerchantExpiryRecallId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("operation_logs_merchant_expiry_recall_id_fkey");
+
                     b.Navigation("CurrentVersion");
+
+                    b.Navigation("MerchantExpiryRecall");
                 });
 
             modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationVersion", b =>

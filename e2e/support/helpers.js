@@ -167,7 +167,7 @@ async function ensureCoreData(page, data) {
 async function openMerchantDetail(page, data) {
   const row = page.locator("#merchant-rows tr", { hasText: data.merchant }).first();
   await expect(row).toBeVisible();
-  await row.getByRole("button", { name: /Detail|Eligibility/i }).first().click();
+  await row.getByRole("button", { name: /Detail|Batch history/i }).first().click();
 }
 
 async function resetOperationEditor(page) {
@@ -358,7 +358,7 @@ async function waitForStockOptions(row, textOrRegex) {
   }, { timeout: 25_000 }).toBeTruthy();
 }
 
-async function runLatestOperationAction(page, operationType, labelRegex, options = {}) {
+async function runLatestOperationAction(page, operationType, labelRegex) {
   const showCompleted = page.locator("#operations-show-completed");
   if (await showCompleted.isVisible().catch(() => false)) {
     await showCompleted.check({ force: true }).catch(() => undefined);
@@ -366,19 +366,6 @@ async function runLatestOperationAction(page, operationType, labelRegex, options
   const row = page.locator("#operation-rows tr", { hasText: operationType }).first();
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: labelRegex }).click();
-  if (options.expectEligibilityDialog || options.acceptOptionalEligibilityDialog) {
-    const dialog = page.locator(".confirm-dialog");
-    if (options.expectEligibilityDialog) {
-      await expect(dialog).toBeVisible();
-    } else {
-      await dialog.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
-    }
-    if (await dialog.isVisible().catch(() => false)) {
-      await expect(dialog).toContainText(/Eligibility warning|Confirm/i);
-      await page.locator("[data-dialog-confirm]").click();
-      await expect(dialog).toBeHidden({ timeout: 10_000 });
-    }
-  }
   await page.waitForTimeout(250).catch(() => undefined);
 }
 
@@ -401,7 +388,7 @@ async function createChangeDraft(page, data) {
   await fillFirstOperationLine(page, {
     skuText: data.product,
     quantity: "1",
-    lot: data.badLot,
+    lot: data.mainLot,
     expiry: data.expiry,
     price: "100"
   });

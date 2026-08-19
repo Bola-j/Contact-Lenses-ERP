@@ -79,10 +79,10 @@ test("operations: wholesale and retail sales move through reserved, shipped, com
 
   await gotoRoute(page, "/crm");
   await openMerchantDetail(page, data);
-  await expect(page.locator("#merchant-detail-panel")).toContainText(/WholesaleSale|Eligibility|Balance/i);
+  await expect(page.locator("#merchant-detail-panel")).toContainText(/WholesaleSale|Merchant Batch History|Balance/i);
 });
 
-test("operations: return/change eligibility warning can be overridden and write-off is confirmed", async ({ page }) => {
+test("operations: returns outside recorded sales warn, can be bypassed, and write-off is confirmed", async ({ page }) => {
   const data = makeRunData("RET");
   await seedStock(page, data);
 
@@ -97,10 +97,16 @@ test("operations: return/change eligibility warning can be overridden and write-
     sourceText: /Roxy|Main/i,
     paymentMethod: "CashHandToHand"
   });
-  await runLatestOperationAction(page, "Return", /Confirm/i, { expectEligibilityDialog: true });
+  await runLatestOperationAction(page, "Return", /Confirm/i);
+  const salesWarning = page.locator(".dialog-overlay", { hasText: /Recorded sales warning/i });
+  await expect(salesWarning).toBeVisible();
+  await expect(salesWarning).toContainText(/Sold to merchant|Requested now|Above recorded balance/i);
+  await salesWarning.locator("#merchant-sales-variance-reason").fill("Verified physical stock during merchant collection.");
+  await salesWarning.getByRole("button", { name: /Confirm with exception/i }).click();
+  await expect(page.locator("#operation-rows tr", { hasText: "Return" }).first()).toContainText(/Confirmed/i);
 
   await createChangeDraft(page, data);
-  await runLatestOperationAction(page, "Change", /Confirm/i, { acceptOptionalEligibilityDialog: true });
+  await runLatestOperationAction(page, "Change", /Confirm/i);
 
   await createOperationDraft(page, {
     type: "WriteOff",

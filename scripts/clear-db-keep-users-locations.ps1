@@ -1,38 +1,32 @@
 $ErrorActionPreference = "Stop"
 
-$sql = @"
-TRUNCATE TABLE
-  catalog.brands,
-  catalog.categories,
-  catalog.skus,
-  catalog.products,
-  crm.merchant_notes,
-  crm.merchants,
-  crm.representatives,
-  identity.audit_logs,
-  identity.refresh_tokens,
-  identity.roles_permissions,
-  inventory.inventory_batches,
-  inventory.opened_piece_lots,
-  inventory.stock_balances,
-  inventory.stock_transactions,
-  notifications.alert_configs,
-  notifications.notification_logs,
-  operations.inventory_receipt_headers,
-  operations.operation_lines,
-  operations.operation_logs,
-  operations.operation_versions,
-  operations.stocktake_adjustment_lines,
-  operations.stocktake_sessions,
-  payments.cash_records,
-  payments.financial_adjustments,
-  payments.installment_sub_logs,
-  payments.main_payment_logs,
-  reporting.export_logs,
-  shared.system_settings
-RESTART IDENTITY CASCADE;
-"@
+$sql = @'
+DO $$
+DECLARE
+  tables_to_clear text;
+BEGIN
+  SELECT string_agg(format('%I.%I', schemaname, tablename), ', ' ORDER BY schemaname, tablename)
+  INTO tables_to_clear
+  FROM pg_tables
+  WHERE schemaname IN (
+    'catalog', 'crm', 'identity', 'inventory', 'notifications',
+    'operations', 'payments', 'reporting', 'shared'
+  )
+  AND (schemaname, tablename) NOT IN (
+    ('identity', 'users'),
+    ('inventory', 'locations')
+  );
 
-$sql | docker compose exec -T db psql -U lensee_user -d lensee
+  IF tables_to_clear IS NOT NULL THEN
+    EXECUTE 'TRUNCATE TABLE ' || tables_to_clear || ' RESTART IDENTITY';
+  END IF;
+END $$;
 
-Write-Host "Cleanup complete. Preserved tables: inventory.locations, identity.users"
+SELECT format(
+  'Cleanup complete. Preserved %s users and %s locations.',
+  (SELECT count(*) FROM identity.users),
+  (SELECT count(*) FROM inventory.locations)
+);
+'@
+
+$sql | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d lensee

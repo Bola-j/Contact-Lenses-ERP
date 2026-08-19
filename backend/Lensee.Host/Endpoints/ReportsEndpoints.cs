@@ -1,4 +1,5 @@
 using System.Text;
+using System.Numerics;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
@@ -414,6 +415,7 @@ public static class ReportsEndpoints
         Guid id,
         string? language,
         OperationsDbContext operationsDbContext,
+        IdentityDbContext identityDbContext,
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
@@ -429,6 +431,14 @@ public static class ReportsEndpoints
             return Results.NotFound();
         }
 
+        var receiptOperationNumber = shipment.InventoryReceiptOperationId.HasValue
+            ? await operationsDbContext.OperationLogs
+                .Where(operation => operation.Id == shipment.InventoryReceiptOperationId.Value && !operation.IsDeleted)
+                .Select(operation => operation.OperationNumber)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+        var userLookup = await LoadUserLookupAsync(identityDbContext, shipment, cancellationToken);
+
         var summary = new List<PdfFact>
         {
             new("Shipment", shipment.ShipmentNumber),
@@ -438,7 +448,7 @@ public static class ReportsEndpoints
             new("Products", FormatMoney(shipment.ProductSubtotal)),
             new("Import costs", FormatMoney(shipment.CostSubtotal)),
             new("Landed total", FormatMoney(shipment.LandedTotal)),
-            new("Receipt operation", shipment.InventoryReceiptOperationId?.ToString("N") ?? "-")
+            new("Receipt operation", receiptOperationNumber ?? "-")
         };
 
         var sections = new List<PdfSection>
@@ -447,9 +457,9 @@ public static class ReportsEndpoints
                 "Shipment data",
                 [
                     new PdfFact("Shipment date", FormatDateTime(shipment.ShipmentDate)),
-                    new PdfFact("Created by", shipment.CreatedBy.ToString("N")),
+                    new PdfFact("Created by", GetUserDisplayName(shipment.CreatedBy, userLookup)),
                     new PdfFact("Created at", FormatDateTime(shipment.CreatedAt)),
-                    new PdfFact("Confirmed by", shipment.ConfirmedBy?.ToString("N") ?? "-"),
+                    new PdfFact("Confirmed by", GetUserDisplayName(shipment.ConfirmedBy, userLookup)),
                     new PdfFact("Confirmed at", FormatDateTime(shipment.ConfirmedAt)),
                     new PdfFact("Notes", shipment.Notes ?? "-")
                 ]),
@@ -513,7 +523,7 @@ public static class ReportsEndpoints
             summary,
             sections,
             language,
-            currentUser.UserId?.ToString("N"));
+            GetUserDisplayName(currentUser.UserId, userLookup));
         await LogExportAsync(reportingDbContext, currentUser, clock, "supply-landed-cost.pdf", $"download://reports/supply/{id}/landed-cost.pdf", cancellationToken);
         return Results.File(pdf, "application/pdf", $"supply-{shipment.ShipmentNumber}-landed-cost.pdf");
     }
@@ -781,7 +791,7 @@ public static class ReportsEndpoints
 
         var summary = new List<PdfFact>
         {
-            new("Receipt no.", log.Id.ToString("N")),
+            new("Receipt no.", DocumentRecordCode("PAY", log.Id)),
             new("Date", FormatDateTime(log.LastModifiedAt)),
             new("Merchant", merchant?.BusinessName ?? operation?.ClientName ?? "Anonymous buyer"),
             new("Method", DescribePaymentMethod(log.PaymentMethod)),
@@ -849,9 +859,9 @@ public static class ReportsEndpoints
 
         var isCashReceipt = string.Equals(log.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase);
         var pdf = BuildEnterprisePdf(
-            isCashReceipt ? "Cash receive receipt" : "Payment receipt",
+            isCashReceipt ? "Cash collection receipt" : "Payment receipt",
             isCashReceipt ? "Cash collection and accountant approval detail" : "Financial collection and review detail",
-            log.Id.ToString("N"),
+            DocumentRecordCode(isCashReceipt ? "CASH" : "PAY", log.Id),
             summary,
             sections,
             language,
@@ -1043,7 +1053,7 @@ public static class ReportsEndpoints
         var pdf = BuildEnterprisePdf(
             "Merchant statement",
             "Commercial relationship and financial position",
-            merchant.BusinessName,
+            DocumentRecordCode("MER", merchant.Id),
             summary,
             sections,
             language,
@@ -1081,7 +1091,7 @@ public static class ReportsEndpoints
         var userLookup = await LoadUserLookupAsync(identityDbContext, session, cancellationToken);
         var summary = new List<PdfFact>
         {
-            new("Session", session.Id.ToString("N")),
+            new("Session", DocumentRecordCode("STK", session.Id)),
             new("Location", location?.Name ?? session.LocationId.ToString("N")),
             new("Status", session.Status),
             new("Performed by", GetUserDisplayName(session.PerformedBy, userLookup)),
@@ -1143,7 +1153,7 @@ public static class ReportsEndpoints
         var pdf = BuildEnterprisePdf(
             "Stocktake summary",
             "Physical count and discrepancy review",
-            session.Id.ToString("N"),
+            DocumentRecordCode("STK", session.Id),
             summary,
             sections,
             language,
@@ -1267,24 +1277,26 @@ public static class ReportsEndpoints
         string? language = null,
         string? generatedBy = null)
     {
+        return BuildTemplatePdf(title, subtitle, documentReference, summaryFacts, sections, language, generatedBy);
+
+    }
+
+    private static byte[] BuildTemplatePdf(
+        string title,
+        string subtitle,
+        string documentReference,
+        IReadOnlyList<PdfFact> summaryFacts,
+        IReadOnlyList<PdfSection> sections,
+        string? language,
+        string? generatedBy)
+    {
         var arabic = string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase);
-        var referenceLabel = arabic ? "المرجع" : "Reference";
-        var generatedLabel = arabic ? "تاريخ الإنشاء" : "Generated";
-        var generatedByLabel = arabic ? "أنشأه" : "Generated by";
-        var internalDocumentLabel = arabic ? "مستند داخلي للشركة" : "Enterprise internal document";
-        var summaryLabel = arabic ? "ملخص" : "Summary";
+        var kind = GetPdfDocumentKind(title);
         var fontFamily = arabic
             ? (OperatingSystem.IsWindows() ? "Tahoma" : "Noto Sans Arabic")
             : (OperatingSystem.IsWindows() ? "Arial" : "Noto Sans");
 
-        if (arabic)
-        {
-            referenceLabel = "\u0627\u0644\u0645\u0631\u062c\u0639";
-            generatedLabel = "\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0625\u0646\u0634\u0627\u0621";
-            generatedByLabel = "\u0623\u0646\u0634\u0623\u0647";
-            internalDocumentLabel = "\u0645\u0633\u062a\u0646\u062f \u062f\u0627\u062e\u0644\u064a \u0644\u0644\u0634\u0631\u0643\u0629";
-            summaryLabel = "\u0645\u0644\u062e\u0635";
-        }
+        sections = NormalizeTemplateSections(kind, sections);
 
         if (arabic)
         {
@@ -1305,139 +1317,545 @@ public static class ReportsEndpoints
                 Note = section.Note is null ? null : ArabicReportText(section.Note)
             }).ToArray();
         }
+
+        var statusLabel = arabic ? ArabicReportText("Status") : "Status";
+        var status = summaryFacts.FirstOrDefault(fact => string.Equals(fact.Label, statusLabel, StringComparison.OrdinalIgnoreCase))?.Value;
+        var overviewCount = Math.Min(kind == PdfDocumentKind.MerchantStatement ? 6 : 5, summaryFacts.Count);
+        var overviewFacts = summaryFacts.Take(overviewCount).ToArray();
+        var metricFacts = summaryFacts.Skip(overviewCount).Take(4).ToArray();
+        var landscape = kind is PdfDocumentKind.SupplyLandedCost or PdfDocumentKind.StocktakeSummary;
+
         return Document.Create(container =>
         {
             container.Page(page =>
             {
+                page.Size(landscape ? PageSizes.A4.Landscape() : PageSizes.A4);
                 page.Margin(18);
-                page.Size(PageSizes.A4);
-                page.DefaultTextStyle(text => text.FontFamily(fontFamily).FontSize(9).FontColor(Colors.Grey.Darken3));
-                page.Header().Column(header =>
+                page.DefaultTextStyle(text => text.FontFamily(fontFamily).FontSize(8.5f).FontColor(Colors.Grey.Darken3));
+                page.Header().Element(item => RenderDocumentHeader(item, title, subtitle, documentReference, status, arabic));
+                page.Content().PaddingTop(8).Column(column =>
                 {
-                    header.Item().Row(row =>
+                    if (kind == PdfDocumentKind.CashReceipt)
                     {
-                        row.RelativeItem().Column(column =>
+                        var paidFact = summaryFacts.FirstOrDefault(fact => fact.Label.Contains(arabic ? "\u0627\u0644\u0645\u062f\u0641\u0648\u0639" : "Paid", StringComparison.OrdinalIgnoreCase));
+                        var totalFact = summaryFacts.FirstOrDefault(fact => fact.Label.Contains(arabic ? "\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a" : "Total", StringComparison.OrdinalIgnoreCase));
+                        var amount = paidFact?.Value ?? totalFact?.Value;
+                        if (!string.IsNullOrWhiteSpace(amount))
                         {
-                            column.Item().Text("Lensee").SemiBold().FontSize(20).FontColor(Colors.Blue.Darken2);
-                            column.Item().Text(title).SemiBold().FontSize(14).FontColor(Colors.Grey.Darken4);
-                            column.Item().Text(subtitle).FontSize(9).FontColor(Colors.Grey.Darken1);
-                        });
-                        row.ConstantItem(180).AlignRight().Column(column =>
-                        {
-                            column.Item().Text($"{referenceLabel}: {documentReference}").SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
-                            column.Item().Text($"{generatedLabel}: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC").FontSize(8).FontColor(Colors.Grey.Darken1);
-                            column.Item().Text($"{generatedByLabel}: {generatedBy ?? "-"}").FontSize(8).FontColor(Colors.Grey.Darken1);
-                            column.Item().Text(internalDocumentLabel).FontSize(8).FontColor(Colors.Grey.Darken1);
-                        });
-                    });
-                    header.Item().PaddingTop(8).LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
-                });
-
-                page.Content().PaddingTop(10).Column(column =>
-                {
-                    if (summaryFacts.Count > 0)
-                    {
-                        column.Item().Text(summaryLabel).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
-                        column.Item().PaddingTop(6).Table(table =>
-                        {
-                            table.ColumnsDefinition(columns =>
-                            {
-                                columns.RelativeColumn();
-                                columns.RelativeColumn();
-                            });
-
-                            foreach (var fact in summaryFacts)
-                            {
-                                table.Cell().Padding(2).Border(1).BorderColor(Colors.Grey.Lighten3).Padding(6).Column(item =>
-                                {
-                                    item.Item().Text(fact.Label).FontSize(7).FontColor(Colors.Grey.Darken1);
-                                    item.Item().Text(fact.Value).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
-                                });
-                            }
-                        });
+                            column.Item().Element(item => RenderCashAmount(item, amount, arabic));
+                        }
                     }
 
-                    foreach (var section in sections)
+                    if (overviewFacts.Length > 0)
                     {
-                        column.Item().PaddingTop(10).Text(section.Title).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
+                        column.Item().PaddingTop(4).Element(item => RenderSectionHeading(item, TemplateText("overview", arabic), arabic));
+                        column.Item().PaddingTop(5).Element(item => RenderOverviewPanel(item, overviewFacts, arabic));
+                    }
 
-                        if (!string.IsNullOrWhiteSpace(section.Note))
-                        {
-                            column.Item().PaddingTop(4).Text(section.Note).FontSize(8).FontColor(Colors.Grey.Darken1);
-                        }
+                    if (metricFacts.Length > 0)
+                    {
+                        column.Item().PaddingTop(8).Element(item => RenderFactGrid(item, metricFacts, arabic, Math.Min(4, metricFacts.Length), false));
+                    }
 
-                        if (section.Facts is { Count: > 0 })
+                    if (kind == PdfDocumentKind.SupplyLandedCost)
+                    {
+                        var shipmentData = sections.FirstOrDefault(section => section.Title == "Shipment data");
+                        var lines = sections.FirstOrDefault(section => section.Title == "Lines");
+                        var costBreakdown = sections.FirstOrDefault(section => section.Title == "Cost breakdown");
+                        var history = sections.FirstOrDefault(section => section.Title == "History");
+
+                        if (shipmentData is not null) RenderPdfSection(column, shipmentData, arabic);
+                        if (lines is not null) RenderPdfSection(column, lines, arabic);
+                        if (costBreakdown is not null || history is not null)
                         {
-                            column.Item().PaddingTop(6).Table(table =>
+                            column.Item().PaddingTop(10).Row(row =>
                             {
-                                table.ColumnsDefinition(columns =>
+                                if (arabic)
                                 {
-                                    columns.ConstantColumn(115);
-                                    columns.RelativeColumn();
-                                });
-
-                                foreach (var fact in section.Facts)
-                                {
-                                    table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).PaddingVertical(4).Text(fact.Label).FontSize(8).FontColor(Colors.Grey.Darken1);
-                                    table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).PaddingVertical(4).Text(fact.Value).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
+                                    if (history is not null) row.RelativeItem().Column(item => RenderPdfSection(item, history, arabic));
+                                    row.ConstantItem(12);
+                                    if (costBreakdown is not null) row.RelativeItem().Column(item => RenderPdfSection(item, costBreakdown, arabic));
                                 }
-                            });
-                        }
-
-                        foreach (var tableSection in section.Tables ?? [])
-                        {
-                            column.Item().PaddingTop(8).Text(tableSection.Title).SemiBold().FontSize(9).FontColor(Colors.Blue.Darken2);
-                            column.Item().PaddingTop(4).Table(table =>
-                            {
-                                table.ColumnsDefinition(columns =>
+                                else
                                 {
-                                    foreach (var _ in tableSection.Headers)
-                                    {
-                                        columns.RelativeColumn();
-                                    }
-                                });
-
-                                foreach (var header in tableSection.Headers)
-                                {
-                                    table.Cell().Background(Colors.Blue.Darken2).Padding(5).Text(header).SemiBold().FontColor(Colors.White).FontSize(8);
-                                }
-
-                                if (tableSection.Rows.Count == 0)
-                                {
-                                    table.Cell().ColumnSpan((uint)tableSection.Headers.Count).BorderBottom(1).BorderColor(Colors.Grey.Lighten3).Padding(8).Text(tableSection.EmptyMessage).FontColor(Colors.Grey.Darken1);
-                                }
-
-                                for (var rowIndex = 0; rowIndex < tableSection.Rows.Count; rowIndex++)
-                                {
-                                    foreach (var cell in tableSection.Rows[rowIndex])
-                                    {
-                                        var tableCell = table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3);
-                                        if (rowIndex % 2 == 1)
-                                        {
-                                            tableCell = tableCell.Background(Colors.Grey.Lighten5);
-                                        }
-
-                                        tableCell.Padding(5).Text(cell ?? string.Empty).FontSize(8);
-                                    }
+                                    if (costBreakdown is not null) row.RelativeItem().Column(item => RenderPdfSection(item, costBreakdown, arabic));
+                                    row.ConstantItem(12);
+                                    if (history is not null) row.RelativeItem().Column(item => RenderPdfSection(item, history, arabic));
                                 }
                             });
                         }
                     }
-                });
-
-                page.Footer().BorderTop(1).BorderColor(Colors.Grey.Lighten3).PaddingTop(8).Row(row =>
-                {
-                    row.RelativeItem().Text("Lensee confidential business document").FontSize(8).FontColor(Colors.Grey.Darken1);
-                    row.ConstantItem(120).AlignRight().Text(text =>
+                    else
                     {
-                        text.Span("Page ").FontSize(8);
-                        text.CurrentPageNumber().FontSize(8);
-                        text.Span(" / ").FontSize(8);
-                        text.TotalPages().FontSize(8);
-                    });
+                        foreach (var section in sections)
+                        {
+                            RenderPdfSection(column, section, arabic);
+                        }
+                    }
+
+                    column.Item().PaddingTop(12).Element(item => RenderSignatureBlocks(item, kind, arabic));
                 });
+                page.Footer().Element(item => RenderDocumentFooter(item, documentReference, kind, arabic, generatedBy));
             });
         }).GeneratePdf();
+    }
+
+    private static void RenderPdfSection(ColumnDescriptor column, PdfSection section, bool arabic)
+    {
+        column.Item().PaddingTop(10).Element(item => RenderSectionHeading(item, section.Title, arabic));
+        if (section.Facts is { Count: > 0 })
+        {
+            var compact = IsMetricSection(section.Title, arabic);
+            column.Item().PaddingTop(5).Element(item =>
+            {
+                if (compact)
+                {
+                    RenderFactGrid(item, section.Facts, arabic, Math.Min(4, section.Facts.Count), false);
+                }
+                else
+                {
+                    RenderOverviewPanel(item, section.Facts, arabic);
+                }
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(section.Note))
+        {
+            column.Item().PaddingTop(5).Element(item => RenderNote(item, section.Note, arabic));
+        }
+
+        foreach (var tableSection in section.Tables ?? [])
+        {
+            column.Item().PaddingTop(6).Text(tableSection.Title).SemiBold().FontSize(8.5f).FontColor(Colors.Grey.Darken4);
+            column.Item().PaddingTop(3).Element(item => RenderPdfTable(item, tableSection, arabic));
+        }
+    }
+
+    private static PdfDocumentKind GetPdfDocumentKind(string title) => title switch
+    {
+        "Operation bill" => PdfDocumentKind.OperationBill,
+        "Payment receipt" => PdfDocumentKind.PaymentReceipt,
+        "Cash receive receipt" or "Cash collection receipt" => PdfDocumentKind.CashReceipt,
+        "Supply landed cost" => PdfDocumentKind.SupplyLandedCost,
+        "Merchant statement" => PdfDocumentKind.MerchantStatement,
+        "Stocktake summary" => PdfDocumentKind.StocktakeSummary,
+        _ => PdfDocumentKind.Generic
+    };
+
+    private static IReadOnlyList<PdfSection> NormalizeTemplateSections(PdfDocumentKind kind, IReadOnlyList<PdfSection> sections)
+    {
+        if (kind != PdfDocumentKind.CashReceipt)
+        {
+            return sections;
+        }
+
+        var merchant = sections.FirstOrDefault(section => section.Title == "Merchant");
+        var operation = sections.FirstOrDefault(section => section.Title == "Operation");
+        var payment = sections.FirstOrDefault(section => section.Title == "Payment");
+        var entries = sections.FirstOrDefault(section => section.Title == "Payment entries");
+        var custodyFacts = (merchant?.Facts ?? []).Concat(operation?.Facts ?? []).ToArray();
+        var normalized = new List<PdfSection>();
+
+        if (custodyFacts.Length > 0)
+        {
+            normalized.Add(new PdfSection("Cash custody details", custodyFacts));
+        }
+
+        if (payment is not null)
+        {
+            normalized.Add(payment with { Title = "Related account movement" });
+        }
+
+        if (entries is not null)
+        {
+            normalized.Add(entries with { Title = "Custody trail" });
+        }
+
+        return normalized;
+    }
+
+    // Stable display references keep printed records traceable without exposing a shortened GUID.
+    private static string DocumentRecordCode(string prefix, Guid id)
+    {
+        const string alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        var value = new BigInteger(id.ToByteArray(), isUnsigned: true, isBigEndian: false);
+        var characters = new char[26];
+        for (var index = characters.Length - 1; index >= 0; index--)
+        {
+            characters[index] = alphabet[(int)(value & 31)];
+            value >>= 5;
+        }
+
+        return $"{prefix}-{new string(characters)}";
+    }
+
+    private static void RenderDocumentHeader(IContainer container, string title, string subtitle, string reference, string? status, bool arabic)
+    {
+        container.BorderTop(4).BorderColor(Colors.Grey.Darken4).PaddingTop(14).Column(column =>
+        {
+            column.Item().Row(row =>
+            {
+                if (arabic)
+                {
+                    row.RelativeItem(1.4f).Element(item => RenderDocumentIdentity(item, title, subtitle, reference, status, false));
+                    row.RelativeItem().AlignRight().Element(item => RenderBrand(item, true));
+                }
+                else
+                {
+                    row.RelativeItem().Element(item => RenderBrand(item, false));
+                    row.RelativeItem(1.4f).Element(item => RenderDocumentIdentity(item, title, subtitle, reference, status, true));
+                }
+            });
+            AlignByLanguage(column.Item().PaddingTop(9), arabic).Text(TemplateText("internal document", arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+            column.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
+        });
+    }
+
+    private static void RenderBrand(IContainer container, bool arabic)
+    {
+        container.Column(column =>
+        {
+            AlignByLanguage(column.Item(), arabic).Text("LENSEE").SemiBold().FontSize(18).FontColor(Colors.Grey.Darken4);
+            AlignByLanguage(column.Item(), arabic).Text(arabic ? "نظام إدارة العمليات" : "OPTICAL OPERATIONS").SemiBold().FontSize(6).FontColor(Colors.Grey.Darken1);
+        });
+    }
+
+    private static void RenderDocumentIdentity(IContainer container, string title, string subtitle, string reference, string? status, bool alignRight)
+    {
+        container.Column(column =>
+        {
+            AlignByLanguage(column.Item(), alignRight).Text(title).SemiBold().FontSize(16).FontColor(Colors.Grey.Darken4);
+            AlignByLanguage(column.Item(), alignRight).Text(subtitle).FontSize(8).FontColor(Colors.Grey.Darken1);
+            column.Item().PaddingTop(8).Row(row =>
+            {
+                AlignByLanguage(row.ConstantItem(112).ScaleToFit(), alignRight).Text(reference).SemiBold().FontSize(reference.Length > 25 ? 7 : 9).FontColor(Colors.Grey.Darken4);
+                if (!string.IsNullOrWhiteSpace(status))
+                {
+                    row.ConstantItem(88).Border(1).BorderColor(Colors.Grey.Lighten1).PaddingVertical(5).AlignCenter().Text(status).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken4);
+                }
+            });
+        });
+    }
+
+    private static void RenderSectionHeading(IContainer container, string title, bool arabic)
+    {
+        container.Column(column =>
+        {
+            AlignByLanguage(column.Item(), arabic).Text(title).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
+            column.Item().PaddingTop(3).Row(row =>
+            {
+                if (arabic)
+                {
+                    row.RelativeItem();
+                    row.ConstantItem(30).LineHorizontal(2).LineColor(Colors.Grey.Darken4);
+                }
+                else
+                {
+                    row.ConstantItem(30).LineHorizontal(2).LineColor(Colors.Grey.Darken4);
+                    row.RelativeItem();
+                }
+            });
+        });
+    }
+
+    private static void RenderFactGrid(IContainer container, IReadOnlyList<PdfFact> facts, bool arabic, int columnsCount, bool accent)
+    {
+        var orderedFacts = arabic ? facts.Reverse().ToArray() : facts.ToArray();
+        container.Table(table =>
+        {
+            table.ColumnsDefinition(columns =>
+            {
+                for (var index = 0; index < columnsCount; index++)
+                {
+                    columns.RelativeColumn();
+                }
+            });
+
+            foreach (var fact in orderedFacts)
+            {
+                var cell = table.Cell().Padding(2).Border(1).BorderColor(Colors.Grey.Lighten2).Padding(7);
+                if (accent)
+                {
+                    cell = arabic
+                        ? cell.BorderRight(4).BorderColor(Colors.Grey.Darken3)
+                        : cell.BorderLeft(4).BorderColor(Colors.Grey.Darken3);
+                }
+
+                cell.Column(column =>
+                {
+                    AlignByLanguage(column.Item(), arabic).Text(fact.Label).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+                    AlignByLanguage(column.Item().PaddingTop(3), arabic).Text(fact.Value).SemiBold().FontSize(9.5f).FontColor(Colors.Grey.Darken4);
+                });
+            }
+
+            for (var index = orderedFacts.Length; index % columnsCount != 0; index++)
+            {
+                table.Cell().Padding(2);
+            }
+        });
+    }
+
+    private static void RenderOverviewPanel(IContainer container, IReadOnlyList<PdfFact> facts, bool arabic)
+    {
+        var orderedFacts = arabic ? facts.Reverse().ToArray() : facts.ToArray();
+        container.Border(1).BorderColor(Colors.Grey.Lighten2).Background(Colors.Grey.Lighten5).Row(row =>
+        {
+            if (arabic)
+            {
+                row.ConstantItem(4).Background(Colors.Grey.Darken3);
+                row.RelativeItem().Padding(8).Table(table => RenderOverviewFacts(table, orderedFacts, arabic));
+            }
+            else
+            {
+                row.ConstantItem(4).Background(Colors.Grey.Darken3);
+                row.RelativeItem().Padding(8).Table(table => RenderOverviewFacts(table, orderedFacts, arabic));
+            }
+        });
+    }
+
+    private static void RenderOverviewFacts(TableDescriptor table, IReadOnlyList<PdfFact> facts, bool arabic)
+    {
+        table.ColumnsDefinition(columns =>
+        {
+            columns.RelativeColumn();
+            columns.RelativeColumn();
+        });
+
+        foreach (var fact in facts)
+        {
+            table.Cell().PaddingVertical(3).Column(column =>
+            {
+                AlignByLanguage(column.Item(), arabic).Text(fact.Label).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+                AlignByLanguage(column.Item().PaddingTop(2), arabic).Text(fact.Value).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
+            });
+        }
+
+        for (var index = facts.Count; index % 2 != 0; index++)
+        {
+            table.Cell();
+        }
+    }
+
+    private static void RenderCashAmount(IContainer container, string amount, bool arabic)
+    {
+        container.Background(Colors.Grey.Lighten4).Padding(12).Row(row =>
+        {
+            if (arabic)
+            {
+                row.RelativeItem().Text(amount).SemiBold().FontSize(21).FontColor(Colors.Grey.Darken4);
+                row.RelativeItem().AlignRight().Column(column =>
+                {
+                    column.Item().Text(TemplateText("payment type", true)).SemiBold().FontSize(7).FontColor(Colors.Grey.Darken1);
+                    column.Item().Text(TemplateText("cash hand to hand", true)).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
+                });
+            }
+            else
+            {
+                row.RelativeItem().Column(column =>
+                {
+                    column.Item().Text(TemplateText("payment type", false)).SemiBold().FontSize(7).FontColor(Colors.Grey.Darken1);
+                    column.Item().Text(TemplateText("cash hand to hand", false)).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
+                });
+                row.RelativeItem().AlignRight().Text(amount).SemiBold().FontSize(21).FontColor(Colors.Grey.Darken4);
+            }
+        });
+    }
+
+    private static void RenderNote(IContainer container, string note, bool arabic)
+    {
+        container.Border(1).BorderColor(Colors.Grey.Lighten2).Background(Colors.Grey.Lighten5).Padding(8).Column(column =>
+        {
+            AlignByLanguage(column.Item(), arabic).Text(TemplateText("note", arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+            AlignByLanguage(column.Item().PaddingTop(4), arabic).Text(note).FontSize(8).FontColor(Colors.Grey.Darken4);
+        });
+    }
+
+    private static void RenderPdfTable(IContainer container, PdfTableSection tableSection, bool arabic)
+    {
+        var headers = arabic ? tableSection.Headers.Reverse().ToArray() : tableSection.Headers.ToArray();
+        var rows = arabic
+            ? tableSection.Rows.Select(row => (IReadOnlyList<string>)row.Reverse().ToArray()).ToArray()
+            : tableSection.Rows.ToArray();
+
+        container.Table(table =>
+        {
+            table.ColumnsDefinition(columns =>
+            {
+                foreach (var _ in headers)
+                {
+                    columns.RelativeColumn();
+                }
+            });
+            table.Header(header =>
+            {
+                foreach (var headerText in headers)
+                {
+                    AlignByLanguage(header.Cell().Background(Colors.Grey.Lighten3).Padding(5), arabic).Text(headerText).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken4);
+                }
+            });
+
+            if (rows.Length == 0)
+            {
+                AlignByLanguage(table.Cell().ColumnSpan((uint)headers.Length).BorderBottom(1).BorderColor(Colors.Grey.Lighten2).Padding(8), arabic).Text(tableSection.EmptyMessage).FontColor(Colors.Grey.Darken1);
+            }
+
+            for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
+            {
+                foreach (var value in rows[rowIndex])
+                {
+                    var cell = table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten2);
+                    if (rowIndex % 2 == 1)
+                    {
+                        cell = cell.Background(Colors.Grey.Lighten5);
+                    }
+
+                    AlignByLanguage(cell.Padding(5), arabic).Text(value ?? string.Empty).FontSize(7.2f);
+                }
+            }
+        });
+    }
+
+    private static void RenderSignatureBlocks(IContainer container, PdfDocumentKind kind, bool arabic)
+    {
+        var labels = kind switch
+        {
+            PdfDocumentKind.OperationBill => new[] { "prepared by", "warehouse representative", "merchant customer", "approved by" },
+            PdfDocumentKind.PaymentReceipt => new[] { "recorded by", "accountant approval", "merchant acknowledgment" },
+            PdfDocumentKind.CashReceipt => new[] { "cash handed over by", "cash received by", "accountant approval" },
+            PdfDocumentKind.SupplyLandedCost => Array.Empty<string>(),
+            PdfDocumentKind.MerchantStatement => new[] { "prepared by", "merchant acknowledgment" },
+            PdfDocumentKind.StocktakeSummary => new[] { "counted by", "reviewed by", "confirmed by" },
+            _ => Array.Empty<string>()
+        };
+
+        if (labels.Length == 0)
+        {
+            return;
+        }
+
+        container.ShowEntire().Table(table =>
+        {
+            table.ColumnsDefinition(columns =>
+            {
+                foreach (var _ in labels)
+                {
+                    columns.RelativeColumn();
+                }
+            });
+
+            foreach (var label in arabic ? labels.Reverse() : labels)
+            {
+                table.Cell().Padding(3).Border(1).BorderColor(Colors.Grey.Lighten1).Padding(9).Column(column =>
+                {
+                    AlignByLanguage(column.Item(), arabic).Text(TemplateText(label, arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+                    column.Item().PaddingTop(34).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
+                    AlignByLanguage(column.Item().PaddingTop(3), arabic).Text(TemplateText("name signature date", arabic)).FontSize(6).FontColor(Colors.Grey.Darken1);
+                });
+            }
+        });
+    }
+
+    private static void RenderDocumentFooter(IContainer container, string reference, PdfDocumentKind kind, bool arabic, string? generatedBy)
+    {
+        container.BorderTop(1).BorderColor(Colors.Grey.Lighten2).PaddingTop(7).Row(row =>
+        {
+            if (arabic)
+            {
+                row.RelativeItem().Text(TemplateText("internal document", true)).FontSize(6.5f).FontColor(Colors.Grey.Darken1).AlignRight();
+                row.RelativeItem().AlignCenter().Text(reference).FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+            }
+            else
+            {
+                row.RelativeItem().Text("Lensee ERP | Internal business document").FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+                row.RelativeItem().AlignCenter().Text($"Reference: {reference}").FontSize(6.5f).FontColor(Colors.Grey.Darken1);
+            }
+
+            row.RelativeItem().AlignRight().Text(text =>
+            {
+                text.Span(arabic ? "صفحة " : "Page ").FontSize(6.5f);
+                text.CurrentPageNumber().FontSize(6.5f);
+                text.Span(arabic ? " من " : " of ").FontSize(6.5f);
+                text.TotalPages().FontSize(6.5f);
+            });
+        });
+    }
+
+    private static bool IsMetricSection(string title, bool arabic)
+    {
+        var normalized = title.ToLowerInvariant();
+        return normalized.Contains(arabic ? "ملخص" : "summary") ||
+            normalized.Contains(arabic ? "دفع" : "payment") ||
+            normalized.Contains(arabic ? "رصيد" : "balance");
+    }
+
+    private static IContainer AlignByLanguage(IContainer container, bool alignRight) =>
+        alignRight ? container.AlignRight() : container;
+
+    private static string TemplateText(string key, bool arabic)
+    {
+        if (!arabic)
+        {
+            return key switch
+            {
+                "overview" => "OVERVIEW",
+                "internal document" => "LENSEE ERP - INTERNAL BUSINESS DOCUMENT",
+                "payment type" => "PAYMENT TYPE",
+                "cash hand to hand" => "CASH HAND-TO-HAND",
+                "note" => "NOTE",
+                "prepared by" => "PREPARED BY",
+                "warehouse representative" => "WAREHOUSE REPRESENTATIVE",
+                "merchant customer" => "MERCHANT / CUSTOMER",
+                "approved by" => "APPROVED BY",
+                "recorded by" => "RECORDED BY",
+                "accountant approval" => "ACCOUNTANT APPROVAL",
+                "merchant acknowledgment" => "MERCHANT ACKNOWLEDGMENT",
+                "cash handed over by" => "CASH HANDED OVER BY",
+                "cash received by" => "CASH RECEIVED BY",
+                "procurement review" => "PROCUREMENT REVIEW",
+                "inventory posted by" => "INVENTORY POSTED BY",
+                "counted by" => "COUNTED BY",
+                "reviewed by" => "REVIEWED BY",
+                "confirmed by" => "CONFIRMED BY",
+                "name signature date" => "Name / signature / date",
+                _ => key
+            };
+        }
+
+        return key switch
+        {
+            "overview" => "بيانات المستند",
+            "internal document" => "نظام لينسي - مستند أعمال داخلي",
+            "payment type" => "نوع الدفع",
+            "cash hand to hand" => "تسليم نقدي باليد",
+            "note" => "ملاحظة",
+            "prepared by" => "أعده",
+            "warehouse representative" => "مسؤول المخزن",
+            "merchant customer" => "التاجر / العميل",
+            "approved by" => "اعتمده",
+            "recorded by" => "سجله",
+            "accountant approval" => "اعتماد المحاسب",
+            "merchant acknowledgment" => "إقرار التاجر",
+            "cash handed over by" => "مسلم النقدية",
+            "cash received by" => "مستلم النقدية",
+            "procurement review" => "مراجعة المشتريات",
+            "inventory posted by" => "ترحيل المخزون",
+            "counted by" => "قام بالجرد",
+            "reviewed by" => "راجعه",
+            "confirmed by" => "اعتمده",
+            "name signature date" => "الاسم / التوقيع / التاريخ",
+            _ => key
+        };
+    }
+
+    private enum PdfDocumentKind
+    {
+        Generic,
+        OperationBill,
+        PaymentReceipt,
+        CashReceipt,
+        SupplyLandedCost,
+        MerchantStatement,
+        StocktakeSummary
     }
 
     private static string ArabicReportText(string value)
@@ -1448,6 +1866,10 @@ public static class ReportsEndpoints
             "Official receipt-style operation document" => "\u0645\u0633\u062a\u0646\u062f \u0631\u0633\u0645\u064a \u0645\u062e\u062a\u0635\u0631 \u0644\u0644\u0639\u0645\u0644\u064a\u0629",
             "Payment receipt" => "\u0625\u064a\u0635\u0627\u0644 \u0633\u062f\u0627\u062f",
             "Cash receive receipt" => "\u0625\u064a\u0635\u0627\u0644 \u0627\u0633\u062a\u0644\u0627\u0645 \u0646\u0642\u062f\u064a\u0629",
+            "Cash collection receipt" => "\u0625\u064a\u0635\u0627\u0644 \u062a\u062d\u0635\u064a\u0644 \u0646\u0642\u062f\u064a",
+            "Cash custody details" => "\u0628\u064a\u0627\u0646\u0627\u062a \u062d\u064a\u0627\u0632\u0629 \u0627\u0644\u0646\u0642\u062f\u064a\u0629",
+            "Related account movement" => "\u062d\u0631\u0643\u0629 \u0627\u0644\u062d\u0633\u0627\u0628 \u0627\u0644\u0645\u0631\u062a\u0628\u0637\u0629",
+            "Custody trail" => "\u0645\u0633\u0627\u0631 \u062d\u064a\u0627\u0632\u0629 \u0627\u0644\u0646\u0642\u062f\u064a\u0629",
             "Supply landed cost" => "\u062a\u0643\u0644\u0641\u0629 \u0627\u0644\u062a\u0648\u0631\u064a\u062f \u0627\u0644\u0646\u0647\u0627\u0626\u064a\u0629",
             "Imported shipment, cost allocation, and inventory receipt" => "\u0634\u062d\u0646\u0629 \u0645\u0633\u062a\u0648\u0631\u062f\u0629 \u0648\u062a\u0648\u0632\u064a\u0639 \u062a\u0643\u0627\u0644\u064a\u0641 \u0648\u0625\u064a\u0635\u0627\u0644 \u0645\u062e\u0632\u0648\u0646",
             "Summary" => "\u0645\u0644\u062e\u0635",
@@ -1897,6 +2319,33 @@ public static class ReportsEndpoints
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        return await identityDbContext.Users
+            .Where(user => ids.Contains(user.Id))
+            .ToDictionaryAsync(user => user.Id, cancellationToken);
+    }
+
+    private static async Task<Dictionary<Guid, User>> LoadUserLookupAsync(
+        IdentityDbContext identityDbContext,
+        SupplyShipment shipment,
+        CancellationToken cancellationToken)
+    {
+        var ids = new[]
+        {
+            shipment.CreatedBy,
+            shipment.UpdatedBy ?? Guid.Empty,
+            shipment.ConfirmedBy ?? Guid.Empty,
+            shipment.CancelledBy ?? Guid.Empty
+        }
+        .Concat(shipment.HistoryLogs.Select(history => history.ActorUserId))
+        .Where(id => id != Guid.Empty)
+        .Distinct()
+        .ToArray();
 
         if (ids.Length == 0)
         {

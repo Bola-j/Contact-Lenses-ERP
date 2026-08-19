@@ -3,6 +3,7 @@ using Lensee.Modules.Catalog.Domain.Events;
 using Lensee.Modules.Catalog.Services;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
+using Lensee.SharedKernel.Text;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 
@@ -88,7 +89,7 @@ public static class CatalogEndpoints
         {
             Id = Guid.NewGuid(),
             ParentId = request.ParentId,
-            Name = request.Name.Trim(),
+            Name = InputText.NormalizeSingleLine(request.Name),
             CreatedAt = clock.EgyptNow
         };
 
@@ -138,7 +139,7 @@ public static class CatalogEndpoints
             return TypedResults.ValidationProblem(errors);
         }
 
-        category.Name = request.Name.Trim();
+        category.Name = InputText.NormalizeSingleLine(request.Name);
         category.ParentId = request.ParentId;
         await dbContext.SaveChangesAsync(cancellationToken);
         await auditLogWriter.WriteAsync("Category", category.Id, "Update", new { category.Name, category.ParentId }, cancellationToken: cancellationToken);
@@ -173,7 +174,7 @@ public static class CatalogEndpoints
             return TypedResults.ValidationProblem(errors);
         }
 
-        var brand = new Brand { Id = Guid.NewGuid(), Name = request.Name.Trim(), CreatedAt = clock.EgyptNow };
+        var brand = new Brand { Id = Guid.NewGuid(), Name = InputText.NormalizeSingleLine(request.Name), CreatedAt = clock.EgyptNow };
         dbContext.Brands.Add(brand);
         await dbContext.SaveChangesAsync(cancellationToken);
         await auditLogWriter.WriteAsync("Brand", brand.Id, "Create", new { brand.Name }, cancellationToken: cancellationToken);
@@ -203,7 +204,7 @@ public static class CatalogEndpoints
             return TypedResults.NotFound();
         }
 
-        brand.Name = request.Name.Trim();
+        brand.Name = InputText.NormalizeSingleLine(request.Name);
         await dbContext.SaveChangesAsync(cancellationToken);
         await auditLogWriter.WriteAsync("Brand", brand.Id, "Update", new { brand.Name }, cancellationToken: cancellationToken);
         await eventPublisher.PublishAsync(new BrandUpdated(brand.Id, clock.EgyptNow), cancellationToken);
@@ -300,7 +301,7 @@ public static class CatalogEndpoints
             Id = Guid.NewGuid(),
             CategoryId = request.CategoryId,
             BrandId = request.BrandId,
-            Name = request.Name.Trim(),
+            Name = InputText.NormalizeSingleLine(request.Name),
             ProductType = CatalogValidation.NormalizeProductType(request.ProductType),
             ExpiryType = CatalogValidation.NormalizeExpiryType(request.ExpiryType),
             SealedExpiryDuration = null,
@@ -346,7 +347,7 @@ public static class CatalogEndpoints
 
         product.CategoryId = request.CategoryId;
         product.BrandId = request.BrandId;
-        product.Name = request.Name.Trim();
+        product.Name = InputText.NormalizeSingleLine(request.Name);
         product.ProductType = CatalogValidation.NormalizeProductType(request.ProductType);
         product.ExpiryType = CatalogValidation.NormalizeExpiryType(request.ExpiryType);
         product.SealedExpiryDuration = null;
@@ -420,9 +421,9 @@ public static class CatalogEndpoints
             SkuCode = skuCode,
             PowerSign = request.PowerSign,
             PowerValue = request.PowerValue,
-            ColorName = request.ColorName?.Trim(),
-            Size = request.Size?.Trim(),
-            Barcode = request.Barcode?.Trim(),
+            ColorName = InputText.NormalizeOptionalSingleLine(request.ColorName),
+            Size = InputText.NormalizeOptionalSingleLine(request.Size),
+            Barcode = InputText.NormalizeOptionalSingleLine(request.Barcode),
             IsActive = true
         };
 
@@ -470,9 +471,9 @@ public static class CatalogEndpoints
         sku.SkuCode = skuCode;
         sku.PowerSign = request.PowerSign;
         sku.PowerValue = request.PowerValue;
-        sku.ColorName = request.ColorName?.Trim();
-        sku.Size = request.Size?.Trim();
-        sku.Barcode = request.Barcode?.Trim();
+        sku.ColorName = InputText.NormalizeOptionalSingleLine(request.ColorName);
+        sku.Size = InputText.NormalizeOptionalSingleLine(request.Size);
+        sku.Barcode = InputText.NormalizeOptionalSingleLine(request.Barcode);
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await auditLogWriter.WriteAsync("Sku", sku.Id, "Update", new { sku.SkuCode }, cancellationToken: cancellationToken);

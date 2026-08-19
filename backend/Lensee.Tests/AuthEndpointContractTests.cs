@@ -102,6 +102,43 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
     }
 
     [Fact]
+    public async Task Refresh_ReuseOfRotatedToken_RevokesTheReplacementSession()
+    {
+        await _factory.SeedUserAsync("admin", "Password123!", LenseeRoles.Admin);
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
+
+        var login = await client.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            username = "admin",
+            password = "Password123!"
+        });
+        var originalCookie = login.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+
+        var firstRefresh = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        firstRefresh.Headers.Add("Cookie", originalCookie);
+        var rotated = await client.SendAsync(firstRefresh);
+        var replacementCookie = rotated.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        Assert.Equal(HttpStatusCode.OK, rotated.StatusCode);
+
+        var replay = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        replay.Headers.Add("Cookie", originalCookie);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(replay)).StatusCode);
+
+        var replacementRefresh = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        replacementRefresh.Headers.Add("Cookie", replacementCookie);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(replacementRefresh)).StatusCode);
+    }
+
+    [Fact]
     public async Task Logout_ClearsRefreshCookie()
     {
         await _factory.SeedUserAsync("admin", "Password123!", LenseeRoles.Admin);

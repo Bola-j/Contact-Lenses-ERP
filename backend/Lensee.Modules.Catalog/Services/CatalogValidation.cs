@@ -100,6 +100,13 @@ public static class CatalogValidation
     public static string? NormalizeOpenedExpiryRate(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : Normalize(value, OpenedExpiryRates);
 
+    public static bool IsLensProduct(string? productType) =>
+        string.Equals(productType, Lens, StringComparison.OrdinalIgnoreCase);
+
+    public static bool HasValidOpenedExpiryRate(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        OpenedExpiryRates.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase);
+
     public static string? NormalizeOpenedDuration(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

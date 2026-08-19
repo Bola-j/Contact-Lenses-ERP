@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Security;
@@ -61,6 +62,37 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
 
         Assert.Equal(HttpStatusCode.OK, read.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, write.StatusCode);
+    }
+
+    [Fact]
+    public async Task OnlyPrimaryAdminCanCreateWarehouseLocations()
+    {
+        await _factory.SeedAsync();
+        var primaryAdminId = Guid.NewGuid();
+        var secondaryAdminId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var identity = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
+            identity.Users.AddRange(
+                new User { Id = primaryAdminId, Username = "primary", FullName = "Primary Admin", PasswordHash = "hash", Role = LenseeRoles.Admin, IsPrimaryAdmin = true, IsActive = true, CreatedAt = DateTime.UtcNow },
+                new User { Id = secondaryAdminId, Username = "secondary", FullName = "Secondary Admin", PasswordHash = "hash", Role = LenseeRoles.Admin, IsActive = true, CreatedAt = DateTime.UtcNow });
+            await identity.SaveChangesAsync();
+        }
+
+        using var secondary = _factory.CreateClient();
+        secondary.AuthorizeAs(LenseeRoles.Admin, secondaryAdminId, LenseePermissions.UsersWrite);
+        var denied = await secondary.PostAsJsonAsync("/api/v1/inventory/locations", new { name = "Retail Annex", locationType = "Retail" });
+
+        using var primary = _factory.CreateClient();
+        primary.AuthorizeAs(LenseeRoles.Admin, primaryAdminId, LenseePermissions.UsersWrite);
+        var created = await primary.PostAsJsonAsync("/api/v1/inventory/locations", new { name = "Retail Annex", locationType = "Retail" });
+        var duplicate = await primary.PostAsJsonAsync("/api/v1/inventory/locations", new { name = "retail annex", locationType = "Retail" });
+        var secondMain = await primary.PostAsJsonAsync("/api/v1/inventory/locations", new { name = "Second Main", locationType = "MainWarehouse" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, secondMain.StatusCode);
     }
 
     [Fact]
@@ -265,9 +297,11 @@ public sealed class InventoryEndpointFactory : WebApplicationFactory<Program>
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<DbContextOptions<CatalogDbContext>>();
+            services.RemoveAll<DbContextOptions<IdentityDbContext>>();
             services.RemoveAll<DbContextOptions<InventoryDbContext>>();
             services.RemoveAll<IAuditLogWriter>();
             services.AddDbContext<CatalogDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<IdentityDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<InventoryDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddSingleton<IAuditLogWriter, NoOpAuditLogWriter>();
 
@@ -422,6 +456,9 @@ internal sealed class NoOpAuditLogWriter : IAuditLogWriter
         Task.CompletedTask;
 
     public Task WriteSystemAsync(string actorName, string entityType, Guid entityId, string action, object? changedFields = null, int? stockDeltaApplied = null, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    public Task WriteForUserAsync(Guid actorUserId, string actorName, string entityType, Guid entityId, string action, object? changedFields = null, int? stockDeltaApplied = null, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 }
 

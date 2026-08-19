@@ -122,27 +122,28 @@ test("scenario DAY-02 authorization: non-admin roles cannot maintain users", asy
   }
 });
 
-test("scenario DAY-01 session: parallel logins remain usable after one logout", async ({ browser }) => {
-  const first = await browser.newPage();
-  const second = await browser.newPage();
+test("scenario DAY-01 session: same-browser tabs share a session and logout together", async ({ page: first, context }) => {
+  const second = await context.newPage();
   await installApiBase(first);
   await installApiBase(second);
 
   try {
     await login(first, users.admin);
-    await login(second, users.admin);
+    await Promise.all([
+      first.reload(),
+      second.goto("/#/dashboard")
+    ]);
+    await expect(first.locator("#page-title")).toContainText("Overview");
+    await expect(second.locator("#page-title")).toContainText("Overview");
 
+    const firstSession = await apiRequest(first, "GET", "/api/v1/auth/me");
     const beforeLogout = await apiRequest(second, "GET", "/api/v1/auth/me");
+    expect(firstSession.ok()).toBeTruthy();
     expect(beforeLogout.ok()).toBeTruthy();
 
     await logout(first);
-
-    const afterLogout = await apiRequest(second, "GET", "/api/v1/auth/me");
-    expect(afterLogout.ok()).toBeTruthy();
-    await gotoRoute(second, "/dashboard");
-    await expect(second.locator("#page-title")).toContainText("Overview");
+    await expect(second.locator("#login-form")).toBeVisible();
   } finally {
-    await first.close();
     await second.close();
   }
 });

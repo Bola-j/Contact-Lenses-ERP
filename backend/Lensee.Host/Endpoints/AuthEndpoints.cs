@@ -1,6 +1,8 @@
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Identity.Data;
+using Lensee.Modules.Inventory.Data;
 using Lensee.SharedKernel.Abstractions;
+using Lensee.SharedKernel.Text;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 
@@ -36,12 +38,14 @@ public static class AuthEndpoints
     private static async Task<Results<Ok<AuthResponse>, ValidationProblem, UnauthorizedHttpResult>> LoginAsync(
         LoginRequest request,
         IdentityDbContext dbContext,
+        InventoryDbContext inventoryDbContext,
         IPasswordHasher passwordHasher,
         ITokenService tokenService,
         IClock clock,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
         IConfiguration configuration,
+        IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
     {
         var errors = ValidateLogin(request);
@@ -50,8 +54,8 @@ public static class AuthEndpoints
             return TypedResults.ValidationProblem(errors);
         }
 
-        var username = request.Username.Trim();
-        var user = await dbContext.Users.SingleOrDefaultAsync(u => u.Username == username, cancellationToken);
+        var username = InputText.NormalizeUsername(request.Username);
+        var user = await dbContext.Users.SingleOrDefaultAsync(u => u.Username.ToUpper() == username.ToUpper(), cancellationToken);
 
         if (user is null || !user.IsActive || !passwordHasher.Verify(request.Password, user.PasswordHash))
         {
@@ -73,14 +77,17 @@ public static class AuthEndpoints
 
         await dbContext.SaveChangesAsync(cancellationToken);
 
+        await auditLogWriter.WriteForUserAsync(user.Id, user.FullName, "User", user.Id, "Login", new { user.Username }, cancellationToken: cancellationToken);
+
         SetRefreshCookie(httpContextAccessor.HttpContext!, refreshToken, refreshTokenExpiresAt, environment);
 
-        return TypedResults.Ok(CreateAuthResponse(user, tokenService.CreateAccessToken(user)));
+        return TypedResults.Ok(await CreateAuthResponseAsync(user, tokenService.CreateAccessToken(user), inventoryDbContext, cancellationToken));
     }
 
     private static async Task<Results<Ok<AuthResponse>, ValidationProblem, UnauthorizedHttpResult>> RefreshAsync(
         RefreshRequest request,
         IdentityDbContext dbContext,
+        InventoryDbContext inventoryDbContext,
         ITokenService tokenService,
         IClock clock,
         IHttpContextAccessor httpContextAccessor,
@@ -142,7 +149,7 @@ public static class AuthEndpoints
 
         SetRefreshCookie(httpContextAccessor.HttpContext!, refreshToken, refreshTokenExpiresAt, environment);
 
-        return TypedResults.Ok(CreateAuthResponse(existingToken.User, tokenService.CreateAccessToken(existingToken.User)));
+        return TypedResults.Ok(await CreateAuthResponseAsync(existingToken.User, tokenService.CreateAccessToken(existingToken.User), inventoryDbContext, cancellationToken));
     }
 
     private static async Task<NoContent> LogoutAsync(
@@ -185,14 +192,17 @@ public static class AuthEndpoints
         return TypedResults.NoContent();
     }
 
-    private static Results<Ok<SessionResponse>, UnauthorizedHttpResult> Me(ICurrentUser currentUser)
+    private static async Task<Results<Ok<SessionResponse>, UnauthorizedHttpResult>> Me(ICurrentUser currentUser, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
         if (currentUser.UserId is not { } userId || currentUser.Role is null)
         {
             return TypedResults.Unauthorized();
         }
 
-        return TypedResults.Ok(new SessionResponse(userId, currentUser.Role, currentUser.LocationId));
+        var locationType = currentUser.LocationId is { } locationId
+            ? await inventoryDbContext.Locations.Where(location => location.Id == locationId && location.IsActive).Select(location => location.LocationType).SingleOrDefaultAsync(cancellationToken)
+            : null;
+        return TypedResults.Ok(new SessionResponse(userId, currentUser.Role, currentUser.LocationId, locationType));
     }
 
     private static async Task RevokeAllRefreshTokensAsync(
@@ -219,9 +229,14 @@ public static class AuthEndpoints
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
 
-        if (string.IsNullOrWhiteSpace(request.Username))
+        var username = InputText.NormalizeUsername(request.Username);
+        if (username.Length == 0)
         {
             errors[nameof(request.Username)] = ["Username is required."];
+        }
+        else if (InputText.HasWhitespace(username))
+        {
+            errors[nameof(request.Username)] = ["Username cannot contain spaces."];
         }
 
         if (string.IsNullOrWhiteSpace(request.Password))
@@ -264,10 +279,13 @@ public static class AuthEndpoints
             Expires = new DateTimeOffset(expiresAt)
         };
 
-    private static AuthResponse CreateAuthResponse(User user, string accessToken) =>
-        new(
-            accessToken,
-            new SessionResponse(user.Id, user.Role, user.LocationId));
+    private static async Task<AuthResponse> CreateAuthResponseAsync(User user, string accessToken, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    {
+        var locationType = user.LocationId is { } locationId
+            ? await inventoryDbContext.Locations.Where(location => location.Id == locationId && location.IsActive).Select(location => location.LocationType).SingleOrDefaultAsync(cancellationToken)
+            : null;
+        return new AuthResponse(accessToken, new SessionResponse(user.Id, user.Role, user.LocationId, locationType));
+    }
 }
 
 public sealed record LoginRequest(string Username, string Password);
@@ -278,4 +296,4 @@ public sealed record LogoutRequest(string? RefreshToken);
 
 public sealed record AuthResponse(string AccessToken, SessionResponse User);
 
-public sealed record SessionResponse(Guid UserId, string Role, Guid? LocationId);
+public sealed record SessionResponse(Guid UserId, string Role, Guid? LocationId, string? LocationType = null);

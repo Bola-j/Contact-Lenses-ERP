@@ -46,3 +46,11 @@ output/pdf/lensee-user-manual.pdf
 tmp/manual-module-gallery-preview.png
 
 tmp/pdfs/*
+scripts/__pycache__/*
+scripts/build-user-manual-pdf.py
+scripts/capture-user-manual-screenshots.py
+.env.example
+.env.production.example
+.env.production.example
+.env.example
+docs/SHOPIFY_INTEGRATION_CONFIGURATION.md

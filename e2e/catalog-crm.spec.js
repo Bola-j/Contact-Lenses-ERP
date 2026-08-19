@@ -88,9 +88,22 @@ test("crm: merchant and representative lifecycle, validation, notes, and profile
   await expect(representativeRow).toContainText(/Inactive|Reactivate/i);
 
   await openMerchantDetail(page, { ...data, merchant: updatedMerchant });
-  await expect(page.locator("#merchant-detail-panel")).toContainText(/Eligibility ledger|Recent operations|Balance/i);
+  await expect(page.locator("#merchant-detail-panel")).toContainText(/Merchant Batch History|Recent operations|Balance/i);
   await merchantRow.getByRole("button", { name: /Add note/i }).click();
   await page.locator(".dialog-input").fill(`${data.runId} note <script>alert(1)</script>`);
   await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();
   await expectNotice(page, /Note added/i);
+});
+
+test("crm: Arabic RTL batch history contains facts without legacy return metrics", async ({ page }) => {
+  const data = makeRunData("CRM-RTL");
+  await createCrmFixture(page, data);
+  await gotoRoute(page, "/crm");
+  await openMerchantDetail(page, data);
+
+  await page.locator("#language-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  const panel = page.locator("#merchant-detail-panel");
+  await expect(panel).toContainText("سجل دفعات التاجر");
+  await expect(panel).not.toContainText(/Eligibility|Returnable|Over by|أهلية/i);
 });

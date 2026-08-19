@@ -2,7 +2,8 @@ param(
     [string]$Username = "admin",
     [Parameter(Mandatory = $true)]
     [string]$Password,
-    [string]$FullName = "Lansee Admin"
+    [string]$FullName = "Lansee Admin",
+    [switch]$Primary
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,17 +36,35 @@ $usernameSql = Escape-SqlLiteral $Username
 $fullNameSql = Escape-SqlLiteral $FullName
 $hashSql = Escape-SqlLiteral $hash
 
-$sql = @"
-insert into identity.users (username, password_hash, full_name, role, location_id, is_active)
-values ('$usernameSql', '$hashSql', '$fullNameSql', 'Admin', null, true)
-on conflict (username) do update
+$primarySql = if ($Primary) {
+@"
+begin;
+update identity.users set is_primary_admin = false where is_primary_admin;
+insert into identity.users (username, password_hash, full_name, role, location_id, is_active, is_primary_admin)
+values ('$usernameSql', '$hashSql', '$fullNameSql', 'Admin', null, true, true)
+on conflict (upper(btrim(username))) do update
+set password_hash = excluded.password_hash,
+    full_name = excluded.full_name,
+    role = 'Admin',
+    location_id = null,
+    is_active = true,
+    is_primary_admin = true;
+commit;
+"@
+} else {
+@"
+insert into identity.users (username, password_hash, full_name, role, location_id, is_active, is_primary_admin)
+values ('$usernameSql', '$hashSql', '$fullNameSql', 'Admin', null, true, false)
+on conflict (upper(btrim(username))) do update
 set password_hash = excluded.password_hash,
     full_name = excluded.full_name,
     role = 'Admin',
     location_id = null,
     is_active = true;
 "@
+}
 
-$sql | docker compose exec -T db psql -U lensee_user -d lensee
+$primarySql | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d lensee
 
-Write-Host "Admin user '$Username' is ready."
+$primaryMessage = if ($Primary) { " as the primary Administrator" } else { "" }
+Write-Host "Admin user '$Username' is ready$primaryMessage."

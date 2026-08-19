@@ -244,7 +244,7 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
   await page.locator("#merchant-form button[type='submit']").click();
   await expect(page.locator("#merchant-rows")).toContainText(updatedMerchant);
   await openMerchantDetail(page, { ...data, merchant: updatedMerchant });
-  await expect(page.locator("#merchant-detail-panel")).toContainText(/Recent operations|Balance|Eligibility/i);
+  await expect(page.locator("#merchant-detail-panel")).toContainText(/Recent operations|Balance|Merchant Batch History/i);
   await page.locator("#merchant-rows tr", { hasText: updatedMerchant }).first().getByRole("button", { name: /Add note/i }).click();
   await page.locator(".dialog-input").fill(`${data.runId} post-edit note`);
   await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();

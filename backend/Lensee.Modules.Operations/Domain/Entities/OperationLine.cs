@@ -43,5 +43,17 @@ public partial class OperationLine
 
     public string? LineNotes { get; set; }
 
+    public string? ShopifyLineItemId { get; set; }
+
+    public string? ShopifyVariantId { get; set; }
+
+    public string? ShopifySkuSnapshot { get; set; }
+
+    public string? ShopifyTitleSnapshot { get; set; }
+
+    public string? ShopifyVariantTitleSnapshot { get; set; }
+
+    public string? ShopifyPropertiesSnapshot { get; set; }
+
     public virtual OperationLog Operation { get; set; } = null!;
 }

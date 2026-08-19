@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Catalog.Services;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
@@ -235,6 +236,7 @@ public sealed class ShopifyIntegrationService
             }
             catch (ShopifyBusinessException exception)
             {
+                eventRecord = await ReloadAfterFailedTransactionAsync(eventRecord.Id, cancellationToken);
                 eventRecord.Status = "RequiresAttention";
                 eventRecord.Detail = exception.Message;
                 eventRecord.ProcessedAt = _clock.EgyptNow;
@@ -244,6 +246,7 @@ public sealed class ShopifyIntegrationService
             }
             catch (Exception)
             {
+                eventRecord = await ReloadAfterFailedTransactionAsync(eventRecord.Id, cancellationToken);
                 eventRecord.Status = eventRecord.AttemptCount >= 5 ? "RequiresAttention" : "Retrying";
                 eventRecord.Detail = eventRecord.Status == "RequiresAttention" ? "Automatic processing exhausted; review the integration event." : "Transient processing failure; retry scheduled.";
                 eventRecord.NextAttemptAt = eventRecord.Status == "Retrying" ? _clock.EgyptNow.Add(GetRetryDelay(eventRecord.AttemptCount)) : null;
@@ -337,28 +340,56 @@ public sealed class ShopifyIntegrationService
             throw new ShopifyBusinessException($"Shopify order {orderId} has no line items.");
         }
 
-        var variantIds = lineItems.Select(item => ReadValue(item, "variant_id")).Where(value => !string.IsNullOrWhiteSpace(value)).Cast<string>().Distinct().ToArray();
-        if (variantIds.Length != lineItems.Count)
+        var incomingLines = lineItems.Select((item, index) => ReadOrderLine(item, index + 1)).ToList();
+        var errors = new List<string>();
+        if (incomingLines.Any(line => string.IsNullOrWhiteSpace(line.LineItemId)))
         {
-            throw new ShopifyBusinessException($"Shopify order {orderId} contains a line without a variant ID.");
+            errors.Add("Every Shopify line requires a line-item ID.");
+        }
+        var duplicateLineIds = incomingLines.Where(line => !string.IsNullOrWhiteSpace(line.LineItemId))
+            .GroupBy(line => line.LineItemId!, StringComparer.Ordinal).Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+        if (duplicateLineIds.Length > 0)
+        {
+            errors.Add($"Shopify line-item IDs must be unique: {string.Join(", ", duplicateLineIds)}.");
+        }
+        foreach (var line in incomingLines)
+        {
+            if (string.IsNullOrWhiteSpace(line.RawSku)) errors.Add($"Line {line.Position} has no Shopify SKU.");
+            if (line.Quantity <= 0) errors.Add($"Line {line.Position} has a non-positive quantity.");
+            if (line.UnitPrice < 0 || !line.HasValidPrice) errors.Add($"Line {line.Position} has an invalid price.");
         }
 
-        var mappings = await _operations.ShopifyVariantMappings
-            .Where(value => value.IsActive && variantIds.Contains(value.ShopifyVariantId))
-            .ToDictionaryAsync(value => value.ShopifyVariantId, cancellationToken);
-        var missingVariants = variantIds.Where(value => !mappings.ContainsKey(value)).ToArray();
-        if (missingVariants.Length > 0)
+        var skuKeys = incomingLines.Where(line => !string.IsNullOrWhiteSpace(line.RawSku)).Select(line => NormalizeSkuKey(line.RawSku!)).Distinct().ToArray();
+        var candidates = skuKeys.Length == 0
+            ? []
+            : await _catalog.Skus.Include(value => value.Product)
+                .Where(value => value.IsActive && value.DeletedAt == null && value.Product.IsActive && value.Product.DeletedAt == null && skuKeys.Contains(value.SkuCode.Trim().ToUpper()))
+                .ToListAsync(cancellationToken);
+        var candidatesByKey = candidates.GroupBy(value => NormalizeSkuKey(value.SkuCode)).ToDictionary(group => group.Key, group => group.ToList());
+        var resolvedLines = new List<ResolvedShopifyOrderLine>();
+        foreach (var line in incomingLines.Where(line => !string.IsNullOrWhiteSpace(line.RawSku)))
         {
-            throw new ShopifyBusinessException($"Shopify order {orderId} has unmapped variant IDs: {string.Join(", ", missingVariants)}.");
+            var key = NormalizeSkuKey(line.RawSku!);
+            if (!candidatesByKey.TryGetValue(key, out var matched))
+            {
+                errors.Add($"Line {line.Position} SKU '{line.RawSku}' is not an active Lensee SKU.");
+                continue;
+            }
+            if (matched.Count != 1)
+            {
+                errors.Add($"Line {line.Position} SKU '{line.RawSku}' matches multiple Lensee SKUs when compared without case.");
+                continue;
+            }
+            var sku = matched[0];
+            if (!CatalogValidation.IsLensProduct(sku.Product.ProductType)) errors.Add($"Line {line.Position} SKU '{line.RawSku}' is not a Lens product.");
+            else if (sku.Product.SellMode is not ("SinglePiece" or "Both")) errors.Add($"Line {line.Position} SKU '{line.RawSku}' is not configured for piece sales.");
+            else if (sku.Product.PiecesPerPack is null or <= 0) errors.Add($"Line {line.Position} SKU '{line.RawSku}' has no valid pieces-per-pack value.");
+            else if (!CatalogValidation.HasValidOpenedExpiryRate(sku.Product.OpenedExpiryRate)) errors.Add($"Line {line.Position} SKU '{line.RawSku}' has no valid Daily, Monthly, or Annual wear cycle.");
+            else resolvedLines.Add(new ResolvedShopifyOrderLine(line, sku));
         }
-
-        var skuIds = mappings.Values.Select(value => value.SkuId).Distinct().ToArray();
-        var skus = await _catalog.Skus.Include(value => value.Product)
-            .Where(value => skuIds.Contains(value.Id) && value.IsActive && value.DeletedAt == null && value.Product.IsActive && value.Product.DeletedAt == null)
-            .ToDictionaryAsync(value => value.Id, cancellationToken);
-        if (skus.Count != skuIds.Length)
+        if (errors.Count > 0)
         {
-            throw new ShopifyBusinessException($"Shopify order {orderId} references an inactive or missing Lensee SKU.");
+            throw new ShopifyBusinessException($"Shopify order {orderId} cannot be imported: {string.Join(" ", errors)}");
         }
 
         var customer = await ResolveCustomerAsync(root, orderId, cancellationToken);
@@ -388,17 +419,10 @@ public sealed class ShopifyIntegrationService
             CurrentVersionId = null
         };
 
-        foreach (var item in lineItems)
+        foreach (var resolved in resolvedLines)
         {
-            var variantId = ReadValue(item, "variant_id")!;
-            var mapping = mappings[variantId];
-            var sku = skus[mapping.SkuId];
-            var quantity = ReadInt(item, "quantity");
-            if (quantity <= 0)
-            {
-                throw new ShopifyBusinessException($"Shopify order {orderId} has a non-positive quantity for variant {variantId}.");
-            }
-            var unitPrice = ReadDecimal(item, "price");
+            var sku = resolved.Sku;
+            var line = resolved.Line;
             operation.OperationLines.Add(new OperationLine
             {
                 Id = Guid.NewGuid(),
@@ -408,14 +432,20 @@ public sealed class ShopifyIntegrationService
                 SkuCodeSnapshot = sku.SkuCode,
                 MerchantNameSnapshot = customer.BusinessName,
                 Section = "Standard",
-                Quantity = quantity,
-                EntryMode = mapping.EntryMode == "Pieces" ? "Pieces" : "Packs",
+                Quantity = line.Quantity,
+                EntryMode = "Pieces",
                 BonusQuantity = 0,
-                UnitPrice = unitPrice,
-                LineTotal = unitPrice * quantity,
+                UnitPrice = line.UnitPrice,
+                LineTotal = line.UnitPrice * line.Quantity,
                 LotNumber = null,
                 ExpiryDate = null,
-                LineNotes = $"Shopify variant {variantId}"
+                LineNotes = $"Imported from Shopify line {line.LineItemId}",
+                ShopifyLineItemId = Limit(line.LineItemId, 100),
+                ShopifyVariantId = Limit(line.VariantId, 100),
+                ShopifySkuSnapshot = LimitRaw(line.RawSku, 255),
+                ShopifyTitleSnapshot = Limit(line.Title, 255),
+                ShopifyVariantTitleSnapshot = Limit(line.VariantTitle, 255),
+                ShopifyPropertiesSnapshot = line.PublicPropertiesSnapshot
             });
         }
 
@@ -426,7 +456,7 @@ public sealed class ShopifyIntegrationService
             OperationId = operation.Id,
             VersionNumber = 1,
             Reason = "Created from Shopify webhook",
-            SnapshotData = JsonSerializer.Serialize(new { operation.OperationType, operation.Status, operation.SalesChannel, ShopifyOrderId = orderId }),
+            SnapshotData = JsonSerializer.Serialize(new { operation.OperationType, operation.Status, operation.SalesChannel, ShopifyOrderId = orderId, Lines = operation.OperationLines.Select(line => new { line.ShopifyLineItemId, line.ShopifyVariantId, line.ShopifySkuSnapshot, line.Quantity, line.EntryMode }) }),
             EditedBy = Guid.Empty,
             EditedActorName = Shopify,
             EditedAt = now
@@ -582,6 +612,15 @@ public sealed class ShopifyIntegrationService
         await CreateExceptionNotificationAsync("ShopifyOrderException", detail, eventRecord.ShopifyOrderId ?? "unknown", eventRecord.OperationId, cancellationToken);
     }
 
+    private async Task<ShopifyWebhookEvent> ReloadAfterFailedTransactionAsync(Guid eventId, CancellationToken cancellationToken)
+    {
+        _operations.ChangeTracker.Clear();
+        _crm.ChangeTracker.Clear();
+        _inventory.ChangeTracker.Clear();
+        _notifications.ChangeTracker.Clear();
+        return await _operations.ShopifyWebhookEvents.SingleAsync(value => value.Id == eventId, cancellationToken);
+    }
+
     private static TimeSpan GetRetryDelay(int attempt) => attempt switch
     {
         <= 1 => TimeSpan.FromMinutes(1),
@@ -619,6 +658,47 @@ public sealed class ShopifyIntegrationService
         root.TryGetProperty(property, out var value) && value.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined
             ? value.ValueKind == JsonValueKind.String ? value.GetString()?.Trim() : value.ToString()
             : null;
+
+    private static ShopifyOrderLineInput ReadOrderLine(JsonElement item, int position)
+    {
+        var rawSku = item.TryGetProperty("sku", out var skuValue) && skuValue.ValueKind == JsonValueKind.String ? skuValue.GetString() : ReadValue(item, "sku");
+        var rawPrice = ReadValue(item, "price");
+        var hasValidPrice = decimal.TryParse(rawPrice, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var unitPrice);
+        return new ShopifyOrderLineInput(
+            position,
+            ReadValue(item, "id"),
+            string.IsNullOrWhiteSpace(rawSku) ? null : rawSku,
+            ReadValue(item, "variant_id"),
+            ReadValue(item, "title") ?? ReadValue(item, "name"),
+            ReadValue(item, "variant_title"),
+            ReadInt(item, "quantity"),
+            hasValidPrice ? unitPrice : 0,
+            hasValidPrice,
+            ReadPublicLineProperties(item));
+    }
+
+    private static string? ReadPublicLineProperties(JsonElement item)
+    {
+        if (!item.TryGetProperty("properties", out var properties) || properties.ValueKind != JsonValueKind.Array) return null;
+        var values = properties.EnumerateArray()
+            .Where(value => value.ValueKind == JsonValueKind.Object)
+            .Select(value => new ShopifyLineProperty(Limit(ReadValue(value, "name"), 100), Limit(ReadValue(value, "value"), 500)))
+            .Where(value => !string.IsNullOrWhiteSpace(value.Name) && !value.Name.StartsWith("_", StringComparison.Ordinal))
+            .Take(20)
+            .ToList();
+        return values.Count == 0 ? null : JsonSerializer.Serialize(values);
+    }
+
+    private static string NormalizeSkuKey(string value) => value.Trim().ToUpperInvariant();
+
+    private static string? Limit(string? value, int length)
+    {
+        var trimmed = TrimToNull(value);
+        return trimmed is null ? null : trimmed.Length <= length ? trimmed : trimmed[..length];
+    }
+
+    private static string? LimitRaw(string? value, int length) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Length <= length ? value : value[..length];
 
     private static string RequireValue(JsonElement root, string property, string error) => ReadValue(root, property) ?? throw new ShopifyBusinessException(error);
 
@@ -674,6 +754,10 @@ public sealed class ShopifyIntegrationService
         operation.CurrentVersionId = version.Id;
         _operations.OperationVersions.Add(version);
     }
+
+    private sealed record ShopifyOrderLineInput(int Position, string? LineItemId, string? RawSku, string? VariantId, string? Title, string? VariantTitle, int Quantity, decimal UnitPrice, bool HasValidPrice, string? PublicPropertiesSnapshot);
+    private sealed record ResolvedShopifyOrderLine(ShopifyOrderLineInput Line, Sku Sku);
+    private sealed record ShopifyLineProperty(string? Name, string? Value);
 
     private sealed class ShopifyBusinessException : Exception
     {

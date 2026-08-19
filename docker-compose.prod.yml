@@ -28,7 +28,8 @@ services:
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
       Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-true}
       Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-false}
-      RateLimiting__PermitLimit: ${RATE_LIMITING_PERMIT_LIMIT:-120}
+      RateLimiting__AnonymousPermitLimit: ${RATE_LIMITING_ANONYMOUS_PERMIT_LIMIT:-60}
+      RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
 

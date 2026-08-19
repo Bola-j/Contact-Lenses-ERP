@@ -297,7 +297,7 @@ internal sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSche
 
         var claims = new List<Claim>
         {
-            new(LenseeClaims.UserId, Guid.NewGuid().ToString()),
+            new(LenseeClaims.UserId, Request.Headers.TryGetValue("X-Test-UserId", out var userIdValues) ? userIdValues.ToString() : Guid.NewGuid().ToString()),
             new(LenseeClaims.Role, roleValues.ToString()),
             new(ClaimTypes.Role, roleValues.ToString())
         };
@@ -336,6 +336,13 @@ internal static class CatalogEndpointClientExtensions
     {
         client.AuthorizeAs(role, permissions);
         client.DefaultRequestHeaders.Add("X-Test-LocationId", locationId.ToString());
+    }
+
+    public static void AuthorizeAs(this HttpClient client, string role, Guid userId, params string[] permissions)
+    {
+        client.AuthorizeAs(role, permissions);
+        client.DefaultRequestHeaders.Remove("X-Test-UserId");
+        client.DefaultRequestHeaders.Add("X-Test-UserId", userId.ToString());
     }
 }
 

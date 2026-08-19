@@ -328,15 +328,19 @@ public static class SupplyEndpoints
                 EditedBy = userId,
                 EditedAt = now
             };
-            operation.CurrentVersionId = version.Id;
             operation.OperationVersions.Add(version);
 
+            operationsDbContext.OperationLogs.Add(operation);
+            // Persist the operation and its initial version before linking the operation
+            // back to that version.  Setting CurrentVersionId before this insert makes
+            // OperationLog and OperationVersion depend on each other in one SaveChanges.
+            await operationsDbContext.SaveChangesAsync(cancellationToken);
+
+            operation.CurrentVersionId = version.Id;
             shipment.Status = Received;
             shipment.ConfirmedAt = now;
             shipment.ConfirmedBy = userId;
             shipment.InventoryReceiptOperationId = operation.Id;
-
-            operationsDbContext.OperationLogs.Add(operation);
             AddHistory(operationsDbContext, shipment, "Confirm", userId, now, $"Shipment received through operation {operation.OperationNumber}.");
             await operationsDbContext.SaveChangesAsync(cancellationToken);
         }, cancellationToken, operationsDbContext);

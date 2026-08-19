@@ -97,9 +97,29 @@ namespace Lensee.Modules.Notifications.Migrations
                         .HasColumnType("text")
                         .HasColumnName("message");
 
+                    b.Property<string>("NotificationNumber")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("notification_number");
+
+                    b.Property<string>("ReferenceCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("reference_code");
+
+                    b.Property<string>("ReferenceContextJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("reference_context_json");
+
                     b.Property<Guid?>("ReferenceId")
                         .HasColumnType("uuid")
                         .HasColumnName("reference_id");
+
+                    b.Property<string>("ReferenceTitle")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("reference_title");
 
                     b.Property<string>("ReferenceType")
                         .HasMaxLength(100)
@@ -123,6 +143,9 @@ namespace Lensee.Modules.Notifications.Migrations
 
                     b.HasIndex(new[] { "TargetUserId", "IsRead" }, "idx_notif_logs_user_unread")
                         .HasFilter("(is_read = false)");
+
+                    b.HasIndex(new[] { "NotificationNumber" }, "uq_notif_logs_notification_number")
+                        .IsUnique();
 
                     b.ToTable("notification_logs", "notifications");
                 });

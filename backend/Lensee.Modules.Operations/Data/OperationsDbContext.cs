@@ -13,11 +13,15 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<InventoryReceiptHeader> InventoryReceiptHeaders { get; set; }
 
+    public virtual DbSet<MerchantExpiryRecall> MerchantExpiryRecalls { get; set; }
+
     public virtual DbSet<OperationLine> OperationLines { get; set; }
 
     public virtual DbSet<OperationLog> OperationLogs { get; set; }
 
     public virtual DbSet<OperationVersion> OperationVersions { get; set; }
+
+    public virtual DbSet<ReplenishmentRun> ReplenishmentRuns { get; set; }
 
     public virtual DbSet<StocktakeAdjustmentLine> StocktakeAdjustmentLines { get; set; }
 
@@ -32,8 +36,6 @@ public partial class OperationsDbContext : DbContext
     public virtual DbSet<SupplyShipmentLine> SupplyShipmentLines { get; set; }
 
     public virtual DbSet<ShopifyOrderLink> ShopifyOrderLinks { get; set; }
-
-    public virtual DbSet<ShopifyVariantMapping> ShopifyVariantMappings { get; set; }
 
     public virtual DbSet<ShopifyWebhookEvent> ShopifyWebhookEvents { get; set; }
 
@@ -69,6 +71,36 @@ public partial class OperationsDbContext : DbContext
                 .HasForeignKey<InventoryReceiptHeader>(d => d.OperationId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("inventory_receipt_headers_operation_id_fkey");
+        });
+
+        modelBuilder.Entity<MerchantExpiryRecall>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("merchant_expiry_recalls_pkey");
+
+            entity.ToTable("merchant_expiry_recalls", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_merchant_expiry_recall_status", "status in ('Active','Completed','NoStock')");
+                table.HasCheckConstraint("chk_merchant_expiry_recall_quantities", "sold_quantity >= 0 and returned_quantity >= 0");
+            });
+
+            entity.HasIndex(e => new { e.MerchantId, e.SkuId, e.LotNumber, e.ExpiryDate }, "uq_merchant_expiry_recall_batch").IsUnique();
+            entity.HasIndex(e => new { e.Status, e.ExpiryDate }, "idx_merchant_expiry_recall_status_expiry");
+            entity.HasIndex(e => e.MerchantId, "idx_merchant_expiry_recall_merchant");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.MerchantId).HasColumnName("merchant_id");
+            entity.Property(e => e.SkuId).HasColumnName("sku_id");
+            entity.Property(e => e.LotNumber).HasMaxLength(100).HasDefaultValue(string.Empty).HasColumnName("lot_number");
+            entity.Property(e => e.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("Active").HasColumnName("status");
+            entity.Property(e => e.SoldQuantity).HasColumnName("sold_quantity");
+            entity.Property(e => e.ReturnedQuantity).HasColumnName("returned_quantity");
+            entity.Property(e => e.ResolvedSoldQuantity).HasColumnName("resolved_sold_quantity");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+            entity.Property(e => e.ResolvedAt).HasColumnType("timestamp without time zone").HasColumnName("resolved_at");
+            entity.Property(e => e.ResolvedBy).HasColumnName("resolved_by");
+            entity.Property(e => e.ResolutionNote).HasMaxLength(1000).HasColumnName("resolution_note");
         });
 
         modelBuilder.Entity<OperationLine>(entity =>
@@ -123,6 +155,12 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'Standard'::character varying")
                 .HasColumnName("section");
+            entity.Property(e => e.ShopifyLineItemId).HasMaxLength(100).HasColumnName("shopify_line_item_id");
+            entity.Property(e => e.ShopifyPropertiesSnapshot).HasColumnType("jsonb").HasColumnName("shopify_properties_snapshot");
+            entity.Property(e => e.ShopifySkuSnapshot).HasMaxLength(255).HasColumnName("shopify_sku_snapshot");
+            entity.Property(e => e.ShopifyTitleSnapshot).HasMaxLength(255).HasColumnName("shopify_title_snapshot");
+            entity.Property(e => e.ShopifyVariantId).HasMaxLength(100).HasColumnName("shopify_variant_id");
+            entity.Property(e => e.ShopifyVariantTitleSnapshot).HasMaxLength(255).HasColumnName("shopify_variant_title_snapshot");
             entity.Property(e => e.SkuCodeSnapshot)
                 .HasMaxLength(100)
                 .HasColumnName("sku_code_snapshot");
@@ -175,6 +213,8 @@ public partial class OperationsDbContext : DbContext
 
             entity.HasIndex(e => e.SalesChannel, "idx_op_logs_sales_channel");
 
+            entity.HasIndex(e => e.MerchantExpiryRecallId, "idx_op_logs_merchant_expiry_recall");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -213,6 +253,8 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.PaymentMethod)
                 .HasMaxLength(50)
                 .HasColumnName("payment_method");
+            entity.Property(e => e.MerchantExpiryRecallId).HasColumnName("merchant_expiry_recall_id");
+            entity.Property(e => e.AutomationType).HasMaxLength(50).HasColumnName("automation_type");
             entity.Property(e => e.SalesChannel).HasMaxLength(50).HasDefaultValue("Manual").HasColumnName("sales_channel");
             entity.Property(e => e.ShippingAddress).HasColumnName("shipping_address");
             entity.Property(e => e.RepresentativeId).HasColumnName("representative_id");
@@ -225,6 +267,11 @@ public partial class OperationsDbContext : DbContext
             entity.HasOne(d => d.CurrentVersion).WithMany(p => p.OperationLogs)
                 .HasForeignKey(d => d.CurrentVersionId)
                 .HasConstraintName("fk_current_version");
+
+            entity.HasOne(d => d.MerchantExpiryRecall).WithMany()
+                .HasForeignKey(d => d.MerchantExpiryRecallId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("operation_logs_merchant_expiry_recall_id_fkey");
         });
 
         modelBuilder.Entity<ShopifyOrderLink>(entity =>
@@ -241,21 +288,6 @@ public partial class OperationsDbContext : DbContext
             entity.HasOne(e => e.Operation).WithOne(e => e.ShopifyOrderLink)
                 .HasForeignKey<ShopifyOrderLink>(e => e.OperationId).OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("shopify_order_links_operation_id_fkey");
-        });
-
-        modelBuilder.Entity<ShopifyVariantMapping>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("shopify_variant_mappings_pkey");
-            entity.ToTable("shopify_variant_mappings", "operations");
-            entity.HasIndex(e => e.ShopifyVariantId, "uq_shopify_variant_mappings_variant").IsUnique();
-            entity.HasIndex(e => e.SkuId, "idx_shopify_variant_mappings_sku");
-            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
-            entity.Property(e => e.ShopifyVariantId).HasMaxLength(100).HasColumnName("shopify_variant_id");
-            entity.Property(e => e.SkuId).HasColumnName("sku_id");
-            entity.Property(e => e.EntryMode).HasMaxLength(20).HasDefaultValue("Packs").HasColumnName("entry_mode");
-            entity.Property(e => e.IsActive).HasDefaultValue(true).HasColumnName("is_active");
-            entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
-            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<ShopifyWebhookEvent>(entity =>
@@ -515,6 +547,22 @@ public partial class OperationsDbContext : DbContext
                 .HasForeignKey(d => d.ShipmentId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("supply_shipment_history_shipment_id_fkey");
+        });
+
+        modelBuilder.Entity<ReplenishmentRun>(entity =>
+        {
+            entity.HasKey(value => value.Id).HasName("replenishment_runs_pkey");
+            entity.ToTable("replenishment_runs", "operations");
+            entity.HasIndex(value => value.RunKey, "uq_replenishment_runs_run_key").IsUnique();
+            entity.Property(value => value.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(value => value.RunKey).HasMaxLength(40).HasColumnName("run_key");
+            entity.Property(value => value.CairoDate).HasColumnName("cairo_date");
+            entity.Property(value => value.Trigger).HasMaxLength(20).HasColumnName("trigger");
+            entity.Property(value => value.Status).HasMaxLength(20).HasColumnName("status");
+            entity.Property(value => value.StartedAt).HasColumnType("timestamp without time zone").HasColumnName("started_at");
+            entity.Property(value => value.CompletedAt).HasColumnType("timestamp without time zone").HasColumnName("completed_at");
+            entity.Property(value => value.CreatedOperations).HasColumnName("created_operations");
+            entity.Property(value => value.UncoveredQuantity).HasColumnName("uncovered_quantity");
         });
         modelBuilder.HasSequence("operation_number_seq", "operations").StartsAt(1000L);
 

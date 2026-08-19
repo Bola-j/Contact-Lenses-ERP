@@ -1,5 +1,6 @@
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Catalog.Services;
 using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
@@ -18,9 +19,8 @@ public static class ShopifyEndpoints
         group.MapGet("/events", ListEventsAsync).RequireAuthorization("integrations.shopify.read");
         group.MapPost("/events/{id:guid}/retry", RetryEventAsync).RequireAuthorization("integrations.shopify.manage");
         group.MapPost("/events/{id:guid}/resolve", ResolveEventAsync).RequireAuthorization("integrations.shopify.manage");
-        group.MapGet("/variant-mappings", ListVariantMappingsAsync).RequireAuthorization("integrations.shopify.read");
-        group.MapPost("/variant-mappings", CreateVariantMappingAsync).RequireAuthorization("integrations.shopify.manage");
-        group.MapPut("/variant-mappings/{id:guid}", UpdateVariantMappingAsync).RequireAuthorization("integrations.shopify.manage");
+        group.MapGet("/sku-readiness", ListSkuReadinessAsync).RequireAuthorization("integrations.shopify.read");
+        group.MapGet("/sku-readiness/products", ListSkuReadinessProductsAsync).RequireAuthorization("integrations.shopify.read");
         return group;
     }
 
@@ -150,57 +150,60 @@ public static class ShopifyEndpoints
         return Results.Ok(ToEventResponse(eventRecord));
     }
 
-    private static async Task<IResult> ListVariantMappingsAsync(OperationsDbContext operations, CatalogDbContext catalog, CancellationToken cancellationToken)
+    private static async Task<IResult> ListSkuReadinessAsync(int? page, int? pageSize, string? search, string? status, Guid? productId, string? wearCycle, CatalogDbContext catalog, CancellationToken cancellationToken)
     {
-        var mappings = await operations.ShopifyVariantMappings.OrderBy(value => value.ShopifyVariantId).ToListAsync(cancellationToken);
-        var skuIds = mappings.Select(value => value.SkuId).Distinct().ToArray();
-        var skus = await catalog.Skus.Where(value => skuIds.Contains(value.Id)).ToDictionaryAsync(value => value.Id, cancellationToken);
-        return Results.Ok(mappings.Select(value => ToResponse(value, skus.GetValueOrDefault(value.SkuId))).ToList());
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var query = catalog.Skus.AsNoTracking().Include(value => value.Product)
+            .Where(value => value.IsActive && value.DeletedAt == null && value.Product.IsActive && value.Product.DeletedAt == null);
+        if (productId.HasValue)
+        {
+            query = query.Where(value => value.ProductId == productId.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(wearCycle))
+        {
+            query = query.Where(value => value.Product.OpenedExpiryRate == wearCycle.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(value => value.SkuCode.Contains(term) || value.Product.Name.Contains(term));
+        }
+
+        var rows = await query.OrderBy(value => value.SkuCode).ToListAsync(cancellationToken);
+        var readiness = rows.Select(ToSkuReadiness).ToList();
+        if (!string.IsNullOrWhiteSpace(status)) readiness = readiness.Where(value => string.Equals(value.Status, status.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        var total = readiness.Count;
+        return Results.Ok(new PagedResult<ShopifySkuReadinessResponse>(readiness.Skip(request.Skip).Take(request.PageSize).ToList(), request.Page, request.PageSize, total));
     }
 
-    private static async Task<IResult> CreateVariantMappingAsync(ShopifyVariantMappingRequest request, OperationsDbContext operations, CatalogDbContext catalog, IClock clock, CancellationToken cancellationToken)
+    private static async Task<IResult> ListSkuReadinessProductsAsync(CatalogDbContext catalog, CancellationToken cancellationToken)
     {
-        var errors = await ValidateMappingAsync(request, null, operations, catalog, cancellationToken);
-        if (errors.Count > 0) return Results.ValidationProblem(errors);
-        var mapping = new ShopifyVariantMapping { Id = Guid.NewGuid(), ShopifyVariantId = request.ShopifyVariantId.Trim(), SkuId = request.SkuId, EntryMode = request.EntryMode == "Pieces" ? "Pieces" : "Packs", IsActive = request.IsActive, CreatedAt = clock.EgyptNow, UpdatedAt = clock.EgyptNow };
-        operations.ShopifyVariantMappings.Add(mapping);
-        await operations.SaveChangesAsync(cancellationToken);
-        return Results.Created($"/api/v1/integrations/shopify/variant-mappings/{mapping.Id}", ToResponse(mapping, await catalog.Skus.FindAsync([mapping.SkuId], cancellationToken)));
+        var products = await catalog.Skus.AsNoTracking()
+            .Where(value => value.IsActive && value.DeletedAt == null && value.Product.IsActive && value.Product.DeletedAt == null)
+            .GroupBy(value => new { value.ProductId, value.Product.Name })
+            .OrderBy(group => group.Key.Name)
+            .Select(group => new ShopifySkuProductFilterResponse(group.Key.ProductId, group.Key.Name))
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(products);
     }
 
-    private static async Task<IResult> UpdateVariantMappingAsync(Guid id, ShopifyVariantMappingRequest request, OperationsDbContext operations, CatalogDbContext catalog, IClock clock, CancellationToken cancellationToken)
+    private static ShopifySkuReadinessResponse ToSkuReadiness(Sku sku)
     {
-        var mapping = await operations.ShopifyVariantMappings.FindAsync([id], cancellationToken);
-        if (mapping is null) return Results.NotFound();
-        var errors = await ValidateMappingAsync(request, id, operations, catalog, cancellationToken);
-        if (errors.Count > 0) return Results.ValidationProblem(errors);
-        mapping.ShopifyVariantId = request.ShopifyVariantId.Trim();
-        mapping.SkuId = request.SkuId;
-        mapping.EntryMode = request.EntryMode == "Pieces" ? "Pieces" : "Packs";
-        mapping.IsActive = request.IsActive;
-        mapping.UpdatedAt = clock.EgyptNow;
-        await operations.SaveChangesAsync(cancellationToken);
-        return Results.Ok(ToResponse(mapping, await catalog.Skus.FindAsync([mapping.SkuId], cancellationToken)));
+        var product = sku.Product;
+        var isLens = CatalogValidation.IsLensProduct(product.ProductType);
+        var pieceSaleAllowed = product.SellMode is "SinglePiece" or "Both";
+        var validWearCycle = CatalogValidation.HasValidOpenedExpiryRate(product.OpenedExpiryRate);
+        var status = !isLens ? "UnsupportedProduct" : !pieceSaleAllowed ? "PieceSaleDisabled" : !validWearCycle ? "NeedsWearCycle" : "Ready";
+        return new(sku.Id, sku.SkuCode, product.Name, product.ProductType, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size, product.PiecesPerPack, product.SellMode, isLens && validWearCycle ? product.OpenedExpiryRate : null, isLens && validWearCycle ? product.OpenedExpiryDuration : null, status);
     }
-
-    private static async Task<Dictionary<string, string[]>> ValidateMappingAsync(ShopifyVariantMappingRequest request, Guid? currentId, OperationsDbContext operations, CatalogDbContext catalog, CancellationToken cancellationToken)
-    {
-        var errors = new Dictionary<string, string[]>();
-        if (string.IsNullOrWhiteSpace(request.ShopifyVariantId)) errors[nameof(request.ShopifyVariantId)] = ["Shopify variant ID is required."];
-        if (request.EntryMode is not ("Packs" or "Pieces")) errors[nameof(request.EntryMode)] = ["Entry mode must be Packs or Pieces."];
-        if (!await catalog.Skus.AnyAsync(value => value.Id == request.SkuId && value.IsActive && value.DeletedAt == null, cancellationToken)) errors[nameof(request.SkuId)] = ["SKU must exist and be active."];
-        if (!string.IsNullOrWhiteSpace(request.ShopifyVariantId) && await operations.ShopifyVariantMappings.AnyAsync(value => value.ShopifyVariantId == request.ShopifyVariantId.Trim() && value.Id != currentId, cancellationToken)) errors[nameof(request.ShopifyVariantId)] = ["Shopify variant ID is already mapped."];
-        return errors;
-    }
-
-    private static ShopifyVariantMappingResponse ToResponse(ShopifyVariantMapping mapping, Sku? sku) => new(mapping.Id, mapping.ShopifyVariantId, mapping.SkuId, sku?.SkuCode, mapping.EntryMode, mapping.IsActive, mapping.UpdatedAt);
 
     private static ShopifyWebhookEventResponse ToEventResponse(ShopifyWebhookEvent value) => new(value.Id, value.Topic, value.ShopDomain, value.VerificationMode, value.EventId, value.ApiVersion, value.Status, value.Detail, value.ShopifyOrderId, value.OperationId, value.ReceivedAt, value.TriggeredAt, value.ProcessedAt, value.NextAttemptAt, value.AttemptCount, value.ResolvedAt, value.ResolutionNote, value.ProtectedPayload is not null);
 }
 
 public sealed record ShopifyWebhookResponse(string Status, string? Detail, Guid? OperationId);
-public sealed record ShopifyVariantMappingRequest(string ShopifyVariantId, Guid SkuId, string EntryMode, bool IsActive = true);
-public sealed record ShopifyVariantMappingResponse(Guid Id, string ShopifyVariantId, Guid SkuId, string? SkuCode, string EntryMode, bool IsActive, DateTime UpdatedAt);
+public sealed record ShopifySkuReadinessResponse(Guid SkuId, string SkuCode, string ProductName, string ProductType, string? PowerSign, decimal? PowerValue, string? ColorName, string? Size, int? PiecesPerPack, string? SellMode, string? WearCycle, string? WearDuration, string Status);
+public sealed record ShopifySkuProductFilterResponse(Guid Id, string Name);
 public sealed record ShopifyIntegrationStatusResponse(bool IsConfigured, bool IsLegacyWebhookConfigured, int MaxBodyBytes);
 public sealed record ShopifyEventResolutionRequest(string Note);
 public sealed record ShopifyWebhookEventResponse(Guid Id, string Topic, string ShopDomain, string VerificationMode, string? EventId, string? ApiVersion, string Status, string? Detail, string? ShopifyOrderId, Guid? OperationId, DateTime ReceivedAt, DateTime? TriggeredAt, DateTime? ProcessedAt, DateTime? NextAttemptAt, int AttemptCount, DateTime? ResolvedAt, string? ResolutionNote, bool PayloadAvailable);

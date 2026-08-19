@@ -15,6 +15,42 @@ public partial class NotificationsDbContext : DbContext
 
     public virtual DbSet<NotificationLog> NotificationLogs { get; set; }
 
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        AssignNotificationNumbers();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        AssignNotificationNumbers();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void AssignNotificationNumbers()
+    {
+        foreach (var entry in ChangeTracker.Entries<NotificationLog>().Where(entry => entry.State == EntityState.Added))
+        {
+            if (entry.Entity.Id == Guid.Empty) entry.Entity.Id = Guid.NewGuid();
+            entry.Entity.NotificationNumber ??= $"NOT-{entry.Entity.Id:N}".ToUpperInvariant();
+            if (entry.Entity.ReferenceId is not { } referenceId || !string.IsNullOrWhiteSpace(entry.Entity.ReferenceCode)) continue;
+
+            var prefix = entry.Entity.ReferenceType?.ToLowerInvariant() switch
+            {
+                "stockbalance" => "BAL",
+                "inventorybatch" => "BATCH",
+                "operation" => "OP",
+                "paymentlog" => "PAY",
+                "stocktake" => "STK",
+                "supplyshipment" => "SUP",
+                "merchant" => "MER",
+                "exportlog" => "EXP",
+                _ => "REC"
+            };
+            entry.Entity.ReferenceCode = $"{prefix}-{referenceId:N}".ToUpperInvariant();
+        }
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
@@ -50,6 +86,8 @@ public partial class NotificationsDbContext : DbContext
 
             entity.HasIndex(e => new { e.TargetUserId, e.IsRead }, "idx_notif_logs_user_unread").HasFilter("(is_read = false)");
 
+            entity.HasIndex(e => e.NotificationNumber, "uq_notif_logs_notification_number").IsUnique();
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -68,7 +106,20 @@ public partial class NotificationsDbContext : DbContext
                 .HasDefaultValue(false)
                 .HasColumnName("is_read");
             entity.Property(e => e.Message).HasColumnName("message");
+            entity.Property(e => e.NotificationNumber)
+                .IsRequired()
+                .HasMaxLength(40)
+                .HasColumnName("notification_number");
             entity.Property(e => e.ReferenceId).HasColumnName("reference_id");
+            entity.Property(e => e.ReferenceCode)
+                .HasMaxLength(40)
+                .HasColumnName("reference_code");
+            entity.Property(e => e.ReferenceContextJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("reference_context_json");
+            entity.Property(e => e.ReferenceTitle)
+                .HasMaxLength(300)
+                .HasColumnName("reference_title");
             entity.Property(e => e.ReferenceType)
                 .HasMaxLength(100)
                 .HasColumnName("reference_type");

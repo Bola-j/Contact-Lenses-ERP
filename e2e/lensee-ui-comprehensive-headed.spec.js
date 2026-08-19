@@ -156,13 +156,13 @@ test("SALE/RSV/RET/CHG/WO: visible operation flows preserve batch, party, status
   await expect(page.locator(".operation-detail").first()).toContainText(/Operation code|Current version|Batch expiry/i);
 
   await createOperationDraft(page, {
-    type: "Return", skuText: data.product, quantity: "1", lot: data.badLot, expiry: data.expiry,
+    type: "Return", skuText: data.product, quantity: "1", lot: data.mainLot, expiry: data.expiry,
     merchantText: data.merchant, sourceText: /Roxy|Main/i, paymentMethod: "CashHandToHand"
   });
-  await runLatestOperationAction(page, "Return", /Confirm/i, { expectEligibilityDialog: true });
+  await runLatestOperationAction(page, "Return", /Confirm/i);
 
   await createChangeDraft(page, data);
-  await runLatestOperationAction(page, "Change", /Confirm/i, { acceptOptionalEligibilityDialog: true });
+  await runLatestOperationAction(page, "Change", /Confirm/i);
 
   await createOperationDraft(page, {
     type: "WriteOff", skuText: data.product, quantity: "1", stockText: data.mainLot, sourceText: /Roxy|Main/i

@@ -1,12 +1,15 @@
 using System.Text.Json;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
 using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
 using Lensee.SharedKernel.Security;
+using Lensee.SharedKernel.Text;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace Lensee.Host.Endpoints;
@@ -20,12 +23,15 @@ public static class InventoryEndpoints
         var group = routes.MapGroup("/api/v1/inventory").WithTags("Inventory");
 
         group.MapGet("/locations", ListLocationsAsync).RequireAuthorization("inventory.read");
+        group.MapPost("/locations", CreateLocationAsync).RequireAuthorization("primary-admin");
         group.MapGet("/stock-balances", ListStockBalancesAsync).RequireAuthorization("inventory.read");
         group.MapGet("/product-totals", ListProductTotalsAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-balances/{locationId:guid}/{skuId:guid}", GetStockBalanceAsync).RequireAuthorization("inventory.read");
+        group.MapGet("/stock-balances/{id:guid}", GetStockBalanceByIdAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-options", ListStockOptionsAsync).RequireAuthorization("inventory.read");
         group.MapPut("/stock-balances/{locationId:guid}/{skuId:guid}/target", SetTargetQuantityAsync).RequireAuthorization("inventory.write");
         group.MapGet("/batches", ListBatchesAsync).RequireAuthorization("inventory.read");
+        group.MapGet("/batches/{id:guid}", GetBatchByIdAsync).RequireAuthorization("inventory.read");
         group.MapGet("/transfer-blocked-batches", ListTransferBlockedBatchesAsync).RequireAuthorization("inventory.read");
         group.MapGet("/transactions", ListTransactionsAsync).RequireAuthorization("inventory.read");
         group.MapPost("/receipts", CreateReceiptAsync).RequireAuthorization("inventory.write");
@@ -55,6 +61,86 @@ public static class InventoryEndpoints
             .ToListAsync(cancellationToken);
 
         return Results.Ok(locations);
+    }
+
+    private static async Task<IResult> CreateLocationAsync(
+        CreateLocationRequest request,
+        InventoryDbContext inventoryDbContext,
+        IdentityDbContext identityDbContext,
+        ICurrentUser currentUser,
+        IAuditLogWriter auditLogWriter,
+        CancellationToken cancellationToken)
+    {
+        var actorIsPrimaryAdmin = currentUser.UserId is { } actorId
+            && await identityDbContext.Users.AsNoTracking().AnyAsync(
+                user => user.Id == actorId
+                    && user.IsActive
+                    && user.IsPrimaryAdmin
+                    && user.Role == LenseeRoles.Admin,
+                cancellationToken);
+        if (!actorIsPrimaryAdmin)
+        {
+            return Results.Problem(
+                title: "Primary Administrator authority is required.",
+                detail: "Only the active primary Administrator can create warehouse locations.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var name = InputText.NormalizeSingleLine(request.Name);
+        var locationType = NormalizeLocationType(request.LocationType);
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        if (name.Length == 0)
+        {
+            errors[nameof(request.Name)] = ["Warehouse name is required."];
+        }
+        if (locationType is null)
+        {
+            errors[nameof(request.LocationType)] = ["Location type must be MainWarehouse, SubWarehouse, Retail, or Online."];
+        }
+        if (errors.Count > 0)
+        {
+            return Results.ValidationProblem(errors);
+        }
+        var validLocationType = locationType!;
+
+        if (await inventoryDbContext.Locations.AnyAsync(location => location.Name.ToUpper() == name.ToUpper(), cancellationToken))
+        {
+            return Results.Conflict(new ProblemDetails
+            {
+                Title = "Warehouse name already exists.",
+                Detail = "Choose a different warehouse name.",
+                Status = StatusCodes.Status409Conflict
+            });
+        }
+
+        if (validLocationType == "MainWarehouse"
+            && await inventoryDbContext.Locations.AnyAsync(location => location.IsActive && location.LocationType == "MainWarehouse", cancellationToken))
+        {
+            return Results.Conflict(new ProblemDetails
+            {
+                Title = "Main warehouse already exists.",
+                Detail = "Only one active MainWarehouse location is allowed.",
+                Status = StatusCodes.Status409Conflict
+            });
+        }
+
+        var location = new Location
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            LocationType = validLocationType,
+            IsActive = true
+        };
+        inventoryDbContext.Locations.Add(location);
+        await inventoryDbContext.SaveChangesAsync(cancellationToken);
+        await auditLogWriter.WriteAsync(
+            "Location",
+            location.Id,
+            "Create",
+            new { location.Name, location.LocationType, location.IsActive },
+            cancellationToken: cancellationToken);
+
+        return Results.Created("/api/v1/inventory/locations", new LocationResponse(location.Id, location.Name, location.LocationType, location.IsActive));
     }
 
     private static async Task<IResult> ListStockBalancesAsync(
@@ -141,6 +227,39 @@ public static class InventoryEndpoints
         var skuLookup = await LoadSkuLookupAsync(catalogDbContext, [skuId], cancellationToken);
         var loosePieces = await LoadLoosePiecesAsync(inventoryDbContext, [(locationId, skuId)], cancellationToken);
         return Results.Ok(ToResponse(balance, skuLookup, loosePieces.GetValueOrDefault((locationId, skuId))));
+    }
+
+    private static async Task<IResult> GetStockBalanceByIdAsync(
+        Guid id,
+        InventoryDbContext inventoryDbContext,
+        CatalogDbContext catalogDbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        var balance = await inventoryDbContext.StockBalances.Include(value => value.Location)
+            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (balance is null) return Results.NotFound();
+        if (!CanAccessLocation(currentUser, balance.LocationId)) return Results.Forbid();
+
+        var skuLookup = await LoadSkuLookupAsync(catalogDbContext, [balance.SkuId], cancellationToken);
+        var loosePieces = await LoadLoosePiecesAsync(inventoryDbContext, [(balance.LocationId, balance.SkuId)], cancellationToken);
+        return Results.Ok(ToResponse(balance, skuLookup, loosePieces.GetValueOrDefault((balance.LocationId, balance.SkuId))));
+    }
+
+    private static async Task<IResult> GetBatchByIdAsync(
+        Guid id,
+        InventoryDbContext inventoryDbContext,
+        CatalogDbContext catalogDbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        var batch = await inventoryDbContext.InventoryBatches.Include(value => value.Location)
+            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (batch is null) return Results.NotFound();
+        if (!CanAccessLocation(currentUser, batch.LocationId)) return Results.Forbid();
+
+        var skuLookup = await LoadSkuLookupAsync(catalogDbContext, [batch.SkuId], cancellationToken);
+        return Results.Ok(ToResponse(batch, skuLookup));
     }
 
     private static async Task<IResult> ListProductTotalsAsync(
@@ -864,12 +983,23 @@ public static class InventoryEndpoints
     private static string? NormalizeBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static string? NormalizeLocationType(string? value) => value?.Trim() switch
+    {
+        "MainWarehouse" => "MainWarehouse",
+        "SubWarehouse" => "SubWarehouse",
+        "Retail" => "Retail",
+        "Online" => "Online",
+        _ => null
+    };
+
     private static bool AllowsPieceDisplay(string locationType) =>
         !string.Equals(locationType, "MainWarehouse", StringComparison.OrdinalIgnoreCase);
 
 }
 
 public sealed record LocationResponse(Guid Id, string Name, string LocationType, bool IsActive);
+
+public sealed record CreateLocationRequest(string Name, string LocationType);
 
 public sealed record StockBalanceResponse(
     Guid LocationId,

@@ -110,15 +110,15 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
     type: "Return",
     skuText: data.product,
     quantity: "1",
-    lot: data.badLot,
+    lot: data.mainLot,
     expiry: data.expiry,
     merchantText: data.merchant,
     sourceText: /Roxy|Main/i,
     paymentMethod: "CashHandToHand"
   });
-  await runLatestOperationAction(page, "Return", /Confirm/i, { expectEligibilityDialog: true });
+  await runLatestOperationAction(page, "Return", /Confirm/i);
   await createChangeDraft(page, data);
-  await runLatestOperationAction(page, "Change", /Confirm/i, { acceptOptionalEligibilityDialog: true });
+  await runLatestOperationAction(page, "Change", /Confirm/i);
 
   await gotoRoute(page, "/stocktakes");
   await expect(page.locator("#stocktake-create-form")).toBeVisible();
@@ -153,7 +153,7 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
 
   await gotoRoute(page, "/crm");
   await openMerchantDetail(page, data);
-  await expect(page.locator("#merchant-detail-panel")).toContainText(/Balance|Eligibility|WholesaleSale/i);
+  await expect(page.locator("#merchant-detail-panel")).toContainText(/Balance|Merchant Batch History|WholesaleSale/i);
 
   await gotoRoute(page, "/reports");
   await expectDownload(page, () => page.getByRole("button", { name: "CSV" }).first().click());
