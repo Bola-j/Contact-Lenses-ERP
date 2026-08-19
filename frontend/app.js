@@ -357,7 +357,7 @@ const arabicTranslations = Object.freeze({
   "PDF downloaded.": "تم تنزيل ملف PDF.",
   "Select a document row before downloading.": "اختر سجل المستند المطلوب قبل التنزيل.",
   "Cannot reach the API. Check the API base URL and whether the host is running.": "لا يمكن الوصول إلى النظام. راجع عنوان الخادم وتأكد من تشغيله.",
-  "English": "English",
+  "English": "الإنجليزية",
   "Switch to English": "التبديل إلى الإنجليزية",
   "Switch to Arabic": "التبديل إلى العربية",
   "Dismiss notice": "إغلاق الإشعار",
@@ -1037,7 +1037,171 @@ const arabicTranslations = Object.freeze({
   "Every SKU price must be greater than zero before confirmation.": "كل أسعار SKU يجب أن تكون أكبر من صفر قبل التأكيد.",
   "Every SKU line needs a unit price before confirmation.": "كل بند SKU يحتاج سعر وحدة قبل التأكيد.",
   "Ready to confirm.": "جاهزة للتأكيد.",
-  "pieces not set": "عدد القطع غير محدد"
+  "pieces not set": "عدد القطع غير محدد",
+  "Account": "الحساب",
+  "Activity": "النشاط",
+  "Add warehouse": "إضافة مخزن",
+  "All active SKUs": "كل رموز الأصناف النشطة",
+  "All areas": "كل الأقسام",
+  "All catalog products": "كل منتجات الكتالوج",
+  "All states": "كل الحالات",
+  "All wear cycles": "كل دورات الاستخدام",
+  "Allocation": "التخصيص",
+  "Allocation pending": "التخصيص معلّق",
+  "Annual": "سنوي",
+  "Arabic": "العربية",
+  "Area": "القسم",
+  "Attempts": "المحاولات",
+  "Audit history": "سجل التدقيق",
+  "Batch allocation pending": "تخصيص الدفعات معلّق",
+  "Buyer contact": "بيانات تواصل العميل",
+  "Check catalog": "فحص الكتالوج",
+  "Copy SKU": "نسخ رمز الصنف",
+  "Copy the ERP SKU into each Shopify variant. Orders match SKU only; each quantity is an individual lens piece.": "انسخ رمز صنف ERP إلى حقل SKU لكل متغير في Shopify. تتم مطابقة الطلبات باستخدام SKU فقط، وتمثل كل كمية قطعة عدسة منفردة.",
+  "Could not copy the SKU. Copy it manually from the table.": "تعذر نسخ رمز الصنف. انسخه يدويًا من الجدول.",
+  "Could not load audit history.": "تعذر تحميل سجل التدقيق.",
+  "CSV / PDF": "CSV / PDF",
+  "Delete": "حذف",
+  "Delivery queue": "قائمة استلام الطلبات",
+  "Employee accounts": "حسابات الموظفين",
+  "Enable piece sales": "تفعيل البيع بالقطعة",
+  "ERP SKU": "رمز صنف ERP",
+  "ERP SKU copied. Paste it into the Shopify variant SKU field.": "تم نسخ رمز صنف ERP. الصقه في حقل SKU لمتغير Shopify.",
+  "ERP SKUs for Shopify": "رموز أصناف ERP لـ Shopify",
+  "ERP SKUs per page": "رموز أصناف ERP في الصفحة",
+  "Event detail": "تفاصيل الحدث",
+  "Export language": "لغة التصدير",
+  "Find activity": "البحث في النشاط",
+  "Find SKU or product": "ابحث عن رمز صنف أو منتج",
+  "From": "من",
+  "Full name & role": "الاسم الكامل والدور",
+  "Generate weekly open-payment summary": "إنشاء ملخص أسبوعي للمدفوعات المفتوحة",
+  "Imported": "تم الاستيراد",
+  "Integration events": "أحداث التكامل",
+  "Landed": "تكلفة الوصول",
+  "Lens products only": "منتجات العدسات فقط",
+  "Loading audit history": "جار تحميل سجل التدقيق",
+  "Loading ERP SKU readiness…": "جار تحميل جاهزية رموز أصناف ERP…",
+  "Loading event": "جار تحميل الحدث",
+  "Loading integration events…": "جار تحميل أحداث التكامل…",
+  "Loading recalls": "جار تحميل طلبات الاسترجاع",
+  "Make primary": "تعيين كمسؤول رئيسي",
+  "Needs review": "يحتاج مراجعة",
+  "Needs setup": "يحتاج إعدادًا",
+  "No active ERP SKUs match this view.": "لا توجد رموز أصناف ERP نشطة تطابق هذا العرض.",
+  "No audit events match these filters.": "لا توجد أحداث تدقيق تطابق عوامل التصفية.",
+  "No changes detected; operation was not revised.": "لم تُكتشف تغييرات؛ لم يتم تعديل العملية.",
+  "No individual field values were saved for this event.": "لم تُحفظ قيم حقول منفردة لهذا الحدث.",
+  "No matching records.": "لا توجد سجلات مطابقة.",
+  "No Shopify events match this view.": "لا توجد أحداث Shopify تطابق هذا العرض.",
+  "No supply shipments.": "لا توجد شحنات توريد.",
+  "Not applicable": "غير منطبق",
+  "Online and retail targets are topped up from MainWarehouse through Draft warehouse transfers awaiting confirmation.": "تُستكمل أرصدة قنوات البيع الإلكتروني والتجزئة من المخزن الرئيسي عبر تحويلات مخزنية مسودة تنتظر التأكيد.",
+  "Online intake": "استلام الطلبات الإلكترونية",
+  "Only the primary Administrator can add an active warehouse location.": "يمكن للمسؤول الرئيسي فقط إضافة موقع مخزن نشط.",
+  "Open record": "فتح السجل",
+  "Open related record": "فتح السجل المرتبط",
+  "Order": "الطلب",
+  "Payload": "بيانات الحدث",
+  "Performed by": "نفّذه",
+  "Person, record name, action, or saved value": "شخص أو اسم سجل أو إجراء أو قيمة محفوظة",
+  "Piece sale disabled": "البيع بالقطعة معطّل",
+  "Primary Admin": "المسؤول الرئيسي",
+  "Print": "طباعة",
+  "Processing": "قيد المعالجة",
+  "Product / attributes": "المنتج / الخصائص",
+  "Product list unavailable": "قائمة المنتجات غير متاحة",
+  "Protect the commercial record. Allocate stock only after review.": "احمِ السجل التجاري. لا تخصّص المخزون إلا بعد المراجعة.",
+  "Protected": "محمي",
+  "Queued": "في قائمة الانتظار",
+  "Queued events process automatically. Exceptions require a deliberate retry or resolution note.": "تُعالج الأحداث المنتظرة تلقائيًا. تتطلب الحالات الاستثنائية إعادة محاولة مقصودة أو ملاحظة تسوية.",
+  "Ready to publish": "جاهز للنشر",
+  "Receipt": "إيصال الاستلام",
+  "Record": "السجل",
+  "Recorded activity": "النشاط المسجّل",
+  "Refresh intake": "تحديث قائمة الاستلام",
+  "Resolution": "التسوية",
+  "Resolution note": "ملاحظة التسوية",
+  "Resolve": "تسوية",
+  "Resolved": "تمت التسوية",
+  "Retry": "إعادة المحاولة",
+  "Retrying": "تجري إعادة المحاولة",
+  "Rows per page": "صفوف الصفحة",
+  "Saved values": "القيم المحفوظة",
+  "Search product, color, power, or SKU": "ابحث بالمنتج أو اللون أو القوة أو رمز الصنف",
+  "Select a batch and expiry for every Shopify line.": "اختر دفعة وتاريخ صلاحية لكل بند Shopify.",
+  "Select a receiving location and enter a positive whole quantity.": "اختر موقع الاستلام وأدخل كمية صحيحة موجبة.",
+  "Select an event to inspect the recorded details.": "اختر حدثًا لمراجعة التفاصيل المسجّلة.",
+  "Set Lens cycle": "تحديد دورة العدسة",
+  "Shipping address": "عنوان الشحن",
+  "Shopify batch allocation saved.": "تم حفظ تخصيص دفعات Shopify.",
+  "Shopify event queued for retry.": "تمت إضافة حدث Shopify إلى قائمة إعادة المحاولة.",
+  "Shopify event resolved.": "تمت تسوية حدث Shopify.",
+  "Shopify intake desk": "مكتب استلام Shopify",
+  "Shopify line": "بند Shopify",
+  "Showing 0 ERP SKUs": "عرض 0 من رموز أصناف ERP",
+  "SKU / product": "رمز الصنف / المنتج",
+  "SKU or product name": "رمز الصنف أو اسم المنتج",
+  "Store": "المتجر",
+  "Sub-warehouse": "مخزن فرعي",
+  "Succeeded": "نجح",
+  "Supply landed cost": "تكلفة التوريد عند الوصول",
+  "System activity": "نشاط النظام",
+  "The related record is unavailable or no longer permitted.": "السجل المرتبط غير متاح أو لم يعد مسموحًا بعرضه.",
+  "The trail remains available even when the original account or record has been removed.": "يبقى السجل متاحًا حتى عند حذف الحساب أو السجل الأصلي.",
+  "There can be only one active Main warehouse.": "لا يمكن أن يوجد سوى مخزن رئيسي نشط واحد.",
+  "These are the values recorded when the activity was completed.": "هذه هي القيم المسجّلة عند اكتمال النشاط.",
+  "This secure link could not be created.": "تعذر إنشاء هذا الرابط الآمن.",
+  "This secure link is unavailable or has expired.": "هذا الرابط الآمن غير متاح أو انتهت صلاحيته.",
+  "To": "إلى",
+  "Trust": "الموثوقية",
+  "Unavailable": "غير متاح",
+  "Unsupported product": "منتج غير مدعوم",
+  "Username / full name": "اسم المستخدم / الاسم الكامل",
+  "View details": "عرض التفاصيل",
+  "Warehouse name": "اسم المخزن",
+  "Warehouse name is required.": "اسم المخزن مطلوب.",
+  "Wear cycle": "دورة الاستخدام",
+  "Webhook content is never shown here. Temporary legacy-path deliveries are explicitly marked until you upgrade to signed webhooks.": "لا يُعرض محتوى Webhook هنا مطلقًا. تُميّز عمليات الاستلام المؤقتة عبر المسار القديم بوضوح حتى الترقية إلى Webhooks موقّعة.",
+  "Was": "كان",
+  "Now": "أصبح",
+  "Saved": "محفوظ",
+  "Cleared": "تم المسح",
+  "Role not recorded": "الدور غير مسجّل",
+  "Signed receiver ready": "المستقبِل الموقّع جاهز",
+  "Temporary legacy receiver": "مستقبِل مؤقت عبر المسار القديم",
+  "Configuration required": "الإعداد مطلوب",
+  "Signed HMAC": "توقيع HMAC صالح",
+  "Temporary legacy path": "مسار قديم مؤقت",
+  "Delivery accepted for processing.": "تم قبول الطلب للمعالجة.",
+  "Not parsed": "لم تتم القراءة",
+  "Retained securely": "محفوظ بأمان",
+  "Retention expired": "انتهت مدة الاحتفاظ",
+  "Events": "الأحداث",
+  "Receiver": "المستقبِل",
+  "Payload access": "الوصول إلى بيانات الحدث",
+  "Checking": "جار التحقق",
+  "Review successful system activity by person, time, section, and related record.": "راجع نشاط النظام الناجح حسب الشخص والوقت والقسم والسجل المرتبط.",
+  "Review online orders, repair mappings, and resolve exceptions before they reach warehouse fulfillment.": "راجع الطلبات الإلكترونية وأصلح الربط وعالج الاستثناءات قبل وصولها إلى تنفيذ المخزن.",
+  "No variant attributes": "لا توجد خصائص للمتغير",
+  "RequiresAttention": "يحتاج مراجعة",
+  "Handle open confirmations first, then use the ledger and tools for audit, entries, cash records, adjustments, and merchant remaining.": "عالج التأكيدات المفتوحة أولًا، ثم استخدم دفتر الحسابات والأدوات للتدقيق والقيود والسجلات النقدية والتسويات والمتبقي على التجار.",
+  "Total sales": "إجمالي المبيعات",
+  "Was:": "كان:",
+  "Now:": "أصبح:",
+  "Saved:": "محفوظ:",
+  "Updated value": "القيمة المحدّثة",
+  "Supplier Name": "اسم المورد",
+  "Operation Number": "رقم العملية",
+  "Location Id": "معرّف الموقع",
+  "Product Id": "معرّف المنتج",
+  "Sku Id": "معرّف رمز الصنف",
+  "User Id": "معرّف المستخدم",
+  "Merchant Id": "معرّف التاجر",
+  "Representative Id": "معرّف المندوب",
+  "Source Location Id": "معرّف موقع المصدر",
+  "Destination Location Id": "معرّف موقع الوجهة",
+  "Is Active": "نشط"
 });
 
 const translatedTextSources = new WeakMap();
@@ -1093,6 +1257,18 @@ function translateEnglishText(value, contextElement = null) {
   match = text.match(/^Page\s+(\d+)\s+of\s+(\d+)$/i);
   if (match) return `${leadingWhitespace}الصفحة ${match[1]} من ${match[2]}${trailingWhitespace}`;
 
+  match = text.match(/^Showing\s+(\d+)[–-](\d+)\s+of\s+(\d+)\s+ERP SKUs\s+·\s+Page\s+(\d+)\s+of\s+(\d+)$/i);
+  if (match) return `${leadingWhitespace}عرض ${match[1]}–${match[2]} من ${match[3]} رمز صنف ERP · الصفحة ${match[4]} من ${match[5]}${trailingWhitespace}`;
+
+  match = text.match(/^Operation\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}العملية ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^Session\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}الجلسة ${match[1]}${trailingWhitespace}`;
+
+  match = text.match(/^(.+?)\s+by\s+(.+)$/i);
+  if (match) return `${leadingWhitespace}${match[1]} بواسطة ${match[2]}${trailingWhitespace}`;
+
   match = text.match(/^Editing\s+(.+)$/i);
   if (match) return `${leadingWhitespace}تعديل ${match[1]}${trailingWhitespace}`;
 
@@ -1126,8 +1302,83 @@ function translateEnglishText(value, contextElement = null) {
   match = text.match(/^Employee account created for (.+)\.$/);
   if (match) return `${leadingWhitespace}تم إنشاء حساب الموظف ${match[1]}.${trailingWhitespace}`;
 
+  match = text.match(/^(.+?) was added as an active warehouse\.$/);
+  if (match) return `${leadingWhitespace}تمت إضافة ${match[1]} كمخزن نشط.${trailingWhitespace}`;
+
+  match = text.match(/^Delete account (.+)\? This cannot be undone\.$/);
+  if (match) return `${leadingWhitespace}حذف حساب ${match[1]}؟ لا يمكن التراجع عن هذا الإجراء.${trailingWhitespace}`;
+
+  match = text.match(/^Account (.+) deleted\.$/);
+  if (match) return `${leadingWhitespace}تم حذف حساب ${match[1]}.${trailingWhitespace}`;
+
+  match = text.match(/^(Reactivate|Deactivate) account (.+)\?$/i);
+  if (match) {
+    const action = match[1].toLowerCase() === "reactivate" ? "إعادة تنشيط" : "إلغاء تنشيط";
+    return `${leadingWhitespace}${action} حساب ${match[2]}؟${trailingWhitespace}`;
+  }
+
+  match = text.match(/^Created\s+(\d+)\s+Draft replenishment transfer\(s\)\.\s+(\d+)\s+pack\(s\)\s+still uncovered\.(.*)$/i);
+  if (match) {
+    const alert = match[3] ? ` ${match[3].replace(/^\s*Alert:\s*/i, "تنبيه: ")}` : "";
+    return `${leadingWhitespace}تم إنشاء ${match[1]} تحويل مسودة لإعادة التوريد، وما زال ${match[2]} عبوة غير مغطاة.${alert}${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(.+?) is now (active|inactive)\.$/i);
+  if (match) {
+    const status = match[2].toLowerCase() === "active" ? "نشطًا" : "غير نشط";
+    return `${leadingWhitespace}أصبح حساب ${match[1]} ${status}.${trailingWhitespace}`;
+  }
+
+  match = text.match(/^Make (.+) the primary Administrator\? You will no longer be able to delete Administrator accounts\.$/);
+  if (match) return `${leadingWhitespace}تعيين ${match[1]} كمسؤول رئيسي؟ لن تتمكن بعد ذلك من حذف حسابات المسؤولين.${trailingWhitespace}`;
+
+  match = text.match(/^(.+?) is now the primary Administrator\.$/);
+  if (match) return `${leadingWhitespace}أصبح ${match[1]} المسؤول الرئيسي الآن.${trailingWhitespace}`;
+
   match = text.match(/^Alert run matched (\d+) item\(s\)\.$/);
   if (match) return `${leadingWhitespace}اكتمل فحص التنبيه وطابق ${match[1]} عنصر.${trailingWhitespace}`;
+
+  match = text.match(/^Return draft (.+) created\.$/);
+  if (match) return `${leadingWhitespace}تم إنشاء مسودة المرتجع ${match[1]}.${trailingWhitespace}`;
+
+  match = text.match(/^(POST|CREATE|CREATED|PUT|PATCH|UPDATE|UPDATED|DELETE|DELETED|CONFIRM|CONFIRMED|CANCEL|CANCELLED|APPROVE|APPROVED|REJECT|REJECTED|DEACTIVATE|DEACTIVATED|REACTIVATE|REACTIVATED|CHANGED)\s+(.+)\.$/i);
+  if (match) {
+    const actions = {
+      post: "تم إنشاء", create: "تم إنشاء", created: "تم إنشاء",
+      put: "تم تحديث", patch: "تم تحديث", update: "تم تحديث", updated: "تم تحديث",
+      delete: "تم حذف", deleted: "تم حذف",
+      confirm: "تم تأكيد", confirmed: "تم تأكيد",
+      cancel: "تم إلغاء", cancelled: "تم إلغاء",
+      approve: "تم اعتماد", approved: "تم اعتماد",
+      reject: "تم رفض", rejected: "تم رفض",
+      deactivate: "تم إلغاء تنشيط", deactivated: "تم إلغاء تنشيط",
+      reactivate: "تمت إعادة تنشيط", reactivated: "تمت إعادة تنشيط",
+      changed: "تم تغيير"
+    };
+    const subjects = {
+      "employee account": "حساب الموظف",
+      "inventory receipt": "إيصال المخزون",
+      "Shopify event": "حدث Shopify",
+      representative: "المندوب",
+      notification: "التنبيه",
+      stocktake: "الجرد",
+      shipment: "الشحنة",
+      operation: "العملية",
+      merchant: "التاجر",
+      payment: "الدفعة"
+    };
+    let subject = match[2];
+    for (const [english, arabic] of Object.entries(subjects)) {
+      if (subject.toLowerCase().startsWith(`${english.toLowerCase()} `)) {
+        subject = `${arabic} ${subject.slice(english.length + 1)}`;
+        break;
+      }
+    }
+    return `${leadingWhitespace}${actions[match[1].toLowerCase()]} ${subject}.${trailingWhitespace}`;
+  }
+
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+open confirmations?$/i);
+  if (match) return `${leadingWhitespace}${match[1]} تأكيد مفتوح${trailingWhitespace}`;
 
   match = text.match(/^(.+?)\s*\((\d+)(?:,\s*(\d+)\s+unread)?\)$/i);
   if (match) {
@@ -1136,7 +1387,7 @@ function translateEnglishText(value, contextElement = null) {
     return `${leadingWhitespace}${translatedLabel} (${match[2]}${unreadPart})${trailingWhitespace}`;
   }
 
-  match = text.match(/^(-?\d+(?:\.\d+)?)\s+(products?|users?|modules?|merchants?|representatives?|unread|active|operations?|visible|shortages?|items?|packs?|pieces?)$/i);
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+(products?|users?|modules?|merchants?|representatives?|reps?|unread|active|operations?|visible|shortages?|items?|packs?|pieces?|sessions?|events?|categories?|balances?|batches?|transactions?|recalls?|records?|expired|logged)$/i);
   if (match) {
     const labels = {
       product: "منتج", products: "منتج",
@@ -1144,6 +1395,7 @@ function translateEnglishText(value, contextElement = null) {
       module: "وحدة", modules: "وحدة",
       merchant: "تاجر", merchants: "تاجر",
       representative: "مندوب", representatives: "مندوب",
+      rep: "مندوب", reps: "مندوب",
       unread: "غير مقروء",
       active: "عملية نشطة",
       operation: "عملية", operations: "عملية",
@@ -1151,7 +1403,17 @@ function translateEnglishText(value, contextElement = null) {
       shortage: "حالة عجز", shortages: "حالة عجز",
       item: "عنصر", items: "عنصر",
       pack: "عبوة", packs: "عبوة",
-      piece: "قطعة", pieces: "قطعة"
+      piece: "قطعة", pieces: "قطعة",
+      session: "جلسة", sessions: "جلسة",
+      event: "حدث", events: "حدث",
+      category: "فئة", categories: "فئة",
+      balance: "رصيد", balances: "رصيد",
+      batch: "دفعة", batches: "دفعة",
+      transaction: "معاملة", transactions: "معاملة",
+      recall: "طلب استرجاع", recalls: "طلب استرجاع",
+      record: "سجل", records: "سجل",
+      expired: "دفعة منتهية الصلاحية",
+      logged: "مسجّل"
     };
     return `${leadingWhitespace}${match[1]} ${labels[match[2].toLowerCase()]}${trailingWhitespace}`;
   }
@@ -1177,6 +1439,10 @@ function translateEnglishText(value, contextElement = null) {
   }
 
   return value;
+}
+
+function uiText(english) {
+  return currentLanguage === "ar" ? translateEnglishText(english).trim() : english;
 }
 
 function getOriginalText(node) {
@@ -7531,7 +7797,7 @@ async function loadMerchantExpiryRecalls() {
   const canManage = isSystemAdminRole(getAuth()?.user.role);
   try {
     const recalls = await request("/api/v1/merchant-expiry-recalls?status=Active");
-    count.textContent = `${recalls.length} active`;
+    count.textContent = `${recalls.length} recalls`;
     tbody.innerHTML = recalls.length === 0 ? `<tr><td colspan="8">No active merchant expiry recalls.</td></tr>` : recalls.map((recall) => `
       <tr data-merchant-recall-row="${escapeHtml(recall.id)}">
         <td><strong>${escapeHtml(recall.merchantName)}</strong></td>
@@ -8174,7 +8440,7 @@ async function deleteAdminUser(userId) {
   const username = row?.querySelector("strong")?.textContent || "this user";
   const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
   const accountLabel = fullName ? `${username} (${fullName})` : username;
-  if (!window.confirm(`Delete account ${accountLabel}? This cannot be undone.`)) return;
+  if (!window.confirm(uiText(`Delete account ${accountLabel}? This cannot be undone.`))) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
@@ -8190,7 +8456,7 @@ async function setAdminUserActiveStatus(userId, isActive) {
     .find((item) => item.dataset.adminUserRow === userId);
   const username = row?.querySelector("strong")?.textContent || "this user";
   const action = isActive ? "reactivate" : "deactivate";
-  if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} account ${username}?`)) return;
+  if (!window.confirm(uiText(`${action[0].toUpperCase()}${action.slice(1)} account ${username}?`))) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}/${isActive ? "activate" : "deactivate"}`, { method: "PATCH", body: JSON.stringify({}) });
@@ -8207,7 +8473,7 @@ async function transferPrimaryAdmin(userId) {
   const username = row?.querySelector("strong")?.textContent || "this Administrator";
   const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
   const accountLabel = fullName ? `${fullName} (${username})` : username;
-  if (!window.confirm(`Make ${accountLabel} the primary Administrator? You will no longer be able to delete Administrator accounts.`)) return;
+  if (!window.confirm(uiText(`Make ${accountLabel} the primary Administrator? You will no longer be able to delete Administrator accounts.`))) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}/transfer-primary`, { method: "POST", body: JSON.stringify({}) });
@@ -8432,7 +8698,7 @@ async function retryShopifyEvent(id) {
 }
 
 async function resolveShopifyEvent(id) {
-  const note = window.prompt("Resolution note");
+  const note = window.prompt(uiText("Resolution note"));
   if (!note?.trim()) return;
   try {
     await request(`/api/v1/integrations/shopify/events/${id}/resolve`, { method: "POST", body: JSON.stringify({ note: note.trim() }) });
@@ -8529,11 +8795,19 @@ function formatDateTime(value) {
   }
 
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(currentLanguage === "ar" ? "ar-EG-u-nu-latn" : "en-US", {
+      dateStyle: "medium",
+      timeStyle: "short"
+    }).format(date);
 }
 
 function formatMoney(value) {
-  return Number(value || 0).toFixed(2);
+  return new Intl.NumberFormat(currentLanguage === "ar" ? "ar-EG-u-nu-latn" : "en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Number(value || 0));
 }
 
 function getFriendlyLoginError(exception) {

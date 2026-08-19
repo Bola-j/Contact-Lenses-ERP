@@ -22,9 +22,10 @@
     "postman:seed-lenses": "npx newman run postman/Lensee_Lens_Seed.postman_collection.json --env-var baseUrl=http://localhost:5000 --env-var adminUsername=admin --env-var adminPassword=Admin123! --env-var requestThrottleMs=550 --env-var rateLimitBackoffMs=65000",
     "vercel:build": "node scripts/build-vercel-frontend.mjs",
     "check:encoding": "node scripts/check-text-encoding.mjs",
-    "check": "npm run check:encoding",
-    "pretest:e2e": "npm run check:encoding",
-    "prevercel:build": "npm run check:encoding"
+    "check:localization": "node scripts/check-frontend-localization.mjs",
+    "check": "npm run check:encoding && npm run check:localization",
+    "pretest:e2e": "npm run check",
+    "prevercel:build": "npm run check"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0"
