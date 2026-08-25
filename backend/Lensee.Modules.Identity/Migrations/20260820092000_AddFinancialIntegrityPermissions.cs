@@ -12,7 +12,7 @@ namespace Lensee.Modules.Identity.Migrations
     public partial class AddFinancialIntegrityPermissions : Migration
     {
         /// <inheritdoc />
-        
+
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.Sql("""

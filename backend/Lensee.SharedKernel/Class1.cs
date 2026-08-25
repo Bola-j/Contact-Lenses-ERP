@@ -1,4 +1,4 @@
-﻿namespace Lensee.SharedKernel;
+namespace Lensee.SharedKernel;
 
 public class Class1
 {

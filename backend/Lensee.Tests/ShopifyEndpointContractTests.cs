@@ -165,10 +165,13 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         }
 
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsWrite, LenseePermissions.OperationsRead);
-        using var allocationResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new { lines = new[]
+        using var allocationResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new
+        {
+            lines = new[]
         {
             new { operationLineId = Guid.Empty, lotNumber = "ONLINE-1", expiryDate = expiry }
-        }});
+        }
+        });
         Assert.Equal(HttpStatusCode.BadRequest, allocationResponse.StatusCode);
 
         using var detailResponse = await client.GetAsync($"/api/v1/operations/{operationId}");
@@ -230,7 +233,11 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
 
     private static string OrderPayload(string id, string sku, string gateway = "Card") => JsonSerializer.Serialize(new
     {
-        id = $"customer-{id}", name = $"#{id}", email = "buyer@example.com", phone = "+20 100 000 0000", payment_gateway_names = new[] { gateway },
+        id = $"customer-{id}",
+        name = $"#{id}",
+        email = "buyer@example.com",
+        phone = "+20 100 000 0000",
+        payment_gateway_names = new[] { gateway },
         customer = new { id = $"shopify-buyer-{id}", first_name = "Online", last_name = "Buyer", email = "buyer@example.com", phone = "+20 100 000 0000" },
         shipping_address = new { first_name = "Online", last_name = "Buyer", address1 = "15 Nile Street", city = "Cairo", country = "EG", phone = "+20 100 000 0000" },
         line_items = new[] { new { id = $"line-{id}", variant_id = $"variant-{id}", sku, title = "Lens", variant_title = "Hazel", quantity = 2, price = "125.50", properties = new[] { new { name = "Eye", value = "Right" } } } }

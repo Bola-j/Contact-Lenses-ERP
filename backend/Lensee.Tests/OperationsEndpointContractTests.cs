@@ -2022,11 +2022,11 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
     {
         using var scope = Services.CreateScope();
         var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
-            return await inventory.StockTransactions
-            .Where(transaction => transaction.SkuId == skuId)
-            .OrderBy(transaction => transaction.CreatedAt)
-            .Select(transaction => transaction.TransactionType)
-            .ToListAsync();
+        return await inventory.StockTransactions
+        .Where(transaction => transaction.SkuId == skuId)
+        .OrderBy(transaction => transaction.CreatedAt)
+        .Select(transaction => transaction.TransactionType)
+        .ToListAsync();
     }
 }
 

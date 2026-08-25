@@ -8,7 +8,7 @@ using Lensee.Modules.Payments.Data;
 namespace Lensee.Modules.Payments.Migrations
 {
     /// <inheritdoc />
-    
+
     [DbContext(typeof(PaymentsDbContext))]
     [Migration("20260820091000_AddPaymentIntegrityControls")]
     public partial class AddPaymentIntegrityControls : Migration

@@ -65,34 +65,34 @@ public sealed class TargetReplenishmentService
             var pendingCurrentVersions = new List<(OperationLog Operation, Guid VersionId)>();
             foreach (var group in balances.GroupBy(value => value.LocationId))
             {
-            var destination = destinations.First(value => value.Id == group.Key);
-            var lines = new List<(Guid SkuId, int Quantity)>();
-            foreach (var balance in group)
-            {
-                var incomingQty = incoming.GetValueOrDefault((balance.LocationId, balance.SkuId));
-                var shortage = Math.Max((balance.TargetQty ?? 0) - balance.AvailableQty - incomingQty, 0);
-                var quantity = Math.Min(shortage, mainBalances.GetValueOrDefault(balance.SkuId));
-                uncovered += shortage - quantity;
-                if (quantity > 0) { lines.Add((balance.SkuId, quantity)); mainBalances[balance.SkuId] -= quantity; }
-            }
-            if (lines.Count == 0) continue;
-            var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}", OperationType = "WarehouseTransfer", Status = "Draft", SourceLocationId = main.Id, DestinationLocationId = destination.Id, Notes = "Target-stock replenishment", CreatedBy = Guid.Empty, CreatedActorName = "System - Target replenishment", CreatedAt = now, AutomationType = "TargetReplenishment" };
-            foreach (var line in lines)
-            {
-                var sku = await _catalog.Skus.Include(value => value.Product).FirstAsync(value => value.Id == line.SkuId, cancellationToken);
-                operation.OperationLines.Add(new OperationLine { Id = Guid.NewGuid(), OperationId = operation.Id, SkuId = line.SkuId, ProductNameSnapshot = sku.Product.Name, SkuCodeSnapshot = sku.SkuCode, Section = "Standard", Quantity = line.Quantity, EntryMode = "Packs", LineNotes = "Target-stock replenishment" });
-            }
-            _operations.OperationLogs.Add(operation);
-            var version = new OperationVersion { Id = Guid.NewGuid(), OperationId = operation.Id, VersionNumber = 1, SnapshotData = "{}", Reason = "Draft replenishment created", EditedBy = Guid.Empty, EditedActorName = "System - Target replenishment", EditedAt = now };
-            operation.OperationVersions.Add(version);
-            _operations.OperationVersions.Add(version);
-            pendingCurrentVersions.Add((operation, version.Id));
-            created++;
-            foreach (var role in new[] { LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.WarehouseClerk })
-            {
-                var id = Guid.NewGuid();
-                _notifications.NotificationLogs.Add(new NotificationLog { Id = id, AlertType = "Replenishment", Message = $"Replenishment {operation.OperationNumber} was created as a Draft. Review and confirm the warehouse transfer.", ReferenceId = operation.Id, ReferenceType = "Operation", ReferenceCode = operation.OperationNumber, TargetRole = role, Channel = "InApp", CreatedAt = now, NotificationNumber = $"NOT-{id:N}".ToUpperInvariant() });
-            }
+                var destination = destinations.First(value => value.Id == group.Key);
+                var lines = new List<(Guid SkuId, int Quantity)>();
+                foreach (var balance in group)
+                {
+                    var incomingQty = incoming.GetValueOrDefault((balance.LocationId, balance.SkuId));
+                    var shortage = Math.Max((balance.TargetQty ?? 0) - balance.AvailableQty - incomingQty, 0);
+                    var quantity = Math.Min(shortage, mainBalances.GetValueOrDefault(balance.SkuId));
+                    uncovered += shortage - quantity;
+                    if (quantity > 0) { lines.Add((balance.SkuId, quantity)); mainBalances[balance.SkuId] -= quantity; }
+                }
+                if (lines.Count == 0) continue;
+                var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}", OperationType = "WarehouseTransfer", Status = "Draft", SourceLocationId = main.Id, DestinationLocationId = destination.Id, Notes = "Target-stock replenishment", CreatedBy = Guid.Empty, CreatedActorName = "System - Target replenishment", CreatedAt = now, AutomationType = "TargetReplenishment" };
+                foreach (var line in lines)
+                {
+                    var sku = await _catalog.Skus.Include(value => value.Product).FirstAsync(value => value.Id == line.SkuId, cancellationToken);
+                    operation.OperationLines.Add(new OperationLine { Id = Guid.NewGuid(), OperationId = operation.Id, SkuId = line.SkuId, ProductNameSnapshot = sku.Product.Name, SkuCodeSnapshot = sku.SkuCode, Section = "Standard", Quantity = line.Quantity, EntryMode = "Packs", LineNotes = "Target-stock replenishment" });
+                }
+                _operations.OperationLogs.Add(operation);
+                var version = new OperationVersion { Id = Guid.NewGuid(), OperationId = operation.Id, VersionNumber = 1, SnapshotData = "{}", Reason = "Draft replenishment created", EditedBy = Guid.Empty, EditedActorName = "System - Target replenishment", EditedAt = now };
+                operation.OperationVersions.Add(version);
+                _operations.OperationVersions.Add(version);
+                pendingCurrentVersions.Add((operation, version.Id));
+                created++;
+                foreach (var role in new[] { LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.WarehouseClerk })
+                {
+                    var id = Guid.NewGuid();
+                    _notifications.NotificationLogs.Add(new NotificationLog { Id = id, AlertType = "Replenishment", Message = $"Replenishment {operation.OperationNumber} was created as a Draft. Review and confirm the warehouse transfer.", ReferenceId = operation.Id, ReferenceType = "Operation", ReferenceCode = operation.OperationNumber, TargetRole = role, Channel = "InApp", CreatedAt = now, NotificationNumber = $"NOT-{id:N}".ToUpperInvariant() });
+                }
             }
             _operations.ReplenishmentRuns.Add(new ReplenishmentRun { Id = Guid.NewGuid(), RunKey = key, CairoDate = cairoDate, Trigger = trigger, Status = "Completed", StartedAt = now, CompletedAt = now, CreatedOperations = created, UncoveredQuantity = uncovered });
             await _operations.SaveChangesAsync(cancellationToken);

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace Lensee.Modules.CRM.Data;
@@ -21,7 +21,7 @@ public partial class Merchant
 
     public string Status { get; set; } = null!;
 
-    public string? Notes { get; set; }  
+    public string? Notes { get; set; }
 
     public string? ExternalProvider { get; set; }
 
