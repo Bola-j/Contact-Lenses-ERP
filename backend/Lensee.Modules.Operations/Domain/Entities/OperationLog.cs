@@ -55,6 +55,23 @@ public partial class OperationLog
 
     public DateTime? ConfirmedAt { get; set; }
 
+    // Financially-final operations are never edited in place.  These fields form
+    // immutable lineage between the original, its compensating reversal, and an
+    // optional replacement draft.
+    public string RecordKind { get; set; } = "Standard";
+
+    public Guid? ReversesOperationId { get; set; }
+
+    public Guid? ReplacedOperationId { get; set; }
+
+    public Guid? CorrectionProposalId { get; set; }
+
+    public string? CorrectionReason { get; set; }
+
+    public Guid? CorrectedBy { get; set; }
+
+    public DateTime? CorrectedAt { get; set; }
+
     public virtual OperationVersion? CurrentVersion { get; set; }
 
     public virtual InventoryReceiptHeader? InventoryReceiptHeader { get; set; }

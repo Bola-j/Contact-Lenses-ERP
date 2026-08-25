@@ -17,6 +17,8 @@ public partial class PaymentsDbContext : DbContext
 
     public virtual DbSet<FinancialAdjustment> FinancialAdjustments { get; set; }
 
+    public virtual DbSet<PaymentIdempotencyKey> PaymentIdempotencyKeys { get; set; }
+
     public virtual DbSet<MainPaymentLog> MainPaymentLogs { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -119,7 +121,7 @@ public partial class PaymentsDbContext : DbContext
             entity.ToTable("financial_adjustments", "payments", table =>
             {
                 table.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('MerchantCredit','BalanceReduction','CashRefund')");
-                table.HasCheckConstraint("chk_financial_adjustment_status", "status in ('Completed','Cancelled')");
+                table.HasCheckConstraint("chk_financial_adjustment_status", "status in ('PendingApproval','Approved','Rejected','Completed','Cancelled','LegacyUnlinked')");
                 table.HasCheckConstraint("chk_financial_adjustment_amount", "amount > 0");
             });
 
@@ -144,10 +146,61 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(e => e.MerchantId).HasColumnName("merchant_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.PaymentLogId).HasColumnName("payment_log_id");
+            entity.Property(e => e.ReversesAdjustmentId).HasColumnName("reverses_adjustment_id");
+            entity.Property(e => e.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(e => e.ReviewedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("reviewed_at");
+            entity.Property(e => e.RejectionReason).HasColumnName("rejection_reason");
+            entity.Property(e => e.LineageKind)
+                .HasMaxLength(50)
+                .HasDefaultValueSql("'SourceLinked'::character varying")
+                .HasColumnName("lineage_kind");
             entity.Property(e => e.Status)
                 .HasMaxLength(50)
-                .HasDefaultValueSql("'Completed'::character varying")
+                .HasDefaultValueSql("'PendingApproval'::character varying")
                 .HasColumnName("status");
+        });
+
+        modelBuilder.Entity<PaymentIdempotencyKey>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("payment_idempotency_keys_pkey");
+
+            entity.ToTable("payment_idempotency_keys", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_payment_idempotency_status", "status in ('Pending','Completed')");
+            });
+
+            entity.HasIndex(e => new { e.Key, e.Scope }, "uq_payment_idempotency_key_scope").IsUnique();
+            entity.HasIndex(e => e.ExpiresAt, "idx_payment_idempotency_expires_at");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Key).HasColumnName("key");
+            entity.Property(e => e.Scope)
+                .HasMaxLength(200)
+                .HasColumnName("scope");
+            entity.Property(e => e.RequestHash)
+                .HasMaxLength(128)
+                .HasColumnName("request_hash");
+            entity.Property(e => e.Status)
+                .HasMaxLength(50)
+                .HasColumnName("status");
+            entity.Property(e => e.ResponseStatusCode).HasColumnName("response_status_code");
+            entity.Property(e => e.ResponseBody)
+                .HasColumnType("jsonb")
+                .HasColumnName("response_body");
+            entity.Property(e => e.CreatedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("created_at");
+            entity.Property(e => e.LastSeenAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("last_seen_at");
+            entity.Property(e => e.ExpiresAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("expires_at");
         });
 
         modelBuilder.Entity<MainPaymentLog>(entity =>
@@ -160,7 +213,8 @@ public partial class PaymentsDbContext : DbContext
                 table.HasCheckConstraint("chk_main_payment_status", "status in ('PendingAdmin','PendingAccountant','PendingAdminReview','Completed','Rejected','Cancelled')");
                 table.HasCheckConstraint("chk_main_payment_total_amount", "total_amount >= 0");
                 table.HasCheckConstraint("chk_main_payment_amount_paid", "amount_paid >= 0");
-                table.HasCheckConstraint("chk_main_payment_paid_lte_total", "amount_paid <= total_amount");
+                table.HasCheckConstraint("chk_main_payment_pending_amount", "pending_amount >= 0");
+                table.HasCheckConstraint("chk_main_payment_paid_lte_total", "amount_paid + pending_amount <= total_amount");
             });
 
             entity.HasIndex(e => e.AssignedTo, "idx_main_payment_assigned").HasFilter("(assigned_to IS NOT NULL)");
@@ -168,6 +222,10 @@ public partial class PaymentsDbContext : DbContext
             entity.HasIndex(e => e.MerchantId, "idx_main_payment_merchant");
 
             entity.HasIndex(e => e.OperationId, "idx_main_payment_operation");
+
+            entity.HasIndex(e => e.OperationId, "uq_main_payment_operation_active")
+                .IsUnique()
+                .HasFilter("(is_deleted = false)");
 
             entity.HasIndex(e => e.Status, "idx_main_payment_status").HasFilter("(is_deleted = false)");
 
@@ -201,6 +259,10 @@ public partial class PaymentsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'Installment'::character varying")
                 .HasColumnName("payment_method");
+            entity.Property(e => e.PendingAmount)
+                .HasPrecision(18, 4)
+                .HasDefaultValue(0m)
+                .HasColumnName("pending_amount");
             entity.Property(e => e.Status)
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'PendingAdmin'::character varying")

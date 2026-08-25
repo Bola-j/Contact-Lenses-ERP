@@ -1,4 +1,3 @@
-using System.Data.Common;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Notifications.Data;
@@ -36,26 +35,36 @@ public sealed class TargetReplenishmentService
             var manualSuffix = Guid.NewGuid().ToString("N")[..16];
             key += $"-{manualSuffix}";
         }
-        if (_operations.Database.IsRelational())
+        TargetReplenishmentRunResult? result = null;
+        await SharedDbTransaction.ExecuteAsync(_operations, async () =>
         {
-            await _operations.Database.ExecuteSqlInterpolatedAsync($"select pg_advisory_lock(hashtextextended({key}, 0))", cancellationToken);
-        }
-        if (!trigger.Equals("Manual", StringComparison.OrdinalIgnoreCase) && await _operations.ReplenishmentRuns.AnyAsync(value => value.RunKey == key, cancellationToken))
-        {
-            return new TargetReplenishmentRunResult(0, 0, true);
-        }
+            if (_operations.Database.IsRelational())
+            {
+                // The lock is released automatically on commit or rollback. This avoids
+                // retaining a pooled-session lock when an exception interrupts the run.
+                await _operations.Database.ExecuteSqlInterpolatedAsync($"select pg_advisory_xact_lock(hashtextextended({key}, 0))", cancellationToken);
+            }
+            if (!trigger.Equals("Manual", StringComparison.OrdinalIgnoreCase) && await _operations.ReplenishmentRuns.AnyAsync(value => value.RunKey == key, cancellationToken))
+            {
+                result = new TargetReplenishmentRunResult(0, 0, true);
+                return;
+            }
 
-        var main = await _inventory.Locations.FirstOrDefaultAsync(value => value.IsActive && value.LocationType == "MainWarehouse", cancellationToken);
-        if (main is null) return new TargetReplenishmentRunResult(0, 0, false);
-        var destinations = await _inventory.Locations.Where(value => value.IsActive && value.LocationType != "MainWarehouse" && (!locationId.HasValue || value.Id == locationId.Value)).ToListAsync(cancellationToken);
-        var destinationIds = destinations.Select(value => value.Id).ToArray();
-        var balances = await _inventory.StockBalances.Where(value => destinationIds.Contains(value.LocationId) && value.TargetQty.HasValue && (!skuId.HasValue || value.SkuId == skuId.Value)).ToListAsync(cancellationToken);
-        var incoming = await _operations.OperationLogs.Include(value => value.OperationLines).Where(value => !value.IsDeleted && value.AutomationType == "TargetReplenishment" && value.OperationType == "WarehouseTransfer" && (value.Status == "Draft" || value.Status == "Reserved" || value.Status == "Shipped") && value.DestinationLocationId.HasValue && destinationIds.Contains(value.DestinationLocationId.Value)).SelectMany(value => value.OperationLines, (operation, line) => new { Destination = operation.DestinationLocationId!.Value, line.SkuId, line.Quantity }).GroupBy(value => new { value.Destination, value.SkuId }).Select(group => new { group.Key.Destination, group.Key.SkuId, Quantity = group.Sum(value => value.Quantity) }).ToDictionaryAsync(value => (value.Destination, value.SkuId), value => value.Quantity, cancellationToken);
-        var mainBalances = await _inventory.StockBalances.Where(value => value.LocationId == main.Id).ToDictionaryAsync(value => value.SkuId, value => Math.Max(value.AvailableQty - (value.TargetQty ?? 0), 0), cancellationToken);
-        var created = 0; var uncovered = 0;
-        var pendingCurrentVersions = new List<(OperationLog Operation, Guid VersionId)>();
-        foreach (var group in balances.GroupBy(value => value.LocationId))
-        {
+            var main = await _inventory.Locations.FirstOrDefaultAsync(value => value.IsActive && value.LocationType == "MainWarehouse", cancellationToken);
+            if (main is null)
+            {
+                result = new TargetReplenishmentRunResult(0, 0, false);
+                return;
+            }
+            var destinations = await _inventory.Locations.Where(value => value.IsActive && value.LocationType != "MainWarehouse" && (!locationId.HasValue || value.Id == locationId.Value)).ToListAsync(cancellationToken);
+            var destinationIds = destinations.Select(value => value.Id).ToArray();
+            var balances = await _inventory.StockBalances.Where(value => destinationIds.Contains(value.LocationId) && value.TargetQty.HasValue && (!skuId.HasValue || value.SkuId == skuId.Value)).ToListAsync(cancellationToken);
+            var incoming = await _operations.OperationLogs.Include(value => value.OperationLines).Where(value => !value.IsDeleted && value.AutomationType == "TargetReplenishment" && value.OperationType == "WarehouseTransfer" && (value.Status == "Draft" || value.Status == "Reserved" || value.Status == "Shipped") && value.DestinationLocationId.HasValue && destinationIds.Contains(value.DestinationLocationId.Value)).SelectMany(value => value.OperationLines, (operation, line) => new { Destination = operation.DestinationLocationId!.Value, line.SkuId, line.Quantity }).GroupBy(value => new { value.Destination, value.SkuId }).Select(group => new { group.Key.Destination, group.Key.SkuId, Quantity = group.Sum(value => value.Quantity) }).ToDictionaryAsync(value => (value.Destination, value.SkuId), value => value.Quantity, cancellationToken);
+            var mainBalances = await _inventory.StockBalances.Where(value => value.LocationId == main.Id).ToDictionaryAsync(value => value.SkuId, value => Math.Max(value.AvailableQty - (value.TargetQty ?? 0), 0), cancellationToken);
+            var created = 0; var uncovered = 0;
+            var pendingCurrentVersions = new List<(OperationLog Operation, Guid VersionId)>();
+            foreach (var group in balances.GroupBy(value => value.LocationId))
+            {
             var destination = destinations.First(value => value.Id == group.Key);
             var lines = new List<(Guid SkuId, int Quantity)>();
             foreach (var balance in group)
@@ -84,13 +93,16 @@ public sealed class TargetReplenishmentService
                 var id = Guid.NewGuid();
                 _notifications.NotificationLogs.Add(new NotificationLog { Id = id, AlertType = "Replenishment", Message = $"Replenishment {operation.OperationNumber} was created as a Draft. Review and confirm the warehouse transfer.", ReferenceId = operation.Id, ReferenceType = "Operation", ReferenceCode = operation.OperationNumber, TargetRole = role, Channel = "InApp", CreatedAt = now, NotificationNumber = $"NOT-{id:N}".ToUpperInvariant() });
             }
-        }
-        _operations.ReplenishmentRuns.Add(new ReplenishmentRun { Id = Guid.NewGuid(), RunKey = key, CairoDate = cairoDate, Trigger = trigger, Status = "Completed", StartedAt = now, CompletedAt = now, CreatedOperations = created, UncoveredQuantity = uncovered });
-        await _operations.SaveChangesAsync(cancellationToken);
-        foreach (var pending in pendingCurrentVersions) pending.Operation.CurrentVersionId = pending.VersionId;
-        await _operations.SaveChangesAsync(cancellationToken);
-        await _notifications.SaveChangesAsync(cancellationToken);
-        return new TargetReplenishmentRunResult(created, uncovered, false);
+            }
+            _operations.ReplenishmentRuns.Add(new ReplenishmentRun { Id = Guid.NewGuid(), RunKey = key, CairoDate = cairoDate, Trigger = trigger, Status = "Completed", StartedAt = now, CompletedAt = now, CreatedOperations = created, UncoveredQuantity = uncovered });
+            await _operations.SaveChangesAsync(cancellationToken);
+            foreach (var pending in pendingCurrentVersions) pending.Operation.CurrentVersionId = pending.VersionId;
+            await _operations.SaveChangesAsync(cancellationToken);
+            await _notifications.SaveChangesAsync(cancellationToken);
+            result = new TargetReplenishmentRunResult(created, uncovered, false);
+        }, cancellationToken, _inventory, _catalog, _notifications);
+
+        return result ?? new TargetReplenishmentRunResult(0, 0, false);
     }
 }
 

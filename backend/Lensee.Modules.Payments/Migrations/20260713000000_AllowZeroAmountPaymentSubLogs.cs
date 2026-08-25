@@ -1,48 +1,50 @@
+using Lensee.Modules.Payments.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace Lensee.Modules.Payments.Migrations
+namespace Lensee.Modules.Payments.Migrations;
+
+[DbContext(typeof(PaymentsDbContext))]
+[Migration("20260713000000_AllowZeroAmountPaymentSubLogs")]
+public partial class AllowZeroAmountPaymentSubLogs : Migration
 {
     /// <inheritdoc />
-    public partial class AllowZeroAmountPaymentSubLogs : Migration
+    protected override void Up(MigrationBuilder migrationBuilder)
     {
-        /// <inheritdoc />
-        protected override void Up(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_amount;");
-            migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_payment_method;");
+        migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_amount;");
+        migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_payment_method;");
 
-            migrationBuilder.AddCheckConstraint(
-                name: "chk_sub_log_amount",
-                schema: "payments",
-                table: "installment_sub_logs",
-                sql: "amount >= 0");
+        migrationBuilder.AddCheckConstraint(
+            name: "chk_sub_log_amount",
+            schema: "payments",
+            table: "installment_sub_logs",
+            sql: "amount >= 0");
 
-            migrationBuilder.AddCheckConstraint(
-                name: "chk_sub_log_payment_method",
-                schema: "payments",
-                table: "installment_sub_logs",
-                sql: "payment_method is null or payment_method in ('CashTransaction','CashHandToHand','BankTransfer','Wallet','Installment')");
-        }
+        migrationBuilder.AddCheckConstraint(
+            name: "chk_sub_log_payment_method",
+            schema: "payments",
+            table: "installment_sub_logs",
+            sql: "payment_method is null or payment_method in ('CashTransaction','CashHandToHand','BankTransfer','Wallet','Installment')");
+    }
 
-        /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_amount;");
-            migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_payment_method;");
+    /// <inheritdoc />
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_amount;");
+        migrationBuilder.Sql("alter table if exists payments.installment_sub_logs drop constraint if exists chk_sub_log_payment_method;");
 
-            migrationBuilder.AddCheckConstraint(
-                name: "chk_sub_log_amount",
-                schema: "payments",
-                table: "installment_sub_logs",
-                sql: "amount > 0");
+        migrationBuilder.AddCheckConstraint(
+            name: "chk_sub_log_amount",
+            schema: "payments",
+            table: "installment_sub_logs",
+            sql: "amount > 0");
 
-            migrationBuilder.AddCheckConstraint(
-                name: "chk_sub_log_payment_method",
-                schema: "payments",
-                table: "installment_sub_logs",
-                sql: "payment_method is null or payment_method in ('CashTransaction','CashHandToHand','BankTransfer','Wallet')");
-        }
+        migrationBuilder.AddCheckConstraint(
+            name: "chk_sub_log_payment_method",
+            schema: "payments",
+            table: "installment_sub_logs",
+            sql: "payment_method is null or payment_method in ('CashTransaction','CashHandToHand','BankTransfer','Wallet')");
     }
 }

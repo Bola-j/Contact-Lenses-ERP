@@ -1,9 +1,13 @@
+using Lensee.Modules.Payments.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace Lensee.Modules.Payments.Migrations;
 
+[DbContext(typeof(PaymentsDbContext))]
+[Migration("20260712000000_AllowAnonymousCashPaymentLogs")]
 public partial class AllowAnonymousCashPaymentLogs : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

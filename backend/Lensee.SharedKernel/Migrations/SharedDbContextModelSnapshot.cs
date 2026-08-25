@@ -23,6 +23,115 @@ namespace Lensee.SharedKernel.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "uuid-ossp");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Lensee.SharedKernel.Data.OutboxDeliveryReceipt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<string>("HandlerName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("handler_name");
+
+                    b.Property<Guid>("OutboxMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("outbox_message_id");
+
+                    b.Property<DateTime>("ProcessedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("processed_at");
+
+                    b.HasKey("Id")
+                        .HasName("outbox_delivery_receipts_pkey");
+
+                    b.HasIndex(new[] { "OutboxMessageId", "HandlerName" }, "uq_outbox_delivery_receipts_message_handler")
+                        .IsUnique();
+
+                    b.ToTable("outbox_delivery_receipts", "shared");
+                });
+
+            modelBuilder.Entity("Lensee.SharedKernel.Data.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<string>("CausationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("causation_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("event_type");
+
+                    b.Property<int>("EventVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("event_version");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("text")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTime?>("ProcessedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("processed_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("outbox_messages_pkey");
+
+                    b.HasIndex(new[] { "CorrelationId" }, "idx_outbox_messages_correlation");
+
+                    b.HasIndex(new[] { "OccurredAt" }, "idx_outbox_messages_occurred_at");
+
+                    b.HasIndex(new[] { "Status", "NextAttemptAt" }, "idx_outbox_messages_ready");
+
+                    b.ToTable("outbox_messages", "shared", t =>
+                        {
+                            t.HasCheckConstraint("chk_outbox_attempts", "attempts >= 0");
+
+                            t.HasCheckConstraint("chk_outbox_status", "status in ('Pending','Processing','Processed','Failed','DeadLetter')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.SharedKernel.Data.SystemSetting", b =>
                 {
                     b.Property<string>("Key")
@@ -49,6 +158,18 @@ namespace Lensee.SharedKernel.Migrations
                         .HasName("system_settings_pkey");
 
                     b.ToTable("system_settings", "shared");
+                });
+
+            modelBuilder.Entity("Lensee.SharedKernel.Data.OutboxDeliveryReceipt", b =>
+                {
+                    b.HasOne("Lensee.SharedKernel.Data.OutboxMessage", "OutboxMessage")
+                        .WithMany()
+                        .HasForeignKey("OutboxMessageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("outbox_delivery_receipts_outbox_message_id_fkey");
+
+                    b.Navigation("OutboxMessage");
                 });
 #pragma warning restore 612, 618
         }

@@ -1,9 +1,19 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Lensee.Modules.Catalog.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+
+// #nullable disable
+// using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
+// namespace Lensee.Modules.Payments.Migrations;
+
+
 namespace Lensee.Modules.Catalog.Migrations
 {
+    [DbContext(typeof(CatalogDbContext))]
+    [Migration("20260719000100_RenameOpenedExpiryRate")]
     /// <inheritdoc />
     public partial class RenameOpenedExpiryRate : Migration
     {

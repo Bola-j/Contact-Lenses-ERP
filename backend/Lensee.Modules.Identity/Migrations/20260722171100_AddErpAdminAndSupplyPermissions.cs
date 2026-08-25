@@ -1,10 +1,13 @@
 using Microsoft.EntityFrameworkCore.Migrations;
-
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Lensee.Modules.Identity.Data;
 #nullable disable
 
 namespace Lensee.Modules.Identity.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(IdentityDbContext))]
+    [Migration("20260722171100_AddErpAdminAndSupplyPermissions")]
     public partial class AddErpAdminAndSupplyPermissions : Migration
     {
         /// <inheritdoc />

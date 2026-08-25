@@ -13,6 +13,7 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.UsersWrite, permissions);
         Assert.Contains(LenseePermissions.UsersPasswordWrite, permissions);
         Assert.Contains(LenseePermissions.SupplyWrite, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsApprove, permissions);
     }
 
     [Fact]
@@ -23,6 +24,7 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.UsersWrite, permissions);
         Assert.Contains(LenseePermissions.InventoryWrite, permissions);
         Assert.Contains(LenseePermissions.PaymentsWrite, permissions);
+        Assert.Contains(LenseePermissions.OperationsCorrectionsApprove, permissions);
         Assert.DoesNotContain(LenseePermissions.UsersPasswordWrite, permissions);
         Assert.DoesNotContain(LenseePermissions.SupplyRead, permissions);
         Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
@@ -60,6 +62,8 @@ public sealed class PermissionTests
         var permissions = LenseePermissions.ForRole(LenseeRoles.Accountant);
 
         Assert.Contains(LenseePermissions.PaymentsDraft, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsRequest, permissions);
         Assert.DoesNotContain(LenseePermissions.PaymentsWrite, permissions);
+        Assert.DoesNotContain(LenseePermissions.PaymentsApprove, permissions);
     }
 }

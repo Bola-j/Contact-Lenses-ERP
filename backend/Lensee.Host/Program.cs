@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading.RateLimiting;
 using Lensee.Host.Endpoints;
 using Lensee.Host.Infrastructure;
+using Lensee.Host.Services;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Catalog.Services;
 using Lensee.Modules.CRM.Data;
@@ -29,6 +30,9 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using QuestPDF.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -42,6 +46,29 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddProblemDetails();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
+
+var otlpEndpoint = builder.Configuration["Telemetry:OtlpEndpoint"];
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService("Lensee.Host"))
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation()
+            .AddSource("Microsoft.EntityFrameworkCore", "Npgsql");
+        if (Uri.TryCreate(otlpEndpoint, UriKind.Absolute, out var endpoint))
+        {
+            tracing.AddOtlpExporter(options => options.Endpoint = endpoint);
+        }
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation()
+            .AddRuntimeInstrumentation()
+            .AddMeter(LenseeTelemetry.Meter.Name);
+        if (Uri.TryCreate(otlpEndpoint, UriKind.Absolute, out var endpoint))
+        {
+            metrics.AddOtlpExporter(options => options.Endpoint = endpoint);
+        }
+    });
 
 builder.Services.AddSwaggerGen(options =>
 {
@@ -96,7 +123,12 @@ builder.Services.AddCors(options =>
                 }
 
                 return allowedOriginSuffixes.Any(suffix =>
-                    uri.Host.EndsWith(suffix.TrimStart('.'), StringComparison.OrdinalIgnoreCase));
+                {
+                    var normalizedSuffix = suffix.Trim().TrimStart('.');
+                    return normalizedSuffix.Length > 0 &&
+                           (uri.Host.Equals(normalizedSuffix, StringComparison.OrdinalIgnoreCase) ||
+                            uri.Host.EndsWith($".{normalizedSuffix}", StringComparison.OrdinalIgnoreCase));
+                });
             })
             .AllowAnyHeader()
             .AllowAnyMethod()
@@ -223,22 +255,38 @@ builder.Services.AddDbContext<SharedDbContext>((services, options) =>
 builder.Services.AddScoped<IClock, SystemClock>();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IAuditLogWriter, AuditLogWriter>();
-builder.Services.AddScoped<IAppEventPublisher, InProcessAppEventPublisher>();
+builder.Services.AddScoped<IAppEventPublisher, OutboxAppEventPublisher>();
 builder.Services.AddScoped<IAppEventHandler<PaymentWorkflowChangedEvent>, PaymentWorkflowNotificationHandler>();
+builder.Services.AddScoped<IAppEventHandler<OperationCorrectionChangedEvent>, OperationCorrectionNotificationHandler>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
-builder.Services.AddScoped<ICatalogEventPublisher, NoOpCatalogEventPublisher>();
+if (builder.Environment.IsEnvironment("Testing"))
+{
+    // Contract fixtures deliberately replace only the context under test.  The
+    // PostgreSQL suite exercises the durable publisher against a real database.
+    builder.Services.AddScoped<ICatalogEventPublisher, NoOpCatalogEventPublisher>();
+}
+else
+{
+    builder.Services.AddScoped<ICatalogEventPublisher, TransactionalCatalogEventPublisher>();
+}
 builder.Services.AddScoped<StockLedgerService>();
 builder.Services.AddScoped<MerchantBalanceService>();
 builder.Services.AddScoped<MerchantBatchHistoryService>();
 builder.Services.AddScoped<MerchantExpiryRecallService>();
 builder.Services.AddScoped<TargetReplenishmentService>();
+builder.Services.AddScoped<OperationCorrectionService>();
+builder.Services.AddScoped<OutboxOperationsService>();
 builder.Services.AddScoped<OperationalAlertScheduler>();
 builder.Services.AddScoped<IAuthorizationHandler, OnlineIntakeAuthorizationHandler>();
 builder.Services.AddDataProtection();
 builder.Services.AddSingleton<NavigationReferenceService>();
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<OutboxWorker>();
+}
 builder.Services.AddOptions<ShopifyOptions>()
     .Bind(builder.Configuration.GetSection("Shopify"))
     .Validate(options => !options.Enabled ||
@@ -351,6 +399,14 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("operations.write", policy =>
         policy.RequireClaim("permission", LenseePermissions.OperationsWrite));
 
+    options.AddPolicy("operations.corrections.request", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.OperationsCorrectionsRequest));
+
+    options.AddPolicy("operations.corrections.approve", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.OperationsCorrectionsApprove));
+
     options.AddPolicy("merchant-recalls.read", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
             .RequireClaim("permission", LenseePermissions.OperationsRead));
@@ -370,8 +426,16 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsDraft));
 
     options.AddPolicy("payments.approve", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.PaymentsApprove));
+
+    options.AddPolicy("payments.adjustments.request", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsRequest));
+
+    options.AddPolicy("payments.adjustments.approve", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsApprove));
 
     options.AddPolicy("reports.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
@@ -400,6 +464,12 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+
+if (args.Contains("--migrate", StringComparer.OrdinalIgnoreCase))
+{
+    await RunDatabaseMigrationsWithAdvisoryLockAsync(app);
+    return;
+}
 
 // Contract tests replace the application DbContexts with in-memory providers after
 // the host is built. Initializing here would connect to the production-style
@@ -512,6 +582,7 @@ app.MapMerchantExpiryRecallEndpoints();
 app.MapInventoryEndpoints();
 app.MapOperationsEndpoints();
 app.MapPaymentsEndpoints();
+app.MapOutboxEndpoints();
 app.MapShopifyEndpoints();
 app.MapNotificationsEndpoints();
 app.MapReportsEndpoints();
@@ -528,7 +599,9 @@ static async Task InitializeDatabaseAsync(WebApplication app)
     var logger = services.GetRequiredService<ILoggerFactory>()
         .CreateLogger("DatabaseStartup");
 
-    var autoMigrate = app.Configuration.GetValue("Database:AutoMigrate", app.Environment.IsDevelopment());
+    // App instances validate only.  Schema mutation is performed by the explicit
+    // --migrate command under the PostgreSQL advisory lock.
+    var autoMigrate = app.Configuration.GetValue("Database:AutoMigrate", false);
     if (!autoMigrate)
     {
         await ValidatePendingMigrationsAsync(app, services);
@@ -578,6 +651,56 @@ static async Task InitializeDatabaseAsync(WebApplication app)
     {
         logger.LogError(exception, "Failed to initialize the database.");
         throw;
+    }
+}
+
+static async Task RunDatabaseMigrationsWithAdvisoryLockAsync(WebApplication app)
+{
+    using var scope = app.Services.CreateScope();
+    var services = scope.ServiceProvider;
+    var logger = services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("DatabaseMigrationCommand");
+    var sharedDbContext = services.GetRequiredService<SharedDbContext>();
+
+    await sharedDbContext.Database.OpenConnectionAsync();
+    try
+    {
+        await sharedDbContext.Database.ExecuteSqlRawAsync("select pg_advisory_lock(726733381);");
+        logger.LogInformation("Acquired PostgreSQL advisory lock for database migrations.");
+
+        await sharedDbContext.Database.ExecuteSqlRawAsync("""
+            create extension if not exists "uuid-ossp";
+
+            create schema if not exists identity;
+            create schema if not exists catalog;
+            create schema if not exists inventory;
+            create schema if not exists crm;
+            create schema if not exists operations;
+            create schema if not exists payments;
+            create schema if not exists notifications;
+            create schema if not exists reporting;
+            create schema if not exists shared;
+        """);
+
+        await EnsurePreMigrationCompatibilityAsync(services);
+
+        await services.GetRequiredService<SharedDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<IdentityDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<CatalogDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<InventoryDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<CrmDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<OperationsDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<PaymentsDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<NotificationsDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<ReportingDbContext>().Database.MigrateAsync();
+
+        await DatabaseCompatibility.EnsureSchemaAsync(services);
+        await ValidateShopifyStartupConfigurationAsync(services);
+    }
+    finally
+    {
+        await sharedDbContext.Database.ExecuteSqlRawAsync("select pg_advisory_unlock(726733381);");
+        await sharedDbContext.Database.CloseConnectionAsync();
     }
 }
 

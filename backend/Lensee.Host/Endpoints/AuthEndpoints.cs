@@ -84,7 +84,7 @@ public static class AuthEndpoints
         return TypedResults.Ok(await CreateAuthResponseAsync(user, tokenService.CreateAccessToken(user), inventoryDbContext, cancellationToken));
     }
 
-    private static async Task<Results<Ok<AuthResponse>, ValidationProblem, UnauthorizedHttpResult>> RefreshAsync(
+    private static async Task<Results<Ok<AuthResponse>, NoContent, UnauthorizedHttpResult>> RefreshAsync(
         RefreshRequest request,
         IdentityDbContext dbContext,
         InventoryDbContext inventoryDbContext,
@@ -98,10 +98,10 @@ public static class AuthEndpoints
         var incomingRefreshToken = ReadRefreshToken(request.RefreshToken, httpContextAccessor.HttpContext);
         if (string.IsNullOrWhiteSpace(incomingRefreshToken))
         {
-            return TypedResults.ValidationProblem(new Dictionary<string, string[]>
-            {
-                [nameof(request.RefreshToken)] = ["Refresh token is required."]
-            });
+            // A page load without a refresh cookie is the normal anonymous state.
+            // Returning 204 keeps browser session restoration quiet while an
+            // invalid supplied token still receives 401 below.
+            return TypedResults.NoContent();
         }
 
         var tokenHash = tokenService.HashRefreshToken(incomingRefreshToken);

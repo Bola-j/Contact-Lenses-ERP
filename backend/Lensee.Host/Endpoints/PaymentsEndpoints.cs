@@ -1,11 +1,16 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.SharedKernel.Abstractions;
+using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Primitives;
 using Lensee.SharedKernel.Security;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace Lensee.Host.Endpoints;
@@ -30,7 +35,11 @@ public static class PaymentsEndpoints
     private const string PendingAdmin = "PendingAdmin";
     private const string PendingAccountant = "PendingAccountant";
     private const string PendingAdminReview = "PendingAdminReview";
+    private const string PendingApproval = "PendingApproval";
     private const string PaymentCompleted = "Completed";
+    private const string IdempotencyPending = "Pending";
+    private const string IdempotencyCompleted = "Completed";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private static readonly HashSet<string> PaymentMethods = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -55,7 +64,9 @@ public static class PaymentsEndpoints
         group.MapPost("/cash-receipts/{id:guid}/approve", ApproveCashReceiptAsync).RequireAuthorization("payments.approve");
         group.MapPost("/cash-records", CreateCashRecordAsync).RequireAuthorization("payments.write");
         group.MapGet("/adjustments", ListFinancialAdjustmentsAsync).RequireAuthorization("payments.read");
-        group.MapPost("/adjustments", CreateFinancialAdjustmentAsync).RequireAuthorization("payments.write");
+        group.MapPost("/adjustments", CreateFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/adjustments/{id:guid}/approve", ApproveFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
+        group.MapPost("/adjustments/{id:guid}/reject", RejectFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
 
         return group;
     }
@@ -216,10 +227,19 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, "POST /api/v1/payments/initialize", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+
         var operation = await operationsDbContext.OperationLogs
             .Include(value => value.OperationLines)
             .FirstOrDefaultAsync(value => value.Id == request.OperationId && !value.IsDeleted, cancellationToken);
@@ -262,6 +282,7 @@ public static class PaymentsEndpoints
             MerchantId = merchantId,
             TotalAmount = total,
             AmountPaid = 0,
+            PendingAmount = 0,
             PaymentMethod = paymentMethod ?? operation.PaymentMethod ?? "Installment",
             Status = PendingAdmin,
             InitializedBy = currentUser.UserId ?? Guid.Empty,
@@ -271,13 +292,18 @@ public static class PaymentsEndpoints
             Notes = request.Notes
         };
 
-        paymentsDbContext.MainPaymentLogs.Add(log);
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            paymentsDbContext.MainPaymentLogs.Add(log);
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentLogInitialized", log.Id, new { log.OperationId, log.TotalAmount, log.PaymentMethod }, now, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
         var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
         var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
         var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log, cancellationToken);
-        return Results.Created($"/api/v1/payments/{log.Id}", ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup), StatusCodes.Status201Created, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<IResult> AssignPaymentLogAsync(
@@ -286,54 +312,80 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var log = await paymentsDbContext.MainPaymentLogs.FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
-        if (log is null)
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/{id}/assign", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
         {
-            return Results.NotFound();
+            return idempotency.Result;
         }
 
-        if (log.Status == PaymentCompleted)
+        MainPaymentLog? log = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Completed payment logs cannot be assigned or reassigned."] });
+            log = await LoadPaymentLogForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (log is null)
+            {
+                transactionResult = Results.NotFound();
+                return;
+            }
+
+            if (log.Status == PaymentCompleted)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Completed payment logs cannot be assigned or reassigned."] });
+                return;
+            }
+
+            var accountantUserId = request.AccountantUserId == Guid.Empty ? null : request.AccountantUserId;
+            if (accountantUserId.HasValue &&
+                !await identityDbContext.Users.AnyAsync(
+                    user => user.Id == accountantUserId.Value &&
+                        user.IsActive &&
+                        user.Role == LenseeRoles.Accountant,
+                    cancellationToken))
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AccountantUserId)] = ["Assigned user must be an active Accountant."] });
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            log.AssignedTo = accountantUserId;
+            log.AssignedAt = now;
+            log.Status = PendingAccountant;
+            log.LastModifiedAt = now;
+            log.LastModifiedBy = currentUser.UserId;
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentAssigned", log.Id, new { log.AssignedTo }, now, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                log.Id,
+                log.MerchantId,
+                log.OperationId,
+                "PaymentAssigned",
+                $"Payment log {log.Id:N} was assigned to accountant workflow.",
+                log.AssignedTo,
+                log.AssignedTo.HasValue ? null : LenseeRoles.Accountant,
+                now),
+                cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
         }
 
-        var accountantUserId = request.AccountantUserId == Guid.Empty ? null : request.AccountantUserId;
-        if (accountantUserId.HasValue &&
-            !await identityDbContext.Users.AnyAsync(
-                user => user.Id == accountantUserId.Value &&
-                    user.IsActive &&
-                    user.Role == LenseeRoles.Accountant,
-                cancellationToken))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AccountantUserId)] = ["Assigned user must be an active Accountant."] });
-        }
-
-        log.AssignedTo = accountantUserId;
-        log.AssignedAt = clock.EgyptNow;
-        log.Status = PendingAccountant;
-        log.LastModifiedAt = clock.EgyptNow;
-        log.LastModifiedBy = currentUser.UserId;
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
-        await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
-            log.Id,
-            log.MerchantId,
-            log.OperationId,
-            "PaymentAssigned",
-            $"Payment log {log.Id:N} was assigned to accountant workflow.",
-            log.AssignedTo,
-            log.AssignedTo.HasValue ? null : LenseeRoles.Accountant,
-            clock.EgyptNow),
-            cancellationToken);
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
-        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
-        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
-        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log, cancellationToken);
-        return Results.Ok(ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [log!], cancellationToken);
+        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log!.OperationId], cancellationToken);
+        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToDetailResponse(log!, cashRecords, adjustments, userLookup, operationLookup), StatusCodes.Status200OK, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<IResult> DraftSubLogAsync(
@@ -342,11 +394,20 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/{id}/sub-logs", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+
         if (request.Amount <= 0)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount must be greater than zero."] });
@@ -358,64 +419,81 @@ public static class PaymentsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, or Installment."] });
         }
 
-        var log = await paymentsDbContext.MainPaymentLogs
-            .Include(value => value.InstallmentSubLogs)
-            .FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
-        if (log is null)
+        MainPaymentLog? log = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
         {
-            return Results.NotFound();
-        }
-        if (string.Equals(currentUser.Role, LenseeRoles.Accountant, StringComparison.OrdinalIgnoreCase) &&
-            log.AssignedTo.HasValue &&
-            log.AssignedTo != currentUser.UserId)
+            log = await LoadPaymentLogForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (log is null)
+            {
+                transactionResult = Results.NotFound();
+                return;
+            }
+            if (string.Equals(currentUser.Role, LenseeRoles.Accountant, StringComparison.OrdinalIgnoreCase) &&
+                log.AssignedTo.HasValue &&
+                log.AssignedTo != currentUser.UserId)
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
+            if (log.Status == PaymentCompleted)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Completed payment logs cannot accept new draft entries."] });
+                return;
+            }
+
+            RecalculateInstallmentAggregates(log);
+            var remaining = log.TotalAmount - log.AmountPaid - log.PendingAmount;
+            if (request.Amount > remaining)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = [$"Amount exceeds remaining payable amount ({remaining:0.####})."] });
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            var subLog = new InstallmentSubLog
+            {
+                Id = Guid.NewGuid(),
+                MainLogId = log.Id,
+                Amount = request.Amount,
+                PaymentMethod = paymentMethod ?? log.PaymentMethod,
+                DateReceived = request.DateReceived ?? DateOnly.FromDateTime(now),
+                SubLogStatus = Draft,
+                DraftedBy = currentUser.UserId ?? Guid.Empty,
+                DraftedAt = now,
+                Notes = string.IsNullOrWhiteSpace(request.Notes) ? "0" : request.Notes.Trim()
+            };
+            paymentsDbContext.InstallmentSubLogs.Add(subLog);
+            log.PendingAmount += subLog.Amount;
+            log.Status = PendingAdminReview;
+            log.LastModifiedBy = currentUser.UserId;
+            log.LastModifiedAt = now;
+
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentSubLogDrafted", log.Id, new { subLog.Id, request.Amount }, now, cancellationToken);
+            await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                log.Id,
+                log.MerchantId,
+                log.OperationId,
+                "PaymentSubLogDrafted",
+                $"A payment sub-log for {request.Amount:0.####} is awaiting Admin review.",
+                null,
+                LenseeRoles.Admin,
+                now),
+                cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
         {
-            return Results.Forbid();
-        }
-        if (log.Status == PaymentCompleted)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Completed payment logs cannot accept new draft entries."] });
-        }
-        var openAmount = log.InstallmentSubLogs
-            .Where(subLog => subLog.SubLogStatus == Draft || subLog.SubLogStatus == ConfirmedPayment)
-            .Sum(subLog => subLog.Amount);
-        var remaining = log.TotalAmount - openAmount;
-        if (request.Amount > remaining)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = [$"Amount exceeds remaining payable amount ({remaining:0.####})."] });
+            return transactionResult;
         }
 
-        var subLog = new InstallmentSubLog
-        {
-            Id = Guid.NewGuid(),
-            MainLogId = log.Id,
-            Amount = request.Amount,
-            PaymentMethod = paymentMethod ?? log.PaymentMethod,
-            DateReceived = request.DateReceived ?? DateOnly.FromDateTime(clock.EgyptNow),
-            SubLogStatus = Draft,
-            DraftedBy = currentUser.UserId ?? Guid.Empty,
-            DraftedAt = clock.EgyptNow,
-            Notes = string.IsNullOrWhiteSpace(request.Notes) ? "0" : request.Notes.Trim()
-        };
-        paymentsDbContext.InstallmentSubLogs.Add(subLog);
-        log.Status = PendingAdminReview;
-        log.LastModifiedBy = currentUser.UserId;
-        log.LastModifiedAt = clock.EgyptNow;
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
-        await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
-            log.Id,
-            log.MerchantId,
-            log.OperationId,
-            "PaymentSubLogDrafted",
-            $"A payment sub-log for {request.Amount:0.####} is awaiting Admin review.",
-            null,
-            LenseeRoles.Admin,
-            clock.EgyptNow),
-            cancellationToken);
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
-        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
-        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
-        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log, cancellationToken);
-        return Results.Created($"/api/v1/payments/{log.Id}", ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [log!], cancellationToken);
+        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log!.OperationId], cancellationToken);
+        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToDetailResponse(log!, cashRecords, adjustments, userLookup, operationLookup), StatusCodes.Status201Created, paymentsDbContext, cancellationToken);
     }
 
     private static Task<IResult> ApproveSubLogAsync(
@@ -423,11 +501,14 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken) =>
-        SetSubLogStatusAsync(id, ConfirmedPayment, null, paymentsDbContext, operationsDbContext, identityDbContext, currentUser, eventPublisher, clock, cancellationToken);
+        SetSubLogStatusAsync(id, ConfirmedPayment, null, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, httpContext, currentUser, eventPublisher, clock, idempotencyKey, cancellationToken);
 
     private static Task<IResult> RejectSubLogAsync(
         Guid id,
@@ -435,78 +516,100 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken) =>
-        SetSubLogStatusAsync(id, Rejected, request.Reason, paymentsDbContext, operationsDbContext, identityDbContext, currentUser, eventPublisher, clock, cancellationToken);
+        SetSubLogStatusAsync(id, Rejected, request.Reason, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, httpContext, currentUser, eventPublisher, clock, idempotencyKey, cancellationToken);
 
     private static async Task<IResult> ApproveCashReceiptAsync(
         Guid id,
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var log = await paymentsDbContext.MainPaymentLogs
-            .Include(value => value.InstallmentSubLogs)
-            .FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
-        if (log is null)
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/cash-receipts/{id}/approve", new { id }, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
         {
-            return Results.NotFound();
-        }
-        if (!string.Equals(log.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentMethod"] = ["Only cash hand-to-hand receipts require this approval workflow."] });
-        }
-        if (log.Status == PaymentCompleted)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt is already approved."] });
+            return idempotency.Result;
         }
 
-        var cashRecord = await paymentsDbContext.CashRecords
-            .FirstOrDefaultAsync(value => value.OperationId == log.OperationId && value.PaymentType == CashReceived, cancellationToken);
-        if (cashRecord is null)
+        MainPaymentLog? log = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["cashRecord"] = ["The cash receipt record was not found."] });
-        }
-
-        var now = clock.EgyptNow;
-        if (paymentsDbContext.Database.IsRelational())
-        {
-            var updatedRows = await paymentsDbContext.CashRecords
-                .Where(value => value.Id == cashRecord.Id && value.Status == PendingAccountant)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.Status, PaymentCompleted), cancellationToken);
-            if (updatedRows == 0 && cashRecord.Status != PaymentCompleted)
+            log = await LoadPaymentLogForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (log is null)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt was already changed by another user."] });
+                transactionResult = Results.NotFound();
+                return;
             }
+            if (!string.Equals(log.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase))
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentMethod"] = ["Only cash hand-to-hand receipts require this approval workflow."] });
+                return;
+            }
+            if (log.Status == PaymentCompleted)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt is already approved."] });
+                return;
+            }
+
+            var cashRecord = await paymentsDbContext.CashRecords
+                .FirstOrDefaultAsync(value => value.OperationId == log.OperationId && value.PaymentType == CashReceived, cancellationToken);
+            if (cashRecord is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["cashRecord"] = ["The cash receipt record was not found."] });
+                return;
+            }
+            if (cashRecord.Status != PendingAccountant)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt was already changed by another user."] });
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            cashRecord.Status = PaymentCompleted;
+            log.AmountPaid = log.TotalAmount;
+            log.PendingAmount = 0;
+            log.Status = PaymentCompleted;
+            log.LastModifiedBy = currentUser.UserId;
+            log.LastModifiedAt = now;
+
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashReceiptApproved", log.Id, new { cashRecord.Id, cashRecord.Amount }, now, cancellationToken);
+            await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                log.Id,
+                log.MerchantId,
+                log.OperationId,
+                "CashReceiptApproved",
+                $"Cash receipt {log.Id:N} was approved.",
+                null,
+                null,
+                now), cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
         }
 
-        cashRecord.Status = PaymentCompleted;
-        log.AmountPaid = log.TotalAmount;
-        log.Status = PaymentCompleted;
-        log.LastModifiedBy = currentUser.UserId;
-        log.LastModifiedAt = now;
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
-        await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
-            log.Id,
-            log.MerchantId,
-            log.OperationId,
-            "CashReceiptApproved",
-            $"Cash receipt {log.Id:N} was approved.",
-            null,
-            null,
-            now), cancellationToken);
-
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
-        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
-        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
-        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log, cancellationToken);
-        return Results.Ok(ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [log!], cancellationToken);
+        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log!.OperationId], cancellationToken);
+        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToDetailResponse(log!, cashRecords, adjustments, userLookup, operationLookup), StatusCodes.Status200OK, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<IResult> SetSubLogStatusAsync(
@@ -516,100 +619,110 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         IClock clock,
+        string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var subLog = await paymentsDbContext.InstallmentSubLogs
-            .Include(value => value.MainLog)
-            .ThenInclude(log => log.InstallmentSubLogs)
-            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
-        if (subLog is null)
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/sub-logs/{id}/{(status == ConfirmedPayment ? "approve" : "reject")}", new { id, status, rejectionReason }, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
         {
-            return Results.NotFound();
+            return idempotency.Result;
         }
+
         if (status == Rejected && string.IsNullOrWhiteSpace(rejectionReason))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(rejectionReason)] = ["Rejection reason is required."] });
         }
-        if (subLog.SubLogStatus != Draft)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Only draft sub-logs can be approved or rejected."] });
-        }
 
-        var log = subLog.MainLog;
-        if (status == ConfirmedPayment)
+        InstallmentSubLog? subLog = null;
+        MainPaymentLog? log = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
         {
-            var confirmedBefore = log.InstallmentSubLogs
-                .Where(value => value.Id != subLog.Id && value.SubLogStatus == ConfirmedPayment)
-                .Sum(value => value.Amount);
-            if (confirmedBefore + subLog.Amount > log.TotalAmount)
+            subLog = await paymentsDbContext.InstallmentSubLogs
+                .Include(value => value.MainLog)
+                .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+            if (subLog is null)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["amount"] = ["Approving this entry would overpay the payment log."] });
+                transactionResult = Results.NotFound();
+                return;
             }
-        }
 
-        var now = clock.EgyptNow;
-        if (paymentsDbContext.Database.IsRelational())
-        {
-            var updatedRows = await paymentsDbContext.InstallmentSubLogs
-                .Where(value => value.Id == id && value.SubLogStatus == Draft)
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(value => value.SubLogStatus, status)
-                        .SetProperty(value => value.ConfirmedBy, currentUser.UserId)
-                        .SetProperty(value => value.ConfirmedAt, now)
-                        .SetProperty(value => value.RejectionReason, status == Rejected ? rejectionReason!.Trim() : null),
-                    cancellationToken);
-            if (updatedRows == 0)
+            log = await LoadPaymentLogForUpdateAsync(subLog.MainLogId, paymentsDbContext, cancellationToken);
+            if (log is null)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Only draft sub-logs can be approved or rejected."] });
+                transactionResult = Results.NotFound();
+                return;
             }
-        }
+            subLog = log.InstallmentSubLogs.Single(value => value.Id == id);
+            if (subLog.SubLogStatus != Draft)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Only draft sub-logs can be approved or rejected."] });
+                return;
+            }
 
-        subLog.SubLogStatus = status;
-        subLog.ConfirmedBy = currentUser.UserId;
-        subLog.ConfirmedAt = now;
-        subLog.RejectionReason = status == Rejected ? rejectionReason?.Trim() : null;
+            RecalculateInstallmentAggregates(log);
+            if (status == ConfirmedPayment && log.AmountPaid + log.PendingAmount > log.TotalAmount)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["amount"] = ["Approving this entry would overpay the payment log."] });
+                return;
+            }
 
-        log.AmountPaid = await paymentsDbContext.InstallmentSubLogs
-            .Where(value => value.MainLogId == log.Id && value.SubLogStatus == ConfirmedPayment)
-            .SumAsync(value => value.Amount, cancellationToken);
-        log.Status = log.AmountPaid >= log.TotalAmount ? PaymentCompleted : PendingAccountant;
-        log.LastModifiedBy = currentUser.UserId;
-        log.LastModifiedAt = now;
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
-        await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
-            log.Id,
-            log.MerchantId,
-            log.OperationId,
-            status == ConfirmedPayment ? "PaymentSubLogApproved" : "PaymentSubLogRejected",
-            status == ConfirmedPayment
-                ? $"A payment sub-log for {subLog.Amount:0.####} was approved."
-                : $"A payment sub-log for {subLog.Amount:0.####} was rejected.",
-            subLog.DraftedBy,
-            null,
-            clock.EgyptNow),
-            cancellationToken);
-        if (log.Status == PaymentCompleted)
-        {
+            var now = clock.EgyptNow;
+            subLog.SubLogStatus = status;
+            subLog.ConfirmedBy = currentUser.UserId;
+            subLog.ConfirmedAt = now;
+            subLog.RejectionReason = status == Rejected ? rejectionReason?.Trim() : null;
+
+            RecalculateInstallmentAggregates(log);
+            log.LastModifiedBy = currentUser.UserId;
+            log.LastModifiedAt = now;
+
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, status == ConfirmedPayment ? "PaymentSubLogApproved" : "PaymentSubLogRejected", log.Id, new { subLog.Id, subLog.Amount, status }, now, cancellationToken);
             await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
                 log.Id,
                 log.MerchantId,
                 log.OperationId,
-                "PaymentCompleted",
-                $"Payment log {log.Id:N} is completed.",
+                status == ConfirmedPayment ? "PaymentSubLogApproved" : "PaymentSubLogRejected",
+                status == ConfirmedPayment
+                    ? $"A payment sub-log for {subLog.Amount:0.####} was approved."
+                    : $"A payment sub-log for {subLog.Amount:0.####} was rejected.",
+                subLog.DraftedBy,
                 null,
-                LenseeRoles.Admin,
-                clock.EgyptNow),
+                now),
                 cancellationToken);
+            if (log.Status == PaymentCompleted)
+            {
+                await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                    log.Id,
+                    log.MerchantId,
+                    log.OperationId,
+                    "PaymentCompleted",
+                    $"Payment log {log.Id:N} is completed.",
+                    null,
+                    LenseeRoles.Admin,
+                    now),
+                    cancellationToken);
+            }
+
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
         }
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
-        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
-        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
-        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log, cancellationToken);
-        return Results.Ok(ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [log!], cancellationToken);
+        var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log!.OperationId], cancellationToken);
+        var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        var adjustments = await LoadAdjustmentsForLogAsync(paymentsDbContext, log!, cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToDetailResponse(log!, cashRecords, adjustments, userLookup, operationLookup), StatusCodes.Status200OK, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<IResult> CreateCashRecordAsync(
@@ -617,10 +730,19 @@ public static class PaymentsEndpoints
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, "POST /api/v1/payments/cash-records", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+
         if (request.Amount <= 0)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount must be greater than zero."] });
@@ -633,6 +755,10 @@ public static class PaymentsEndpoints
         if (operation is null)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must exist. Use the full operation ID or operation code."] });
+        }
+        if (paymentType == CashRefund)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentType)] = ["Cash refunds must be submitted through the adjustment approval workflow."] });
         }
 
         var record = new CashRecord
@@ -647,10 +773,16 @@ public static class PaymentsEndpoints
             CreatedBy = currentUser.UserId ?? Guid.Empty,
             Notes = request.Notes
         };
-        paymentsDbContext.CashRecords.Add(record);
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            paymentsDbContext.CashRecords.Add(record);
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashReceiptRecorded", record.Id, new { record.OperationId, record.Amount }, record.PaymentDate, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
         var userLookup = await LoadUserLookupAsync(identityDbContext, [record], cancellationToken);
-        return Results.Created($"/api/v1/payments/cash-records/{record.Id}", ToCashResponse(record, userLookup));
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToCashResponse(record, userLookup), StatusCodes.Status201Created, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<OperationLog?> ResolveOperationReferenceAsync(
@@ -727,10 +859,19 @@ public static class PaymentsEndpoints
         OperationsDbContext operationsDbContext,
         CrmDbContext crmDbContext,
         IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
         ICurrentUser currentUser,
         IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, "POST /api/v1/payments/adjustments", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+
         if (request.Amount <= 0)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount must be greater than zero."] });
@@ -744,61 +885,234 @@ public static class PaymentsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.MerchantId)] = ["Merchant must exist."] });
         }
 
-        OperationLog? operation = null;
         var operationReference = request.OperationId?.Trim();
-        if (!string.IsNullOrWhiteSpace(operationReference))
+        if (string.IsNullOrWhiteSpace(operationReference))
         {
-            operation = await ResolveOperationReferenceAsync(operationsDbContext, operationReference, cancellationToken);
-            if (operation is null)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must exist. Use the full operation ID or operation code."] });
-            }
-            if (operation.ClientId != request.MerchantId)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must belong to the selected merchant."] });
-            }
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Adjustment requests must reference a source operation. Legacy unlinked adjustments are read-only."] });
         }
 
+        var operation = await ResolveOperationReferenceAsync(operationsDbContext, operationReference, cancellationToken);
+        if (operation is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must exist. Use the full operation ID or operation code."] });
+        }
+        if (operation.ClientId != request.MerchantId)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must belong to the selected merchant."] });
+        }
+
+        MainPaymentLog? paymentLog = null;
+        IResult? transactionResult = null;
+        FinancialAdjustment? adjustment = null;
         var now = clock.EgyptNow;
         var userId = currentUser.UserId ?? Guid.Empty;
-        var adjustment = new FinancialAdjustment
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
         {
-            Id = Guid.NewGuid(),
-            MerchantId = request.MerchantId,
-            OperationId = operation?.Id,
-            AdjustmentType = adjustmentType,
-            Amount = request.Amount,
-            Status = PaymentCompleted,
-            Notes = request.Notes,
-            CreatedBy = userId,
-            CreatedAt = now
-        };
-        paymentsDbContext.FinancialAdjustments.Add(adjustment);
-
-        if (adjustmentType == CashRefund)
-        {
-            if (operation is null)
+            paymentLog = await paymentsDbContext.MainPaymentLogs
+                .Include(log => log.InstallmentSubLogs)
+                .FirstOrDefaultAsync(log => log.OperationId == operation.Id && log.MerchantId == request.MerchantId && !log.IsDeleted, cancellationToken);
+            if (paymentLog is null)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Cash refund requires an operation."] });
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Adjustment requests must reference an existing source payment log."] });
+                return;
             }
 
-            paymentsDbContext.CashRecords.Add(new CashRecord
+            paymentLog = await LoadPaymentLogForUpdateAsync(paymentLog.Id, paymentsDbContext, cancellationToken);
+            var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog!, adjustmentType, null, cancellationToken);
+            if (request.Amount > cap)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = [$"Adjustment exceeds the remaining source cap ({cap:0.####})."] });
+                return;
+            }
+
+            adjustment = new FinancialAdjustment
             {
                 Id = Guid.NewGuid(),
+                MerchantId = request.MerchantId,
                 OperationId = operation.Id,
-                PaymentType = CashRefund,
-                SubType = "HandToHand",
+                PaymentLogId = paymentLog!.Id,
+                AdjustmentType = adjustmentType,
                 Amount = request.Amount,
-                Status = PaymentCompleted,
-                PaymentDate = now,
+                Status = PendingApproval,
+                Notes = request.Notes,
                 CreatedBy = userId,
-                Notes = request.Notes
-            });
+                CreatedAt = now,
+                LineageKind = "SourceLinked"
+            };
+            paymentsDbContext.FinancialAdjustments.Add(adjustment);
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRequested", paymentLog.Id, new { adjustment.Id, adjustmentType, request.Amount }, now, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
         }
 
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment], cancellationToken);
-        return Results.Created($"/api/v1/payments/adjustments/{adjustment.Id}", ToAdjustmentResponse(adjustment, userLookup));
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status201Created, paymentsDbContext, cancellationToken);
+    }
+
+    private static async Task<IResult> ApproveFinancialAdjustmentAsync(
+        Guid id,
+        PaymentsDbContext paymentsDbContext,
+        IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
+        ICurrentUser currentUser,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/adjustments/{id}/approve", new { id }, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+        if (!IsAdjustmentReviewer(currentUser))
+        {
+            return Results.Forbid();
+        }
+
+        FinancialAdjustment? adjustment = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            adjustment = await paymentsDbContext.FinancialAdjustments.FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+            if (adjustment is null)
+            {
+                transactionResult = Results.NotFound();
+                return;
+            }
+            if (adjustment.Status != PendingApproval)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Only pending adjustment requests can be approved."] });
+                return;
+            }
+            if (adjustment.CreatedBy == currentUser.UserId)
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
+            if (adjustment.PaymentLogId is not { } paymentLogId)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["lineage"] = ["Legacy unlinked adjustments cannot be approved or reversed."] });
+                return;
+            }
+
+            var paymentLog = await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken);
+            if (paymentLog is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentLog"] = ["The source payment log no longer exists."] });
+                return;
+            }
+            var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog, adjustment.AdjustmentType, adjustment.Id, cancellationToken);
+            if (adjustment.Amount > cap)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["amount"] = [$"Adjustment exceeds the remaining source cap ({cap:0.####})."] });
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            adjustment.Status = PaymentCompleted;
+            adjustment.ReviewedBy = currentUser.UserId;
+            adjustment.ReviewedAt = now;
+
+            if (adjustment.AdjustmentType == CashRefund && adjustment.OperationId.HasValue)
+            {
+                paymentsDbContext.CashRecords.Add(new CashRecord
+                {
+                    Id = Guid.NewGuid(),
+                    OperationId = adjustment.OperationId.Value,
+                    PaymentType = CashRefund,
+                    SubType = "AdjustmentApproval",
+                    Amount = adjustment.Amount,
+                    Status = PaymentCompleted,
+                    PaymentDate = now,
+                    CreatedBy = currentUser.UserId ?? Guid.Empty,
+                    Notes = adjustment.Notes
+                });
+            }
+
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount }, now, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
+        }
+
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status200OK, paymentsDbContext, cancellationToken);
+    }
+
+    private static async Task<IResult> RejectFinancialAdjustmentAsync(
+        Guid id,
+        RejectionRequest request,
+        PaymentsDbContext paymentsDbContext,
+        IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
+        ICurrentUser currentUser,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        var idempotency = await StartPaymentIdempotencyAsync(idempotencyKey, $"POST /api/v1/payments/adjustments/{id}/reject", request, paymentsDbContext, clock, cancellationToken);
+        if (idempotency.Result is not null)
+        {
+            return idempotency.Result;
+        }
+        if (!IsAdjustmentReviewer(currentUser))
+        {
+            return Results.Forbid();
+        }
+        if (string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["Rejection reason is required."] });
+        }
+
+        FinancialAdjustment? adjustment = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            adjustment = await paymentsDbContext.FinancialAdjustments.FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+            if (adjustment is null)
+            {
+                transactionResult = Results.NotFound();
+                return;
+            }
+            if (adjustment.Status != PendingApproval)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Only pending adjustment requests can be rejected."] });
+                return;
+            }
+            if (adjustment.CreatedBy == currentUser.UserId)
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            adjustment.Status = Rejected;
+            adjustment.ReviewedBy = currentUser.UserId;
+            adjustment.ReviewedAt = now;
+            adjustment.RejectionReason = request.Reason.Trim();
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRejected", adjustment.PaymentLogId ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.RejectionReason }, now, cancellationToken);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await identityDbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null)
+        {
+            return transactionResult;
+        }
+
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
+        return await CompleteIdempotencyAsync(idempotency.Entry, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status200OK, paymentsDbContext, cancellationToken);
     }
 
     private static async Task<IResult> GetMerchantBalanceAsync(
@@ -809,6 +1123,59 @@ public static class PaymentsEndpoints
         var balance = await merchantBalanceService.CalculateAsync(merchantId, cancellationToken);
         return Results.Ok(balance);
     }
+
+    private static async Task<decimal> CalculateAdjustmentCapAsync(
+        PaymentsDbContext paymentsDbContext,
+        MainPaymentLog paymentLog,
+        string adjustmentType,
+        Guid? excludingAdjustmentId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(adjustmentType, CashRefund, StringComparison.OrdinalIgnoreCase))
+        {
+            var completedReceipts = await paymentsDbContext.CashRecords
+                .Where(record => record.OperationId == paymentLog.OperationId &&
+                    record.PaymentType == CashReceived &&
+                    record.Status == PaymentCompleted)
+                .SumAsync(record => record.Amount, cancellationToken);
+            var completedRefunds = await paymentsDbContext.CashRecords
+                .Where(record => record.OperationId == paymentLog.OperationId &&
+                    record.PaymentType == CashRefund &&
+                    record.Status == PaymentCompleted)
+                .SumAsync(record => record.Amount, cancellationToken);
+            var pendingRefunds = await paymentsDbContext.FinancialAdjustments
+                .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
+                    adjustment.Id != excludingAdjustmentId &&
+                    adjustment.AdjustmentType == CashRefund &&
+                    adjustment.Status == PendingApproval)
+                .SumAsync(adjustment => adjustment.Amount, cancellationToken);
+
+            return Math.Max(completedReceipts - completedRefunds - pendingRefunds, 0);
+        }
+
+        if (string.Equals(adjustmentType, MerchantCredit, StringComparison.OrdinalIgnoreCase))
+        {
+            var priorCredits = await paymentsDbContext.FinancialAdjustments
+                .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
+                    adjustment.Id != excludingAdjustmentId &&
+                    adjustment.AdjustmentType == MerchantCredit &&
+                    (adjustment.Status == PendingApproval || adjustment.Status == PaymentCompleted))
+                .SumAsync(adjustment => adjustment.Amount, cancellationToken);
+            return Math.Max(paymentLog.AmountPaid - priorCredits, 0);
+        }
+
+        var priorReductions = await paymentsDbContext.FinancialAdjustments
+            .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
+                adjustment.Id != excludingAdjustmentId &&
+                adjustment.AdjustmentType == BalanceReduction &&
+                (adjustment.Status == PendingApproval || adjustment.Status == PaymentCompleted))
+            .SumAsync(adjustment => adjustment.Amount, cancellationToken);
+        return Math.Max(paymentLog.TotalAmount - paymentLog.AmountPaid - priorReductions, 0);
+    }
+
+    private static bool IsAdjustmentReviewer(ICurrentUser currentUser) =>
+        string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(currentUser.Role, LenseeRoles.ERPAdmin, StringComparison.OrdinalIgnoreCase);
 
     public static async Task CreatePaymentArtifactsForCompletedSaleAsync(
         OperationLog operation,
@@ -1508,7 +1875,159 @@ public static class PaymentsEndpoints
             ? (string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName)
             : userId.Value.ToString();
     }
+
+    private static async Task<IdempotencyStart> StartPaymentIdempotencyAsync(
+        string? idempotencyKey,
+        string scope,
+        object request,
+        PaymentsDbContext paymentsDbContext,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(idempotencyKey, out var parsedKey) || parsedKey == Guid.Empty)
+        {
+            return new(null, Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["Idempotency-Key"] = ["A valid UUID Idempotency-Key header is required for payment mutations."]
+            }));
+        }
+
+        var now = clock.EgyptNow;
+        var requestHash = ComputeRequestHash(scope, request);
+        var existing = await paymentsDbContext.PaymentIdempotencyKeys
+            .FirstOrDefaultAsync(entry => entry.Key == parsedKey && entry.Scope == scope, cancellationToken);
+        if (existing is not null)
+        {
+            existing.LastSeenAt = now;
+            if (!string.Equals(existing.RequestHash, requestHash, StringComparison.Ordinal))
+            {
+                return new(null, Results.Conflict(new
+                {
+                    error = "Idempotency-Key was already used with a different request payload."
+                }));
+            }
+
+            if (existing.Status == IdempotencyCompleted && existing.ResponseBody is not null && existing.ResponseStatusCode.HasValue)
+            {
+                using var document = JsonDocument.Parse(existing.ResponseBody);
+                return new(null, Results.Json(document.RootElement.Clone(), statusCode: existing.ResponseStatusCode.Value, options: JsonOptions));
+            }
+
+            return new(null, Results.Conflict(new
+            {
+                error = "The idempotent payment request is already in progress."
+            }));
+        }
+
+        var entry = new PaymentIdempotencyKey
+        {
+            Id = Guid.NewGuid(),
+            Key = parsedKey,
+            Scope = scope,
+            RequestHash = requestHash,
+            Status = IdempotencyPending,
+            CreatedAt = now,
+            LastSeenAt = now,
+            ExpiresAt = now.AddDays(90)
+        };
+        paymentsDbContext.PaymentIdempotencyKeys.Add(entry);
+        return new(entry, null);
+    }
+
+    private static async Task<IResult> CompleteIdempotencyAsync(
+        PaymentIdempotencyKey? idempotency,
+        object response,
+        int statusCode,
+        PaymentsDbContext paymentsDbContext,
+        CancellationToken cancellationToken)
+    {
+        if (idempotency is not null)
+        {
+            idempotency.Status = IdempotencyCompleted;
+            idempotency.ResponseStatusCode = statusCode;
+            idempotency.ResponseBody = JsonSerializer.Serialize(response, JsonOptions);
+            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return statusCode == StatusCodes.Status201Created
+            ? Results.Json(response, statusCode: StatusCodes.Status201Created, options: JsonOptions)
+            : Results.Json(response, statusCode: statusCode, options: JsonOptions);
+    }
+
+    private static string ComputeRequestHash(string scope, object request)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { scope, request }, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    private static async Task<MainPaymentLog?> LoadPaymentLogForUpdateAsync(
+        Guid id,
+        PaymentsDbContext paymentsDbContext,
+        CancellationToken cancellationToken)
+    {
+        if (paymentsDbContext.Database.IsRelational())
+        {
+            await paymentsDbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"select 1 from payments.main_payment_logs where id = {id} and is_deleted = false for update",
+                cancellationToken);
+        }
+
+        return await paymentsDbContext.MainPaymentLogs
+            .Include(value => value.InstallmentSubLogs)
+            .FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
+    }
+
+    private static void RecalculateInstallmentAggregates(MainPaymentLog log)
+    {
+        log.AmountPaid = log.InstallmentSubLogs
+            .Where(value => value.SubLogStatus == ConfirmedPayment)
+            .Sum(value => value.Amount);
+        log.PendingAmount = log.InstallmentSubLogs
+            .Where(value => value.SubLogStatus == Draft)
+            .Sum(value => value.Amount);
+        log.Status = log.AmountPaid >= log.TotalAmount ? PaymentCompleted : PendingAccountant;
+    }
+
+    private static async Task AddPaymentAuditAsync(
+        IdentityDbContext identityDbContext,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        string action,
+        Guid paymentLogId,
+        object changedFields,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (currentUser.UserId is not { } userId)
+        {
+            return;
+        }
+
+        var actor = await identityDbContext.Users.AsNoTracking()
+            .Where(user => user.Id == userId)
+            .Select(user => new { user.FullName, user.Username, user.Role })
+            .SingleOrDefaultAsync(cancellationToken);
+
+        identityDbContext.AuditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            EntityType = "Payment",
+            EntityId = paymentLogId,
+            Action = action,
+            ChangedFields = JsonSerializer.Serialize(changedFields, JsonOptions),
+            UserId = userId,
+            ActorType = actor?.Role ?? currentUser.Role,
+            ActorName = actor is null
+                ? "Full name unavailable"
+                : string.IsNullOrWhiteSpace(actor.FullName) ? actor.Username : actor.FullName,
+            IpAddress = httpContext.Connection.RemoteIpAddress?.ToString(),
+            CreatedAt = now
+        });
+        httpContext.Items[AuditMutationMiddleware.AuditWrittenItemKey] = true;
+    }
 }
+
+internal sealed record IdempotencyStart(PaymentIdempotencyKey? Entry, IResult? Result);
 
 public sealed record InitializePaymentRequest(Guid OperationId, string? PaymentMethod, string? Notes);
 

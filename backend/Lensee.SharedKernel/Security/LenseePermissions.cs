@@ -16,6 +16,10 @@ public static class LenseePermissions
     public const string PaymentsWrite = "payments.write";
     public const string PaymentsDraft = "payments.draft";
     public const string PaymentsApprove = "payments.approve";
+    public const string PaymentsAdjustmentsRequest = "payments.adjustments.request";
+    public const string PaymentsAdjustmentsApprove = "payments.adjustments.approve";
+    public const string OperationsCorrectionsRequest = "operations.corrections.request";
+    public const string OperationsCorrectionsApprove = "operations.corrections.approve";
     public const string ReportsRead = "reports.read";
     public const string SupplyRead = "supply.read";
     public const string SupplyWrite = "supply.write";
@@ -34,18 +38,20 @@ public static class LenseePermissions
             LenseeRoles.Admin => new[]
             {
                 UsersRead, UsersWrite, UsersPasswordWrite, UsersDelete, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
-                OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
+                OperationsRead, OperationsWrite, OperationsCorrectionsRequest, OperationsCorrectionsApprove,
+                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove,
                 ReportsRead, SupplyRead, SupplyWrite, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },
             LenseeRoles.ERPAdmin => new[]
             {
                 UsersRead, UsersWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
-                OperationsRead, OperationsWrite, PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove,
+                OperationsRead, OperationsWrite, OperationsCorrectionsRequest, OperationsCorrectionsApprove,
+                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove,
                 ReportsRead, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage
             },
             LenseeRoles.Accountant => new[]
             {
-                OperationsRead, PaymentsRead, PaymentsDraft, PaymentsApprove, ReportsRead
+                OperationsRead, OperationsCorrectionsRequest, PaymentsRead, PaymentsDraft, PaymentsAdjustmentsRequest, ReportsRead
             },
             LenseeRoles.WarehouseClerk => new[]
             {

@@ -40,7 +40,7 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
     }
 
     [Fact]
-    public async Task Refresh_RejectsBlankRefreshToken()
+    public async Task Refresh_WithoutCookieOrBodyToken_ReturnsNoContentForAnonymousSessionRestore()
     {
         await _factory.ResetAsync();
         using var client = _factory.CreateClient();
@@ -50,7 +50,7 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             refreshToken = ""
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
 
     [Fact]

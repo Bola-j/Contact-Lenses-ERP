@@ -151,6 +151,92 @@ namespace Lensee.Modules.Operations.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationCorrectionProposal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<bool>("CreateReplacementDraft")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("create_replacement_draft");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<Guid?>("ReplacementOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replacement_operation_id");
+
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<Guid>("RequesterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requester_id");
+
+                    b.Property<Guid?>("ReversalOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reversal_operation_id");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_id");
+
+                    b.Property<decimal?>("SettlementAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("settlement_amount");
+
+                    b.Property<string>("SettlementMethod")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("settlement_method");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("operation_correction_proposals_pkey");
+
+                    b.HasIndex(new[] { "OperationId" }, "idx_operation_corrections_operation");
+
+                    b.HasIndex(new[] { "OperationId" }, "uq_operation_active_correction")
+                        .IsUnique()
+                        .HasFilter("(status = 'PendingApproval')");
+
+                    b.ToTable("operation_correction_proposals", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_operation_correction_amount", "settlement_amount is null or settlement_amount > 0");
+
+                            t.HasCheckConstraint("chk_operation_correction_settlement", "settlement_method is null or settlement_method in ('CashRefund','MerchantCredit')");
+
+                            t.HasCheckConstraint("chk_operation_correction_status", "status in ('PendingApproval','Approved','Rejected')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLine", b =>
                 {
                     b.Property<Guid>("Id")
@@ -346,6 +432,22 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("confirmed_by");
 
+                    b.Property<DateTime?>("CorrectedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("corrected_at");
+
+                    b.Property<Guid?>("CorrectedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("corrected_by");
+
+                    b.Property<Guid?>("CorrectionProposalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("correction_proposal_id");
+
+                    b.Property<string>("CorrectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("correction_reason");
+
                     b.Property<string>("CreatedActorName")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
@@ -406,9 +508,25 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("character varying(50)")
                         .HasColumnName("payment_method");
 
+                    b.Property<string>("RecordKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("Standard")
+                        .HasColumnName("record_kind");
+
+                    b.Property<Guid?>("ReplacedOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaced_operation_id");
+
                     b.Property<Guid?>("RepresentativeId")
                         .HasColumnType("uuid")
                         .HasColumnName("representative_id");
+
+                    b.Property<Guid?>("ReversesOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reverses_operation_id");
 
                     b.Property<string>("SalesChannel")
                         .IsRequired()
@@ -458,6 +576,10 @@ namespace Lensee.Modules.Operations.Migrations
                     b.HasIndex(new[] { "OperationNumber" }, "operation_logs_operation_number_key")
                         .IsUnique();
 
+                    b.HasIndex(new[] { "ReversesOperationId" }, "uq_operation_active_reversal")
+                        .IsUnique()
+                        .HasFilter("(record_kind = 'Reversal' AND is_deleted = false)");
+
                     b.ToTable("operation_logs", "operations", t =>
                         {
                             t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','Installment')");
@@ -465,6 +587,8 @@ namespace Lensee.Modules.Operations.Migrations
                             t.HasCheckConstraint("chk_op_status", "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
 
                             t.HasCheckConstraint("chk_op_type", "operation_type in ('InventoryReceipt','WarehouseTransfer','WholesaleSale','RetailSale','Reserve','WriteOff','StocktakeAdjustment','Change','Return')");
+
+                            t.HasCheckConstraint("chk_operation_record_kind", "record_kind in ('Standard','Reversal','Replacement')");
                         });
                 });
 
@@ -1166,6 +1290,18 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasForeignKey("Lensee.Modules.Operations.Data.InventoryReceiptHeader", "OperationId")
                         .IsRequired()
                         .HasConstraintName("inventory_receipt_headers_operation_id_fkey");
+
+                    b.Navigation("Operation");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationCorrectionProposal", b =>
+                {
+                    b.HasOne("Lensee.Modules.Operations.Data.OperationLog", "Operation")
+                        .WithMany()
+                        .HasForeignKey("OperationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("operation_correction_proposals_operation_id_fkey");
 
                     b.Navigation("Operation");
                 });

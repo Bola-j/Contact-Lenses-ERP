@@ -15,6 +15,8 @@ public partial class MainPaymentLog
 
     public decimal AmountPaid { get; set; }
 
+    public decimal PendingAmount { get; set; }
+
     public string PaymentMethod { get; set; } = null!;
 
     public string Status { get; set; } = null!;

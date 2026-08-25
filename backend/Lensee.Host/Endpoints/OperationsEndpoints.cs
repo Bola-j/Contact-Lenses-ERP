@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
+using Lensee.Host.Services;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Catalog.Services;
 using Lensee.Modules.CRM.Data;
@@ -67,8 +68,91 @@ public static class OperationsEndpoints
         group.MapPost("/{id:guid}/receive", ReceiveOperationAsync).RequireAuthorization("operations.write");
         group.MapPost("/{id:guid}/complete", ReceiveOperationAsync).RequireAuthorization("operations.write");
         group.MapPost("/{id:guid}/cancel", CancelOperationAsync).RequireAuthorization("operations.write");
+        group.MapGet("/{id:guid}/corrections", GetCorrectionLineageAsync).RequireAuthorization("operations.read");
+        group.MapPost("/{id:guid}/corrections", CreateCorrectionAsync).RequireAuthorization("operations.corrections.request");
+        group.MapGet("/corrections/{proposalId:guid}", GetCorrectionAsync).RequireAuthorization("operations.read");
+        group.MapPost("/corrections/{proposalId:guid}/settlement", SubmitCorrectionSettlementAsync).RequireAuthorization("operations.corrections.request");
+        group.MapPost("/corrections/{proposalId:guid}/approve", ApproveCorrectionAsync).RequireAuthorization("operations.corrections.approve");
+        group.MapPost("/corrections/{proposalId:guid}/reject", RejectCorrectionAsync).RequireAuthorization("operations.corrections.approve");
 
         return group;
+    }
+
+    private static async Task<IResult> CreateCorrectionAsync(
+        Guid id,
+        CreateOperationCorrectionCommand request,
+        OperationCorrectionService service,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.CreateAsync(id, request, currentUser.UserId ?? Guid.Empty, currentUser.Role, cancellationToken);
+        return ToCorrectionResult(result, httpContext);
+    }
+
+    private static async Task<IResult> SubmitCorrectionSettlementAsync(
+        Guid proposalId,
+        SubmitOperationCorrectionSettlementCommand request,
+        OperationCorrectionService service,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.SubmitSettlementAsync(proposalId, request, currentUser.UserId ?? Guid.Empty, currentUser.Role, cancellationToken);
+        return ToCorrectionResult(result, httpContext);
+    }
+
+    private static async Task<IResult> ApproveCorrectionAsync(
+        Guid proposalId,
+        OperationCorrectionService service,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.ApproveAsync(proposalId, currentUser.UserId ?? Guid.Empty, currentUser.Role, cancellationToken);
+        return ToCorrectionResult(result, httpContext);
+    }
+
+    private static async Task<IResult> RejectCorrectionAsync(
+        Guid proposalId,
+        RejectOperationCorrectionCommand request,
+        OperationCorrectionService service,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.RejectAsync(proposalId, request, currentUser.UserId ?? Guid.Empty, currentUser.Role, cancellationToken);
+        return ToCorrectionResult(result, httpContext);
+    }
+
+    private static async Task<IResult> GetCorrectionAsync(Guid proposalId, OperationCorrectionService service, CancellationToken cancellationToken)
+    {
+        var proposal = await service.GetAsync(proposalId, cancellationToken);
+        return proposal is null ? Results.NotFound() : Results.Ok(proposal);
+    }
+
+    private static async Task<IResult> GetCorrectionLineageAsync(Guid id, OperationCorrectionService service, CancellationToken cancellationToken) =>
+        Results.Ok(await service.GetLineageAsync(id, cancellationToken));
+
+    private static IResult ToCorrectionResult(CorrectionCommandResult result, HttpContext httpContext)
+    {
+        if (result.Value is not null)
+        {
+            httpContext.Items[AuditMutationMiddleware.AuditWrittenItemKey] = true;
+            return result.StatusCode == StatusCodes.Status201Created
+                ? Results.Created($"/api/v1/operations/corrections/{result.Value.Id}", result.Value)
+                : Results.Ok(result.Value);
+        }
+
+        return result.StatusCode switch
+        {
+            StatusCodes.Status404NotFound => Results.NotFound(),
+            StatusCodes.Status403Forbidden => Results.Forbid(),
+            StatusCodes.Status409Conflict => Results.Conflict(new { detail = result.Error }),
+            _ => Results.ValidationProblem(
+                new Dictionary<string, string[]> { [result.ErrorField ?? "correction"] = [result.Error ?? "The correction request is invalid."] },
+                statusCode: result.StatusCode)
+        };
     }
 
     private static async Task<IResult> GetReplenishmentAsync(
@@ -574,6 +658,14 @@ public static class OperationsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 [nameof(operation.Status)] = ["Cancelled operations cannot be revised."]
+            });
+        }
+        if (IsFinalizedForCorrection(operation.Status))
+        {
+            return Results.Conflict(new
+            {
+                detail = "Finalized operations are immutable. Create a correction proposal instead.",
+                correctionRoute = $"/api/v1/operations/{operation.Id}/corrections"
             });
         }
         if (operation.SalesChannel == "Shopify")
@@ -1251,17 +1343,17 @@ public static class OperationsEndpoints
         {
             return Results.NotFound();
         }
-        if (operation.Status == Received)
+        if (IsFinalizedForCorrection(operation.Status))
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Received operations cannot be cancelled."] });
+            return Results.Conflict(new
+            {
+                detail = "Finalized operations are immutable. Create a correction proposal instead.",
+                correctionRoute = $"/api/v1/operations/{operation.Id}/corrections"
+            });
         }
         if (operation.Status == Shipped)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Shipped transfers cannot be cancelled because stock has already left the main warehouse. Receive it, then use a return/transfer correction if needed."] });
-        }
-        if (operation.Status is Confirmed or Completed)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Confirmed or completed operations cannot be cancelled until reversal/versioning is implemented."] });
         }
         if (operation.Status == Cancelled)
         {
@@ -2738,6 +2830,8 @@ public static class OperationsEndpoints
 
         return null;
     }
+
+    private static bool IsFinalizedForCorrection(string status) => status is Confirmed or Completed or Received;
 
     private static async Task EnsureAnonymousRetailCashMerchantAsync(
         OperationLog operation,

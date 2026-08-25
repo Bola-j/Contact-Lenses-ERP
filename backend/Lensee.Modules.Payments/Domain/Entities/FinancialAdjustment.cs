@@ -21,4 +21,16 @@ public partial class FinancialAdjustment
     public Guid CreatedBy { get; set; }
 
     public DateTime CreatedAt { get; set; }
+
+    public Guid? ReviewedBy { get; set; }
+
+    public DateTime? ReviewedAt { get; set; }
+
+    public string? RejectionReason { get; set; }
+
+    public Guid? PaymentLogId { get; set; }
+
+    public Guid? ReversesAdjustmentId { get; set; }
+
+    public string LineageKind { get; set; } = null!;
 }

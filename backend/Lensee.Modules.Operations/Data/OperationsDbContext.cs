@@ -17,6 +17,8 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<OperationLine> OperationLines { get; set; }
 
+    public virtual DbSet<OperationCorrectionProposal> OperationCorrectionProposals { get; set; }
+
     public virtual DbSet<OperationLog> OperationLogs { get; set; }
 
     public virtual DbSet<OperationVersion> OperationVersions { get; set; }
@@ -197,6 +199,9 @@ public partial class OperationsDbContext : DbContext
                 table.HasCheckConstraint(
                     "chk_op_payment_method",
                     "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','Installment')");
+                table.HasCheckConstraint(
+                    "chk_operation_record_kind",
+                    "record_kind in ('Standard','Reversal','Replacement')");
             });
 
             entity.HasIndex(e => e.ClientId, "idx_op_logs_client").HasFilter("(client_id IS NOT NULL)");
@@ -214,6 +219,10 @@ public partial class OperationsDbContext : DbContext
             entity.HasIndex(e => e.SalesChannel, "idx_op_logs_sales_channel");
 
             entity.HasIndex(e => e.MerchantExpiryRecallId, "idx_op_logs_merchant_expiry_recall");
+
+            entity.HasIndex(e => e.ReversesOperationId, "uq_operation_active_reversal")
+                .IsUnique()
+                .HasFilter("(record_kind = 'Reversal' AND is_deleted = false)");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -263,6 +272,16 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'Draft'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.RecordKind)
+                .HasMaxLength(30)
+                .HasDefaultValue("Standard")
+                .HasColumnName("record_kind");
+            entity.Property(e => e.ReversesOperationId).HasColumnName("reverses_operation_id");
+            entity.Property(e => e.ReplacedOperationId).HasColumnName("replaced_operation_id");
+            entity.Property(e => e.CorrectionProposalId).HasColumnName("correction_proposal_id");
+            entity.Property(e => e.CorrectionReason).HasColumnName("correction_reason");
+            entity.Property(e => e.CorrectedBy).HasColumnName("corrected_by");
+            entity.Property(e => e.CorrectedAt).HasColumnType("timestamp without time zone").HasColumnName("corrected_at");
 
             entity.HasOne(d => d.CurrentVersion).WithMany(p => p.OperationLogs)
                 .HasForeignKey(d => d.CurrentVersionId)
@@ -272,6 +291,39 @@ public partial class OperationsDbContext : DbContext
                 .HasForeignKey(d => d.MerchantExpiryRecallId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("operation_logs_merchant_expiry_recall_id_fkey");
+        });
+
+        modelBuilder.Entity<OperationCorrectionProposal>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("operation_correction_proposals_pkey");
+            entity.ToTable("operation_correction_proposals", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_operation_correction_status", "status in ('PendingApproval','Approved','Rejected')");
+                table.HasCheckConstraint("chk_operation_correction_settlement", "settlement_method is null or settlement_method in ('CashRefund','MerchantCredit')");
+                table.HasCheckConstraint("chk_operation_correction_amount", "settlement_amount is null or settlement_amount > 0");
+            });
+            entity.HasIndex(e => e.OperationId, "idx_operation_corrections_operation");
+            entity.HasIndex(e => e.OperationId, "uq_operation_active_correction")
+                .IsUnique()
+                .HasFilter("(status = 'PendingApproval')");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.Status).HasMaxLength(30).HasColumnName("status");
+            entity.Property(e => e.Reason).HasColumnName("reason");
+            entity.Property(e => e.SettlementMethod).HasMaxLength(30).HasColumnName("settlement_method");
+            entity.Property(e => e.SettlementAmount).HasPrecision(18, 4).HasColumnName("settlement_amount");
+            entity.Property(e => e.CreateReplacementDraft).HasDefaultValue(false).HasColumnName("create_replacement_draft");
+            entity.Property(e => e.RequesterId).HasColumnName("requester_id");
+            entity.Property(e => e.RequestedAt).HasColumnType("timestamp without time zone").HasColumnName("requested_at");
+            entity.Property(e => e.ReviewerId).HasColumnName("reviewer_id");
+            entity.Property(e => e.ReviewedAt).HasColumnType("timestamp without time zone").HasColumnName("reviewed_at");
+            entity.Property(e => e.RejectionReason).HasColumnName("rejection_reason");
+            entity.Property(e => e.ReversalOperationId).HasColumnName("reversal_operation_id");
+            entity.Property(e => e.ReplacementOperationId).HasColumnName("replacement_operation_id");
+            entity.HasOne(e => e.Operation).WithMany()
+                .HasForeignKey(e => e.OperationId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("operation_correction_proposals_operation_id_fkey");
         });
 
         modelBuilder.Entity<ShopifyOrderLink>(entity =>

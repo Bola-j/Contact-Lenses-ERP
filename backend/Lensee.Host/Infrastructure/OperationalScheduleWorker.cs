@@ -10,12 +10,17 @@ namespace Lensee.Host.Infrastructure;
 public sealed class OperationalScheduleWorker : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<OperationalScheduleWorker> _logger;
 
-    public OperationalScheduleWorker(IServiceScopeFactory scopeFactory) { _scopeFactory = scopeFactory; }
+    public OperationalScheduleWorker(IServiceScopeFactory scopeFactory, ILogger<OperationalScheduleWorker> logger)
+    {
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RunScheduledJobsAsync(stoppingToken);
+        await RunScheduledJobsSafelyAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = CairoNow();
@@ -23,7 +28,25 @@ public sealed class OperationalScheduleWorker : BackgroundService
             var delay = next - now;
             if (delay > TimeSpan.Zero) await Task.Delay(delay, stoppingToken);
             if (stoppingToken.IsCancellationRequested) break;
-            await RunScheduledJobsAsync(stoppingToken);
+            await RunScheduledJobsSafelyAsync(stoppingToken);
+        }
+    }
+
+    private async Task RunScheduledJobsSafelyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RunScheduledJobsAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Host shutdown is expected and must not be reported as a failed job.
+        }
+        catch (Exception exception)
+        {
+            // A scheduled maintenance failure must never terminate the API host.
+            // The next scheduled pass retries after the underlying dependency recovers.
+            _logger.LogError(exception, "Operational scheduled jobs failed; the next scheduled run will retry.");
         }
     }
 
