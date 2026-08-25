@@ -27,6 +27,7 @@ public partial class InventoryDbContext : DbContext
 
         modelBuilder.Entity<InventoryBatch>(entity =>
         {
+            entity.Property<uint>("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("inventory_batches_pkey");
 
             entity.ToTable("inventory_batches", "inventory", table =>
@@ -89,6 +90,7 @@ public partial class InventoryDbContext : DbContext
 
         modelBuilder.Entity<OpenedPieceLot>(entity =>
         {
+            entity.Property<uint>("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("opened_piece_lots_pkey");
 
             entity.ToTable("opened_piece_lots", "inventory", table =>
@@ -126,6 +128,7 @@ public partial class InventoryDbContext : DbContext
 
         modelBuilder.Entity<StockBalance>(entity =>
         {
+            entity.Property<uint>("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("stock_balances_pkey");
 
             entity.ToTable("stock_balances", "inventory", table =>

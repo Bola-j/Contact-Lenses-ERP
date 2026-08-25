@@ -72,6 +72,12 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("sku_id");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id")
                         .HasName("inventory_batches_pkey");
 
@@ -176,6 +182,12 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("source_batch_id");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id")
                         .HasName("opened_piece_lots_pkey");
 
@@ -236,6 +248,12 @@ namespace Lensee.Modules.Inventory.Migrations
                     b.Property<int?>("TargetQty")
                         .HasColumnType("integer")
                         .HasColumnName("target_qty");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("stock_balances_pkey");
