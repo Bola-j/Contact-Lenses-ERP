@@ -42,8 +42,9 @@ services:
       Hosting__TrustedProxyNetwork: ${HOSTING_TRUSTED_PROXY_NETWORK:-}
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
       Cors__AllowedOrigins__1: ${CORS_ALLOWED_ORIGIN_LOOPBACK:-http://127.0.0.1:3001}
-      Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-true}
-      Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-true}
+      Database__AutoMigrate: ${DATABASE_AUTO_MIGRATE:-false}
+      Database__BaselineExistingSchema: ${DATABASE_BASELINE_EXISTING_SCHEMA:-false}
+      Telemetry__OtlpEndpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       RateLimiting__AnonymousPermitLimit: ${RATE_LIMITING_ANONYMOUS_PERMIT_LIMIT:-60}
       RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
@@ -55,6 +56,23 @@ services:
       - "5000:8080"
     volumes:
       - data_protection:/home/app/.aspnet/DataProtection-Keys
+
+  migrator:
+    image: ${DOCKER_REGISTRY-}lenseehost
+    build:
+      context: .
+      dockerfile: backend/Lensee.Host/Dockerfile
+    profiles: ["migrate"]
+    command: ["--migrate"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:-SomeStrongPassword123!}
+      Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
+      Jwt__Issuer: Lensee
+      Jwt__Audience: Lensee.App
+    depends_on:
+      db:
+        condition: service_healthy
 
   frontend:
     build:
@@ -73,6 +91,49 @@ services:
     ports:
       - "${FRONTEND_PORT:-3001}:80"
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-before-sharing}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3002:3000"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["observability"]
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+
 volumes:
   pgdata:
   data_protection:
+  prometheus_data:
+  grafana_data:

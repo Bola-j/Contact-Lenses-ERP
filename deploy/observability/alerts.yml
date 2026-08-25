@@ -1,0 +1,19 @@
+groups:
+  - name: lensee-critical-workflows
+    rules:
+      - alert: LenseeOutboxDeadLetters
+        expr: sum(increase(lensee_outbox_dead_letters_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lensee has outbox dead letters"
+          runbook: "deploy/runbooks/outbox-replay.md"
+      - alert: LenseeCorrectionFailures
+        expr: sum(increase(lensee_corrections_failures_total[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lensee correction commands are failing"
+          runbook: "deploy/runbooks/correction-reconciliation.md"

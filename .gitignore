@@ -28,7 +28,6 @@ test-results/
 
 
 backend/Lensee.Host/appsettings.Development.json
-backend/Lensee.Host/appsettings.Testing.json
 backend/Lensee.Host/appsettings.json
 backups/
 *.dump

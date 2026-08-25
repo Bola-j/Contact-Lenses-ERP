@@ -42,7 +42,14 @@ try {
         Start-Sleep -Seconds 1
     }
 
-    Write-Host "Starting API so application migrations run inside Docker..."
+    Write-Host "Applying migrations with the one-shot advisory-lock command..."
+    $migrationPassword = $env:DB_PASSWORD
+    if ([string]::IsNullOrWhiteSpace($migrationPassword)) { $migrationPassword = "SomeStrongPassword123!" }
+    $migrationConnection = "Host=localhost;Port=8181;Database=lensee;Username=lensee_user;Password=$migrationPassword"
+    & (Join-Path $repoRoot "scripts/migrate-prod.ps1") -ConnectionString $migrationConnection
+    if ($LASTEXITCODE -ne 0) { throw "Migration command failed." }
+
+    Write-Host "Starting API after successful migration validation..."
     docker compose build lensee.host frontend
     docker compose up -d lensee.host frontend
 

@@ -23,7 +23,9 @@
     "vercel:build": "node scripts/build-vercel-frontend.mjs",
     "check:encoding": "node scripts/check-text-encoding.mjs",
     "check:localization": "node scripts/check-frontend-localization.mjs",
-    "check": "npm run check:encoding && npm run check:localization",
+    "check:dom-sinks": "node scripts/check-unsafe-dom-sinks.mjs",
+    "check:endpoint-boundaries": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-endpoint-boundaries.ps1",
+    "check": "npm run check:encoding && npm run check:localization && npm run check:dom-sinks && npm run check:endpoint-boundaries",
     "pretest:e2e": "npm run check",
     "prevercel:build": "npm run check"
   },

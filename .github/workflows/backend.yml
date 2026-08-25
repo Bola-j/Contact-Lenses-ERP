@@ -23,11 +23,145 @@ jobs:
       - name: Restore
         run: dotnet restore Lensee.slnx
 
+      - name: Install frontend dependencies
+        run: npm ci
+
       - name: Build
         run: dotnet build Lensee.slnx --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test Lensee.slnx --configuration Release --no-build --no-restore --verbosity normal
+        run: dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --verbosity normal
+
+      - name: PostgreSQL integration tests
+        env:
+          LENSEE_RUN_POSTGRES_TESTS: "true"
+        run: dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj --configuration Release --no-build --no-restore --verbosity normal
 
       - name: Format check
         run: dotnet format Lensee.slnx --verify-no-changes --no-restore
+
+      - name: Frontend and endpoint safety guards
+        run: npm run check
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp,javascript-typescript
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+
+  seeded-e2e:
+    runs-on: ubuntu-latest
+    needs: build-test-format
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Seeded browser business flows
+        run: |
+          pwsh -NoProfile -File scripts/e2e-setup.ps1
+          npm run e2e -- --project=chromium
+
+      - name: Collect service logs
+        if: always()
+        run: docker compose logs --no-color
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+  sbom-and-image-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f backend/Lensee.Host/Dockerfile -t lensee-api:${{ github.sha }} .
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: lensee-api:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: lensee-api-sbom
+          path: sbom.spdx.json
+
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: lensee-api:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      - name: Upload Trivy results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif

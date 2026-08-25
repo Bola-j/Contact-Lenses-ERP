@@ -5,6 +5,14 @@
 {$APP_DOMAIN} {
     encode zstd gzip
 
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https: http://localhost:5000 http://127.0.0.1:5000; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+
     @api path /api/* /health /ready /swagger* /openapi*
     reverse_proxy @api lensee.host:8080
 

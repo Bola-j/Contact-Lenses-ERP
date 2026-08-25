@@ -1,0 +1,46 @@
+# Load with: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.recovery.yml up -d
+# Supply every PGBACKREST_REPO1_S3_* and PGBACKREST_REPO1_CIPHER_PASS value through the deployment secret store.
+services:
+  db:
+    build:
+      context: ./deploy/postgres-pgbackrest
+    environment:
+      PGBACKREST_STANZA: lensee
+      PGBACKREST_REPO1_S3_KEY: ${PGBACKREST_REPO1_S3_KEY:?required}
+      PGBACKREST_REPO1_S3_KEY_SECRET: ${PGBACKREST_REPO1_S3_KEY_SECRET:?required}
+      PGBACKREST_REPO1_S3_BUCKET: ${PGBACKREST_REPO1_S3_BUCKET:?required}
+      PGBACKREST_REPO1_S3_ENDPOINT: ${PGBACKREST_REPO1_S3_ENDPOINT:?required}
+      PGBACKREST_REPO1_S3_REGION: ${PGBACKREST_REPO1_S3_REGION:?required}
+      PGBACKREST_REPO1_S3_URI_STYLE: ${PGBACKREST_REPO1_S3_URI_STYLE:-path}
+      PGBACKREST_REPO1_CIPHER_PASS: ${PGBACKREST_REPO1_CIPHER_PASS:?required}
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=lensee archive-push %p
+      - -c
+      - archive_timeout=900
+
+  pgbackrest-backup:
+    build:
+      context: ./deploy/postgres-pgbackrest
+    profiles: ["recovery"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGBACKREST_STANZA: lensee
+      PGBACKREST_REPO1_S3_KEY: ${PGBACKREST_REPO1_S3_KEY:?required}
+      PGBACKREST_REPO1_S3_KEY_SECRET: ${PGBACKREST_REPO1_S3_KEY_SECRET:?required}
+      PGBACKREST_REPO1_S3_BUCKET: ${PGBACKREST_REPO1_S3_BUCKET:?required}
+      PGBACKREST_REPO1_S3_ENDPOINT: ${PGBACKREST_REPO1_S3_ENDPOINT:?required}
+      PGBACKREST_REPO1_S3_REGION: ${PGBACKREST_REPO1_S3_REGION:?required}
+      PGBACKREST_REPO1_S3_URI_STYLE: ${PGBACKREST_REPO1_S3_URI_STYLE:-path}
+      PGBACKREST_REPO1_CIPHER_PASS: ${PGBACKREST_REPO1_CIPHER_PASS:?required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >
+      pgbackrest --stanza=lensee check;
+      while true; do pgbackrest --stanza=lensee backup --type=diff; sleep 900; done

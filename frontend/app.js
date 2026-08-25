@@ -1,13 +1,13 @@
 const configuredApiBase = window.LENSEE_CONFIG?.apiBaseUrl?.trim();
 const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
-const defaultApiBase = isLocalHost ? "http://localhost:5275" : "";
+const defaultApiBase = isLocalHost ? "http://localhost:5000" : "";
 let apiBase = configuredApiBase || localStorage.getItem("lensee.apiBase") || defaultApiBase;
 const authKey = "lensee.auth";
 let activeAuth = null;
 const apiCandidates = [
   configuredApiBase,
   localStorage.getItem("lensee.apiBase"),
-  ...(isLocalHost ? ["http://localhost:5275", "http://localhost:5000", "https://localhost:7237"] : [])
+  ...(isLocalHost ? ["http://localhost:5000", "https://localhost:7237"] : [])
 ].filter(Boolean);
 const ngrokSkipHeader = "ngrok-skip-browser-warning";
 const mutationEventName = "lensee:data-mutated";
@@ -690,6 +690,11 @@ const arabicTranslations = Object.freeze({
   "Merchant and positive amount are required.": "يجب اختيار تاجر وإدخال مبلغ أكبر من صفر.",
   "Cash refund adjustments must reference an operation ID.": "يجب ربط تسوية الاسترداد النقدي بمعرّف عملية.",
   "Financial adjustment saved.": "تم حفظ التسوية المالية.",
+  "Financial adjustment requested.": "\u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0637\u0644\u0628 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
+  "Financial adjustment approved.": "\u062a\u0645 \u0627\u0639\u062a\u0645\u0627\u062f \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
+  "Financial adjustment rejected.": "\u062a\u0645 \u0631\u0641\u0636 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
+  "Reject Financial Adjustment": "\u0631\u0641\u0636 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629",
+  "Record the reason. Rejected adjustments remain visible in the log.": "\u0633\u062c\u0644 \u0633\u0628\u0628 \u0627\u0644\u0631\u0641\u0636. \u062a\u0628\u0642\u0649 \u0627\u0644\u062a\u0633\u0648\u064a\u0627\u062a \u0627\u0644\u0645\u0631\u0641\u0648\u0636\u0629 \u0638\u0627\u0647\u0631\u0629 \u0641\u064a \u0627\u0644\u0633\u062c\u0644.",
   "Cash record saved.": "تم حفظ الحركة النقدية.",
   "Loaded": "تم التحميل",
   "PendingAdmin": "بانتظار الإدارة",
@@ -1778,6 +1783,32 @@ function buildRequestHeaders(options = {}, auth = getAuth()) {
   return headers;
 }
 
+function createUuid() {
+  const cryptoSource = globalThis.crypto;
+  if (cryptoSource?.randomUUID) {
+    return cryptoSource.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  cryptoSource.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+function withPaymentIdempotency(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  if (method === "GET" || !path.startsWith("/api/v1/payments")) {
+    return options;
+  }
+
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("Idempotency-Key")) {
+    headers.set("Idempotency-Key", createUuid());
+  }
+  return { ...options, headers };
+}
+
 async function fetchWithAuth(path, options = {}) {
   let auth = getAuth();
   let headers = buildRequestHeaders(options, auth);
@@ -1797,7 +1828,8 @@ async function fetchWithAuth(path, options = {}) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetchWithAuth(path, options);
+  const requestOptions = withPaymentIdempotency(path, options);
+  const response = await fetchWithAuth(path, requestOptions);
 
   if (!response.ok) {
     const body = await response.text();
@@ -1807,7 +1839,7 @@ async function request(path, options = {}) {
   }
 
   const payload = response.status === 204 ? null : await response.json();
-  const method = (options.method || "GET").toUpperCase();
+  const method = (requestOptions.method || "GET").toUpperCase();
   if (method !== "GET") {
     window.dispatchEvent(new CustomEvent(mutationEventName, { detail: { path, method } }));
     publishSync({ type: "mutation", source: sessionStorage.getItem("lensee.tabId"), path, method });
@@ -6008,26 +6040,26 @@ async function renderPayments() {
       </section>` : ""}
     ${isAdmin ? `
       <section class="band compact-band payment-tool-card">
-        <h2>Cash / refund record</h2>
+        <h2>Cash receipt record</h2>
         <form id="cash-record-form" class="form grid-form">
           <div class="field"><label for="cash-operation-id">Operation reference</label><input id="cash-operation-id" class="input" required></div>
-          <div class="field"><label for="cash-type">Type</label><select id="cash-type" class="select"><option value="CashReceived">Cash received</option><option value="CashRefund">Cash refund</option></select></div>
+          <div class="field"><label for="cash-type">Type</label><select id="cash-type" class="select"><option value="CashReceived">Cash received</option></select></div>
           <div class="field"><label for="cash-amount">Amount</label><input id="cash-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field full-span"><label for="cash-notes">Notes</label><input id="cash-notes" class="input"></div>
           <button class="button" type="submit">Record cash</button>
         </form>
-      </section>
-      <section class="band compact-band payment-tool-card">
+      </section>` : ""}
+      ${canDraft ? `<section class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
-        <p class="muted-text">Use for return/change outcomes that become merchant credit, remaining reduction, or cash refund.</p>
+        <p class="muted-text">Submit a source-linked request. Admin or ERPAdmin approval posts the financial effect.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
           <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="MerchantCredit">Merchant credit</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
-          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required for cash refund"></div>
+          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required source"></div>
           <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field full-span"><label for="adjustment-notes">Notes</label><input id="adjustment-notes" class="input"></div>
-          <button class="button" type="submit">Save adjustment</button>
+          <button class="button" type="submit">Request adjustment</button>
         </form>
       </section>` : ""}
     <section class="band compact-band payment-tool-card merchant-tool-card">
@@ -6097,7 +6129,7 @@ async function loadPayments() {
           <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
           <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
           <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(log.status)}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
-          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(shortId(log.id, "PAY"))}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAccountant && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(shortId(log.id, "PAY"))}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAdmin && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
         </tr>
         <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
@@ -6179,6 +6211,8 @@ async function togglePaymentDetails(id, button) {
     target.innerHTML = renderPaymentDetail(detail);
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
+    target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
   } catch (exception) {
     target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
   }
@@ -6203,6 +6237,8 @@ async function togglePaymentHistoryDetails(id, button) {
     target.innerHTML = renderPaymentDetail(detail);
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
+    target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
   } catch (exception) {
     target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
   }
@@ -6254,8 +6290,8 @@ function renderPaymentDetail(detail) {
         <td>${escapeHtml(record.createdByName || "-")}</td>
         <td>${escapeHtml(record.notes || "-")}</td>
       </tr>`).join("")}</tbody></table></div>
-    <div class="table-wrap compact-table"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th></tr></thead><tbody>${adjustments.length === 0
-    ? `<tr><td colspan="6">No financial adjustments.</td></tr>`
+    <div class="table-wrap compact-table"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${adjustments.length === 0
+    ? `<tr><td colspan="7">No financial adjustments.</td></tr>`
     : adjustments.map((adjustment) => `<tr>
         <td>${escapeHtml(paymentStageLabel(adjustment.adjustmentType))}</td>
         <td>${escapeHtml(formatMoney(adjustment.amount))}</td>
@@ -6263,6 +6299,7 @@ function renderPaymentDetail(detail) {
         <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(adjustment.status || "-")}</span></td>
         <td>${escapeHtml(adjustment.createdByName || "-")}</td>
         <td>${escapeHtml(adjustment.notes || "-")}</td>
+        <td>${isAdmin && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">Approve</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">Reject</button>` : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
   </div>`;
 }
@@ -6348,6 +6385,38 @@ async function rejectSubLog(id, paymentLogId = null) {
   }
 }
 
+async function approveAdjustment(id, paymentLogId = null) {
+  try {
+    await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/approve`, { method: "POST" });
+    notice("Financial adjustment approved.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function rejectAdjustment(id, paymentLogId = null) {
+  const reason = await promptDialog({
+    title: "Reject Financial Adjustment",
+    label: "Record the reason. Rejected adjustments remain visible in the log.",
+    multiline: true,
+    required: true
+  });
+  if (!reason) {
+    return;
+  }
+
+  try {
+    await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+    notice("Financial adjustment rejected.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
 async function reopenPaymentDetail(paymentLogId) {
   if (!paymentLogId) {
     return;
@@ -6400,7 +6469,7 @@ async function createFinancialAdjustment(event) {
         notes: document.getElementById("adjustment-notes").value || null
       })
     });
-    notice("Financial adjustment saved.", "success");
+    notice("Financial adjustment requested.", "success");
     event.target.reset();
     await Promise.all([loadPayments(), loadPaymentHistory()]);
     await loadMerchantBalance();
