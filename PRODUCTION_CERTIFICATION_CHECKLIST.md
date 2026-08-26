@@ -59,7 +59,7 @@ Those results are not yet a production certificate because:
 | P0-01 | Critical | No immutable release candidate | Review, commit, and build from a clean tree | Resolved — application candidate `33f1311` committed locally; no push/deployment performed |
 | P0-02 | Critical | Production deployment order is incompatible with explicit migrations | Start DB, run migrator, then start API/frontend/proxy | Open |
 | P0-03 | Critical | Deployment readiness check requires Bash | Replace with host-side HTTP or an Alpine-compatible check | Open |
-| P0-04 | Critical | Docker daemon unavailable | Start Docker Desktop and rerun all Docker/PostgreSQL gates | BLOCKED |
+| P0-04 | Critical | Docker daemon unavailable | Start Docker Desktop and complete the Phase 2 environment-safety runbook before rerunning Docker/PostgreSQL gates | BLOCKED — plan ready; Engine still unreachable on 2026-08-26 |
 | P0-05 | Critical | E2E setup can delete the default Compose volume | Create isolated E2E Compose project and target guards | Open |
 | P0-06 | Critical | Authenticated seeded business-day workflow incomplete | Run all critical role workflows with persisted-state proof | Open |
 | P0-07 | Critical | Backup/restore drill incomplete | Back up, restore to isolation, migrate, reconcile, measure RPO/RTO | Open |
@@ -219,12 +219,76 @@ Pass criteria:
 
 ## Phase 2 — Restore the verification environment
 
-- [ ] Start Docker Desktop.
-- [ ] Run `docker info` and record client/server versions.
-- [ ] Run `docker compose version`.
-- [ ] Confirm adequate disk, memory, and CPU.
-- [ ] Confirm no stale E2E containers or conflicting ports.
-- [ ] Confirm ports `8181`, `5000`, and `3001` are either free or intentionally owned by the test stack.
+### 2.0 Execution plan and current baseline
+
+**Objective:** establish a Docker-capable, evidence-backed verification environment without disturbing valued local, E2E, or production-like data. Phase 2 authorizes only disposable container checks and read-only inspection; application deployment, database reset, migration rehearsal, and browser testing remain in their later phases.
+
+**Acceptance criteria:**
+
+- WHEN Docker Desktop is started THEN `docker info` SHALL return both client and server information using the Linux-container engine.
+- IF a certification or E2E port is already listening THEN the operator SHALL identify its owner and preserve it unless it is explicitly confirmed as disposable test infrastructure.
+- WHEN a disposable Docker container runs successfully THEN the environment SHALL record the command, engine version, resource allocation, and result before any PostgreSQL test is attempted.
+- WHEN the Testcontainers smoke test completes THEN the container SHALL be automatically removed and the full PostgreSQL suite SHALL still be rerun in Phase 4.
+- IF Docker startup, capacity, port ownership, or Testcontainers fails THEN Phase 2 SHALL remain blocked and no default Compose volume may be reset as a workaround.
+
+**Planned sequence:**
+
+1. [~] Start Docker Desktop in Linux-container mode; record Docker Desktop version, engine server version, active context, and its configured allocation of at least 4 CPUs and 8 GiB memory.
+2. [~] Run `docker info`, `docker compose version`, and `docker run --rm hello-world`; record output without secrets.
+3. [~] Inspect default and `lensee-e2e` Compose projects, named volumes, and ports before any stack command. Do not use `docker compose down --volumes` for the default project.
+4. [~] Resolve port conflicts: keep `8181`, `5000`, and `3001` free or intentionally attributed to the default test stack; keep E2E ports `58181`, `55000`, and `53001` free for `lensee-e2e`.
+5. [~] Run one disposable Testcontainers smoke test with `LENSEE_RUN_POSTGRES_TESTS=true` and filter `MigrationUpgradePostgresTests`; record the result, then proceed to the complete Phase 4 suite only after this environment gate passes.
+
+**Current pre-start baseline (2026-08-26):**
+
+| Check | Result | Phase 2 action |
+|---|---|---|
+| Docker Engine | Unreachable at `//./pipe/dockerDesktopLinuxEngine` | Start Docker Desktop; do not claim container verification yet. |
+| Docker Compose CLI | `v5.1.1` | Re-record after Engine startup. |
+| Host capacity | 16 logical processors; 15.31 GiB physical memory; 73.60 GiB free on `D:` | Confirm Docker Desktop allocation is at least 4 CPUs / 8 GiB before testing. |
+| Default ports | `5000` and `3001` had no listener; `8181` is owned by PID `8112` (`postgres`) | Preserve and identify this PostgreSQL instance before using the default stack. |
+| E2E ports | `58181`, `55000`, and `53001` had no listener | Reserve for the dedicated `lensee-e2e` project. |
+
+**Safe command set after Docker Desktop is available:**
+
+```powershell
+docker info
+docker context ls
+docker compose version
+docker run --rm hello-world
+
+docker compose ps -a
+docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps -a
+docker volume ls
+Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 8181,5000,3001,58181,55000,53001 }
+
+$env:LENSEE_RUN_POSTGRES_TESTS = "true"
+try {
+    dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj `
+      --configuration Release --no-build --no-restore `
+      --filter "FullyQualifiedName~MigrationUpgradePostgresTests" `
+      --logger "console;verbosity=minimal"
+} finally {
+    Remove-Item Env:LENSEE_RUN_POSTGRES_TESTS -ErrorAction SilentlyContinue
+}
+```
+
+Evidence:
+
+| Item | Result | Date/operator | Evidence path/link |
+|---|---|---|---|
+| Docker Engine/client-server versions | | | |
+| Docker Desktop CPU/memory allocation | | | |
+| Port/project/volume ownership review | | | |
+| Disposable container smoke test | | | |
+| Testcontainers smoke test | | | |
+
+- [~] Start Docker Desktop.
+- [~] Run `docker info` and record client/server versions.
+- [~] Run `docker compose version`.
+- [~] Confirm adequate disk, memory, and CPU.
+- [~] Confirm no stale E2E containers or conflicting ports.
+- [~] Confirm ports `8181`, `5000`, and `3001` are either free or intentionally owned by the test stack.
 
 Pass criteria:
 
