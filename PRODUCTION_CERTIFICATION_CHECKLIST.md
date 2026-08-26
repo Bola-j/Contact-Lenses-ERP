@@ -30,11 +30,11 @@ The application has materially stronger transaction, concurrency, migration, con
 
 Those results are not yet a production certificate because:
 
-1. The application hardening candidate is committed locally at `33f1311`; its PostgreSQL, container, browser, restore, and deployment evidence must be rerun before certification.
-2. Docker Desktop is unavailable on 2026-08-26, so PostgreSQL, container, and browser evidence cannot currently be reproduced.
-3. `scripts/deploy-prod.ps1` starts the application stack before explicitly running the migrator even though production auto-migration is disabled.
-4. The same deployment script uses `bash` and `/dev/tcp`, while the hardened runtime image is Alpine and does not install Bash.
-5. `scripts/e2e-setup.ps1` executes `docker compose down --volumes` and is unsafe unless it is isolated from valued data.
+1. The implementation candidate through `0514711` is committed locally; PostgreSQL, container, browser, restore, and deployment acceptance evidence must still be completed before certification.
+2. Docker Desktop is now available, but its 7.41 GiB allocation is below the Phase 2 target of 8 GiB; full container, runtime, and browser evidence remains incomplete.
+3. `scripts/deploy-prod.ps1` has been corrected to run the migrator before promotion, but the production-shaped ordering and idempotence acceptance run remains open.
+4. The Alpine-compatible Docker health check is implemented, but its runtime readiness/failure evidence remains open.
+5. `scripts/e2e-setup.ps1` now targets an isolated project, but the required two-run isolation acceptance is still open.
 6. The seeded, authenticated, role-based catalog-to-supply-to-payment browser workflow is not complete for this candidate.
 7. A real backup/isolated-restore/migration drill has not been recorded.
 
@@ -44,9 +44,9 @@ Those results are not yet a production certificate because:
 |---|---:|---|
 | Domain and transaction consistency | 8/10 | Stronger; PostgreSQL failure/concurrency tests previously passed |
 | Database migration safety | 8/10 | Fresh and upgrade paths previously passed; must rerun from immutable candidate |
-| Runtime/container | 8/10 | Alpine image previously healthy and clean; Docker currently unavailable |
+| Runtime/container | 8/10 | Alpine image previously healthy and clean; Docker smoke and one disposable PostgreSQL upgrade test now pass, but allocation is below the planned target |
 | Production configuration | 7/10 | Fail-fast safeguards exist; target environment is unverified |
-| Deployment automation | 4/10 | Migration ordering and Bash readiness probe are blockers |
+| Deployment automation | 6/10 | Migration ordering and Alpine-compatible readiness are implemented; runtime acceptance is still a blocker |
 | Browser/business workflows | 4/10 | Automated suites exist but complete seeded acceptance is open |
 | Backup and disaster recovery | 4/10 | Runbooks/scripts exist; no completed restore drill evidence |
 | Observability/incident operations | 7/10 | Health, telemetry, outbox, and runbooks exist; live alerting is unverified |
@@ -57,14 +57,15 @@ Those results are not yet a production certificate because:
 | ID | Severity | Blocker | Required resolution | Status |
 |---|---|---|---|---|
 | P0-01 | Critical | No immutable release candidate | Review, commit, and build from a clean tree | Resolved — application candidate `33f1311` committed locally; no push/deployment performed |
-| P0-02 | Critical | Production deployment order is incompatible with explicit migrations | Start DB, run migrator, then start API/frontend/proxy | Open |
-| P0-03 | Critical | Deployment readiness check requires Bash | Replace with host-side HTTP or an Alpine-compatible check | Open |
-| P0-04 | Critical | Docker daemon unavailable | Start Docker Desktop and complete the Phase 2 environment-safety runbook before rerunning Docker/PostgreSQL gates | BLOCKED — plan ready; Engine still unreachable on 2026-08-26 |
-| P0-05 | Critical | E2E setup can delete the default Compose volume | Create isolated E2E Compose project and target guards | Open |
+| P0-02 | Critical | Production deployment acceptance is incomplete | Prove DB → migrator → API → frontend/proxy order and idempotence against production-shaped Compose | Open — implementation `83b7975`; acceptance unrun |
+| P0-03 | Critical | Alpine readiness acceptance is incomplete | Prove Docker health transitions and actionable failure handling in the release image | Open — implementation `83b7975`; acceptance unrun |
+| P0-04 | Critical | Docker Desktop allocation is below the Phase 2 target | Allocate at least 8 GiB to Docker Desktop, then rerun the Phase 2 environment-safety runbook before complete Docker/PostgreSQL gates | BLOCKED — Engine and disposable upgrade test pass, but 7.41 GiB is below target on 2026-08-26 |
+| P0-05 | Critical | E2E isolation acceptance is incomplete | Prove two isolated reset/seed runs leave default-project containers and volumes unchanged | Open — implementation `eb93b99`; acceptance unrun |
 | P0-06 | Critical | Authenticated seeded business-day workflow incomplete | Run all critical role workflows with persisted-state proof | Open |
 | P0-07 | Critical | Backup/restore drill incomplete | Back up, restore to isolation, migrate, reconcile, measure RPO/RTO | Open |
 | P1-01 | High | Production secrets/TLS/proxy/key storage unverified | Validate actual deployment configuration without exposing secrets | Open |
 | P1-02 | High | Failure injection incomplete across all critical workflows | Prove rollback/retry/no duplicate state | Open |
+| P1-03 | High | Static format gate fails on existing line endings | Remediate CRLF `ENDOLINE` findings in a reviewed candidate, then rerun Phase 3 | Open |
 
 ## Previously completed hardening work
 
@@ -155,7 +156,7 @@ Pass criteria:
 
 ### 1.0 Implementation state
 
-Phase 1 code is implemented locally but remains unverified at runtime because Docker Desktop is unavailable. The changes remove production seed switches, use the explicit Compose migrator, replace the Bash probe with an API Docker health check, and move E2E reset/seed activity to `lensee-e2e` with loopback-only ports `58181`, `55000`, and `53001`.
+Phase 1 code is implemented locally but remains unverified at runtime because Docker was unavailable during its implementation run. Phase 2 later restored Docker access, but did not run the production-shaped or two-run E2E acceptance. The changes remove production seed switches, use the explicit Compose migrator, replace the Bash probe with an API Docker health check, and move E2E reset/seed activity to `lensee-e2e` with loopback-only ports `58181`, `55000`, and `53001`.
 
 - [~] Deployment sequence implementation is complete; production-shaped rehearsal and idempotence proof remain required.
 - [~] Alpine-compatible readiness implementation is complete; runtime health proof remains required.
@@ -233,13 +234,24 @@ Pass criteria:
 
 **Planned sequence:**
 
-1. [~] Start Docker Desktop in Linux-container mode; record Docker Desktop version, engine server version, active context, and its configured allocation of at least 4 CPUs and 8 GiB memory.
-2. [~] Run `docker info`, `docker compose version`, and `docker run --rm hello-world`; record output without secrets.
-3. [~] Inspect default and `lensee-e2e` Compose projects, named volumes, and ports before any stack command. Do not use `docker compose down --volumes` for the default project.
-4. [~] Resolve port conflicts: keep `8181`, `5000`, and `3001` free or intentionally attributed to the default test stack; keep E2E ports `58181`, `55000`, and `53001` free for `lensee-e2e`.
-5. [~] Run one disposable Testcontainers smoke test with `LENSEE_RUN_POSTGRES_TESTS=true` and filter `MigrationUpgradePostgresTests`; record the result, then proceed to the complete Phase 4 suite only after this environment gate passes.
+1. [~] Start Docker Desktop in Linux-container mode; record Docker Desktop version, engine server version, active context, and its configured allocation of at least 4 CPUs and 8 GiB memory — started and recorded, but memory is below target.
+2. [x] Run `docker info`, `docker compose version`, and `docker run --rm hello-world`; record output without secrets.
+3. [x] Inspect default and `lensee-e2e` Compose projects, named volumes, and ports before any stack command. Do not use `docker compose down --volumes` for the default project.
+4. [x] Resolve port conflicts: `8181`, `5000`, and `3001` are intentionally attributed to the pre-existing default stack; E2E ports `58181`, `55000`, and `53001` are free for `lensee-e2e`.
+5. [x] Run one disposable Testcontainers smoke test with `LENSEE_RUN_POSTGRES_TESTS=true` and filter `MigrationUpgradePostgresTests`; record the result, then proceed to the complete Phase 4 suite only after this environment gate passes.
 
-**Current pre-start baseline (2026-08-26):**
+**Execution result (2026-08-26 / Codex):** Docker Desktop was started in the background. The active CLI context was `desktop-linux`; Docker reported Linux containers, client/server `29.4.0`, 16 CPUs, and `7,956,238,336` bytes (7.41 GiB) memory. The resource allocation misses the planned 8 GiB minimum, so Phase 2 remains incomplete even though the disposable container and Testcontainers upgrade smoke test passed. Docker Desktop startup also resumed the pre-existing default stack; it was inspected only and was not reset or otherwise changed by a certification command.
+
+| Check | Result | Phase 2 action |
+|---|---|---|
+| Docker Engine | Linux Engine available; client/server `29.4.0`; CLI context `desktop-linux` | Passed — retain Engine evidence. |
+| Docker Compose CLI | `v5.1.1` | Passed. |
+| Host/Docker capacity | Host: 16 logical processors, 15.31 GiB physical memory, 73.59 GiB free on `D:`. Docker: 16 CPUs, 7.41 GiB memory. | **Blocked** — increase Docker allocation to at least 8 GiB before declaring Phase 2 complete. |
+| Default project and ports | Pre-existing `lensee_api`, `lensee_db` (healthy), and `lensee_web` were running. Ports `8181`, `5000`, and `3001` were intentionally owned by that stack; no default-project command was run. | Passed — preserved. |
+| E2E project and ports | `lensee-e2e` had no containers or project-labelled volumes; ports `58181`, `55000`, and `53001` were free. | Passed — reserved for later E2E acceptance. |
+| Disposable checks | `docker run --rm hello-world` passed. Filtered `MigrationUpgradePostgresTests` passed 1/1 with `LENSEE_RUN_POSTGRES_TESTS=true`. | Passed — Phase 4 full suite remains required. |
+
+**Superseded pre-start baseline (2026-08-26):**
 
 | Check | Result | Phase 2 action |
 |---|---|---|
@@ -277,18 +289,18 @@ Evidence:
 
 | Item | Result | Date/operator | Evidence path/link |
 |---|---|---|---|
-| Docker Engine/client-server versions | | | |
-| Docker Desktop CPU/memory allocation | | | |
-| Port/project/volume ownership review | | | |
-| Disposable container smoke test | | | |
-| Testcontainers smoke test | | | |
+| Docker Engine/client-server versions | Pass — Linux Engine, client/server `29.4.0`; active CLI context `desktop-linux` | 2026-08-26 / Codex | Local command output: `docker version`, `docker info`, `docker context ls` |
+| Docker Desktop CPU/memory allocation | Blocked — 16 CPUs, 7.41 GiB memory; below 8 GiB phase target | 2026-08-26 / Codex | Local `docker info` output |
+| Port/project/volume ownership review | Pass — default stack attributed and preserved; `lensee-e2e` has no containers or labelled volumes; E2E ports free | 2026-08-26 / Codex | Local Compose, volume, and port inspection |
+| Disposable container smoke test | Pass — `hello-world` completed and removed | 2026-08-26 / Codex | Local command output |
+| Testcontainers smoke test | Pass — `MigrationUpgradePostgresTests`: 1 passed, 0 failed, 0 skipped | 2026-08-26 / Codex | Local `dotnet test` output |
 
-- [~] Start Docker Desktop.
-- [~] Run `docker info` and record client/server versions.
-- [~] Run `docker compose version`.
-- [~] Confirm adequate disk, memory, and CPU.
-- [~] Confirm no stale E2E containers or conflicting ports.
-- [~] Confirm ports `8181`, `5000`, and `3001` are either free or intentionally owned by the test stack.
+- [x] Start Docker Desktop in Linux-container mode.
+- [x] Run `docker info` and record client/server versions.
+- [x] Run `docker compose version`.
+- [~] Confirm adequate disk, memory, and CPU — Docker memory is 7.41 GiB, below the 8 GiB target.
+- [x] Confirm no stale E2E containers or conflicting ports.
+- [x] Confirm ports `8181`, `5000`, and `3001` are intentionally owned by the pre-existing default stack and preserve them.
 
 Pass criteria:
 
@@ -303,7 +315,7 @@ Pass criteria:
 
 **Objective:** prove that the exact committed candidate builds and passes static quality gates without changing tracked source, lockfiles, or generated frontend configuration.
 
-**Preconditions:** Phase 2 does not need to be complete for these local checks, but the candidate SHA must be recorded immediately before execution. The current host has an unrelated untracked `save.session`; preserve it, do not stage it, and require no tracked or staged difference before starting.
+**Preconditions:** Phase 2 does not need to be complete for these local checks, but the candidate SHA must be recorded immediately before execution. Preserve any unrelated untracked files, do not stage them, and require no tracked or staged difference before starting. The 2026-08-26 execution began clean at `0514711`.
 
 **Acceptance criteria:**
 
@@ -354,12 +366,12 @@ git diff --cached --exit-code
 
 | Item | Required result | Candidate SHA | Date/operator | Evidence path/link |
 |---|---|---|---|---|
-| Baseline status and diff checks | No tracked/staged candidate drift; unrelated untracked files recorded | | | |
-| Restore and Release build | Restore succeeds; build has 0 warnings / 0 errors | | | |
-| Format verification | No formatting changes required | | | |
-| Dependency reproducibility | `npm ci` succeeds without lockfile change | | | |
-| Static guards and syntax | Encoding, localization, DOM sink, endpoint boundary, and JS syntax pass | | | |
-| Frontend build | Build succeeds; `frontend/config.js` remains unchanged | | | |
+| Baseline status and diff checks | Pass — clean before execution; final content and staged diffs clean | `0514711` | 2026-08-26 / Codex | Local `git status`, diff, cached-diff, and hash output |
+| Restore and Release build | Pass — restore up to date; build 0 warnings / 0 errors | `0514711` | 2026-08-26 / Codex | Local command output |
+| Format verification | **Fail** — `ENDOFLINE` requires CRLF in existing backend files, including `CatalogEndpoints.cs` and `PaymentIntegrityPostgresTests.cs`; no auto-format was run | `0514711` | 2026-08-26 / Codex | Local `dotnet format --verify-no-changes` output |
+| Dependency reproducibility | Pass — `npm ci` added 3 packages, audited 4, found 0 vulnerabilities; no lockfile content drift | `0514711` | 2026-08-26 / Codex | Local command and final diff output |
+| Static guards and syntax | Pass — encoding (71 files), localization (1,071 Arabic translations / 554 UI strings), DOM sink (157/157 legacy uses), endpoint boundary, and JS syntax | `0514711` | 2026-08-26 / Codex | Local `npm run check` and `node --check` output |
+| Frontend build | Pass — deterministic build used `http://localhost:5000`; `frontend/config.js` content hash equalled the index and final diff was clean | `0514711` | 2026-08-26 / Codex | Local build, hash, and diff output |
 
 Run these commands sequentially from the repository root:
 
@@ -375,24 +387,24 @@ npm --prefix frontend run build
 
 Checklist:
 
-- [~] Restore succeeds without changing locked dependencies unexpectedly.
-- [~] Release build succeeds with zero warnings/errors.
-- [~] Formatting verification passes.
-- [~] Encoding check passes.
-- [~] Localization check passes.
-- [~] Unsafe-DOM-sink guard passes.
-- [~] Endpoint-boundary guard passes.
-- [~] Frontend JavaScript syntax passes.
-- [~] Frontend production build succeeds.
+- [x] Restore succeeds without changing locked dependencies unexpectedly.
+- [x] Release build succeeds with zero warnings/errors.
+- [~] Formatting verification passes — blocked by existing `ENDOLINE` findings; no auto-format was run.
+- [x] Encoding check passes.
+- [x] Localization check passes.
+- [x] Unsafe-DOM-sink guard passes.
+- [x] Endpoint-boundary guard passes.
+- [x] Frontend JavaScript syntax passes.
+- [x] Frontend production build succeeds.
 
 Evidence:
 
 | Check | Result | Evidence path/link |
 |---|---|---|
-| Release build | | |
-| Format | | |
-| Frontend checks | | |
-| Frontend build | | |
+| Release build | Pass — 0 warnings / 0 errors at `0514711` | Local command output |
+| Format | Fail — existing CRLF `ENDOLINE` violations; remediation requires a reviewed candidate | Local command output |
+| Frontend checks | Pass — all configured checks and JS syntax passed | Local command output |
+| Frontend build | Pass — deterministic config content unchanged | Local command/hash/diff output |
 
 ## Phase 4 — Backend and PostgreSQL tests
 
@@ -747,10 +759,12 @@ Fill one row for every certification execution. Do not mark a gate complete with
 
 | Gate | Command/test | Candidate SHA/image digest | Date/operator | Result | Evidence path/link |
 |---|---|---|---|---|---|
-| Release build | `dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror` | `33f1311` | 2026-08-26 / Codex | Pass — 0 warnings / 0 errors | Local command output |
+| Release build | `dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror` | `0514711` | 2026-08-26 / Codex | Pass — 0 warnings / 0 errors | Local command output |
 | Unit/contract tests | `dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"` | `33f1311` | 2026-08-26 / Codex | Pass — 164 passed, 0 failed, 0 skipped; rerun not required because `33f1311` changes only PostgreSQL test code | Local command output |
-| PostgreSQL tests | | | | | |
-| Frontend checks/build | | | | | |
+| PostgreSQL Testcontainers smoke | Filtered `MigrationUpgradePostgresTests` with `LENSEE_RUN_POSTGRES_TESTS=true` | `0514711` | 2026-08-26 / Codex | Pass — 1 passed, 0 failed, 0 skipped; not a substitute for Phase 4 full suite | Local command output |
+| Docker environment smoke | `docker run --rm hello-world` | N/A | 2026-08-26 / Codex | Pass — Linux engine client/server 29.4.0; Docker allocation 7.41 GiB remains below Phase 2 target | Local command output |
+| Format verification | `dotnet format Lensee.slnx --verify-no-changes --no-restore` | `0514711` | 2026-08-26 / Codex | Fail — existing `ENDOFLINE` CRLF violations; no automatic remediation performed | Local command output |
+| Frontend checks/build | `npm ci`; `npm run check`; `node --check frontend/app.js`; deterministic frontend build | `0514711` | 2026-08-26 / Codex | Pass — checks passed; config content unchanged | Local command output |
 | Dependency review | | | | | |
 | Image scan | | | | | |
 | Fresh migration | | | | | |
@@ -768,10 +782,11 @@ Fill one row for every certification execution. Do not mark a gate complete with
 | Defect ID | Severity | Area | Reproduction/evidence | Owner | Status | Release impact |
 |---|---|---|---|---|---|---|
 | P0-01 | Critical | Release candidate | Application hardening candidate committed locally at `33f1311` | Codex | Resolved | Does not waive downstream certification gates |
-| P0-02 | Critical | Deployment | API starts before explicit migration in current script | | Open | Blocks release |
-| P0-03 | Critical | Runtime | Deployment readiness check requires Bash on Alpine | | Open | Blocks release |
-| P0-04 | Critical | Test environment | Docker daemon unavailable on 2026-08-26 | | BLOCKED | Blocks revalidation |
-| P0-05 | Critical | E2E safety | Default E2E setup deletes Compose volumes | | Open | Blocks seeded acceptance |
+| P0-02 | Critical | Deployment | Implementation `83b7975` is pending production-shaped ordering/idempotence evidence | | Open | Blocks release |
+| P0-03 | Critical | Runtime | Implementation `83b7975` is pending Alpine Docker-health/failure evidence | | Open | Blocks release |
+| P0-04 | Critical | Test environment | Docker Engine and filtered Testcontainers smoke pass, but 7.41 GiB allocation is below 8 GiB Phase 2 target | | BLOCKED | Blocks complete Docker/PostgreSQL revalidation |
+| P0-05 | Critical | E2E safety | Implementation `eb93b99` is pending two-run default-volume isolation proof | | Open | Blocks seeded acceptance |
+| P1-03 | High | Static validation | Existing CRLF `ENDOLINE` violations fail `dotnet format --verify-no-changes` at `0514711` | | Open | Blocks Phase 3 completion |
 | P0-06 | Critical | Browser acceptance | Critical business-day workflow is incomplete | | Open | Blocks certification |
 | P0-07 | Critical | Recovery | Restore drill is incomplete | | Open | Blocks certification |
 
