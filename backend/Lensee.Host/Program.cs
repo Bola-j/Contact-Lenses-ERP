@@ -262,6 +262,7 @@ builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
+builder.Services.AddScoped<CatalogMutationTransaction>();
 if (builder.Environment.IsEnvironment("Testing"))
 {
     // Contract fixtures deliberately replace only the context under test.  The
