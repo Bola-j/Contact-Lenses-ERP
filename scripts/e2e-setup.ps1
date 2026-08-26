@@ -24,62 +24,101 @@ function Convert-PlainPasswordPlaceholdersToHashes {
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$projectName = "lensee-e2e"
+$composeFiles = @("-p", $projectName, "-f", "docker-compose.yml", "-f", "docker-compose.e2e.yml")
+$databaseVolume = "lensee-e2e-pgdata"
+$dataProtectionVolume = "lensee-e2e-data-protection"
+$apiPort = if ([string]::IsNullOrWhiteSpace($env:LENSEE_E2E_API_PORT)) { "55000" } else { $env:LENSEE_E2E_API_PORT }
+$frontendPort = if ([string]::IsNullOrWhiteSpace($env:LENSEE_E2E_FRONTEND_PORT)) { "53001" } else { $env:LENSEE_E2E_FRONTEND_PORT }
+$apiUrl = "http://127.0.0.1:$apiPort"
+$frontendUrl = "http://127.0.0.1:$frontendPort"
 
-Push-Location $repoRoot
-try {
-    $env:RATE_LIMITING_PERMIT_LIMIT = "5000"
-    $env:RATE_LIMITING_WINDOW_SECONDS = "60"
-    $env:RATE_LIMITING_QUEUE_LIMIT = "100"
+function Invoke-E2ECompose {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-    Write-Host "Resetting Docker database volume..."
-    docker compose down --volumes
-    docker compose up -d db
+    & docker compose @composeFiles @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "E2E docker compose $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
 
+function Wait-ForE2EDatabase {
     for ($attempt = 1; $attempt -le 60; $attempt++) {
-        docker compose exec -T db pg_isready -U lensee_user -d lensee | Out-Null
-        if ($LASTEXITCODE -eq 0) { break }
-        if ($attempt -eq 60) { throw "PostgreSQL did not become ready in time." }
+        & docker compose @composeFiles exec -T db pg_isready -U lensee_e2e_user -d lensee_e2e | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
         Start-Sleep -Seconds 1
     }
 
-    Write-Host "Applying migrations with the one-shot advisory-lock command..."
-    $migrationPassword = $env:DB_PASSWORD
-    if ([string]::IsNullOrWhiteSpace($migrationPassword)) { $migrationPassword = "SomeStrongPassword123!" }
-    $migrationConnection = "Host=localhost;Port=8181;Database=lensee;Username=lensee_user;Password=$migrationPassword"
-    & (Join-Path $repoRoot "scripts/migrate-prod.ps1") -ConnectionString $migrationConnection
-    if ($LASTEXITCODE -ne 0) { throw "Migration command failed." }
+    Invoke-E2ECompose logs --tail 120 db
+    throw "E2E PostgreSQL did not become ready in time."
+}
 
-    Write-Host "Starting API after successful migration validation..."
-    docker compose build lensee.host frontend
-    docker compose up -d lensee.host frontend
-
+function Wait-ForE2EApi {
     for ($attempt = 1; $attempt -le 90; $attempt++) {
         try {
-            $health = Invoke-RestMethod "http://localhost:5000/health" -TimeoutSec 2
-            if ($health.status -eq "Healthy") {
-                Write-Host "API health is Healthy."
-                break
+            $ready = Invoke-RestMethod "$apiUrl/ready" -TimeoutSec 2
+            if ($ready.status -eq "Healthy") {
+                return
             }
-        } catch {
-            if ($attempt -eq 90) { throw "API did not become healthy in time." }
-            Start-Sleep -Seconds 1
         }
+        catch {
+            # The API is expected to be unavailable until the migrator has completed.
+        }
+
+        Start-Sleep -Seconds 1
     }
 
-    Write-Host "Applying deterministic E2E seed data..."
+    Invoke-E2ECompose logs --tail 120 lensee.host
+    throw "E2E API did not become ready in time."
+}
+
+Push-Location $repoRoot
+try {
+    if ($env:ASPNETCORE_ENVIRONMENT -eq "Production") {
+        throw "Refusing to reset E2E data while ASPNETCORE_ENVIRONMENT=Production."
+    }
+
+    Write-Host "E2E target project: $projectName"
+    Write-Host "E2E target database: lensee_e2e (volume: $databaseVolume)"
+    Write-Host "E2E target Data Protection volume: $dataProtectionVolume"
+    Write-Host "E2E target API: $apiUrl; frontend: $frontendUrl"
+    Invoke-E2ECompose config --quiet
+
+    Write-Host "Resetting only the dedicated E2E Compose project..."
+    Invoke-E2ECompose down --volumes --remove-orphans
+    Invoke-E2ECompose build lensee.host migrator frontend
+    Invoke-E2ECompose up -d db
+    Wait-ForE2EDatabase
+
+    Write-Host "Applying migrations with the dedicated one-shot migrator..."
+    Invoke-E2ECompose --profile migrate run --rm --no-deps migrator
+
+    Write-Host "Starting the isolated API and frontend..."
+    Invoke-E2ECompose up -d lensee.host frontend
+    Wait-ForE2EApi
+
+    Write-Host "Applying deterministic shared and E2E-only seed data..."
     Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-locations.sql") |
-        docker compose exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d lensee
+        docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
 
-    $seedSql = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-dev.sql")
-    $seedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $seedSql
-    $seedSql | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d lensee
+    $sharedSeedSql = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-dev.sql")
+    $sharedSeedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $sharedSeedSql
+    $sharedSeedSql | docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
 
-    $frontend = Invoke-WebRequest "http://localhost:3001" -UseBasicParsing -TimeoutSec 10
+    $e2eSeedSql = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-e2e.sql")
+    $e2eSeedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $e2eSeedSql
+    $e2eSeedSql | docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
+
+    $frontend = Invoke-WebRequest $frontendUrl -UseBasicParsing -TimeoutSec 10
     if ($frontend.StatusCode -ne 200) {
-        throw "Frontend returned HTTP $($frontend.StatusCode)."
+        throw "E2E frontend returned HTTP $($frontend.StatusCode)."
     }
 
-    Write-Host "E2E setup complete."
-} finally {
+    Write-Host "E2E setup complete for project $projectName."
+}
+finally {
     Pop-Location
 }

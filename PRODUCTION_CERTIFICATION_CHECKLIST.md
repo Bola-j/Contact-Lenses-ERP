@@ -153,6 +153,19 @@ Pass criteria:
 
 ## Phase 1 — Repair deployment and E2E tooling
 
+### 1.0 Implementation state
+
+Phase 1 code is implemented locally but remains unverified at runtime because Docker Desktop is unavailable. The changes remove production seed switches, use the explicit Compose migrator, replace the Bash probe with an API Docker health check, and move E2E reset/seed activity to `lensee-e2e` with loopback-only ports `58181`, `55000`, and `53001`.
+
+- [~] Deployment sequence implementation is complete; production-shaped rehearsal and idempotence proof remain required.
+- [~] Alpine-compatible readiness implementation is complete; runtime health proof remains required.
+- [~] Dedicated E2E project/volumes/seeds implementation is complete; two-run isolation proof remains required.
+- [~] CI log collection is aligned to the dedicated E2E Compose project.
+
+Static evidence recorded on 2026-08-26: PowerShell parsing passed for both changed scripts; production and E2E Compose merges passed with non-secret dummy production values; `dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror` passed with 0 warnings/errors; unit/contract tests passed 164/164; and `npm run check` passed. Docker Engine was unavailable, so no migrator, container, or reset command was executed.
+
+Evidence to collect when Docker is available: merged Compose output, migrator log, API Docker health status, service/image status, two consecutive E2E setup results, and proof that default-project volumes are unchanged.
+
 ### 1.1 Correct the production deployment sequence
 
 Modify `scripts/deploy-prod.ps1` so that it performs this exact order:
@@ -170,19 +183,19 @@ Modify `scripts/deploy-prod.ps1` so that it performs this exact order:
 
 Checklist:
 
-- [ ] Production instances remain `Database:AutoMigrate=false`.
-- [ ] The migrator is the only schema-mutating process.
-- [ ] A failed migration prevents API promotion.
-- [ ] The script captures migration logs on failure.
-- [ ] Rerunning the script is idempotent.
+- [~] Production instances remain `Database:AutoMigrate=false`.
+- [~] The migrator is the only schema-mutating process.
+- [~] A failed migration prevents API promotion.
+- [~] The script captures migration logs on failure.
+- [~] Rerunning the script is idempotent.
 
 ### 1.2 Replace the Bash readiness probe
 
-- [ ] Remove the `bash -lc` and `/dev/tcp` dependency from `scripts/deploy-prod.ps1`.
-- [ ] Use `Invoke-RestMethod`, a Docker health status, or another installed Alpine-compatible mechanism.
-- [ ] Validate response status and JSON `status` value.
-- [ ] Print the final 120 API log lines when readiness fails.
-- [ ] Return a non-zero exit code on timeout.
+- [~] Remove the `bash -lc` and `/dev/tcp` dependency from `scripts/deploy-prod.ps1`.
+- [~] Use `Invoke-RestMethod`, a Docker health status, or another installed Alpine-compatible mechanism.
+- [~] Validate response status and JSON `status` value.
+- [~] Print the final 120 API log lines when readiness fails.
+- [~] Return a non-zero exit code on timeout.
 
 Pass criteria:
 
@@ -191,12 +204,12 @@ Pass criteria:
 
 ### 1.3 Isolate destructive E2E setup
 
-- [ ] Add a dedicated E2E Compose configuration with unique container names, ports, network, and volumes.
-- [ ] Use a dedicated Compose project name.
-- [ ] Refuse to run when `ASPNETCORE_ENVIRONMENT=Production`.
-- [ ] Resolve and print the target project, database, and volume before resetting.
-- [ ] Limit `down --volumes` to the dedicated E2E project.
-- [ ] Never point `scripts/restore-db.ps1 -Force` at production during E2E.
+- [~] Add a dedicated E2E Compose configuration with unique container names, ports, network, and volumes.
+- [~] Use a dedicated Compose project name.
+- [~] Refuse to run when `ASPNETCORE_ENVIRONMENT=Production`.
+- [~] Resolve and print the target project, database, and volume before resetting.
+- [~] Limit `down --volumes` to the dedicated E2E project.
+- [~] Never point `scripts/restore-db.ps1 -Force` at production during E2E.
 
 Pass criteria:
 

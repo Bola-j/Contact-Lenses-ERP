@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { installApiBase, login, gotoRoute, expectNotice } = require("./support/helpers");
+const { installApiBase, login, gotoRoute, expectNotice, users } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
   await installApiBase(page);
@@ -28,7 +28,7 @@ test("audit and accounts: duplicate usernames explain the conflict, protected ac
   await form.getByRole("button", { name: "Create employee account" }).click();
   await expectNotice(page, "This username is already in use. Choose a different username.");
 
-  await expect(page.locator("[data-admin-user-row]", { hasText: "admin" }).locator("[data-admin-delete-user]")).toBeDisabled();
+  await expect(page.locator("[data-admin-user-row]", { hasText: users.admin.username }).locator("[data-admin-delete-user]")).toBeDisabled();
 
   await gotoRoute(page, "/audit");
   await expect(page.locator("#audit-rows")).toContainText(/Create|POST/i);

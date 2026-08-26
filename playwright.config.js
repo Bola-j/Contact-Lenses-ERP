@@ -1,7 +1,7 @@
 // @ts-check
 const { defineConfig, devices } = require("@playwright/test");
 
-const frontendPort = Number(process.env.LENSEE_E2E_FRONTEND_PORT || 3000);
+const frontendPort = Number(process.env.LENSEE_E2E_FRONTEND_PORT || 53001);
 const frontendBaseUrl = process.env.LENSEE_E2E_FRONTEND_URL || `http://127.0.0.1:${frontendPort}`;
 
 module.exports = defineConfig({

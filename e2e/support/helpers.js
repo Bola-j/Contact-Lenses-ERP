@@ -1,16 +1,17 @@
 const { expect } = require("@playwright/test");
 
-const apiBaseUrl = process.env.LENSEE_E2E_API_URL || "http://localhost:5000";
+const apiBaseUrl = process.env.LENSEE_E2E_API_URL || "http://127.0.0.1:55000";
+const defaultE2ePassword = "E2E-only-not-production-2026!";
 
 const users = {
-  admin: { username: process.env.LENSEE_E2E_ADMIN_USER || "admin", password: process.env.LENSEE_E2E_ADMIN_PASSWORD || "12121212" },
-  erpAdmin: { username: process.env.LENSEE_E2E_ERP_ADMIN_USER || "erp_admin", password: process.env.LENSEE_E2E_ERP_ADMIN_PASSWORD || "12121212" },
-  clevel: { username: process.env.LENSEE_E2E_CLEVEL_USER || "clevel", password: process.env.LENSEE_E2E_CLEVEL_PASSWORD || "12121212" },
-  accountant: { username: process.env.LENSEE_E2E_ACCOUNTANT_USER || "accountant", password: process.env.LENSEE_E2E_ACCOUNTANT_PASSWORD || "12121212" },
-  clerk: { username: process.env.LENSEE_E2E_CLERK_USER || "roxy_clerk", password: process.env.LENSEE_E2E_CLERK_PASSWORD || "12121212" },
-  roxyClerk: { username: process.env.LENSEE_E2E_ROXY_CLERK_USER || "roxy_clerk", password: process.env.LENSEE_E2E_ROXY_CLERK_PASSWORD || "12121212" },
-  retailClerk: { username: process.env.LENSEE_E2E_RETAIL_CLERK_USER || "retail_clerk", password: process.env.LENSEE_E2E_RETAIL_CLERK_PASSWORD || "12121212" },
-  onlineClerk: { username: process.env.LENSEE_E2E_ONLINE_CLERK_USER || "online_clerk", password: process.env.LENSEE_E2E_ONLINE_CLERK_PASSWORD || "12121212" }
+  admin: { username: process.env.LENSEE_E2E_ADMIN_USER || "e2e_admin", password: process.env.LENSEE_E2E_ADMIN_PASSWORD || defaultE2ePassword },
+  erpAdmin: { username: process.env.LENSEE_E2E_ERP_ADMIN_USER || "e2e_erp_admin", password: process.env.LENSEE_E2E_ERP_ADMIN_PASSWORD || defaultE2ePassword },
+  clevel: { username: process.env.LENSEE_E2E_CLEVEL_USER || "e2e_clevel", password: process.env.LENSEE_E2E_CLEVEL_PASSWORD || defaultE2ePassword },
+  accountant: { username: process.env.LENSEE_E2E_ACCOUNTANT_USER || "e2e_accountant", password: process.env.LENSEE_E2E_ACCOUNTANT_PASSWORD || defaultE2ePassword },
+  clerk: { username: process.env.LENSEE_E2E_CLERK_USER || "e2e_roxy_clerk", password: process.env.LENSEE_E2E_CLERK_PASSWORD || defaultE2ePassword },
+  roxyClerk: { username: process.env.LENSEE_E2E_ROXY_CLERK_USER || "e2e_roxy_clerk", password: process.env.LENSEE_E2E_ROXY_CLERK_PASSWORD || defaultE2ePassword },
+  retailClerk: { username: process.env.LENSEE_E2E_RETAIL_CLERK_USER || "e2e_retail_clerk", password: process.env.LENSEE_E2E_RETAIL_CLERK_PASSWORD || defaultE2ePassword },
+  onlineClerk: { username: process.env.LENSEE_E2E_ONLINE_CLERK_USER || "e2e_online_clerk", password: process.env.LENSEE_E2E_ONLINE_CLERK_PASSWORD || defaultE2ePassword }
 };
 
 function makeRunData(prefix = "E2E") {

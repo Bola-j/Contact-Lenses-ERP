@@ -13,7 +13,7 @@ This suite drives the real vanilla JavaScript frontend with Playwright. It also 
 
 ## Reset And Run
 
-The full release suite is destructive to dev/demo data by design.
+The full release suite resets only its dedicated `lensee-e2e` Compose project. It never targets the default development project or production volumes.
 
 ```powershell
 npm run e2e:setup
@@ -60,19 +60,21 @@ The existing `e2e/support/helpers.js` remains the shared compatibility layer. Th
 
 ## Credentials
 
-Defaults match the deterministic dev seed:
+Defaults match the dedicated synthetic E2E seed. They are valid only in the isolated `lensee-e2e` database and may be overridden by environment variables when required:
 
 ```powershell
-$env:LENSEE_E2E_ADMIN_USER = "admin"
-$env:LENSEE_E2E_ADMIN_PASSWORD = "12121212"
-$env:LENSEE_E2E_CLEVEL_USER = "clevel"
-$env:LENSEE_E2E_CLEVEL_PASSWORD = "12121212"
-$env:LENSEE_E2E_ACCOUNTANT_USER = "accountant"
-$env:LENSEE_E2E_ACCOUNTANT_PASSWORD = "12121212"
-$env:LENSEE_E2E_CLERK_USER = "roxy_clerk"
-$env:LENSEE_E2E_CLERK_PASSWORD = "12121212"
-$env:LENSEE_E2E_RETAIL_CLERK_USER = "retail_clerk"
-$env:LENSEE_E2E_ONLINE_CLERK_USER = "online_clerk"
+$env:LENSEE_E2E_ADMIN_USER = "e2e_admin"
+$env:LENSEE_E2E_ADMIN_PASSWORD = "E2E-only-not-production-2026!"
+$env:LENSEE_E2E_ERP_ADMIN_USER = "e2e_erp_admin"
+$env:LENSEE_E2E_ERP_ADMIN_PASSWORD = "E2E-only-not-production-2026!"
+$env:LENSEE_E2E_CLEVEL_USER = "e2e_clevel"
+$env:LENSEE_E2E_CLEVEL_PASSWORD = "E2E-only-not-production-2026!"
+$env:LENSEE_E2E_ACCOUNTANT_USER = "e2e_accountant"
+$env:LENSEE_E2E_ACCOUNTANT_PASSWORD = "E2E-only-not-production-2026!"
+$env:LENSEE_E2E_CLERK_USER = "e2e_roxy_clerk"
+$env:LENSEE_E2E_CLERK_PASSWORD = "E2E-only-not-production-2026!"
+$env:LENSEE_E2E_RETAIL_CLERK_USER = "e2e_retail_clerk"
+$env:LENSEE_E2E_ONLINE_CLERK_USER = "e2e_online_clerk"
 ```
 
-The suite uses `LENSEE_E2E_API_URL` when set, otherwise `http://localhost:5000`.
+The default isolated ports are PostgreSQL `58181`, API `55000`, and frontend `53001`, all loopback-only. The suite uses `LENSEE_E2E_API_URL` when set, otherwise `http://127.0.0.1:55000`.
