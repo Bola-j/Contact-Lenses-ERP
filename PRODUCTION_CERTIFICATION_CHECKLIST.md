@@ -299,6 +299,68 @@ Pass criteria:
 
 ## Phase 3 — Build and static validation
 
+### 3.0 Execution plan and evidence boundary
+
+**Objective:** prove that the exact committed candidate builds and passes static quality gates without changing tracked source, lockfiles, or generated frontend configuration.
+
+**Preconditions:** Phase 2 does not need to be complete for these local checks, but the candidate SHA must be recorded immediately before execution. The current host has an unrelated untracked `save.session`; preserve it, do not stage it, and require no tracked or staged difference before starting.
+
+**Acceptance criteria:**
+
+- WHEN restore or `npm ci` changes a tracked lockfile THEN Phase 3 SHALL stop and record the diff; dependency changes require a separate reviewed candidate.
+- WHEN formatting verification reports a difference THEN Phase 3 SHALL fail without running an auto-format command.
+- WHEN a static guard fails THEN Phase 3 SHALL retain its command output and open a defect; it SHALL not suppress or raise a guard baseline merely to pass.
+- WHEN the frontend build runs THEN it SHALL use `LENSEE_API_BASE_URL=http://localhost:5000` and SHALL leave tracked `frontend/config.js` unchanged.
+- WHEN every command succeeds and `git diff --check`, tracked-diff, and staged-diff checks are clean THEN Phase 3 SHALL record the candidate SHA and command results in the evidence register.
+
+**Planned sequential runbook:**
+
+```powershell
+# 0. Capture the exact candidate and preserve unrelated untracked files.
+git rev-parse HEAD
+git status --short
+git diff --check
+git diff --exit-code
+git diff --cached --exit-code
+
+# 1. Run .NET commands one at a time to avoid CS2012 file locks.
+dotnet restore Lensee.slnx
+dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror
+dotnet format Lensee.slnx --verify-no-changes --no-restore
+
+# 2. Recreate root JavaScript dependencies from the lockfile, then run guards.
+npm ci
+npm run check
+node --check frontend/app.js
+
+# 3. Build deterministic local frontend config and prove it did not change tracked output.
+$env:LENSEE_API_BASE_URL = "http://localhost:5000"
+try {
+    npm --prefix frontend run build
+} finally {
+    Remove-Item Env:LENSEE_API_BASE_URL -ErrorAction SilentlyContinue
+}
+git diff --exit-code -- frontend/config.js
+
+# 4. Final candidate-integrity checks.
+git diff --check
+git diff --exit-code
+git diff --cached --exit-code
+```
+
+**Failure handling:** capture the failing command and candidate SHA in the evidence register. Do not run `dotnet format` without `--verify-no-changes`, `npm update`, `npm install`, `git restore`, or a dependency upgrade as a corrective shortcut. Investigate and commit any legitimate remediation as a new candidate, then rerun the complete sequence.
+
+**Planned evidence:**
+
+| Item | Required result | Candidate SHA | Date/operator | Evidence path/link |
+|---|---|---|---|---|
+| Baseline status and diff checks | No tracked/staged candidate drift; unrelated untracked files recorded | | | |
+| Restore and Release build | Restore succeeds; build has 0 warnings / 0 errors | | | |
+| Format verification | No formatting changes required | | | |
+| Dependency reproducibility | `npm ci` succeeds without lockfile change | | | |
+| Static guards and syntax | Encoding, localization, DOM sink, endpoint boundary, and JS syntax pass | | | |
+| Frontend build | Build succeeds; `frontend/config.js` remains unchanged | | | |
+
 Run these commands sequentially from the repository root:
 
 ```powershell
@@ -313,15 +375,15 @@ npm --prefix frontend run build
 
 Checklist:
 
-- [ ] Restore succeeds without changing locked dependencies unexpectedly.
-- [ ] Release build succeeds with zero warnings/errors.
-- [ ] Formatting verification passes.
-- [ ] Encoding check passes.
-- [ ] Localization check passes.
-- [ ] Unsafe-DOM-sink guard passes.
-- [ ] Endpoint-boundary guard passes.
-- [ ] Frontend JavaScript syntax passes.
-- [ ] Frontend production build succeeds.
+- [~] Restore succeeds without changing locked dependencies unexpectedly.
+- [~] Release build succeeds with zero warnings/errors.
+- [~] Formatting verification passes.
+- [~] Encoding check passes.
+- [~] Localization check passes.
+- [~] Unsafe-DOM-sink guard passes.
+- [~] Endpoint-boundary guard passes.
+- [~] Frontend JavaScript syntax passes.
+- [~] Frontend production build succeeds.
 
 Evidence:
 
