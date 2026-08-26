@@ -138,9 +138,10 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     }
 
     [PostgreSqlIntegrationFact]
-    public async Task CatalogMutationTransaction_RollsBackCatalogAndOutboxTogether()
+    public async Task CatalogMutationTransaction_RollsBackCatalogAuditAndOutboxTogether()
     {
         var brandId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
         await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
         {
             await connection.OpenAsync();
@@ -159,6 +160,17 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
             await Assert.ThrowsAsync<InvalidOperationException>(() => mutation.ExecuteAsync(catalog, async () =>
             {
                 await catalog.SaveChangesAsync();
+                identity.AuditLogs.Add(new AuditLog
+                {
+                    Id = auditId,
+                    EntityType = "Brand",
+                    EntityId = brandId,
+                    Action = "Create",
+                    ActorType = "Integration",
+                    ActorName = "Rollback proof",
+                    CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                });
+                await identity.SaveChangesAsync();
                 shared.OutboxMessages.Add(new OutboxMessage
                 {
                     Id = Guid.NewGuid(),
@@ -177,8 +189,10 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await using var verificationConnection = new NpgsqlConnection(_postgres.GetConnectionString());
         await verificationConnection.OpenAsync();
         await using var verificationCatalog = CreateCatalogContext(verificationConnection);
+        await using var verificationIdentity = CreateIdentityContext(verificationConnection);
         await using var verificationShared = CreateSharedContext(verificationConnection);
         Assert.False(await verificationCatalog.Brands.AnyAsync(brand => brand.Id == brandId));
+        Assert.False(await verificationIdentity.AuditLogs.AnyAsync(audit => audit.Id == auditId));
         Assert.DoesNotContain(await verificationShared.OutboxMessages.ToListAsync(), message => message.EventType == "Catalog.BrandCreated");
     }
 
