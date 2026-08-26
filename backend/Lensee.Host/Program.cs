@@ -487,6 +487,7 @@ app.UseExceptionHandler(errorApp =>
         var (status, title) = exception switch
         {
             DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "The record was changed or removed before your update could be saved."),
+            StockWriteConflictException => (StatusCodes.Status409Conflict, "Inventory changed while your stock write was being processed. Reload and retry."),
             DbUpdateException => (StatusCodes.Status400BadRequest, "The requested database change could not be saved."),
             InvalidOperationException => (StatusCodes.Status400BadRequest, "The request cannot be completed in the current state."),
             _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.")
