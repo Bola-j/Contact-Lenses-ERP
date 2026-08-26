@@ -16,6 +16,7 @@ services:
       Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
       Jwt__Issuer: ${JWT_ISSUER:-Lensee}
       Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
       Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
       Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
       Shopify__LegacyWebhookPathSecret: ${SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET:-}

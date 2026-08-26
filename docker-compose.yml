@@ -31,6 +31,7 @@ services:
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
       Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
       Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
       Shopify__LegacyWebhookPathSecret: ${SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET:-}
@@ -70,6 +71,7 @@ services:
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
     depends_on:
       db:
         condition: service_healthy
