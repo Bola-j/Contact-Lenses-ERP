@@ -1,0 +1,62 @@
+name: lensee-e2e
+
+services:
+  db:
+    container_name: lensee_e2e_db
+    environment:
+      POSTGRES_DB: lensee_e2e
+      POSTGRES_USER: lensee_e2e_user
+      POSTGRES_PASSWORD: ${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
+    ports: !override
+      - "127.0.0.1:${LENSEE_E2E_DB_PORT:-58181}:5432"
+    volumes: !override
+      - lensee_e2e_pgdata:/var/lib/postgresql/data
+
+  lensee.host:
+    container_name: lensee_e2e_api
+    environment:
+      ASPNETCORE_ENVIRONMENT: E2E
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
+      Jwt__Secret: ${LENSEE_E2E_JWT_SECRET:-e2e-only-jwt-secret-not-for-production-2026}
+      Jwt__Issuer: Lensee.E2E
+      Jwt__Audience: Lensee.E2E
+      Cors__AllowedOrigins__0: http://127.0.0.1:${LENSEE_E2E_FRONTEND_PORT:-53001}
+      Cors__AllowedOrigins__1: http://localhost:${LENSEE_E2E_FRONTEND_PORT:-53001}
+      Database__AutoMigrate: "false"
+      Database__BaselineExistingSchema: "false"
+      Shopify__Enabled: "false"
+    ports: !override
+      - "127.0.0.1:${LENSEE_E2E_API_PORT:-55000}:8080"
+    volumes: !override
+      - lensee_e2e_data_protection:/home/app/.aspnet/DataProtection-Keys
+
+  migrator:
+    container_name: lensee_e2e_migrator
+    environment:
+      ASPNETCORE_ENVIRONMENT: E2E
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
+      Jwt__Secret: ${LENSEE_E2E_JWT_SECRET:-e2e-only-jwt-secret-not-for-production-2026}
+      Jwt__Issuer: Lensee.E2E
+      Jwt__Audience: Lensee.E2E
+      Database__AutoMigrate: "false"
+      Database__BaselineExistingSchema: "false"
+      Shopify__Enabled: "false"
+    volumes: !override
+      - lensee_e2e_data_protection:/home/app/.aspnet/DataProtection-Keys
+
+  frontend:
+    container_name: lensee_e2e_web
+    environment:
+      FRONTEND_API_BASE_URL: http://127.0.0.1:${LENSEE_E2E_API_PORT:-55000}
+    ports: !override
+      - "127.0.0.1:${LENSEE_E2E_FRONTEND_PORT:-53001}:80"
+
+networks:
+  default:
+    name: lensee-e2e-network
+
+volumes:
+  lensee_e2e_pgdata:
+    name: lensee-e2e-pgdata
+  lensee_e2e_data_protection:
+    name: lensee-e2e-data-protection

@@ -1,3 +1,4 @@
+using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Catalog.Domain.Events;
 using Lensee.Modules.Catalog.Services;
@@ -69,6 +70,7 @@ public static class CatalogEndpoints
     private static async Task<Results<Created<CategoryResponse>, ValidationProblem, NotFound>> CreateCategoryAsync(
         CategoryRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -94,9 +96,12 @@ public static class CatalogEndpoints
         };
 
         dbContext.Categories.Add(category);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Category", category.Id, "Create", new { category.Name, category.ParentId }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new CategoryCreated(category.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Category", category.Id, "Create", new { category.Name, category.ParentId }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new CategoryCreated(category.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Created($"/api/v1/catalog/categories/{category.Id}", ToResponse(category));
     }
@@ -105,6 +110,7 @@ public static class CatalogEndpoints
         Guid id,
         CategoryRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         CategoryTreeService categoryTreeService,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -141,9 +147,12 @@ public static class CatalogEndpoints
 
         category.Name = InputText.NormalizeSingleLine(request.Name);
         category.ParentId = request.ParentId;
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Category", category.Id, "Update", new { category.Name, category.ParentId }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new CategoryUpdated(category.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Category", category.Id, "Update", new { category.Name, category.ParentId }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new CategoryUpdated(category.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToResponse(category));
     }
@@ -163,6 +172,7 @@ public static class CatalogEndpoints
     private static async Task<Results<Created<BrandResponse>, ValidationProblem>> CreateBrandAsync(
         BrandRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -176,9 +186,12 @@ public static class CatalogEndpoints
 
         var brand = new Brand { Id = Guid.NewGuid(), Name = InputText.NormalizeSingleLine(request.Name), CreatedAt = clock.EgyptNow };
         dbContext.Brands.Add(brand);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Brand", brand.Id, "Create", new { brand.Name }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new BrandCreated(brand.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Brand", brand.Id, "Create", new { brand.Name }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new BrandCreated(brand.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Created($"/api/v1/catalog/brands/{brand.Id}", ToResponse(brand));
     }
@@ -187,6 +200,7 @@ public static class CatalogEndpoints
         Guid id,
         BrandRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -205,9 +219,12 @@ public static class CatalogEndpoints
         }
 
         brand.Name = InputText.NormalizeSingleLine(request.Name);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Brand", brand.Id, "Update", new { brand.Name }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new BrandUpdated(brand.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Brand", brand.Id, "Update", new { brand.Name }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new BrandUpdated(brand.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToResponse(brand));
     }
@@ -279,6 +296,7 @@ public static class CatalogEndpoints
     private static async Task<Results<Created<ProductDetailResponse>, ValidationProblem, NotFound>> CreateProductAsync(
         ProductRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -316,9 +334,12 @@ public static class CatalogEndpoints
         };
 
         dbContext.Products.Add(product);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Product", product.Id, "Create", new { product.Name, product.ProductType }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new ProductCreated(product.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Product", product.Id, "Create", new { product.Name, product.ProductType }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new ProductCreated(product.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Created($"/api/v1/catalog/products/{product.Id}", ToDetailResponse(await LoadProductAsync(dbContext, product.Id, cancellationToken)));
     }
@@ -327,6 +348,7 @@ public static class CatalogEndpoints
         Guid id,
         ProductRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -358,9 +380,12 @@ public static class CatalogEndpoints
         product.ClinicalParams = NormalizeJson(request.ClinicalParams);
         product.ExtendedAttributes = NormalizeJson(request.ExtendedAttributes);
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Product", product.Id, "Update", new { product.Name, product.ProductType }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new ProductUpdated(product.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Product", product.Id, "Update", new { product.Name, product.ProductType }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new ProductUpdated(product.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToDetailResponse(await LoadProductAsync(dbContext, product.Id, cancellationToken)));
     }
@@ -368,25 +393,28 @@ public static class CatalogEndpoints
     private static Task<Results<Ok<ProductDetailResponse>, NotFound>> DeactivateProductAsync(
         Guid id,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
         CancellationToken cancellationToken) =>
-        SetProductActiveStateAsync(id, false, dbContext, clock, auditLogWriter, eventPublisher, cancellationToken);
+        SetProductActiveStateAsync(id, false, dbContext, catalogMutationTransaction, clock, auditLogWriter, eventPublisher, cancellationToken);
 
     private static Task<Results<Ok<ProductDetailResponse>, NotFound>> ReactivateProductAsync(
         Guid id,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
         CancellationToken cancellationToken) =>
-        SetProductActiveStateAsync(id, true, dbContext, clock, auditLogWriter, eventPublisher, cancellationToken);
+        SetProductActiveStateAsync(id, true, dbContext, catalogMutationTransaction, clock, auditLogWriter, eventPublisher, cancellationToken);
 
     private static async Task<Results<Created<SkuResponse>, ValidationProblem, Conflict, NotFound>> CreateSkuAsync(
         Guid productId,
         SkuRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         SkuCodeGenerator skuCodeGenerator,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -428,9 +456,12 @@ public static class CatalogEndpoints
         };
 
         dbContext.Skus.Add(sku);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Sku", sku.Id, "Create", new { sku.SkuCode, sku.ProductId }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new SkuCreated(sku.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Sku", sku.Id, "Create", new { sku.SkuCode, sku.ProductId }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new SkuCreated(sku.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Created($"/api/v1/catalog/skus/{sku.Id}", ToResponse(sku));
     }
@@ -439,6 +470,7 @@ public static class CatalogEndpoints
         Guid id,
         SkuRequest request,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         SkuCodeGenerator skuCodeGenerator,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -475,9 +507,12 @@ public static class CatalogEndpoints
         sku.Size = InputText.NormalizeOptionalSingleLine(request.Size);
         sku.Barcode = InputText.NormalizeOptionalSingleLine(request.Barcode);
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Sku", sku.Id, "Update", new { sku.SkuCode }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(new SkuUpdated(sku.Id, clock.EgyptNow), cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Sku", sku.Id, "Update", new { sku.SkuCode }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(new SkuUpdated(sku.Id, clock.EgyptNow), cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToResponse(sku));
     }
@@ -485,25 +520,28 @@ public static class CatalogEndpoints
     private static Task<Results<Ok<SkuResponse>, NotFound>> DeactivateSkuAsync(
         Guid id,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
         CancellationToken cancellationToken) =>
-        SetSkuActiveStateAsync(id, false, dbContext, clock, auditLogWriter, eventPublisher, cancellationToken);
+        SetSkuActiveStateAsync(id, false, dbContext, catalogMutationTransaction, clock, auditLogWriter, eventPublisher, cancellationToken);
 
     private static Task<Results<Ok<SkuResponse>, NotFound>> ReactivateSkuAsync(
         Guid id,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
         CancellationToken cancellationToken) =>
-        SetSkuActiveStateAsync(id, true, dbContext, clock, auditLogWriter, eventPublisher, cancellationToken);
+        SetSkuActiveStateAsync(id, true, dbContext, catalogMutationTransaction, clock, auditLogWriter, eventPublisher, cancellationToken);
 
     private static async Task<Results<Ok<ProductDetailResponse>, NotFound>> SetProductActiveStateAsync(
         Guid id,
         bool isActive,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -517,11 +555,14 @@ public static class CatalogEndpoints
 
         product.IsActive = isActive;
         product.DeletedAt = isActive ? null : clock.EgyptNow;
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Product", product.Id, isActive ? "Reactivate" : "Deactivate", new { product.IsActive }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(
-            isActive ? new ProductReactivated(product.Id, clock.EgyptNow) : new ProductDeactivated(product.Id, clock.EgyptNow),
-            cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Product", product.Id, isActive ? "Reactivate" : "Deactivate", new { product.IsActive }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(
+                isActive ? new ProductReactivated(product.Id, clock.EgyptNow) : new ProductDeactivated(product.Id, clock.EgyptNow),
+                cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToDetailResponse(await LoadProductAsync(dbContext, product.Id, cancellationToken)));
     }
@@ -530,6 +571,7 @@ public static class CatalogEndpoints
         Guid id,
         bool isActive,
         CatalogDbContext dbContext,
+        CatalogMutationTransaction catalogMutationTransaction,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         ICatalogEventPublisher eventPublisher,
@@ -543,11 +585,14 @@ public static class CatalogEndpoints
 
         sku.IsActive = isActive;
         sku.DeletedAt = isActive ? null : clock.EgyptNow;
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await auditLogWriter.WriteAsync("Sku", sku.Id, isActive ? "Reactivate" : "Deactivate", new { sku.IsActive }, cancellationToken: cancellationToken);
-        await eventPublisher.PublishAsync(
-            isActive ? new SkuReactivated(sku.Id, clock.EgyptNow) : new SkuDeactivated(sku.Id, clock.EgyptNow),
-            cancellationToken);
+        await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await auditLogWriter.WriteAsync("Sku", sku.Id, isActive ? "Reactivate" : "Deactivate", new { sku.IsActive }, cancellationToken: cancellationToken);
+            await eventPublisher.PublishAsync(
+                isActive ? new SkuReactivated(sku.Id, clock.EgyptNow) : new SkuDeactivated(sku.Id, clock.EgyptNow),
+                cancellationToken);
+        }, cancellationToken);
 
         return TypedResults.Ok(ToResponse(sku));
     }

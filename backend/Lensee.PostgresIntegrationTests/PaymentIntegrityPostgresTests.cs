@@ -1,3 +1,6 @@
+using Lensee.Host.Infrastructure;
+using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Data;
@@ -26,6 +29,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
             command.CommandText = """
                 create extension if not exists "uuid-ossp";
                 create schema if not exists shared;
+                create schema if not exists catalog;
+                create schema if not exists identity;
                 create schema if not exists payments;
                 create schema if not exists operations;
                 """;
@@ -33,9 +38,13 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         }
 
         await using var shared = CreateSharedContext(connection);
+        await using var catalog = CreateCatalogContext(connection);
+        await using var identity = CreateIdentityContext(connection);
         await using var payments = CreatePaymentsContext(connection);
         await using var operations = CreateOperationsContext(connection);
         await shared.Database.MigrateAsync();
+        await catalog.Database.MigrateAsync();
+        await identity.Database.MigrateAsync();
         await payments.Database.MigrateAsync();
         await operations.Database.MigrateAsync();
     }
@@ -128,8 +137,73 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Assert.Contains("20260825090000_AddOperationCorrections", migrations);
     }
 
+    [PostgreSqlIntegrationFact]
+    public async Task CatalogMutationTransaction_RollsBackCatalogAuditAndOutboxTogether()
+    {
+        var brandId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
+        await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var catalog = CreateCatalogContext(connection);
+            await using var identity = CreateIdentityContext(connection);
+            await using var shared = CreateSharedContext(connection);
+            var mutation = new CatalogMutationTransaction(identity, shared);
+
+            catalog.Brands.Add(new Brand
+            {
+                Id = brandId,
+                Name = "Rollback proof brand",
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => mutation.ExecuteAsync(catalog, async () =>
+            {
+                await catalog.SaveChangesAsync();
+                identity.AuditLogs.Add(new AuditLog
+                {
+                    Id = auditId,
+                    EntityType = "Brand",
+                    EntityId = brandId,
+                    Action = "Create",
+                    ActorType = "Integration",
+                    ActorName = "Rollback proof",
+                    CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                });
+                await identity.SaveChangesAsync();
+                shared.OutboxMessages.Add(new OutboxMessage
+                {
+                    Id = Guid.NewGuid(),
+                    EventType = "Catalog.BrandCreated",
+                    Payload = "{}",
+                    Status = "Pending",
+                    Attempts = 0,
+                    OccurredAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified),
+                    NextAttemptAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                });
+                await shared.SaveChangesAsync();
+                throw new InvalidOperationException("Injected catalog mutation failure.");
+            }, CancellationToken.None));
+        }
+
+        await using var verificationConnection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await verificationConnection.OpenAsync();
+        await using var verificationCatalog = CreateCatalogContext(verificationConnection);
+        await using var verificationIdentity = CreateIdentityContext(verificationConnection);
+        await using var verificationShared = CreateSharedContext(verificationConnection);
+        Assert.False(await verificationCatalog.Brands.AnyAsync(brand => brand.Id == brandId));
+        Assert.False(await verificationIdentity.AuditLogs.AnyAsync(audit => audit.Id == auditId));
+        Assert.DoesNotContain(await verificationShared.OutboxMessages.ToListAsync(), message => message.EventType == "Catalog.BrandCreated");
+    }
+
     private static SharedDbContext CreateSharedContext(NpgsqlConnection connection) =>
         new(new DbContextOptionsBuilder<SharedDbContext>().UseNpgsql(connection).Options);
+
+    private static CatalogDbContext CreateCatalogContext(NpgsqlConnection connection) =>
+        new(new DbContextOptionsBuilder<CatalogDbContext>().UseNpgsql(connection).Options);
+
+    private static IdentityDbContext CreateIdentityContext(NpgsqlConnection connection) =>
+        new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connection).Options);
 
     private static PaymentsDbContext CreatePaymentsContext(NpgsqlConnection connection) =>
         new(new DbContextOptionsBuilder<PaymentsDbContext>().UseNpgsql(connection).Options);

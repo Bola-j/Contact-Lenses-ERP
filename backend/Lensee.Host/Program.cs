@@ -19,6 +19,7 @@ using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
@@ -262,6 +263,7 @@ builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
+builder.Services.AddScoped<CatalogMutationTransaction>();
 if (builder.Environment.IsEnvironment("Testing"))
 {
     // Contract fixtures deliberately replace only the context under test.  The
@@ -281,7 +283,6 @@ builder.Services.AddScoped<OperationCorrectionService>();
 builder.Services.AddScoped<OutboxOperationsService>();
 builder.Services.AddScoped<OperationalAlertScheduler>();
 builder.Services.AddScoped<IAuthorizationHandler, OnlineIntakeAuthorizationHandler>();
-builder.Services.AddDataProtection();
 builder.Services.AddSingleton<NavigationReferenceService>();
 if (!builder.Environment.IsEnvironment("Testing"))
 {
@@ -317,7 +318,16 @@ var jwtSecret = builder.Configuration["Jwt:Secret"]
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "Lensee";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "Lensee.App";
 
-ValidateProductionConfiguration(builder.Environment, connectionString, jwtSecret);
+ValidateProductionConfiguration(builder.Environment, builder.Configuration, connectionString, jwtSecret);
+
+var dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("Lensee");
+if (builder.Environment.IsProduction())
+{
+    var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"]!;
+    Directory.CreateDirectory(keyRingPath);
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+}
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -487,6 +497,7 @@ app.UseExceptionHandler(errorApp =>
         var (status, title) = exception switch
         {
             DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "The record was changed or removed before your update could be saved."),
+            StockWriteConflictException => (StatusCodes.Status409Conflict, "Inventory changed while your stock write was being processed. Reload and retry."),
             DbUpdateException => (StatusCodes.Status400BadRequest, "The requested database change could not be saved."),
             InvalidOperationException => (StatusCodes.Status400BadRequest, "The request cannot be completed in the current state."),
             _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.")
@@ -903,7 +914,7 @@ static Task WriteHealthResponseAsync(HttpContext context, Microsoft.Extensions.D
     return context.Response.WriteAsync(JsonSerializer.Serialize(payload));
 }
 
-static void ValidateProductionConfiguration(IHostEnvironment environment, string connectionString, string jwtSecret)
+static void ValidateProductionConfiguration(IHostEnvironment environment, IConfiguration configuration, string connectionString, string jwtSecret)
 {
     if (!environment.IsProduction())
     {
@@ -933,6 +944,24 @@ static void ValidateProductionConfiguration(IHostEnvironment environment, string
     if (weakConnectionMarkers.Any(marker => connectionString.Contains(marker, StringComparison.OrdinalIgnoreCase)))
     {
         throw new InvalidOperationException("Production database connection string contains a development placeholder password.");
+    }
+
+    var keyRingPath = configuration["DataProtection:KeyRingPath"];
+    if (string.IsNullOrWhiteSpace(keyRingPath) || !Path.IsPathFullyQualified(keyRingPath))
+    {
+        throw new InvalidOperationException("Production DataProtection:KeyRingPath must be an absolute path backed by durable storage.");
+    }
+
+    var allowedOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+        ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
+        .ToArray()
+        ?? [];
+    if (allowedOrigins.Length == 0 || allowedOrigins.Any(origin =>
+            !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !string.IsNullOrEmpty(uri.PathAndQuery.Trim('/'))))
+    {
+        throw new InvalidOperationException("Production Cors:AllowedOrigins must contain one or more exact HTTPS origins without paths.");
     }
 }
 

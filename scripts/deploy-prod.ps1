@@ -1,22 +1,93 @@
 param(
-    [switch]$SeedLocations,
-    [switch]$SeedUsers,
-    [switch]$SeedLenses,
-    [switch]$SkipMigrations
+    [ValidatePattern("^[a-z0-9][a-z0-9_-]*$")]
+    [string]$ProjectName = "lenseeproduction",
+    [string]$EnvFile = ".env",
+    [string[]]$AdditionalComposeFiles = @(),
+    [string]$EvidenceDirectory
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$powerShellCommand = if ($PSVersionTable.PSEdition -eq "Core") { "pwsh" } else { "powershell" }
-Push-Location $repoRoot
 
-try {
-    if (-not (Test-Path -LiteralPath ".env")) {
-        throw "Missing .env. Copy .env.production.example to .env and fill real values first."
+function Invoke-Compose {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    & docker compose @composeFiles @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker compose $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Wait-ForDatabase {
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        & docker compose @composeFiles exec -T db pg_isready -U lensee_user -d lensee | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        Start-Sleep -Seconds 2
     }
 
-    $envLines = Get-Content -LiteralPath ".env" | Where-Object { $_ -match "^\s*[^#][^=]+=" }
+    Invoke-Compose -Arguments @("logs", "--tail", "120", "db")
+    throw "Database did not become ready."
+}
+
+function Wait-ForHealthyService {
+    param([Parameter(Mandatory = $true)][string]$Service)
+
+    for ($attempt = 1; $attempt -le 60; $attempt++) {
+        $containerId = ((@(& docker compose @composeFiles ps -q $Service) -join "").Trim())
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($containerId)) {
+            $health = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $containerId).Trim()
+            if ($LASTEXITCODE -eq 0 -and $health -eq "healthy") {
+                return
+            }
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    Invoke-Compose -Arguments @("logs", "--tail", "120", $Service)
+    throw "$Service did not reach Docker health status 'healthy'."
+}
+
+function Write-ImageEvidence {
+    param([Parameter(Mandatory = $true)][string]$Service)
+
+    $containerId = ((@(& docker compose @composeFiles ps -q $Service) -join "").Trim())
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($containerId)) {
+        Write-Warning "No container ID found for $Service."
+        return
+    }
+
+    [string]$imageId = & docker inspect --format '{{.Image}}' $containerId
+    $imageId = $imageId.Trim()
+    [string]$digest = & docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' $imageId 2>$null
+    $digest = $digest.Trim()
+    Write-Host "$Service image ID: $imageId"
+    Write-Host "$Service image digest: $(if ($digest) { $digest } else { 'not published locally' })"
+}
+
+Push-Location $repoRoot
+try {
+    $resolvedEnvFile = if ([System.IO.Path]::IsPathRooted($EnvFile)) { $EnvFile } else { Join-Path $repoRoot $EnvFile }
+    if (-not (Test-Path -LiteralPath $resolvedEnvFile)) {
+        throw "Missing environment file '$EnvFile'. Copy .env.production.example to .env and fill real values first."
+    }
+
+    $resolvedEnvFile = (Resolve-Path -LiteralPath $resolvedEnvFile).Path
+    $composeFiles = @("--project-name", $ProjectName, "--env-file", $resolvedEnvFile, "-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml")
+    foreach ($composeFile in $AdditionalComposeFiles) {
+        $resolvedComposeFile = if ([System.IO.Path]::IsPathRooted($composeFile)) { $composeFile } else { Join-Path $repoRoot $composeFile }
+        if (-not (Test-Path -LiteralPath $resolvedComposeFile)) {
+            throw "Additional Compose file '$composeFile' was not found."
+        }
+
+        $composeFiles += @("-f", (Resolve-Path -LiteralPath $resolvedComposeFile).Path)
+    }
+
+    $envLines = Get-Content -LiteralPath $resolvedEnvFile | Where-Object { $_ -match "^\s*[^#][^=]+=" }
     $envMap = @{}
     foreach ($line in $envLines) {
         $name, $value = $line -split "=", 2
@@ -29,68 +100,55 @@ try {
         }
     }
 
-    $composeFiles = @("-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml")
+    Invoke-Compose -Arguments @("config", "--quiet")
 
-    if ($SkipMigrations) {
-        $env:DATABASE_AUTO_MIGRATE = "false"
+    Write-Host "Pulling external production images..."
+    Invoke-Compose -Arguments @("pull", "db", "caddy")
+    Write-Host "Building application images..."
+    Invoke-Compose -Arguments @("build", "lensee.host", "migrator", "frontend")
+
+    Write-Host "Starting PostgreSQL only..."
+    Invoke-Compose -Arguments @("up", "-d", "db")
+    Wait-ForDatabase
+
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+        $resolvedEvidenceDirectory = if ([System.IO.Path]::IsPathRooted($EvidenceDirectory)) { $EvidenceDirectory } else { Join-Path $repoRoot $EvidenceDirectory }
+        New-Item -ItemType Directory -Force -Path $resolvedEvidenceDirectory | Out-Null
+        $migrationLog = Join-Path $resolvedEvidenceDirectory "migrator-$ProjectName-$timestamp.log"
+    }
+    else {
+        $migrationLog = Join-Path ([System.IO.Path]::GetTempPath()) "lensee-migrator-$timestamp.log"
+    }
+    Write-Host "Running the explicit migrator. Log: $migrationLog"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & docker compose @composeFiles --profile migrate run --rm --no-deps migrator 2>&1 | Tee-Object -FilePath $migrationLog
+        $migrationExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($migrationExitCode -ne 0) {
+        Write-Host "Migration log retained at: $migrationLog"
+        throw "Migrator failed with exit code $migrationExitCode. API, frontend, and proxy were not started."
     }
 
-    Write-Host "Building and starting production containers..."
-    docker compose @composeFiles up -d --build
+    Write-Host "Starting API after a successful migration..."
+    Invoke-Compose -Arguments @("up", "-d", "lensee.host")
+    Wait-ForHealthyService lensee.host
 
-    Write-Host "Waiting for database..."
-    for ($i = 1; $i -le 30; $i++) {
-        docker compose @composeFiles exec -T db pg_isready -U lensee_user -d lensee | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            break
-        }
+    Write-Host "Starting frontend, then proxy..."
+    Invoke-Compose -Arguments @("up", "-d", "frontend")
+    Invoke-Compose -Arguments @("up", "-d", "caddy")
 
-        Start-Sleep -Seconds 2
-        if ($i -eq 30) {
-            throw "Database did not become ready."
-        }
+    Write-Host "Production deployment is up. Migration evidence: $migrationLog"
+    Invoke-Compose -Arguments @("ps")
+    foreach ($service in @("db", "lensee.host", "frontend", "caddy")) {
+        Write-ImageEvidence $service
     }
-
-    if (-not $SkipMigrations) {
-        Write-Host "Waiting for API readiness after startup migrations..."
-        for ($i = 1; $i -le 60; $i++) {
-            docker compose @composeFiles exec -T lensee.host bash -lc "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"
-            if ($LASTEXITCODE -eq 0) {
-                break
-            }
-
-            Start-Sleep -Seconds 2
-            if ($i -eq 60) {
-                docker compose @composeFiles logs --tail 120 lensee.host
-                throw "API did not become ready after startup migrations."
-            }
-        }
-    }
-
-    if ($SeedLocations) {
-        Write-Host "Seeding locations..."
-        Get-Content ".\database\seed-locations.sql" -Raw |
-            docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d lensee
-    }
-
-    if ($SeedUsers) {
-        throw "SeedUsers is a local development flow and is not supported by deploy-prod.ps1. Bootstrap production users with scripts/bootstrap-admin.ps1 using a unique password."
-    }
-
-    if ($SeedLenses) {
-        Write-Host "Seeding lens catalog..."
-        $seedUsername = if ($envMap.ContainsKey("SEED_ADMIN_USERNAME") -and $envMap["SEED_ADMIN_USERNAME"]) { $envMap["SEED_ADMIN_USERNAME"] } else { "admin" }
-        $seedPassword = if ($envMap.ContainsKey("SEED_ADMIN_PASSWORD") -and $envMap["SEED_ADMIN_PASSWORD"]) { $envMap["SEED_ADMIN_PASSWORD"] } else { "Admin123!" }
-        & $powerShellCommand -ExecutionPolicy Bypass -File ".\scripts\seed-lenses.ps1" -ApiBaseUrl $envMap["FRONTEND_API_BASE_URL"] -Username $seedUsername -Password $seedPassword
-        if ($LASTEXITCODE -ne 0) {
-            throw "Seed lenses script failed."
-        }
-    }
-
-    Write-Host "Production deployment is up."
-    docker compose @composeFiles ps
 }
 finally {
     Pop-Location
 }
-

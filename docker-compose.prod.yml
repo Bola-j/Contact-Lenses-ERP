@@ -16,6 +16,7 @@ services:
       Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
       Jwt__Issuer: ${JWT_ISSUER:-Lensee}
       Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
       Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
       Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
       Shopify__LegacyWebhookPathSecret: ${SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET:-}
@@ -33,6 +34,18 @@ services:
       RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
+
+  migrator:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:?DB_PASSWORD is required}
+      Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
+      Jwt__Issuer: ${JWT_ISSUER:-Lensee}
+      Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
+      Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
+      Database__AutoMigrate: "false"
+      Database__BaselineExistingSchema: "false"
 
   frontend:
     restart: always

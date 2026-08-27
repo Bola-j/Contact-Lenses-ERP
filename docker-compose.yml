@@ -31,6 +31,7 @@ services:
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
       Shopify__Enabled: ${SHOPIFY_ENABLED:-false}
       Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
       Shopify__LegacyWebhookPathSecret: ${SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET:-}
@@ -52,6 +53,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/ready | grep -q Healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     ports:
       - "5000:8080"
     volumes:
@@ -70,9 +77,12 @@ services:
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
+      DataProtection__KeyRingPath: /home/app/.aspnet/DataProtection-Keys
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - data_protection:/home/app/.aspnet/DataProtection-Keys
 
   frontend:
     build:

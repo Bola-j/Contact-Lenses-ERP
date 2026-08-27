@@ -619,26 +619,29 @@ public sealed class StockLedgerService
             return;
         }
 
-        var updatedRows = await _dbContext.StockBalances
-            .Where(balance =>
-                balance.LocationId == locationId &&
-                balance.SkuId == skuId &&
-                balance.AvailableQty >= quantity)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(balance => balance.AvailableQty, balance => balance.AvailableQty - quantity)
-                    .SetProperty(balance => balance.ReservedInWarehouseQty, balance => balance.ReservedInWarehouseQty + quantity)
-                    .SetProperty(balance => balance.RowVersion, balance => balance.RowVersion + 1)
-                    .SetProperty(balance => balance.LastUpdated, now),
-                cancellationToken);
-        if (updatedRows == 0)
+        await ExecuteRelationalWriteAsync(async () =>
         {
-            throw new InvalidOperationException("Available stock is insufficient.");
-        }
+            var updatedRows = await _dbContext.StockBalances
+                .Where(balance =>
+                    balance.LocationId == locationId &&
+                    balance.SkuId == skuId &&
+                    balance.AvailableQty >= quantity)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(balance => balance.AvailableQty, balance => balance.AvailableQty - quantity)
+                        .SetProperty(balance => balance.ReservedInWarehouseQty, balance => balance.ReservedInWarehouseQty + quantity)
+                        .SetProperty(balance => balance.RowVersion, balance => balance.RowVersion + 1)
+                        .SetProperty(balance => balance.LastUpdated, now),
+                    cancellationToken);
+            if (updatedRows == 0)
+            {
+                throw new StockWriteConflictException();
+            }
 
-        await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, userId, referenceOperationId, now);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+            await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, userId, referenceOperationId, now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
     }
 
     public async Task<IReadOnlyList<BatchAllocation>> ReserveInWarehouseFefoAsync(
@@ -848,26 +851,29 @@ public sealed class StockLedgerService
             return;
         }
 
-        var updatedRows = await _dbContext.StockBalances
-            .Where(balance =>
-                balance.LocationId == locationId &&
-                balance.SkuId == skuId &&
-                balance.AvailableQty >= quantity)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(balance => balance.AvailableQty, balance => balance.AvailableQty - quantity)
-                    .SetProperty(balance => balance.ReservedWithRepQty, balance => balance.ReservedWithRepQty + quantity)
-                    .SetProperty(balance => balance.RowVersion, balance => balance.RowVersion + 1)
-                    .SetProperty(balance => balance.LastUpdated, now),
-                cancellationToken);
-        if (updatedRows == 0)
+        await ExecuteRelationalWriteAsync(async () =>
         {
-            throw new InvalidOperationException("Available stock is insufficient.");
-        }
+            var updatedRows = await _dbContext.StockBalances
+                .Where(balance =>
+                    balance.LocationId == locationId &&
+                    balance.SkuId == skuId &&
+                    balance.AvailableQty >= quantity)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(balance => balance.AvailableQty, balance => balance.AvailableQty - quantity)
+                        .SetProperty(balance => balance.ReservedWithRepQty, balance => balance.ReservedWithRepQty + quantity)
+                        .SetProperty(balance => balance.RowVersion, balance => balance.RowVersion + 1)
+                        .SetProperty(balance => balance.LastUpdated, now),
+                    cancellationToken);
+            if (updatedRows == 0)
+            {
+                throw new StockWriteConflictException();
+            }
 
-        await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, userId, referenceOperationId, now);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+            await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, userId, referenceOperationId, now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
     }
 
     public async Task ReleaseWithRepAsync(Guid locationId, Guid skuId, int quantity, Guid userId, Guid? referenceOperationId = null, CancellationToken cancellationToken = default)
@@ -963,6 +969,27 @@ public sealed class StockLedgerService
         if (trackedBalance is not null)
         {
             await trackedBalance.ReloadAsync(cancellationToken);
+        }
+    }
+
+    private async Task ExecuteRelationalWriteAsync(Func<Task> action, CancellationToken cancellationToken)
+    {
+        if (_dbContext.Database.CurrentTransaction is not null)
+        {
+            await action();
+            return;
+        }
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            await action();
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
         }
     }
 
