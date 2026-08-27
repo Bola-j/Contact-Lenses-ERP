@@ -152,6 +152,18 @@ Pass criteria:
 - [x] No secrets or generated test artifacts.
 - [x] Every behavior change has a corresponding test/evidence item; Docker-gated items are explicitly deferred to Phase 4 rather than claimed as passed.
 
+### 0.3 Current isolated certification execution (2026-08-28)
+
+Candidate runtime work is on review branch `certification/phase0-3-evidence`; the executable candidate at this record is `02024bf`. Evidence is ignored locally under `artifacts/certification/` and contains no `.env` file, secret, or database dump.
+
+- [x] `20260828-001259`: isolated deployment success ran twice; direct and Caddy `/ready` both returned `Healthy`; `Database__AutoMigrate=false`; PostgreSQL schema/migration fingerprints were unchanged on the second run.
+- [x] `failure-direct-check`: the same deployment script, with a dedicated failure-only overlay, retained the migrator log, exited `73`, and did not start API/frontend/Caddy.
+- [x] `20260828-001259`: Production refusal, two E2E resets, synthetic-role authentication, and the eight-user API workload passed. The workload recorded 924 requests, 0 failures, p95 21 ms, no readiness failures, no restarts, and no OOM kill.
+- [x] E2E CSP was corrected in `02024bf`: a browser reproduction now reaches `http://127.0.0.1:55000`, and invalid credentials return the expected application error instead of a CSP/network error.
+- [~] Repeat the complete Phase 0-3 runner after `02024bf` to obtain one successful artifact set that also contains the final full Playwright role matrix. Do not mark the Phase 1 runtime gates complete from partial or pre-fix artifacts.
+- [~] Phase 4-10 static/PostgreSQL/image/recovery evidence must be rerun for the final candidate. Historical local evidence is reference only, not final certification.
+- [~] VPS and production-only gates remain operator-run: live backup/restore, TLS, maintenance-window deployment/migration, and staged live load testing.
+
 ## Phase 1 — Repair deployment and E2E tooling
 
 ### 1.0 Implementation state
