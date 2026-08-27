@@ -102,7 +102,7 @@ try {
     $imageIdentity = & docker image inspect --format 'id={{.Id}}`ndigest={{index .RepoDigests 0}}' $imageTag
     if ($LASTEXITCODE -ne 0) { throw "Could not inspect certification image $imageTag." }
     $imageIdentity | Set-Content -LiteralPath (Join-Path $evidenceDirectory "image-identity.txt")
-    Invoke-Logged -Name "image-runtime-policy" -Command { docker run --rm --entrypoint /bin/sh $imageTag -ec 'test "$(id -u)" -ne 0; test -f /usr/share/zoneinfo/Africa/Cairo' }
+    Invoke-Logged -Name "image-runtime-policy" -Command { docker run --rm --entrypoint /bin/sh $imageTag -ec 'id -u | grep -Eq "^[1-9][0-9]*$"; test -f /usr/share/zoneinfo/Africa/Cairo' }
 
     $trivy = Get-Command trivy -ErrorAction SilentlyContinue
     if ($null -ne $trivy) {
