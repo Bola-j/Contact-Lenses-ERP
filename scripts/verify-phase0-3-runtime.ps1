@@ -172,10 +172,25 @@ function Assert-Ready {
         throw "Direct API readiness was '$($direct.status)', not Healthy."
     }
 
-    $proxied = Invoke-WebRequest "http://127.0.0.1:$CaddyPort/ready" -Headers @{ Host = $certificationHost } -UseBasicParsing -TimeoutSec 10
-    $proxiedBody = $proxied.Content | ConvertFrom-Json
-    if ($proxied.StatusCode -ne 200 -or $proxiedBody.status -ne "Healthy") {
-        throw "Caddy readiness did not return HTTP 200 / Healthy."
+    $caddyReady = $false
+    $lastCaddyError = $null
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        try {
+            $proxied = Invoke-WebRequest "http://127.0.0.1:$CaddyPort/ready" -Headers @{ Host = $certificationHost } -UseBasicParsing -TimeoutSec 2
+            $proxiedBody = $proxied.Content | ConvertFrom-Json
+            if ($proxied.StatusCode -eq 200 -and $proxiedBody.status -eq "Healthy") {
+                $caddyReady = $true
+                break
+            }
+            $lastCaddyError = "HTTP $($proxied.StatusCode) / $($proxiedBody.status)"
+        }
+        catch {
+            $lastCaddyError = $_.Exception.Message
+        }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $caddyReady) {
+        throw "Caddy readiness did not return HTTP 200 / Healthy within 20 seconds: $lastCaddyError"
     }
 
     "direct=Healthy; caddy=Healthy" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "readiness.txt")
