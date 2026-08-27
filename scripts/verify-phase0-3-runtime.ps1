@@ -159,7 +159,9 @@ function Get-DatabaseFingerprint {
         [Parameter(Mandatory = $true)][string]$EnvFile
     )
 
-    $schemaHash = Invoke-CertificationCompose -Project $Project -EnvFile $EnvFile -Arguments @("exec", "-T", "db", "sh", "-c", "pg_dump -U lensee_user -d lensee --schema-only | sha256sum")
+    # PostgreSQL 17 emits a randomized \restrict/\unrestrict pair in every pg_dump.
+    # Remove only those dump-session directives so the fingerprint measures schema state.
+    $schemaHash = Invoke-CertificationCompose -Project $Project -EnvFile $EnvFile -Arguments @("exec", "-T", "db", "sh", "-c", "pg_dump -U lensee_user -d lensee --schema-only | sed '/^\\restrict /d; /^\\unrestrict /d' | sha256sum")
     $migrationHistory = Invoke-CertificationCompose -Project $Project -EnvFile $EnvFile -Arguments @("exec", "-T", "db", "psql", "-At", "-U", "lensee_user", "-d", "lensee", "-c", "select table_schema from information_schema.tables where table_name = '__EFMigrationsHistory' order by table_schema;")
     return [pscustomobject]@{ SchemaHash = ($schemaHash | Out-String).Trim(); MigrationSchemas = ($migrationHistory | Out-String).Trim() }
 }
