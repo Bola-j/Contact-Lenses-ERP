@@ -88,7 +88,14 @@ try {
 
     Invoke-Logged -Name "npm-ci" -Command { npm ci }
     Invoke-Logged -Name "frontend-guards" -Command { npm run check }
-    Invoke-Logged -Name "frontend-build" -Command { npm run build }
+    $previousFrontendApiBase = $env:LENSEE_API_BASE_URL
+    try {
+        $env:LENSEE_API_BASE_URL = "http://localhost:5000"
+        Invoke-Logged -Name "frontend-build" -Command { npm run vercel:build }
+    }
+    finally {
+        if ($null -eq $previousFrontendApiBase) { Remove-Item Env:LENSEE_API_BASE_URL -ErrorAction SilentlyContinue } else { $env:LENSEE_API_BASE_URL = $previousFrontendApiBase }
+    }
 
     $imageTag = "lensee-api:certification-$($candidateSha.Substring(0, 12))"
     Invoke-Logged -Name "image-build" -Command { docker build --pull --tag $imageTag --file backend/Lensee.Host/Dockerfile . }
