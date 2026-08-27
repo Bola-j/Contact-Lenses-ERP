@@ -99,6 +99,44 @@ jobs:
         if: always()
         run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color
 
+  phase0-3-certification:
+    runs-on: ubuntu-latest
+    needs: build-test-format
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install certification dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run isolated Phase 0-3 certification proof
+        run: pwsh -NoProfile -File scripts/verify-phase0-3-runtime.ps1 -SkipDockerMemoryGate
+
+      - name: Upload certification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phase0-3-certification-evidence
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

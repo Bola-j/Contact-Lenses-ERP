@@ -1,0 +1,33 @@
+services:
+  db:
+    container_name: ${CERT_CONTAINER_PREFIX:?CERT_CONTAINER_PREFIX is required}-db
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${CERT_DB_PORT:-18181}:5432"
+
+  lensee.host:
+    container_name: ${CERT_CONTAINER_PREFIX:?CERT_CONTAINER_PREFIX is required}-api
+    restart: "no"
+    environment:
+      Cors__AllowedOrigins__1: https://certification.local
+    ports: !override
+      - "127.0.0.1:${CERT_API_PORT:-15000}:8080"
+
+  migrator:
+    container_name: ${CERT_CONTAINER_PREFIX:?CERT_CONTAINER_PREFIX is required}-migrator
+
+  frontend:
+    container_name: ${CERT_CONTAINER_PREFIX:?CERT_CONTAINER_PREFIX is required}-web
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${CERT_FRONTEND_PORT:-13001}:80"
+
+  caddy:
+    container_name: ${CERT_CONTAINER_PREFIX:?CERT_CONTAINER_PREFIX is required}-caddy
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${CERT_CADDY_PORT:-18080}:80"
+    volumes: !override
+      - ./deploy/Caddyfile.certification:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config

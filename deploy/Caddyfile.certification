@@ -1,0 +1,6 @@
+http://{$APP_DOMAIN} {
+    @api path /api/* /health /ready /swagger* /openapi*
+    reverse_proxy @api lensee.host:8080
+
+    reverse_proxy frontend:80
+}
