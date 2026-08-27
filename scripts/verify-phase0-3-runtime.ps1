@@ -367,7 +367,9 @@ try {
 
     New-CertificationEnvFile -Path $failureEnv -Prefix $failurePrefix -DbPort 18182 -ApiPort 15001 -FrontendPort 13002 -CaddyPort 18081
     $failure = Invoke-Logged -Name "deploy-injected-migrator-failure" -AllowFailure -Command {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $failureProject -EnvFile $failureEnv -AdditionalComposeFiles @("docker-compose.certification.yml", "docker-compose.certification-failure.yml") -EvidenceDirectory $evidenceDirectory
+        # Pass one explicit comma-delimited value through the child PowerShell process.
+        # deploy-prod.ps1 normalizes it to the two overlay files.
+        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $failureProject -EnvFile $failureEnv -AdditionalComposeFiles "docker-compose.certification.yml,docker-compose.certification-failure.yml" -EvidenceDirectory $evidenceDirectory
     }
     if ($failure.ExitCode -eq 0 -or -not (Select-String -LiteralPath $failure.LogPath -Pattern "certification-injected-migrator-failure" -Quiet)) {
         throw "Injected migration failure was not surfaced by deployment evidence."
