@@ -3,10 +3,14 @@ name: lensee-e2e
 services:
   db:
     container_name: lensee_e2e_db
+    cpus: "0.75"
+    mem_limit: 768m
     environment:
       POSTGRES_DB: lensee_e2e
       POSTGRES_USER: lensee_e2e_user
       POSTGRES_PASSWORD: ${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lensee_e2e_user -d lensee_e2e"]
     ports: !override
       - "127.0.0.1:${LENSEE_E2E_DB_PORT:-58181}:5432"
     volumes: !override
@@ -14,6 +18,8 @@ services:
 
   lensee.host:
     container_name: lensee_e2e_api
+    cpus: "1.00"
+    mem_limit: 1024m
     environment:
       ASPNETCORE_ENVIRONMENT: E2E
       ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
@@ -32,6 +38,8 @@ services:
 
   migrator:
     container_name: lensee_e2e_migrator
+    cpus: "0.75"
+    mem_limit: 1024m
     environment:
       ASPNETCORE_ENVIRONMENT: E2E
       ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
@@ -46,6 +54,8 @@ services:
 
   frontend:
     container_name: lensee_e2e_web
+    cpus: "0.10"
+    mem_limit: 128m
     environment:
       FRONTEND_API_BASE_URL: http://127.0.0.1:${LENSEE_E2E_API_PORT:-55000}
     ports: !override

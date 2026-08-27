@@ -42,6 +42,18 @@ function Invoke-E2ECompose {
     }
 }
 
+function Invoke-E2ESql {
+    param(
+        [Parameter(Mandatory = $true)][string]$Sql,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $Sql | docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
+    if ($LASTEXITCODE -ne 0) {
+        throw "E2E SQL seed '$Label' failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Wait-ForE2EDatabase {
     for ($attempt = 1; $attempt -le 60; $attempt++) {
         & docker compose @composeFiles exec -T db pg_isready -U lensee_e2e_user -d lensee_e2e | Out-Null
@@ -52,7 +64,7 @@ function Wait-ForE2EDatabase {
         Start-Sleep -Seconds 1
     }
 
-    Invoke-E2ECompose logs --tail 120 db
+    Invoke-E2ECompose -Arguments @("logs", "--tail", "120", "db")
     throw "E2E PostgreSQL did not become ready in time."
 }
 
@@ -71,7 +83,7 @@ function Wait-ForE2EApi {
         Start-Sleep -Seconds 1
     }
 
-    Invoke-E2ECompose logs --tail 120 lensee.host
+    Invoke-E2ECompose -Arguments @("logs", "--tail", "120", "lensee.host")
     throw "E2E API did not become ready in time."
 }
 
@@ -85,32 +97,31 @@ try {
     Write-Host "E2E target database: lensee_e2e (volume: $databaseVolume)"
     Write-Host "E2E target Data Protection volume: $dataProtectionVolume"
     Write-Host "E2E target API: $apiUrl; frontend: $frontendUrl"
-    Invoke-E2ECompose config --quiet
+    Invoke-E2ECompose -Arguments @("config", "--quiet")
 
     Write-Host "Resetting only the dedicated E2E Compose project..."
-    Invoke-E2ECompose down --volumes --remove-orphans
-    Invoke-E2ECompose build lensee.host migrator frontend
-    Invoke-E2ECompose up -d db
+    Invoke-E2ECompose -Arguments @("down", "--volumes", "--remove-orphans")
+    Invoke-E2ECompose -Arguments @("build", "lensee.host", "migrator", "frontend")
+    Invoke-E2ECompose -Arguments @("up", "-d", "db")
     Wait-ForE2EDatabase
 
     Write-Host "Applying migrations with the dedicated one-shot migrator..."
-    Invoke-E2ECompose --profile migrate run --rm --no-deps migrator
+    Invoke-E2ECompose -Arguments @("--profile", "migrate", "run", "--rm", "--no-deps", "migrator")
 
     Write-Host "Starting the isolated API and frontend..."
-    Invoke-E2ECompose up -d lensee.host frontend
+    Invoke-E2ECompose -Arguments @("up", "-d", "lensee.host", "frontend")
     Wait-ForE2EApi
 
     Write-Host "Applying deterministic shared and E2E-only seed data..."
-    Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-locations.sql") |
-        docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
+    Invoke-E2ESql -Sql (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-locations.sql")) -Label "locations"
 
     $sharedSeedSql = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-dev.sql")
     $sharedSeedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $sharedSeedSql
-    $sharedSeedSql | docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
+    Invoke-E2ESql -Sql $sharedSeedSql -Label "shared development data"
 
     $e2eSeedSql = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-e2e.sql")
     $e2eSeedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $e2eSeedSql
-    $e2eSeedSql | docker compose @composeFiles exec -T db psql -v ON_ERROR_STOP=1 -U lensee_e2e_user -d lensee_e2e
+    Invoke-E2ESql -Sql $e2eSeedSql -Label "E2E users"
 
     $frontend = Invoke-WebRequest $frontendUrl -UseBasicParsing -TimeoutSec 10
     if ($frontend.StatusCode -ne 200) {

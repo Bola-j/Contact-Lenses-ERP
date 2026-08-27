@@ -1,0 +1,15 @@
+# Isolated recovery target for synthetic certification backups only.
+# It deliberately reuses the certification overlay's loopback ports, generated
+# credentials, project-scoped network, and project-scoped volumes.
+services:
+  db:
+    container_name: ${RECOVERY_CONTAINER_PREFIX:?RECOVERY_CONTAINER_PREFIX is required}-db
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${RECOVERY_DB_PORT:-18281}:5432"
+
+  lensee.host:
+    container_name: ${RECOVERY_CONTAINER_PREFIX:?RECOVERY_CONTAINER_PREFIX is required}-api
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${RECOVERY_API_PORT:-15200}:8080"

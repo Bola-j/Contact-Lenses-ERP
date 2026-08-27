@@ -124,13 +124,51 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run isolated Phase 0-3 certification proof
-        run: pwsh -NoProfile -File scripts/verify-phase0-3-runtime.ps1 -SkipDockerMemoryGate
+        run: pwsh -NoProfile -File scripts/verify-phase0-3-runtime.ps1
 
       - name: Upload certification evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: phase0-3-certification-evidence
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+
+  phase4-10-certification:
+    runs-on: ubuntu-latest
+    needs: build-test-format
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run isolated Phase 4-10 certification proof
+        run: pwsh -NoProfile -File scripts/verify-phase4-10.ps1 -IncludeRuntime -IncludeBrowser -IncludeRecovery
+
+      - name: Upload Phase 4-10 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phase4-10-certification-evidence
           path: |
             artifacts/certification/**
             playwright-report/**

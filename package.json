@@ -12,6 +12,8 @@
     "e2e:headed:comprehensive": "set \"LENSEE_E2E_SKIP_WEBSERVER=1\"&& set \"LENSEE_E2E_FRONTEND_PORT=3001\"&& set \"LENSEE_E2E_FRONTEND_URL=http://127.0.0.1:3001\"&& playwright test e2e/lensee-ui-comprehensive-headed.spec.js --project=chromium --headed --reporter=line",
     "e2e:ui": "playwright test --ui",
     "e2e:report": "playwright show-report",
+    "workload:e2e": "node scripts/run-workload-test.mjs",
+    "workload:check": "node --check scripts/run-workload-test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:mvp": "playwright test e2e",
     "test:e2e:editing": "playwright test e2e/record-editing-complex.spec.js --project=chromium",
@@ -25,7 +27,7 @@
     "check:localization": "node scripts/check-frontend-localization.mjs",
     "check:dom-sinks": "node scripts/check-unsafe-dom-sinks.mjs",
     "check:endpoint-boundaries": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-endpoint-boundaries.ps1",
-    "check": "npm run check:encoding && npm run check:localization && npm run check:dom-sinks && npm run check:endpoint-boundaries",
+    "check": "npm run check:encoding && npm run check:localization && npm run check:dom-sinks && npm run check:endpoint-boundaries && npm run workload:check",
     "pretest:e2e": "npm run check",
     "prevercel:build": "npm run check"
   },
