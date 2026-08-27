@@ -1,6 +1,8 @@
 param(
     [string]$EvidenceRoot = "artifacts/certification",
-    [switch]$SkipDockerMemoryGate,
+    [ValidateRange(1, 64)][int]$TargetCpuCount = 2,
+    [ValidateRange(1, 64)][int]$TargetMemoryGb = 4,
+    [switch]$SkipDockerCapacityGate,
     [switch]$KeepResources
 )
 
@@ -190,6 +192,108 @@ function Assert-AutoMigrateDisabled {
     $environment | Where-Object { $_ -match '^Database__(AutoMigrate|BaselineExistingSchema)=' }
 }
 
+function Assert-VpsRuntimeResourceEnvelope {
+    param([Parameter(Mandatory = $true)][string]$Prefix)
+
+    $expectedLimits = @(
+        [pscustomobject]@{ Name = "$Prefix-db"; NanoCpus = 750000000L; MemoryBytes = 768MB },
+        [pscustomobject]@{ Name = "$Prefix-api"; NanoCpus = 1000000000L; MemoryBytes = 1GB },
+        [pscustomobject]@{ Name = "$Prefix-web"; NanoCpus = 100000000L; MemoryBytes = 128MB },
+        [pscustomobject]@{ Name = "$Prefix-caddy"; NanoCpus = 150000000L; MemoryBytes = 128MB }
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $containerNames = [System.Collections.Generic.List[string]]::new()
+    $totalNanoCpus = 0L
+    $totalMemoryBytes = 0L
+    foreach ($limit in $expectedLimits) {
+        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}' $limit.Name).Trim()
+        if ($LASTEXITCODE -ne 0 -or $actual -notmatch '^(\d+)\|(\d+)$') {
+            throw "Could not read resource limits for $($limit.Name)."
+        }
+
+        $actualNanoCpus = [int64]$Matches[1]
+        $actualMemoryBytes = [int64]$Matches[2]
+        if ($actualNanoCpus -ne $limit.NanoCpus -or $actualMemoryBytes -ne $limit.MemoryBytes) {
+            throw "$($limit.Name) has CPU=$actualNanoCpus and memory=$actualMemoryBytes; expected CPU=$($limit.NanoCpus) and memory=$($limit.MemoryBytes)."
+        }
+
+        $totalNanoCpus += $actualNanoCpus
+        $totalMemoryBytes += $actualMemoryBytes
+        $containerNames.Add($limit.Name)
+        $lines.Add("$($limit.Name): cpu=$actualNanoCpus; memory=$actualMemoryBytes")
+    }
+
+    if ($totalNanoCpus -gt ($TargetCpuCount * 1000000000L)) {
+        throw "Concurrent runtime CPU caps exceed the $TargetCpuCount-vCPU VPS envelope."
+    }
+    if ($totalMemoryBytes -gt ($TargetMemoryGb * 1000000000L)) {
+        throw "Concurrent runtime memory caps exceed the $TargetMemoryGb-GB VPS envelope."
+    }
+
+    $lines.Insert(0, "target=$TargetCpuCount vCPU / $TargetMemoryGb GB; concurrent-runtime-caps=cpu=$totalNanoCpus; memory=$totalMemoryBytes")
+    $lines | Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-resource-envelope.txt")
+
+    $runtimeState = [System.Collections.Generic.List[string]]::new()
+    foreach ($containerName in $containerNames) {
+        $state = (& docker inspect --format '{{.State.OOMKilled}}|{{.RestartCount}}' $containerName).Trim()
+        if ($LASTEXITCODE -ne 0 -or $state -notmatch '^(true|false)\|(\d+)$') {
+            throw "Could not read runtime state for $containerName."
+        }
+        if ($Matches[1] -eq 'true' -or [int]$Matches[2] -ne 0) {
+            throw "$containerName was OOM-killed or restarted during the VPS-envelope rehearsal: $state."
+        }
+        $runtimeState.Add("${containerName}: oom-killed=$($Matches[1]); restarts=$($Matches[2])")
+    }
+    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' @containerNames |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "docker-stats-runtime.txt")
+    $runtimeState | Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-runtime-state.txt")
+}
+
+function Assert-VpsMigratorResourceLimit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Project,
+        [Parameter(Mandatory = $true)][string]$EnvFile
+    )
+
+    $composeArguments = @("--project-name", $Project, "--env-file", $EnvFile,
+        "-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml",
+        "-f", "docker-compose.certification.yml", "--profile", "migrate", "config", "--format", "json")
+    $config = (& docker compose @composeArguments | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0) { throw "Could not render the VPS-envelope Compose configuration." }
+
+    $migrator = $config.services.PSObject.Properties["migrator"].Value
+    if ($null -eq $migrator -or $migrator.cpus -ne "0.75" -or [int64]$migrator.mem_limit -ne 1GB) {
+        throw "Migrator resource limit does not match the VPS envelope."
+    }
+    "migrator: cpu=$($migrator.cpus); memory=$($migrator.mem_limit)" |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-migrator-resource-limit.txt")
+}
+
+function Assert-E2EWorkloadRuntime {
+    $expectedLimits = @(
+        [pscustomobject]@{ Name = "lensee_e2e_db"; NanoCpus = 750000000L; MemoryBytes = 768MB },
+        [pscustomobject]@{ Name = "lensee_e2e_api"; NanoCpus = 1000000000L; MemoryBytes = 1GB },
+        [pscustomobject]@{ Name = "lensee_e2e_web"; NanoCpus = 100000000L; MemoryBytes = 128MB }
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($limit in $expectedLimits) {
+        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.State.OOMKilled}}|{{.RestartCount}}' $limit.Name).Trim()
+        if ($LASTEXITCODE -ne 0 -or $actual -notmatch '^(\d+)\|(\d+)\|(true|false)\|(\d+)$') {
+            throw "Could not read E2E workload state for $($limit.Name)."
+        }
+        if ([int64]$Matches[1] -ne $limit.NanoCpus -or [int64]$Matches[2] -ne $limit.MemoryBytes -or $Matches[3] -eq 'true' -or [int]$Matches[4] -ne 0) {
+            throw "$($limit.Name) exceeded its workload safety envelope: $actual."
+        }
+        $lines.Add("$($limit.Name): cpu=$($Matches[1]); memory=$($Matches[2]); oom-killed=$($Matches[3]); restarts=$($Matches[4])")
+    }
+
+    $lines | Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-runtime-state.txt")
+    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' lensee_e2e_db lensee_e2e_api lensee_e2e_web |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-docker-stats.txt")
+}
+
 function Invoke-E2ESetup {
     param([Parameter(Mandatory = $true)][string]$Name, [switch]$Production)
 
@@ -214,19 +318,23 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Docker Engine is unavailable." }
     $dockerInfo | Set-Content -LiteralPath (Join-Path $evidenceDirectory "docker-info.txt")
     $memoryBytes = [int64](($dockerInfo -split 'MemoryBytes=')[-1])
-    if (-not $SkipDockerMemoryGate -and $memoryBytes -lt 8GB) {
-        throw "Docker reports $memoryBytes bytes, below the required 8 GiB."
+    $cpuCount = [int](($dockerInfo -split 'CPUs=')[-1] -split ';')[0]
+    $minimumMemoryBytes = [int64]$TargetMemoryGb * 1000000000L
+    if (-not $SkipDockerCapacityGate -and ($memoryBytes -lt $minimumMemoryBytes -or $cpuCount -lt $TargetCpuCount)) {
+        throw "Docker reports $cpuCount CPUs and $memoryBytes bytes; the VPS-envelope rehearsal requires at least $TargetCpuCount CPUs and $TargetMemoryGb GB ($minimumMemoryBytes bytes)."
     }
 
     Invoke-Logged -Name "docker-hello-world" -Command { docker run --rm hello-world } | Out-Null
     $defaultBefore = Write-DefaultStackFingerprint -Name "default-stack-before"
 
     New-CertificationEnvFile -Path $successEnv -Prefix $successPrefix -DbPort 18181 -ApiPort 15000 -FrontendPort 13001 -CaddyPort 18080
+    Assert-VpsMigratorResourceLimit -Project $successProject -EnvFile $successEnv
     Invoke-Logged -Name "deploy-success-first" -Command {
         & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $successProject -EnvFile $successEnv -AdditionalComposeFiles "docker-compose.certification.yml" -EvidenceDirectory $evidenceDirectory
     } | Out-Null
     Assert-Ready -ApiPort 15000 -CaddyPort 18080
     Assert-AutoMigrateDisabled -ContainerName "$successPrefix-api" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "auto-migrate-api.txt")
+    Assert-VpsRuntimeResourceEnvelope -Prefix $successPrefix
     $firstFingerprint = Get-DatabaseFingerprint -Project $successProject -EnvFile $successEnv
     $firstFingerprint | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceDirectory "database-first.json")
 
@@ -269,6 +377,11 @@ try {
         if ($login.StatusCode -ne 200) { throw "Synthetic E2E user $username did not authenticate." }
         "$username=authenticated" | Add-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-authentication.txt")
     }
+
+    Invoke-Logged -Name "e2e-eight-user-workload" -Command {
+        node (Join-Path $repoRoot "scripts/run-workload-test.mjs") --users 8 --duration-seconds 60 --output (Join-Path $evidenceDirectory "e2e-eight-user-workload.json")
+    } | Out-Null
+    Assert-E2EWorkloadRuntime
 
     $previousSkipWebserver = $env:LENSEE_E2E_SKIP_WEBSERVER
     $env:LENSEE_E2E_SKIP_WEBSERVER = "1"

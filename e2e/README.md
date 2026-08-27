@@ -78,3 +78,20 @@ $env:LENSEE_E2E_ONLINE_CLERK_USER = "e2e_online_clerk"
 ```
 
 The default isolated ports are PostgreSQL `58181`, API `55000`, and frontend `53001`, all loopback-only. The suite uses `LENSEE_E2E_API_URL` when set, otherwise `http://127.0.0.1:55000`.
+
+## Workload capacity test
+
+The workload harness uses eight dedicated `e2e_load_01` through `e2e_load_08` accounts and only authenticated read routes. It never creates operations, stock movements, payments, or production data.
+
+```powershell
+npm run e2e:setup
+npm run workload:e2e
+```
+
+The default run simulates eight concurrent sessions for 60 seconds, with 500 ms think time. It records a redacted JSON report under `artifacts/workload/` and fails when readiness drops, any request fails above 1%, or p95 latency exceeds 2 seconds. To inspect a planned run without sending requests:
+
+```powershell
+node scripts/run-workload-test.mjs --users 8 --duration-seconds 60 --dry-run
+```
+
+The default target is the loopback-only E2E API. Any other target, including a VPS, requires both `--allow-live-target` and the environment confirmation `LENSEE_ALLOW_LIVE_WORKLOAD_TEST=I_UNDERSTAND_THIS_HITS_A_LIVE_SYSTEM`, plus a password supplied through `LENSEE_WORKLOAD_PASSWORD`. Do not run a live-target test without a maintenance window and dedicated test accounts.
