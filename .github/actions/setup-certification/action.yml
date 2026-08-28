@@ -1,0 +1,28 @@
+name: Setup certification environment
+description: Install the .NET and Node toolchains plus frontend dependencies for CI jobs.
+
+inputs:
+  playwright:
+    description: Install Chromium and its Linux dependencies.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 8.0.x
+    - name: Setup Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 20
+        cache: npm
+    - name: Install frontend dependencies
+      shell: bash
+      run: npm ci
+    - name: Install Chromium
+      if: inputs.playwright == 'true'
+      shell: bash
+      run: npx playwright install --with-deps chromium
