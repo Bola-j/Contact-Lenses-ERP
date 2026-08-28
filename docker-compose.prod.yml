@@ -1,6 +1,8 @@
 services:
   db:
     restart: always
+    cpus: "0.75"
+    mem_limit: 768m
     environment:
       POSTGRES_DB: lensee
       POSTGRES_USER: lensee_user
@@ -9,6 +11,8 @@ services:
 
   lensee.host:
     restart: always
+    cpus: "1.00"
+    mem_limit: 1024m
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_HTTP_PORTS: 8080
@@ -36,6 +40,8 @@ services:
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
 
   migrator:
+    cpus: "0.75"
+    mem_limit: 1024m
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:?DB_PASSWORD is required}
@@ -49,5 +55,7 @@ services:
 
   frontend:
     restart: always
+    cpus: "0.10"
+    mem_limit: 128m
     environment:
       FRONTEND_API_BASE_URL: ${FRONTEND_API_BASE_URL:?FRONTEND_API_BASE_URL is required}

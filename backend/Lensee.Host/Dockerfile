@@ -3,7 +3,11 @@
 # This stage is used when running from VS in fast mode (Default for Debug configuration)
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS base
 USER root
-RUN apk add --no-cache fontconfig font-noto tzdata \
+# The .NET Alpine image can contain vulnerable base packages between image
+# publications. Upgrade the repository packages before adding runtime tools so
+# the build consumes Alpine's current security fixes.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache fontconfig font-noto tzdata \
     && mkdir -p /home/app/.aspnet/DataProtection-Keys \
     && chown -R $APP_UID:$APP_UID /home/app/.aspnet
 USER $APP_UID

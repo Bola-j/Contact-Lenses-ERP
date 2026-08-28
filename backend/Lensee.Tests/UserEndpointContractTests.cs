@@ -430,7 +430,9 @@ public sealed class UserEndpointContractTests : IClassFixture<UserEndpointFactor
         revoked.AuthorizeAs(LenseeRoles.Admin, userId, LenseePermissions.AuditRead);
         var revokedAccess = await revoked.GetAsync($"/api/v1/navigation-references/{Uri.EscapeDataString(reference)}/resolve");
 
-        var tampered = await owner.GetAsync($"/api/v1/navigation-references/{Uri.EscapeDataString(reference[..^1] + "A")}/resolve");
+        var replacementCharacter = reference[^1] == 'A' ? 'B' : 'A';
+        var tamperedReference = reference[..^1] + replacementCharacter;
+        var tampered = await owner.GetAsync($"/api/v1/navigation-references/{Uri.EscapeDataString(tamperedReference)}/resolve");
 
         Assert.Equal(HttpStatusCode.OK, resolved.StatusCode);
         Assert.Equal("#/operations", resolvedBody!.Route);

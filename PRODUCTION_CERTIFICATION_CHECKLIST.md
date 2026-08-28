@@ -31,7 +31,7 @@ The application has materially stronger transaction, concurrency, migration, con
 Those results are not yet a production certificate because:
 
 1. The implementation candidate through `0514711` is committed locally; PostgreSQL, container, browser, restore, and deployment acceptance evidence must still be completed before certification.
-2. Docker Desktop is now available, but its 7.41 GiB allocation is below the Phase 2 target of 8 GiB; full container, runtime, and browser evidence remains incomplete.
+2. Docker Desktop evidence from 2026-08-26 predates the corrected VPS envelope. Certification must now prove the actual 2-vCPU / 4-GB VPS budget with per-container limits; full container, runtime, and browser evidence remains incomplete.
 3. `scripts/deploy-prod.ps1` has been corrected to run the migrator before promotion, but the production-shaped ordering and idempotence acceptance run remains open.
 4. The Alpine-compatible Docker health check is implemented, but its runtime readiness/failure evidence remains open.
 5. `scripts/e2e-setup.ps1` now targets an isolated project, but the required two-run isolation acceptance is still open.
@@ -59,7 +59,7 @@ Those results are not yet a production certificate because:
 | P0-01 | Critical | No immutable release candidate | Review, commit, and build from a clean tree | Resolved — application candidate `33f1311` committed locally; no push/deployment performed |
 | P0-02 | Critical | Production deployment acceptance is incomplete | Prove DB → migrator → API → frontend/proxy order and idempotence against production-shaped Compose | Open — implementation `83b7975`; acceptance unrun |
 | P0-03 | Critical | Alpine readiness acceptance is incomplete | Prove Docker health transitions and actionable failure handling in the release image | Open — implementation `83b7975`; acceptance unrun |
-| P0-04 | Critical | Docker Desktop allocation is below the Phase 2 target | Allocate at least 8 GiB to Docker Desktop, then rerun the Phase 2 environment-safety runbook before complete Docker/PostgreSQL gates | BLOCKED — Engine and disposable upgrade test pass, but 7.41 GiB is below target on 2026-08-26 |
+| P0-04 | Critical | VPS-envelope capacity acceptance is incomplete | Restart the local certification engine with the 2-vCPU / 4-GB envelope, prove Compose resource caps, then rerun the Phase 2 environment-safety runbook | BLOCKED — the earlier 8-GiB target was superseded; the corrected envelope has not yet been runtime-proved |
 | P0-05 | Critical | E2E isolation acceptance is incomplete | Prove two isolated reset/seed runs leave default-project containers and volumes unchanged | Open — implementation `eb93b99`; acceptance unrun |
 | P0-06 | Critical | Authenticated seeded business-day workflow incomplete | Run all critical role workflows with persisted-state proof | Open |
 | P0-07 | Critical | Backup/restore drill incomplete | Back up, restore to isolation, migrate, reconcile, measure RPO/RTO | Open |
@@ -152,6 +152,18 @@ Pass criteria:
 - [x] No secrets or generated test artifacts.
 - [x] Every behavior change has a corresponding test/evidence item; Docker-gated items are explicitly deferred to Phase 4 rather than claimed as passed.
 
+### 0.3 Current isolated certification execution (2026-08-28)
+
+Candidate runtime work is on review branch `certification/phase0-3-evidence`; the executable candidate at this record is `02024bf`. Evidence is ignored locally under `artifacts/certification/` and contains no `.env` file, secret, or database dump.
+
+- [x] `20260828-001259`: isolated deployment success ran twice; direct and Caddy `/ready` both returned `Healthy`; `Database__AutoMigrate=false`; PostgreSQL schema/migration fingerprints were unchanged on the second run.
+- [x] `failure-direct-check`: the same deployment script, with a dedicated failure-only overlay, retained the migrator log, exited `73`, and did not start API/frontend/Caddy.
+- [x] `20260828-001259`: Production refusal, two E2E resets, synthetic-role authentication, and the eight-user API workload passed. The workload recorded 924 requests, 0 failures, p95 21 ms, no readiness failures, no restarts, and no OOM kill.
+- [x] E2E CSP was corrected in `02024bf`: a browser reproduction now reaches `http://127.0.0.1:55000`, and invalid credentials return the expected application error instead of a CSP/network error.
+- [~] Repeat the complete Phase 0-3 runner after `02024bf` to obtain one successful artifact set that also contains the final full Playwright role matrix. Do not mark the Phase 1 runtime gates complete from partial or pre-fix artifacts.
+- [~] Phase 4-10 static/PostgreSQL/image/recovery evidence must be rerun for the final candidate. Historical local evidence is reference only, not final certification.
+- [~] VPS and production-only gates remain operator-run: live backup/restore, TLS, maintenance-window deployment/migration, and staged live load testing.
+
 ## Phase 1 — Repair deployment and E2E tooling
 
 ### 1.0 Implementation state
@@ -220,6 +232,20 @@ Pass criteria:
 
 ## Phase 2 — Restore the verification environment
 
+### 2.0A VPS-envelope correction (2026-08-27)
+
+The production VPS has **2 vCPUs and 4 GB RAM**. The prior 4-vCPU / 8-GiB local Docker target was therefore removed: it could mask resource exhaustion that would occur on the real VPS.
+
+- [~] `C:\Users\Bola_Gerges\.wslconfig` is set to `processors=2` and `memory=4GB`; this is pending a maintenance-window WSL/Docker restart and `docker info` evidence.
+- [~] Production and certification Compose configurations cap the concurrent runtime at 2 vCPUs and 2 GiB across PostgreSQL, API, frontend, and Caddy. The remaining VPS memory is intentionally left to Linux, Docker, filesystem cache, and process overhead.
+- [~] The migrator has a separate 0.75-vCPU / 1-GiB cap because it runs before the API, not concurrently with the runtime services.
+- [x] `scripts/run-workload-test.mjs` simulates eight concurrent, authenticated, read-only E2E users; it records latency, status/error rate, readiness probes, and a redacted JSON report without using production credentials or mutations. Local isolated execution passed on 2026-08-27; live-VPS capacity evidence remains required.
+- [ ] Record the post-restart Docker CPU/memory report, the running-container cgroup limits, `docker stats --no-stream`, and the deployment/E2E proof for the immutable candidate.
+
+**Workload acceptance:** run the isolated eight-user workload for 60 seconds under the VPS envelope. Require zero readiness failures, error rate at or below 1%, p95 API latency at or below 2 seconds, no unexpected `429`/`5xx` responses, no OOM kill, and no container restart. Increase user count only after the prior stage passes; live-VPS execution requires a maintenance window and dedicated test users.
+
+**Pass criteria:** the isolated certification run completes with the 2-vCPU / 4-GB envelope; no container is OOM-killed or restart-looping; readiness, migrator failure handling, idempotence, and E2E isolation all pass. A larger local Docker allocation is not acceptable as substitute evidence.
+
 ### 2.0 Execution plan and current baseline
 
 **Objective:** establish a Docker-capable, evidence-backed verification environment without disturbing valued local, E2E, or production-like data. Phase 2 authorizes only disposable container checks and read-only inspection; application deployment, database reset, migration rehearsal, and browser testing remain in their later phases.
@@ -234,19 +260,19 @@ Pass criteria:
 
 **Planned sequence:**
 
-1. [~] Start Docker Desktop in Linux-container mode; record Docker Desktop version, engine server version, active context, and its configured allocation of at least 4 CPUs and 8 GiB memory — started and recorded, but memory is below target.
+1. [~] Start Docker Desktop in Linux-container mode with the VPS-matching 2-vCPU / 4-GB envelope; record Docker Desktop version, engine server version, active context, and configured allocation. The local configuration change requires a maintenance-window restart before it is evidence.
 2. [x] Run `docker info`, `docker compose version`, and `docker run --rm hello-world`; record output without secrets.
 3. [x] Inspect default and `lensee-e2e` Compose projects, named volumes, and ports before any stack command. Do not use `docker compose down --volumes` for the default project.
 4. [x] Resolve port conflicts: `8181`, `5000`, and `3001` are intentionally attributed to the pre-existing default stack; E2E ports `58181`, `55000`, and `53001` are free for `lensee-e2e`.
 5. [x] Run one disposable Testcontainers smoke test with `LENSEE_RUN_POSTGRES_TESTS=true` and filter `MigrationUpgradePostgresTests`; record the result, then proceed to the complete Phase 4 suite only after this environment gate passes.
 
-**Execution result (2026-08-26 / Codex):** Docker Desktop was started in the background. The active CLI context was `desktop-linux`; Docker reported Linux containers, client/server `29.4.0`, 16 CPUs, and `7,956,238,336` bytes (7.41 GiB) memory. The resource allocation misses the planned 8 GiB minimum, so Phase 2 remains incomplete even though the disposable container and Testcontainers upgrade smoke test passed. Docker Desktop startup also resumed the pre-existing default stack; it was inspected only and was not reset or otherwise changed by a certification command.
+**Historical execution result (2026-08-26 / Codex):** Docker Desktop was started in the background. The active CLI context was `desktop-linux`; Docker reported Linux containers, client/server `29.4.0`, 16 CPUs, and `7,956,238,336` bytes (7.41 GiB) memory. The disposable container and Testcontainers upgrade smoke test passed. This allocation is not VPS-representative and is retained only as historical evidence; it does not complete Phase 2. Docker Desktop startup also resumed the pre-existing default stack; it was inspected only and was not reset or otherwise changed by a certification command.
 
 | Check | Result | Phase 2 action |
 |---|---|---|
 | Docker Engine | Linux Engine available; client/server `29.4.0`; CLI context `desktop-linux` | Passed — retain Engine evidence. |
 | Docker Compose CLI | `v5.1.1` | Passed. |
-| Host/Docker capacity | Host: 16 logical processors, 15.31 GiB physical memory, 73.59 GiB free on `D:`. Docker: 16 CPUs, 7.41 GiB memory. | **Blocked** — increase Docker allocation to at least 8 GiB before declaring Phase 2 complete. |
+| Host/Docker capacity | Historical: Host: 16 logical processors, 15.31 GiB physical memory, 73.59 GiB free on `D:`. Docker: 16 CPUs, 7.41 GiB memory. | **Superseded / blocked** — this is not the 2-vCPU / 4-GB VPS-envelope proof. |
 | Default project and ports | Pre-existing `lensee_api`, `lensee_db` (healthy), and `lensee_web` were running. Ports `8181`, `5000`, and `3001` were intentionally owned by that stack; no default-project command was run. | Passed — preserved. |
 | E2E project and ports | `lensee-e2e` had no containers or project-labelled volumes; ports `58181`, `55000`, and `53001` were free. | Passed — reserved for later E2E acceptance. |
 | Disposable checks | `docker run --rm hello-world` passed. Filtered `MigrationUpgradePostgresTests` passed 1/1 with `LENSEE_RUN_POSTGRES_TESTS=true`. | Passed — Phase 4 full suite remains required. |
@@ -257,7 +283,7 @@ Pass criteria:
 |---|---|---|
 | Docker Engine | Unreachable at `//./pipe/dockerDesktopLinuxEngine` | Start Docker Desktop; do not claim container verification yet. |
 | Docker Compose CLI | `v5.1.1` | Re-record after Engine startup. |
-| Host capacity | 16 logical processors; 15.31 GiB physical memory; 73.60 GiB free on `D:` | Confirm Docker Desktop allocation is at least 4 CPUs / 8 GiB before testing. |
+| Host capacity | 16 logical processors; 15.31 GiB physical memory; 73.60 GiB free on `D:` | Configure the local certification engine to 2 vCPUs / 4 GB, then verify that envelope after restart before testing. |
 | Default ports | `5000` and `3001` had no listener; `8181` is owned by PID `8112` (`postgres`) | Preserve and identify this PostgreSQL instance before using the default stack. |
 | E2E ports | `58181`, `55000`, and `53001` had no listener | Reserve for the dedicated `lensee-e2e` project. |
 
@@ -290,15 +316,17 @@ Evidence:
 | Item | Result | Date/operator | Evidence path/link |
 |---|---|---|---|
 | Docker Engine/client-server versions | Pass — Linux Engine, client/server `29.4.0`; active CLI context `desktop-linux` | 2026-08-26 / Codex | Local command output: `docker version`, `docker info`, `docker context ls` |
-| Docker Desktop CPU/memory allocation | Blocked — 16 CPUs, 7.41 GiB memory; below 8 GiB phase target | 2026-08-26 / Codex | Local `docker info` output |
+| Docker Desktop CPU/memory allocation | Superseded / blocked — historical 16 CPUs, 7.41 GiB allocation is not the 2-vCPU / 4-GB VPS envelope | 2026-08-26 / Codex | Local `docker info` output |
 | Port/project/volume ownership review | Pass — default stack attributed and preserved; `lensee-e2e` has no containers or labelled volumes; E2E ports free | 2026-08-26 / Codex | Local Compose, volume, and port inspection |
 | Disposable container smoke test | Pass — `hello-world` completed and removed | 2026-08-26 / Codex | Local command output |
 | Testcontainers smoke test | Pass — `MigrationUpgradePostgresTests`: 1 passed, 0 failed, 0 skipped | 2026-08-26 / Codex | Local `dotnet test` output |
 
+| Isolated 8-session workload | Pass: 936 authenticated read-only requests in 60 seconds; 0 errors, p50 7 ms, p95 15 ms, p99 24 ms, maximum 143 ms; 12 readiness probes with 0 failures; API/DB stayed healthy with 0 OOM kills and 0 restarts. Test project only: `lensee-e2e`; default `lensee_*` containers and volumes unchanged. | 2026-08-27 / Codex | `artifacts/workload/local-e2e-8-users-20260827.json`; runtime snapshot from `docker stats` and `docker inspect` |
+
 - [x] Start Docker Desktop in Linux-container mode.
 - [x] Run `docker info` and record client/server versions.
 - [x] Run `docker compose version`.
-- [~] Confirm adequate disk, memory, and CPU — Docker memory is 7.41 GiB, below the 8 GiB target.
+- [~] Restart Docker Desktop during a maintenance window and confirm the 2-vCPU / 4-GB VPS envelope; inspect the production Compose CPU/memory caps before certification.
 - [x] Confirm no stale E2E containers or conflicting ports.
 - [x] Confirm ports `8181`, `5000`, and `3001` are intentionally owned by the pre-existing default stack and preserve them.
 
@@ -762,7 +790,7 @@ Fill one row for every certification execution. Do not mark a gate complete with
 | Release build | `dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror` | `0514711` | 2026-08-26 / Codex | Pass — 0 warnings / 0 errors | Local command output |
 | Unit/contract tests | `dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"` | `33f1311` | 2026-08-26 / Codex | Pass — 164 passed, 0 failed, 0 skipped; rerun not required because `33f1311` changes only PostgreSQL test code | Local command output |
 | PostgreSQL Testcontainers smoke | Filtered `MigrationUpgradePostgresTests` with `LENSEE_RUN_POSTGRES_TESTS=true` | `0514711` | 2026-08-26 / Codex | Pass — 1 passed, 0 failed, 0 skipped; not a substitute for Phase 4 full suite | Local command output |
-| Docker environment smoke | `docker run --rm hello-world` | N/A | 2026-08-26 / Codex | Pass — Linux engine client/server 29.4.0; Docker allocation 7.41 GiB remains below Phase 2 target | Local command output |
+| Docker environment smoke | `docker run --rm hello-world` | N/A | 2026-08-26 / Codex | Historical pass — Linux engine client/server 29.4.0; this was not a 2-vCPU / 4-GB VPS-envelope run | Local command output |
 | Format verification | `dotnet format Lensee.slnx --verify-no-changes --no-restore` | `0514711` | 2026-08-26 / Codex | Fail — existing `ENDOFLINE` CRLF violations; no automatic remediation performed | Local command output |
 | Frontend checks/build | `npm ci`; `npm run check`; `node --check frontend/app.js`; deterministic frontend build | `0514711` | 2026-08-26 / Codex | Pass — checks passed; config content unchanged | Local command output |
 | Dependency review | | | | | |
@@ -784,7 +812,7 @@ Fill one row for every certification execution. Do not mark a gate complete with
 | P0-01 | Critical | Release candidate | Application hardening candidate committed locally at `33f1311` | Codex | Resolved | Does not waive downstream certification gates |
 | P0-02 | Critical | Deployment | Implementation `83b7975` is pending production-shaped ordering/idempotence evidence | | Open | Blocks release |
 | P0-03 | Critical | Runtime | Implementation `83b7975` is pending Alpine Docker-health/failure evidence | | Open | Blocks release |
-| P0-04 | Critical | Test environment | Docker Engine and filtered Testcontainers smoke pass, but 7.41 GiB allocation is below 8 GiB Phase 2 target | | BLOCKED | Blocks complete Docker/PostgreSQL revalidation |
+| P0-04 | Critical | Test environment | Docker Engine and filtered Testcontainers smoke are historical only; 2-vCPU / 4-GB container-capped VPS-envelope proof is pending | | BLOCKED | Blocks complete Docker/PostgreSQL revalidation |
 | P0-05 | Critical | E2E safety | Implementation `eb93b99` is pending two-run default-volume isolation proof | | Open | Blocks seeded acceptance |
 | P1-03 | High | Static validation | Existing CRLF `ENDOLINE` violations fail `dotnet format --verify-no-changes` at `0514711` | | Open | Blocks Phase 3 completion |
 | P0-06 | Critical | Browser acceptance | Critical business-day workflow is incomplete | | Open | Blocks certification |

@@ -1,3 +1,4 @@
 services:
   migrator:
-    command: ["/bin/sh", "-c", "echo certification-injected-migrator-failure >&2; exit 73"]
+    entrypoint: ["/bin/sh", "-c", "echo certification-injected-migrator-failure >&2; exit 73"]
+    command: []

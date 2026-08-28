@@ -11,6 +11,7 @@ playwright-report/
 test-results/
 .playwright/
 artifacts/certification/
+artifacts/workload/
 
 # Rider
 .idea/

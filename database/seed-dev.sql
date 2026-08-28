@@ -3,53 +3,8 @@
 --   all users / 12121212
 
 
-
-
-
-
-alter table catalog.products
-add column if not exists sealed_expiry_duration varchar(50);
-
-alter table catalog.products
-add column if not exists opened_expiry_rate varchar(20);
-
-alter table catalog.products
-add column if not exists opened_expiry_duration varchar(50);
-
-alter table catalog.products
-drop constraint if exists chk_product_type;
-
-update catalog.products
-set product_type = 'Lens'
-where product_type in ('ColoredLens', 'MedicalLens', 'PlainMedical', 'ColoredMedical', 'ContactLens');
-
-update catalog.products
-set product_type = 'Solution'
-where product_type in ('LensSolution', 'CareSolution');
-
-alter table catalog.products
-add constraint chk_product_type check (product_type in ('Lens', 'Solution'));
-
-alter table catalog.products
-drop column if exists opened_expiry_days;
-
-alter table catalog.products
-drop column if exists sealed_expiry_days;
-
-alter table catalog.products
-drop column if exists opened_expiry_duration_value;
-
-alter table catalog.products
-drop column if exists opened_expiry_duration_unit;
-
-alter table catalog.products
-drop column if exists sealed_expiry_duration_value;
-
-alter table catalog.products
-drop column if exists sealed_expiry_duration_unit;
-
-alter table inventory.inventory_batches
-drop column if exists sealed_expiry_days;
+-- Schema changes belong to the one-shot migrator. This seed intentionally
+-- contains data only, so it can run after a fresh or upgraded migration.
 
 insert into inventory.locations (id, name, location_type, is_active)
 values
@@ -122,7 +77,7 @@ values
   (uuid_generate_v4(), 'WarehouseClerk', 'inventory.read'),
   (uuid_generate_v4(), 'WarehouseClerk', 'operations.read'),
   (uuid_generate_v4(), 'WarehouseClerk', 'operations.write')
-on conflict (role, permission) do nothing;
+on conflict do nothing;
 
 insert into identity.users (id, username, password_hash, full_name, role, location_id, is_active)
 values
@@ -189,7 +144,7 @@ values
     '33333333-3333-3333-3333-333333333333',
     true
   )
-on conflict (username) do update
+on conflict (id) do update
 set password_hash = excluded.password_hash,
     full_name = excluded.full_name,
     role = excluded.role,

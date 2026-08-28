@@ -78,7 +78,10 @@ try {
 
     $resolvedEnvFile = (Resolve-Path -LiteralPath $resolvedEnvFile).Path
     $composeFiles = @("--project-name", $ProjectName, "--env-file", $resolvedEnvFile, "-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml")
-    foreach ($composeFile in $AdditionalComposeFiles) {
+    # A child PowerShell process passes a string-array script parameter as one
+    # comma-delimited argument. Normalize either form before resolving files.
+    $normalizedComposeFiles = @($AdditionalComposeFiles | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    foreach ($composeFile in $normalizedComposeFiles) {
         $resolvedComposeFile = if ([System.IO.Path]::IsPathRooted($composeFile)) { $composeFile } else { Join-Path $repoRoot $composeFile }
         if (-not (Test-Path -LiteralPath $resolvedComposeFile)) {
             throw "Additional Compose file '$composeFile' was not found."
