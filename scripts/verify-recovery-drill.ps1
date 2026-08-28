@@ -12,9 +12,10 @@ $sourceProject = "lensee-certification-backup-source"
 $recoveryProject = "lensee-certification-recovery"
 $sourcePrefix = "lensee_cert_backup_source"
 $recoveryPrefix = "lensee_cert_recovery"
-$sourceEnv = Join-Path $env:TEMP "lensee-certification-backup-source-$runId.env"
-$recoveryEnv = Join-Path $env:TEMP "lensee-certification-recovery-$runId.env"
-$backupPath = Join-Path $env:TEMP "lensee-certification-recovery-$runId.dump"
+$temporaryDirectory = [System.IO.Path]::GetTempPath()
+$sourceEnv = Join-Path $temporaryDirectory "lensee-certification-backup-source-$runId.env"
+$recoveryEnv = Join-Path $temporaryDirectory "lensee-certification-recovery-$runId.env"
+$backupPath = Join-Path $temporaryDirectory "lensee-certification-recovery-$runId.dump"
 $shell = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($shell)) { $shell = (Get-Command powershell -ErrorAction Stop).Source }
 

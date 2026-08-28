@@ -60,7 +60,7 @@ function Write-EvidenceManifest {
 }
 
 New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
-$verificationEnv = Join-Path $env:TEMP "lensee-production-config-$runId.env"
+$verificationEnv = Join-Path ([System.IO.Path]::GetTempPath()) "lensee-production-config-$runId.env"
 Push-Location $repoRoot
 try {
     "candidate-sha=$candidateSha`nstarted-at=$(Get-Date -Format o)" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt") -NoNewline

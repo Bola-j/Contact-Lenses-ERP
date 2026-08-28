@@ -325,8 +325,9 @@ function Invoke-E2ESetup {
 }
 
 New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
-$successEnv = Join-Path $env:TEMP "lensee-certification-success-$runId.env"
-$failureEnv = Join-Path $env:TEMP "lensee-certification-failure-$runId.env"
+$temporaryDirectory = [System.IO.Path]::GetTempPath()
+$successEnv = Join-Path $temporaryDirectory "lensee-certification-success-$runId.env"
+$failureEnv = Join-Path $temporaryDirectory "lensee-certification-failure-$runId.env"
 $defaultBefore = $null
 
 Push-Location $repoRoot
