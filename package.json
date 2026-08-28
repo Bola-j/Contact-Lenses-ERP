@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "e2e:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-setup.ps1",
+    "e2e:setup": "node scripts/run-powershell-script.mjs scripts/e2e-setup.ps1",
     "e2e": "playwright test",
     "e2e:smoke": "playwright test --grep \"auth:|mobile:\"",
     "e2e:business-day": "playwright test e2e/full-business-day.spec.js --project=chromium",
@@ -26,7 +26,7 @@
     "check:encoding": "node scripts/check-text-encoding.mjs",
     "check:localization": "node scripts/check-frontend-localization.mjs",
     "check:dom-sinks": "node scripts/check-unsafe-dom-sinks.mjs",
-    "check:endpoint-boundaries": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-endpoint-boundaries.ps1",
+    "check:endpoint-boundaries": "node scripts/run-powershell-script.mjs scripts/check-endpoint-boundaries.ps1",
     "check": "npm run check:encoding && npm run check:localization && npm run check:dom-sinks && npm run check:endpoint-boundaries && npm run workload:check",
     "pretest:e2e": "npm run check",
     "prevercel:build": "npm run check"
