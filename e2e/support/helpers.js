@@ -248,11 +248,13 @@ async function selectSupplyLineSku(row, textOrRegex) {
   const query = textOrRegex instanceof RegExp ? textOrRegex.source.replace(/\\/g, "") : String(textOrRegex);
   await search.fill(query);
   await expect(results).toBeVisible();
-  const result = results.locator(".op-line-search-result:not([disabled])", { hasText: textOrRegex }).first();
+  const availableResults = results.locator(".op-line-search-result:not([disabled])");
+  await expect(availableResults.first()).toBeVisible({ timeout: 25_000 });
+  const result = availableResults.filter({ hasText: textOrRegex }).first();
   if (await result.isVisible().catch(() => false)) {
     await result.click();
   } else {
-    await results.locator(".op-line-search-result:not([disabled])").first().click();
+    await availableResults.first().click();
   }
   await expect(hiddenSku).not.toHaveValue("");
 }
@@ -338,11 +340,13 @@ async function selectOperationLineSku(row, textOrRegex) {
   const query = textOrRegex instanceof RegExp ? textOrRegex.source.replace(/\\/g, "") : String(textOrRegex);
   await search.fill(query);
   await expect(results).toBeVisible();
-  const result = results.locator(".op-line-search-result:not([disabled])", { hasText: textOrRegex }).first();
+  const availableResults = results.locator(".op-line-search-result:not([disabled])");
+  await expect(availableResults.first()).toBeVisible({ timeout: 25_000 });
+  const result = availableResults.filter({ hasText: textOrRegex }).first();
   if (await result.isVisible().catch(() => false)) {
     await result.click();
   } else {
-    await results.locator(".op-line-search-result:not([disabled])").first().click();
+    await availableResults.first().click();
   }
   await expect(hiddenSku).not.toHaveValue("");
   await expect(row.locator(".op-line-resolved")).toContainText(/Resolved SKU/i);
@@ -366,8 +370,14 @@ async function runLatestOperationAction(page, operationType, labelRegex) {
   }
   const row = page.locator("#operation-rows tr", { hasText: operationType }).first();
   await expect(row).toBeVisible();
+  const operationId = await row.locator("[data-op-action]").first().getAttribute("data-op-id");
+  const action = await row.getByRole("button", { name: labelRegex }).getAttribute("data-op-action");
+  const responsePromise = page.waitForResponse((response) =>
+    Boolean(operationId) && Boolean(action) &&
+    response.url().includes(`/api/v1/operations/${operationId}/${action}`) &&
+    response.request().method() === "POST", { timeout: 30_000 });
   await row.getByRole("button", { name: labelRegex }).click();
-  await page.waitForTimeout(250).catch(() => undefined);
+  await responsePromise;
 }
 
 async function closeBlockingDialogIfPresent(page) {
@@ -375,8 +385,8 @@ async function closeBlockingDialogIfPresent(page) {
   if (!await dialog.isVisible().catch(() => false)) return;
   const confirm = dialog.locator("[data-dialog-confirm]");
   const cancel = dialog.locator("[data-dialog-cancel]");
-  if (await confirm.isVisible().catch(() => false)) await confirm.click();
-  else if (await cancel.isVisible().catch(() => false)) await cancel.click();
+  if (await cancel.isVisible().catch(() => false)) await cancel.click();
+  else if (await confirm.isVisible().catch(() => false)) await confirm.click();
   else await page.keyboard.press("Escape").catch(() => undefined);
   await expect(dialog).toBeHidden({ timeout: 10_000 }).catch(() => undefined);
 }

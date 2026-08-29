@@ -28,7 +28,7 @@ test("audit and accounts: duplicate usernames explain the conflict, protected ac
   await form.getByRole("button", { name: "Create employee account" }).click();
   await expectNotice(page, "This username is already in use. Choose a different username.");
 
-  await expect(page.locator("[data-admin-user-row]", { hasText: users.admin.username }).locator("[data-admin-delete-user]")).toBeDisabled();
+  await expect(page.locator("[data-admin-user-row]", { hasText: users.admin.username }).getByRole("button", { name: "Protected" })).toBeDisabled();
 
   await gotoRoute(page, "/audit");
   await expect(page.locator("#audit-rows")).toContainText(/Create|POST/i);

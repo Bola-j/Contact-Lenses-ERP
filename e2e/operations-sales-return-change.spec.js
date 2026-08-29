@@ -107,6 +107,11 @@ test("operations: returns outside recorded sales warn, can be bypassed, and writ
 
   await createChangeDraft(page, data);
   await runLatestOperationAction(page, "Change", /Confirm/i);
+  const changeWarning = page.locator(".dialog-overlay", { hasText: /Recorded sales warning/i });
+  await expect(changeWarning).toBeVisible();
+  await changeWarning.locator("#merchant-sales-variance-reason").fill("Verified exchange stock during merchant collection.");
+  await changeWarning.getByRole("button", { name: /Confirm with exception/i }).click();
+  await expect(page.locator("#operation-rows tr", { hasText: "Change" }).first()).toContainText(/Confirmed/i);
 
   await createOperationDraft(page, {
     type: "WriteOff",

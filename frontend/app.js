@@ -4585,7 +4585,7 @@ async function addMerchantNote(merchantId) {
 async function renderOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
-  operationsUiState.operationType = operationsUiState.operationType === "InventoryReceipt" ? "WarehouseTransfer" : (operationsUiState.operationType || "WarehouseTransfer");
+  operationsUiState.operationType = operationsUiState.operationType || "WarehouseTransfer";
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Operations",
@@ -4608,7 +4608,7 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
             </div>
-            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
             <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>

@@ -28,6 +28,11 @@ services:
       Jwt__Audience: Lensee.E2E
       Cors__AllowedOrigins__0: http://127.0.0.1:${LENSEE_E2E_FRONTEND_PORT:-53001}
       Cors__AllowedOrigins__1: http://localhost:${LENSEE_E2E_FRONTEND_PORT:-53001}
+      # A serial browser acceptance run hydrates several authenticated workspaces
+      # from the same loopback address. Keep rate limiting enabled, but give the
+      # dedicated, non-production test stack enough headroom to exercise it.
+      RateLimiting__AnonymousPermitLimit: 300
+      RateLimiting__AuthenticatedPermitLimit: 5000
       Database__AutoMigrate: "false"
       Database__BaselineExistingSchema: "false"
       Shopify__Enabled: "false"

@@ -76,22 +76,35 @@ function Invoke-CertificationCompose {
 
 function Get-DefaultStackFingerprint {
     $containerNames = @("lensee_db", "lensee_api", "lensee_web", "lensee_caddy")
-    $containers = & docker ps -a --format '{{.Names}}|{{.ID}}|{{.Image}}|{{.Status}}' |
+    # Container status includes a continuously changing elapsed uptime (for
+    # example, "Up 37 minutes"), so it cannot be part of a before/after
+    # resource fingerprint. Name, ID, and image still detect replacement.
+    $containers = & docker ps -a --format '{{.Names}}|{{.ID}}|{{.Image}}' |
         Where-Object {
             $name = ($_ -split '\|', 2)[0]
             $containerNames -contains $name
         }
 
     $volumes = & docker volume ls --format '{{.Name}}' |
-        Where-Object { $_ -match '^lensee' -and $_ -notmatch '^lensee-e2e-' -and $_ -notmatch '^lensee-certification-' }
+        Where-Object { $_ -match '^lensee' -and $_ -notmatch '^lensee[_-]e2e[_-]' -and $_ -notmatch '^lensee[_-]certification[_-]' }
     $listeners = if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
         foreach ($port in 8181, 5000, 3001) {
-            Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
-                ForEach-Object { "$port|$($_.LocalAddress)|$($_.OwningProcess)" }
+            # Docker Desktop can recreate its IPv6 forwarding entry while the
+            # default container and published host port remain unchanged. The
+            # gate needs the listener's presence, not that transient proxy PID
+            # or address-family implementation detail.
+            if (@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue).Count -gt 0) {
+                "$port|listening"
+            }
         }
     }
     else {
-        & docker ps -a --format '{{.Names}}|{{.Ports}}' | Where-Object { $_ -match '8181|5000|3001' }
+        # Docker's Linux-friendly port output contains values such as
+        # "127.0.0.1:18181->5432/tcp". Match only complete published host-port
+        # tokens so the isolated certification ports (18181, 15000, 13001) do
+        # not get mistaken for the default-stack ports (8181, 5000, 3001).
+        & docker ps -a --format '{{.Names}}|{{.Ports}}' |
+            Where-Object { $_ -match '(?<!\d)(?:8181|5000|3001)->' }
     }
 
     return (@($containers) + @($volumes) + @($listeners) | Sort-Object) -join "`n"
