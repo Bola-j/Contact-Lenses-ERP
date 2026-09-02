@@ -52,6 +52,55 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task WarehouseClerk_CrmAndCorrectionReadsAreScoped_AndCrmWritesAreDenied()
+    {
+        var seed = await _factory.SeedAsync();
+        var scoped = await _factory.SeedLocationScopedCrmAndCorrectionsAsync(seed);
+        using var clerk = _factory.CreateClient();
+        clerk.AuthorizeAsAtLocation(
+            LenseeRoles.WarehouseClerk,
+            seed.MainLocationId,
+            LenseePermissions.OperationsRead,
+            LenseePermissions.OperationsWrite);
+
+        var merchants = await clerk.GetFromJsonAsync<PagedContract<MerchantListContract>>("/api/v1/crm/merchants?pageSize=25");
+        var ownMerchant = await clerk.GetAsync($"/api/v1/crm/merchants/{scoped.OwnMerchantId}");
+        var foreignMerchant = await clerk.GetAsync($"/api/v1/crm/merchants/{scoped.ForeignMerchantId}");
+        var representatives = await clerk.GetFromJsonAsync<IReadOnlyList<ScopedRepresentativeContract>>("/api/v1/crm/representatives");
+        var updateMerchant = await clerk.PutAsJsonAsync($"/api/v1/crm/merchants/{scoped.OwnMerchantId}", new
+        {
+            businessName = "Updated but forbidden",
+            contactPersonName = "Scoped Clerk",
+            phoneNumbers = new[] { "01000000000" },
+            businessType = "Merchant"
+        });
+        var createRepresentative = await clerk.PostAsJsonAsync("/api/v1/crm/representatives", new
+        {
+            name = "Forbidden representative",
+            phoneNumbers = new[] { "01000000000" },
+            type = "External",
+            assignedLocationId = seed.MainLocationId
+        });
+        var ownCorrection = await clerk.GetAsync($"/api/v1/operations/corrections/{scoped.OwnProposalId}");
+        var foreignCorrection = await clerk.GetAsync($"/api/v1/operations/corrections/{scoped.ForeignProposalId}");
+        var ownLineage = await clerk.GetAsync($"/api/v1/operations/{scoped.OwnOperationId}/corrections");
+        var foreignLineage = await clerk.GetAsync($"/api/v1/operations/{scoped.ForeignOperationId}/corrections");
+
+        Assert.NotNull(merchants);
+        Assert.Equal(scoped.OwnMerchantId, Assert.Single(merchants!.Items).Id);
+        Assert.Equal(HttpStatusCode.OK, ownMerchant.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, foreignMerchant.StatusCode);
+        Assert.NotNull(representatives);
+        Assert.Equal(scoped.OwnRepresentativeId, Assert.Single(representatives!).Id);
+        Assert.Equal(HttpStatusCode.Forbidden, updateMerchant.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, createRepresentative.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, ownCorrection.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, foreignCorrection.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, ownLineage.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, foreignLineage.StatusCode);
+    }
+
+    [Fact]
     public async Task FinalizedSale_CorrectionRequiresIndependentApproval_AndCreatesImmutableReversal()
     {
         var seed = await _factory.SeedAsync();
@@ -186,10 +235,87 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task OperationLifecycle_WritesOneExplicitAuditPerSuccessfulMutation()
+    {
+        using var factory = new OperationsEndpointFactory(useRealAuditWriter: true);
+        var seed = await factory.SeedAsync(withMainStock: true);
+        using var client = factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+
+        var operation = await CreateOperationAsync(client, new
+        {
+            operationType = "WarehouseTransfer",
+            sourceLocationId = seed.MainLocationId,
+            destinationLocationId = seed.OnlineLocationId,
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
+        });
+        var confirm = await client.PostAsync($"/api/v1/operations/{operation.Id}/confirm", null);
+        var ship = await client.PostAsync($"/api/v1/operations/{operation.Id}/ship", null);
+        var receive = await client.PostAsync($"/api/v1/operations/{operation.Id}/receive", null);
+
+        Assert.Equal(HttpStatusCode.NoContent, confirm.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, ship.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, receive.StatusCode);
+        var auditActions = await factory.GetOperationAuditActionsAsync(operation.Id);
+        Assert.Equal(4, auditActions.Count);
+        Assert.Equal(1, auditActions.Count(action => action == "Create"));
+        Assert.Equal(1, auditActions.Count(action => action == "Confirm"));
+        Assert.Equal(1, auditActions.Count(action => action == "Ship"));
+        Assert.Equal(1, auditActions.Count(action => action == "Receive"));
+    }
+
+    [Fact]
+    public async Task DraftMutationLifecycle_WritesOneExplicitAuditForUpdateReviseAndCancel()
+    {
+        using var factory = new OperationsEndpointFactory(useRealAuditWriter: true);
+        var seed = await factory.SeedAsync();
+        using var client = factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+
+        var operation = await CreateOperationAsync(client, new
+        {
+            operationType = "InventoryReceipt",
+            destinationLocationId = seed.MainLocationId,
+            receipt = new { supplierName = "Audit supplier", invoiceNumber = "AUD-1" },
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, lotNumber = "AUDIT", expiryDate = "2028-06-01" } }
+        });
+        var update = await client.PutAsJsonAsync($"/api/v1/operations/{operation.Id}", new
+        {
+            operationType = "InventoryReceipt",
+            destinationLocationId = seed.MainLocationId,
+            receipt = new { supplierName = "Audit supplier", invoiceNumber = "AUD-2" },
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, lotNumber = "AUDIT", expiryDate = "2028-06-01" } }
+        });
+        var revise = await client.PostAsJsonAsync($"/api/v1/operations/{operation.Id}/revise", new
+        {
+            operation = new
+            {
+                operationType = "InventoryReceipt",
+                destinationLocationId = seed.MainLocationId,
+                receipt = new { supplierName = "Audit supplier", invoiceNumber = "AUD-3" },
+                lines = new[] { new { skuId = seed.SkuId, packQuantity = 3, lotNumber = "AUDIT", expiryDate = "2028-06-01" } }
+            },
+            reason = "Correct the receipt draft."
+        });
+        var cancel = await client.PostAsync($"/api/v1/operations/{operation.Id}/cancel", null);
+
+        Assert.Equal(HttpStatusCode.NoContent, update.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, revise.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, cancel.StatusCode);
+        var auditActions = await factory.GetOperationAuditActionsAsync(operation.Id);
+        Assert.Equal(4, auditActions.Count);
+        Assert.Equal(1, auditActions.Count(action => action == "Create"));
+        Assert.Equal(1, auditActions.Count(action => action == "Update"));
+        Assert.Equal(1, auditActions.Count(action => action == "Revise"));
+        Assert.Equal(1, auditActions.Count(action => action == "Cancel"));
+    }
+
+    [Fact]
     public async Task WarehouseTransfer_UsesShortDatedUnexpiredBatchesByFefo()
     {
         var seed = await _factory.SeedAsync();
-        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", new DateOnly(2026, 9, 1), 4);
+        var shortExpiry = _factory.GetEgyptToday().AddDays(7);
+        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", shortExpiry, 4);
         await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "VALID", new DateOnly(2028, 6, 1), 5);
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
@@ -199,7 +325,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             operationType = "WarehouseTransfer",
             sourceLocationId = seed.MainLocationId,
             destinationLocationId = seed.OnlineLocationId,
-            lines = new[] { new { skuId = seed.SkuId, packQuantity = 3, lotNumber = "SHORT", expiryDate = "2026-09-01" } }
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 3, lotNumber = "SHORT", expiryDate = shortExpiry } }
         });
 
         await client.PostAsync($"/api/v1/operations/{operation.Id}/confirm", null);
@@ -296,7 +422,8 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     public async Task ReplenishmentReserve_UsesShortDatedUnexpiredStock()
     {
         var seed = await _factory.SeedAsync();
-        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", new DateOnly(2026, 9, 1), 5);
+        var shortExpiry = _factory.GetEgyptToday().AddDays(7);
+        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", shortExpiry, 5);
         await _factory.SetTargetBalanceAsync(seed.OnlineLocationId, seed.SkuId, available: 0, target: 4);
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
@@ -336,7 +463,8 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     public async Task InventoryTransferBlockedBatches_DoesNotShowShortDatedUnexpiredStock()
     {
         var seed = await _factory.SeedAsync();
-        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", new DateOnly(2026, 9, 1), 5);
+        var shortExpiry = _factory.GetEgyptToday().AddDays(7);
+        await _factory.ReceiveMainStockAsync(seed.MainLocationId, seed.SkuId, "SHORT", shortExpiry, 5);
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead);
 
@@ -511,7 +639,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
-    public async Task CashRefundForWrongCashSale_ReturnsMerchantBalanceToZero()
+    public async Task CashRefundForWrongCashSale_ReopensMerchantReceivable()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
@@ -556,7 +684,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         Assert.Equal(200m, balance!.SaleTotal);
         Assert.Equal(200m, balance.PaymentsReceived);
         Assert.Equal(200m, balance.CashRefunded);
-        Assert.Equal(0m, balance.Balance);
+        Assert.Equal(200m, balance.Balance);
     }
 
     [Fact]
@@ -605,7 +733,8 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             LenseePermissions.OperationsWrite,
             LenseePermissions.InventoryRead,
             LenseePermissions.PaymentsRead,
-            LenseePermissions.PaymentsWrite);
+            LenseePermissions.PaymentsWrite,
+            LenseePermissions.PaymentsApprove);
 
         var operation = await CreateOperationAsync(admin, new
         {
@@ -1361,6 +1490,38 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task StocktakeReads_AreScopedForWarehouseClerk_AndGlobalForAdmin()
+    {
+        var seed = await _factory.SeedAsync();
+        using var admin = _factory.CreateClient();
+        admin.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+
+        var ownCreate = await admin.PostAsJsonAsync("/api/v1/stocktakes", new { locationId = seed.MainLocationId });
+        var otherCreate = await admin.PostAsJsonAsync("/api/v1/stocktakes", new { locationId = seed.OnlineLocationId });
+        var own = await ownCreate.Content.ReadFromJsonAsync<StocktakeDetailContract>();
+        var other = await otherCreate.Content.ReadFromJsonAsync<StocktakeDetailContract>();
+
+        using var clerk = _factory.CreateClient();
+        clerk.AuthorizeAsAtLocation(LenseeRoles.WarehouseClerk, seed.MainLocationId, LenseePermissions.InventoryRead);
+        var list = await clerk.GetFromJsonAsync<PagedContract<StocktakeListContract>>("/api/v1/stocktakes?pageSize=25");
+        var ownRead = await clerk.GetAsync($"/api/v1/stocktakes/{own!.Id}");
+        var foreignRead = await clerk.GetAsync($"/api/v1/stocktakes/{other!.Id}");
+        var adminList = await admin.GetFromJsonAsync<PagedContract<StocktakeListContract>>("/api/v1/stocktakes?pageSize=25");
+        var adminForeignRead = await admin.GetAsync($"/api/v1/stocktakes/{other.Id}");
+
+        Assert.Equal(HttpStatusCode.Created, ownCreate.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, otherCreate.StatusCode);
+        Assert.NotNull(list);
+        Assert.Equal(own.Id, Assert.Single(list!.Items).Id);
+        Assert.Equal(HttpStatusCode.OK, ownRead.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, foreignRead.StatusCode);
+        Assert.NotNull(adminList);
+        Assert.Contains(adminList!.Items, item => item.Id == own.Id);
+        Assert.Contains(adminList.Items, item => item.Id == other.Id);
+        Assert.Equal(HttpStatusCode.OK, adminForeignRead.StatusCode);
+    }
+
+    [Fact]
     public async Task StocktakeLines_RejectUnknownSku()
     {
         var seed = await _factory.SeedAsync();
@@ -1664,9 +1825,17 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName = $"operations-contracts-{Guid.NewGuid()}";
     private readonly Guid _shopifyOnlineLocationId = Guid.NewGuid();
+    private readonly bool _useRealAuditWriter;
     public const string ShopifyWebhookSecret = "ShopifyContractWebhookSecret123!";
     public const string ShopifyLegacyWebhookPathSecret = "ShopifyContractLegacyPathSecret123456";
     public const string ShopifyStoreDomain = "lensee-contracts.myshopify.com";
+
+    public OperationsEndpointFactory()
+        : this(useRealAuditWriter: false)
+    {
+    }
+
+    internal OperationsEndpointFactory(bool useRealAuditWriter) => _useRealAuditWriter = useRealAuditWriter;
 
     public Guid ShopifyOnlineLocationId => _shopifyOnlineLocationId;
 
@@ -1709,7 +1878,14 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
             services.AddDbContext<OperationsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<PaymentsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<SharedDbContext>(options => options.UseInMemoryDatabase(_databaseName));
-            services.AddSingleton<IAuditLogWriter, NoOpAuditLogWriter>();
+            if (_useRealAuditWriter)
+            {
+                services.AddScoped<IAuditLogWriter, AuditLogWriter>();
+            }
+            else
+            {
+                services.AddSingleton<IAuditLogWriter, NoOpAuditLogWriter>();
+            }
 
             services.AddAuthentication(options =>
             {
@@ -1808,6 +1984,119 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         }
 
         return new OperationsSeed(mainLocationId, onlineLocationId, skuId);
+    }
+
+    public async Task<LocationScopedCrmCorrectionSeed> SeedLocationScopedCrmAndCorrectionsAsync(OperationsSeed seed)
+    {
+        using var scope = Services.CreateScope();
+        var crm = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var now = DateTime.UtcNow;
+        var ownMerchantId = Guid.NewGuid();
+        var foreignMerchantId = Guid.NewGuid();
+        var ownRepresentativeId = Guid.NewGuid();
+        var foreignRepresentativeId = Guid.NewGuid();
+        var ownOperationId = Guid.NewGuid();
+        var foreignOperationId = Guid.NewGuid();
+        var ownProposalId = Guid.NewGuid();
+        var foreignProposalId = Guid.NewGuid();
+
+        crm.Merchants.AddRange(
+            new Merchant
+            {
+                Id = ownMerchantId,
+                BusinessName = "Main location merchant",
+                ContactPersonName = "Main contact",
+                PhoneNumbers = [],
+                BusinessType = "Merchant",
+                Status = "Active",
+                CreatedAt = now,
+                UpdatedAt = now
+            },
+            new Merchant
+            {
+                Id = foreignMerchantId,
+                BusinessName = "Online location merchant",
+                ContactPersonName = "Online contact",
+                PhoneNumbers = [],
+                BusinessType = "Merchant",
+                Status = "Active",
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        crm.Representatives.AddRange(
+            new Representative
+            {
+                Id = ownRepresentativeId,
+                Name = "Main location representative",
+                PhoneNumbers = [],
+                Type = "External",
+                AssignedLocationId = seed.MainLocationId,
+                Status = "Active"
+            },
+            new Representative
+            {
+                Id = foreignRepresentativeId,
+                Name = "Online location representative",
+                PhoneNumbers = [],
+                Type = "External",
+                AssignedLocationId = seed.OnlineLocationId,
+                Status = "Active"
+            });
+        operations.OperationLogs.AddRange(
+            new OperationLog
+            {
+                Id = ownOperationId,
+                OperationNumber = "OP-SCOPE-MAIN",
+                OperationType = "RetailSale",
+                Status = "Completed",
+                SourceLocationId = seed.MainLocationId,
+                ClientId = ownMerchantId,
+                CreatedBy = Guid.NewGuid(),
+                CreatedAt = now
+            },
+            new OperationLog
+            {
+                Id = foreignOperationId,
+                OperationNumber = "OP-SCOPE-ONLINE",
+                OperationType = "RetailSale",
+                Status = "Completed",
+                SourceLocationId = seed.OnlineLocationId,
+                ClientId = foreignMerchantId,
+                CreatedBy = Guid.NewGuid(),
+                CreatedAt = now
+            });
+        operations.OperationCorrectionProposals.AddRange(
+            new OperationCorrectionProposal
+            {
+                Id = ownProposalId,
+                OperationId = ownOperationId,
+                Status = "PendingApproval",
+                Reason = "Main location correction",
+                RequesterId = Guid.NewGuid(),
+                RequestedAt = now
+            },
+            new OperationCorrectionProposal
+            {
+                Id = foreignProposalId,
+                OperationId = foreignOperationId,
+                Status = "PendingApproval",
+                Reason = "Online location correction",
+                RequesterId = Guid.NewGuid(),
+                RequestedAt = now
+            });
+
+        await crm.SaveChangesAsync();
+        await operations.SaveChangesAsync();
+        return new LocationScopedCrmCorrectionSeed(
+            ownMerchantId,
+            foreignMerchantId,
+            ownRepresentativeId,
+            foreignRepresentativeId,
+            ownOperationId,
+            foreignOperationId,
+            ownProposalId,
+            foreignProposalId);
     }
 
     public async Task SetTargetBalanceAsync(Guid locationId, Guid skuId, int available, int target)
@@ -1916,6 +2205,16 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         using var scope = Services.CreateScope();
         var payments = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
         return await payments.InstallmentSubLogs.CountAsync(value => value.MainLogId == paymentLogId);
+    }
+
+    public async Task<IReadOnlyList<string>> GetOperationAuditActionsAsync(Guid operationId)
+    {
+        using var scope = Services.CreateScope();
+        var identity = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
+        return await identity.AuditLogs
+            .Where(value => value.EntityType == "Operation" && value.EntityId == operationId)
+            .Select(value => value.Action)
+            .ToListAsync();
     }
 
     public async Task DeactivateProductForSkuAsync(Guid skuId)
@@ -2032,6 +2331,16 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
 
 public sealed record OperationsSeed(Guid MainLocationId, Guid OnlineLocationId, Guid SkuId);
 
+public sealed record LocationScopedCrmCorrectionSeed(
+    Guid OwnMerchantId,
+    Guid ForeignMerchantId,
+    Guid OwnRepresentativeId,
+    Guid ForeignRepresentativeId,
+    Guid OwnOperationId,
+    Guid ForeignOperationId,
+    Guid OwnProposalId,
+    Guid ForeignProposalId);
+
 public sealed class OperationDetailContract
 {
     public Guid Id { get; set; }
@@ -2055,6 +2364,8 @@ public sealed class StocktakeDetailContract
     public Guid Id { get; set; }
     public IReadOnlyList<StocktakeLineContract> Lines { get; set; } = [];
 }
+
+public sealed record StocktakeListContract(Guid Id, Guid LocationId);
 
 public sealed record StocktakeLineContract(Guid Id, Guid SkuId, int PhysicalCount);
 
@@ -2102,6 +2413,8 @@ public sealed record PaymentLogContract(
     DateTime LastModifiedAt);
 
 public sealed record MerchantListContract(Guid Id, string BusinessName, string BusinessType, string Status);
+
+public sealed record ScopedRepresentativeContract(Guid Id, string Name, string Status);
 
 public sealed record PaymentLogDetailContract(PaymentLogContract Log, IReadOnlyList<PaymentSubLogContract> SubLogs, string? Notes);
 

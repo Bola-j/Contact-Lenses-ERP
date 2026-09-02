@@ -17,6 +17,8 @@ public partial class StocktakeAdjustmentLine
 
     public int SystemQtyBefore { get; set; }
 
+    public int BaselineStockRowVersion { get; set; }
+
     public int PhysicalCount { get; set; }
 
     public int Delta { get; set; }

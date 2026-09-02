@@ -158,6 +158,10 @@ public static class SupplyEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(shipment.Status)] = ["Only draft supply shipments can be edited."] });
         }
+        if (operationsDbContext.Database.IsRelational() && request.ExpectedVersion is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.ExpectedVersion)] = ["expectedVersion is required when editing a supply shipment."] });
+        }
 
         var built = await BuildShipmentPartsAsync(request, catalogDbContext, inventoryDbContext, cancellationToken);
         if (built.Errors.Count > 0)
@@ -168,6 +172,17 @@ public static class SupplyEndpoints
         await using var transaction = operationsDbContext.Database.IsRelational()
             ? await operationsDbContext.Database.BeginTransactionAsync(cancellationToken)
             : null;
+
+        await LockShipmentAsync(operationsDbContext, shipment.Id, cancellationToken);
+        await operationsDbContext.Entry(shipment).ReloadAsync(cancellationToken);
+        if (shipment.Status != Draft)
+        {
+            return Results.Conflict(new { code = "transition-conflict", detail = "The shipment is no longer a draft." });
+        }
+        if (request.ExpectedVersion.HasValue && shipment.ConcurrencyVersion != request.ExpectedVersion.Value)
+        {
+            return Results.Conflict(new { code = "stale-version", detail = "The shipment has been changed by another request." });
+        }
 
         var oldLines = await operationsDbContext.SupplyShipmentLines.Where(value => value.ShipmentId == shipment.Id).ToListAsync(cancellationToken);
         var oldCosts = await operationsDbContext.SupplyShipmentCosts.Where(value => value.ShipmentId == shipment.Id).ToListAsync(cancellationToken);
@@ -373,6 +388,14 @@ public static class SupplyEndpoints
         AddHistory(operationsDbContext, shipment, "Cancel", currentUser.UserId ?? Guid.Empty, now, "Draft shipment cancelled.");
         await operationsDbContext.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
+    }
+
+    private static async Task LockShipmentAsync(OperationsDbContext dbContext, Guid shipmentId, CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsRelational()) return;
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"select 1 from operations.supply_shipments where id = {shipmentId} for update",
+            cancellationToken);
     }
 
     private static async Task<SupplyBuildResult> BuildShipmentPartsAsync(SupplyShipmentRequest request, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
@@ -630,6 +653,7 @@ public static class SupplyEndpoints
             shipment.InvoiceNumber,
             shipment.ShipmentDate,
             shipment.Status,
+            shipment.ConcurrencyVersion,
             shipment.DestinationLocationId,
             locationLookup.TryGetValue(shipment.DestinationLocationId, out var location) ? location.Name : null,
             shipment.Lines.Sum(value => value.Quantity),
@@ -647,6 +671,7 @@ public static class SupplyEndpoints
             shipment.InvoiceNumber,
             shipment.ShipmentDate,
             shipment.Status,
+            shipment.ConcurrencyVersion,
             shipment.DestinationLocationId,
             locationLookup.TryGetValue(shipment.DestinationLocationId, out var location) ? location.Name : null,
             shipment.Notes,
@@ -713,7 +738,8 @@ public sealed record SupplyShipmentRequest(
     Guid DestinationLocationId,
     string? Notes,
     IReadOnlyList<SupplyShipmentLineRequest>? Lines,
-    IReadOnlyList<SupplyShipmentCostRequest>? Costs);
+    IReadOnlyList<SupplyShipmentCostRequest>? Costs,
+    uint? ExpectedVersion = null);
 
 public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, decimal? UnitPrice, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
@@ -726,6 +752,7 @@ public sealed record SupplyShipmentListResponse(
     string? InvoiceNumber,
     DateTime ShipmentDate,
     string Status,
+    uint ConcurrencyVersion,
     Guid DestinationLocationId,
     string? DestinationLocationName,
     int Quantity,
@@ -742,6 +769,7 @@ public sealed record SupplyShipmentDetailResponse(
     string? InvoiceNumber,
     DateTime ShipmentDate,
     string Status,
+    uint ConcurrencyVersion,
     Guid DestinationLocationId,
     string? DestinationLocationName,
     string? Notes,

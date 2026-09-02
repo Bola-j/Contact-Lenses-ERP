@@ -69,47 +69,57 @@ public sealed class OperationCorrectionService
             return CorrectionCommandResult.Validation("reason", "A correction reason is required.");
         }
 
-        var operation = await _operations.OperationLogs.AsNoTracking()
-            .FirstOrDefaultAsync(value => value.Id == operationId && !value.IsDeleted, cancellationToken);
-        if (operation is null)
-        {
-            return CorrectionCommandResult.NotFound();
-        }
-
-        if (!IsFinalized(operation.Status) || operation.RecordKind != "Standard")
-        {
-            return CorrectionCommandResult.Conflict("Only a finalized original operation can enter the correction workflow.");
-        }
-
         var settlementValidation = ValidateSettlement(command.SettlementMethod, command.SettlementAmount);
         if (settlementValidation is not null)
         {
             return settlementValidation;
         }
 
-        if (await _operations.OperationCorrectionProposals.AnyAsync(
-                value => value.OperationId == operationId && value.Status == PendingApproval,
-                cancellationToken))
-        {
-            return CorrectionCommandResult.Conflict("A correction proposal is already awaiting review for this operation.");
-        }
-
         var now = _clock.EgyptNow;
-        var proposal = new OperationCorrectionProposal
-        {
-            Id = Guid.NewGuid(),
-            OperationId = operationId,
-            Status = PendingApproval,
-            Reason = reason,
-            SettlementMethod = NormalizeSettlement(command.SettlementMethod),
-            SettlementAmount = command.SettlementAmount,
-            CreateReplacementDraft = command.CreateReplacementDraft,
-            RequesterId = requesterId,
-            RequestedAt = now
-        };
-
+        CorrectionCommandResult? result = null;
         await SharedDbTransaction.ExecuteAsync(_operations, async () =>
         {
+            // The source operation is the aggregate lock for correction creation.
+            // Holding it before eligibility and pending-proposal checks makes the
+            // partial unique index a last-line invariant rather than normal flow.
+            var operation = await LoadOperationForUpdateAsync(operationId, cancellationToken);
+            if (operation is null)
+            {
+                result = CorrectionCommandResult.NotFound();
+                return;
+            }
+            if (!IsFinalized(operation.Status) || operation.RecordKind != "Standard")
+            {
+                result = CorrectionCommandResult.Conflict("Only a finalized original operation can enter the correction workflow.");
+                return;
+            }
+            if (await _operations.OperationLogs.AnyAsync(value =>
+                    value.ReversesOperationId == operation.Id && value.RecordKind == "Reversal" && !value.IsDeleted,
+                    cancellationToken))
+            {
+                result = CorrectionCommandResult.Conflict("A reversal already exists for this operation.");
+                return;
+            }
+            if (await _operations.OperationCorrectionProposals.AnyAsync(
+                    value => value.OperationId == operationId && value.Status == PendingApproval,
+                    cancellationToken))
+            {
+                result = CorrectionCommandResult.Conflict("A correction proposal is already awaiting review for this operation.");
+                return;
+            }
+
+            var proposal = new OperationCorrectionProposal
+            {
+                Id = Guid.NewGuid(),
+                OperationId = operationId,
+                Status = PendingApproval,
+                Reason = reason,
+                SettlementMethod = NormalizeSettlement(command.SettlementMethod),
+                SettlementAmount = command.SettlementAmount,
+                CreateReplacementDraft = command.CreateReplacementDraft,
+                RequesterId = requesterId,
+                RequestedAt = now
+            };
             _operations.OperationCorrectionProposals.Add(proposal);
             StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "Requested", new
             {
@@ -123,9 +133,10 @@ public sealed class OperationCorrectionService
             await _operations.SaveChangesAsync(cancellationToken);
             await _identity.SaveChangesAsync(cancellationToken);
             await _shared.SaveChangesAsync(cancellationToken);
+            result = CorrectionCommandResult.Created(ToResponse(proposal));
         }, cancellationToken, _identity, _shared);
 
-        return CorrectionCommandResult.Created(ToResponse(proposal));
+        return result ?? throw new InvalidOperationException("The correction request did not produce a result.");
     }
 
     public async Task<CorrectionCommandResult> SubmitSettlementAsync(
@@ -135,7 +146,7 @@ public sealed class OperationCorrectionService
         string? requesterRole,
         CancellationToken cancellationToken)
     {
-        var proposal = await _operations.OperationCorrectionProposals
+        var proposal = await _operations.OperationCorrectionProposals.AsNoTracking()
             .FirstOrDefaultAsync(value => value.Id == proposalId, cancellationToken);
         if (proposal is null) return CorrectionCommandResult.NotFound();
         if (proposal.RequesterId != requesterId) return CorrectionCommandResult.Forbidden();
@@ -144,21 +155,36 @@ public sealed class OperationCorrectionService
         var validation = ValidateSettlement(command.SettlementMethod, command.SettlementAmount);
         if (validation is not null) return validation;
 
-        proposal.SettlementMethod = NormalizeSettlement(command.SettlementMethod);
-        proposal.SettlementAmount = command.SettlementAmount;
+        var settlementMethod = NormalizeSettlement(command.SettlementMethod);
+        var settlementAmount = command.SettlementAmount;
         var now = _clock.EgyptNow;
-        await SharedDbTransaction.ExecuteAsync(_operations, async () =>
+        try
         {
-            StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "SettlementSubmitted", new
+            await SharedDbTransaction.ExecuteAsync(_operations, async () =>
             {
-                proposal.SettlementMethod,
-                proposal.SettlementAmount
-            }, now);
-            StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "SettlementSubmitted", requesterId, now));
-            await _operations.SaveChangesAsync(cancellationToken);
-            await _identity.SaveChangesAsync(cancellationToken);
-            await _shared.SaveChangesAsync(cancellationToken);
-        }, cancellationToken, _identity, _shared);
+                proposal = await LoadProposalForUpdateAsync(proposalId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The correction proposal no longer exists.", 404);
+                if (proposal.RequesterId != requesterId) throw new CorrectionBusinessException("Only the requester can update this settlement.", 403);
+                if (proposal.Status != PendingApproval) throw new CorrectionBusinessException("Only a pending proposal can receive a settlement.", 409);
+                _ = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The source operation no longer exists.", 404);
+                proposal.SettlementMethod = settlementMethod;
+                proposal.SettlementAmount = settlementAmount;
+                StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "SettlementSubmitted", new
+                {
+                    proposal.SettlementMethod,
+                    proposal.SettlementAmount
+                }, now);
+                StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "SettlementSubmitted", requesterId, now));
+                await _operations.SaveChangesAsync(cancellationToken);
+                await _identity.SaveChangesAsync(cancellationToken);
+                await _shared.SaveChangesAsync(cancellationToken);
+            }, cancellationToken, _identity, _shared);
+        }
+        catch (CorrectionBusinessException exception)
+        {
+            return new CorrectionCommandResult(exception.StatusCode, exception.Message, null, null, exception.Code);
+        }
 
         return CorrectionCommandResult.Ok(ToResponse(proposal));
     }
@@ -173,25 +199,38 @@ public sealed class OperationCorrectionService
         var reason = command.Reason?.Trim();
         if (string.IsNullOrWhiteSpace(reason)) return CorrectionCommandResult.Validation("reason", "A rejection reason is required.");
 
-        var proposal = await _operations.OperationCorrectionProposals
+        var proposal = await _operations.OperationCorrectionProposals.AsNoTracking()
             .FirstOrDefaultAsync(value => value.Id == proposalId, cancellationToken);
         if (proposal is null) return CorrectionCommandResult.NotFound();
         if (proposal.RequesterId == reviewerId) return CorrectionCommandResult.Forbidden("Requesters cannot review their own correction proposal.");
         if (proposal.Status != PendingApproval) return CorrectionCommandResult.Conflict("Only a pending proposal can be rejected.");
 
         var now = _clock.EgyptNow;
-        await SharedDbTransaction.ExecuteAsync(_operations, async () =>
+        try
         {
-            proposal.Status = Rejected;
-            proposal.ReviewerId = reviewerId;
-            proposal.ReviewedAt = now;
-            proposal.RejectionReason = reason;
-            StageAudit(proposal.Id, reviewerId, reviewerRole, "OperationCorrection", "Rejected", new { Reason = reason }, now);
-            StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "Rejected", reviewerId, now));
-            await _operations.SaveChangesAsync(cancellationToken);
-            await _identity.SaveChangesAsync(cancellationToken);
-            await _shared.SaveChangesAsync(cancellationToken);
-        }, cancellationToken, _identity, _shared);
+            await SharedDbTransaction.ExecuteAsync(_operations, async () =>
+            {
+                proposal = await LoadProposalForUpdateAsync(proposalId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The correction proposal no longer exists.", 404);
+                if (proposal.RequesterId == reviewerId) throw new CorrectionBusinessException("Requesters cannot review their own correction proposal.", 403);
+                if (proposal.Status != PendingApproval) throw new CorrectionBusinessException("Only a pending proposal can be rejected.", 409);
+                _ = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The source operation no longer exists.", 404);
+                proposal.Status = Rejected;
+                proposal.ReviewerId = reviewerId;
+                proposal.ReviewedAt = now;
+                proposal.RejectionReason = reason;
+                StageAudit(proposal.Id, reviewerId, reviewerRole, "OperationCorrection", "Rejected", new { Reason = reason }, now);
+                StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "Rejected", reviewerId, now));
+                await _operations.SaveChangesAsync(cancellationToken);
+                await _identity.SaveChangesAsync(cancellationToken);
+                await _shared.SaveChangesAsync(cancellationToken);
+            }, cancellationToken, _identity, _shared);
+        }
+        catch (CorrectionBusinessException exception)
+        {
+            return new CorrectionCommandResult(exception.StatusCode, exception.Message, null, null, exception.Code);
+        }
 
         return CorrectionCommandResult.Ok(ToResponse(proposal));
     }
@@ -205,7 +244,7 @@ public sealed class OperationCorrectionService
         LenseeTelemetry.CorrectionRequests.Add(1, new KeyValuePair<string, object?>("operation", "approve"));
         if (reviewerId == Guid.Empty) return CorrectionCommandResult.Forbidden();
 
-        var proposal = await _operations.OperationCorrectionProposals
+        var proposal = await _operations.OperationCorrectionProposals.AsNoTracking()
             .FirstOrDefaultAsync(value => value.Id == proposalId, cancellationToken);
         if (proposal is null) return CorrectionCommandResult.NotFound();
         if (proposal.RequesterId == reviewerId) return CorrectionCommandResult.Forbidden("Requesters cannot approve their own correction proposal.");
@@ -217,6 +256,10 @@ public sealed class OperationCorrectionService
         {
             await SharedDbTransaction.ExecuteAsync(_operations, async () =>
             {
+                proposal = await LoadProposalForUpdateAsync(proposalId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The correction proposal no longer exists.", 404);
+                if (proposal.RequesterId == reviewerId) throw new CorrectionBusinessException("Requesters cannot approve their own correction proposal.", 403);
+                if (proposal.Status != PendingApproval) throw new CorrectionBusinessException("Only a pending proposal can be approved.", 409);
                 var original = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken);
                 if (original is null) throw new CorrectionBusinessException("The source operation no longer exists.", 404);
                 if (!IsFinalized(original.Status) || original.RecordKind != "Standard")
@@ -230,13 +273,14 @@ public sealed class OperationCorrectionService
                     throw new CorrectionBusinessException("A reversal already exists for this operation.", 409);
                 }
 
-                await ValidateSettlementCapAsync(original, proposal, cancellationToken);
+                var payment = await LoadPaymentLogForUpdateAsync(original.Id, cancellationToken);
+                await ValidateSettlementCapAsync(original, proposal, payment, cancellationToken);
                 EnsureCompensationSupported(original);
 
                 var reversal = CopyOperation(original, "Reversal", original.Id, null, proposal, reviewerId, now, original.Status);
                 _operations.OperationLogs.Add(reversal);
                 await CompensateStockAsync(original, reversal.Id, reviewerId, cancellationToken);
-                await CreateSettlementAsync(original, proposal, reviewerId, now, cancellationToken);
+                await CreateSettlementAsync(original, proposal, payment, reviewerId, now, cancellationToken);
 
                 OperationLog? replacement = null;
                 if (proposal.CreateReplacementDraft)
@@ -271,7 +315,7 @@ public sealed class OperationCorrectionService
         catch (CorrectionBusinessException exception)
         {
             LenseeTelemetry.CorrectionFailures.Add(1, new KeyValuePair<string, object?>("reason", exception.StatusCode.ToString()));
-            return new CorrectionCommandResult(exception.StatusCode, exception.Message, null, null);
+            return new CorrectionCommandResult(exception.StatusCode, exception.Message, null, null, exception.Code);
         }
         catch (InvalidOperationException exception)
         {
@@ -307,16 +351,44 @@ public sealed class OperationCorrectionService
         }
 
         return await _operations.OperationLogs
-            .FromSqlInterpolated($"select * from operations.operation_logs where id = {operationId} and is_deleted = false for update")
+            // xmin is mapped as the operation concurrency token and PostgreSQL
+            // does not expose system columns through SELECT *.  Include it in
+            // the locked aggregate projection so correction commands work on
+            // the same versioned row used by the rest of Operations.
+            .FromSqlInterpolated($"select operations.operation_logs.*, xmin from operations.operation_logs where id = {operationId} and is_deleted = false for update")
             .Include(value => value.OperationLines)
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private async Task ValidateSettlementCapAsync(OperationLog original, OperationCorrectionProposal proposal, CancellationToken cancellationToken)
+    private async Task<OperationCorrectionProposal?> LoadProposalForUpdateAsync(Guid proposalId, CancellationToken cancellationToken)
     {
-        var payment = await _payments.MainPaymentLogs
-            .FirstOrDefaultAsync(value => value.OperationId == original.Id && !value.IsDeleted, cancellationToken);
-        var settledAmount = payment?.AmountPaid ?? 0m;
+        if (!_operations.Database.IsRelational())
+        {
+            return await _operations.OperationCorrectionProposals.FirstOrDefaultAsync(value => value.Id == proposalId, cancellationToken);
+        }
+
+        return await _operations.OperationCorrectionProposals
+            .FromSqlInterpolated($"select * from operations.operation_correction_proposals where id = {proposalId} for update")
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<MainPaymentLog?> LoadPaymentLogForUpdateAsync(Guid operationId, CancellationToken cancellationToken)
+    {
+        if (!_payments.Database.IsRelational())
+        {
+            return await _payments.MainPaymentLogs.FirstOrDefaultAsync(value => value.OperationId == operationId && !value.IsDeleted, cancellationToken);
+        }
+
+        return await _payments.MainPaymentLogs
+            .FromSqlInterpolated($"select * from payments.main_payment_logs where operation_id = {operationId} and is_deleted = false for update")
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task ValidateSettlementCapAsync(OperationLog original, OperationCorrectionProposal proposal, MainPaymentLog? payment, CancellationToken cancellationToken)
+    {
+        var settledAmount = payment is null
+            ? 0m
+            : await PaymentFinancialCapacity.FinalizedPaidValueAsync(_payments, payment, cancellationToken);
         if (settledAmount > 0m && (proposal.SettlementMethod is null || proposal.SettlementAmount is null))
         {
             throw new CorrectionBusinessException("A completed payment requires a CashRefund or MerchantCredit settlement before approval.", 422);
@@ -327,34 +399,45 @@ public sealed class OperationCorrectionService
         decimal remaining;
         if (proposal.SettlementMethod == CashRefund)
         {
-            var received = await _payments.CashRecords
-                .Where(value => value.OperationId == original.Id && value.Status == "Completed" && value.PaymentType == "CashReceived")
-                .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
-            var refunded = await _payments.CashRecords
-                .Where(value => value.OperationId == original.Id && value.Status == "Completed" && value.PaymentType == "CashRefund")
-                .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
-            remaining = received - refunded;
+            if (payment is null) throw new CorrectionBusinessException("Cash settlement requires an active payment log.", 409);
+            remaining = await PaymentFinancialCapacity.CashRefundCapacityAsync(_payments, payment, null, cancellationToken);
         }
         else
         {
             if (original.ClientId is null) throw new CorrectionBusinessException("Merchant credit requires a source merchant.", 422);
-            var credited = await _payments.FinancialAdjustments
-                .Where(value => value.OperationId == original.Id && value.AdjustmentType == MerchantCredit && value.Status == "Approved")
-                .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
-            remaining = settledAmount - credited;
+            if (payment is null) throw new CorrectionBusinessException("Merchant credit requires an active payment log.", 409);
+            remaining = await PaymentFinancialCapacity.MerchantCreditCapacityAsync(_payments, payment, null, cancellationToken);
         }
 
         if (proposal.SettlementAmount.Value > remaining)
         {
-            throw new CorrectionBusinessException("The requested settlement exceeds the source operation's remaining refundable balance.", 422);
+            throw new CorrectionBusinessException("The requested settlement exceeds the source operation's remaining refundable balance.", 409, "payment-cap-exceeded");
         }
     }
 
-    private async Task CreateSettlementAsync(OperationLog original, OperationCorrectionProposal proposal, Guid reviewerId, DateTime now, CancellationToken cancellationToken)
+    private Task CreateSettlementAsync(OperationLog original, OperationCorrectionProposal proposal, MainPaymentLog? payment, Guid reviewerId, DateTime now, CancellationToken cancellationToken)
     {
-        if (proposal.SettlementMethod is null || proposal.SettlementAmount is null) return;
+        if (proposal.SettlementMethod is null || proposal.SettlementAmount is null) return Task.CompletedTask;
         if (proposal.SettlementMethod == CashRefund)
         {
+            if (payment is null) throw new CorrectionBusinessException("Cash settlement requires an active payment log.", 409);
+            var adjustment = new FinancialAdjustment
+            {
+                Id = Guid.NewGuid(),
+                MerchantId = original.ClientId!.Value,
+                OperationId = original.Id,
+                PaymentLogId = payment.Id,
+                AdjustmentType = CashRefund,
+                Amount = proposal.SettlementAmount.Value,
+                Status = "Completed",
+                Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}.",
+                CreatedBy = reviewerId,
+                CreatedAt = now,
+                ReviewedBy = reviewerId,
+                ReviewedAt = now,
+                LineageKind = "OperationCorrection"
+            };
+            _payments.FinancialAdjustments.Add(adjustment);
             _payments.CashRecords.Add(new CashRecord
             {
                 Id = Guid.NewGuid(),
@@ -364,22 +447,22 @@ public sealed class OperationCorrectionService
                 Status = "Completed",
                 PaymentDate = now,
                 CreatedBy = reviewerId,
+                FinancialAdjustmentId = adjustment.Id,
                 Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}."
             });
-            return;
+            return Task.CompletedTask;
         }
 
-        var payment = await _payments.MainPaymentLogs.AsNoTracking()
-            .FirstOrDefaultAsync(value => value.OperationId == original.Id && !value.IsDeleted, cancellationToken);
+        if (payment is null) throw new CorrectionBusinessException("Merchant credit requires an active payment log.", 409);
         _payments.FinancialAdjustments.Add(new FinancialAdjustment
         {
             Id = Guid.NewGuid(),
             MerchantId = original.ClientId!.Value,
             OperationId = original.Id,
-            PaymentLogId = payment?.Id,
+            PaymentLogId = payment.Id,
             AdjustmentType = MerchantCredit,
             Amount = proposal.SettlementAmount.Value,
-            Status = "Approved",
+            Status = "Completed",
             Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}.",
             CreatedBy = reviewerId,
             CreatedAt = now,
@@ -387,6 +470,7 @@ public sealed class OperationCorrectionService
             ReviewedAt = now,
             LineageKind = "OperationCorrection"
         });
+        return Task.CompletedTask;
     }
 
     private async Task CompensateStockAsync(OperationLog original, Guid reversalOperationId, Guid reviewerId, CancellationToken cancellationToken)
@@ -571,8 +655,13 @@ public sealed class OperationCorrectionService
 
     private sealed class CorrectionBusinessException : Exception
     {
-        public CorrectionBusinessException(string message, int statusCode) : base(message) => StatusCode = statusCode;
+        public CorrectionBusinessException(string message, int statusCode, string? code = null) : base(message)
+        {
+            StatusCode = statusCode;
+            Code = code ?? (statusCode == StatusCodes.Status409Conflict ? "transition-conflict" : null);
+        }
         public int StatusCode { get; }
+        public string? Code { get; }
     }
 }
 
@@ -602,12 +691,12 @@ public sealed record OperationCorrectionResponse(
     Guid? ReversalOperationId,
     Guid? ReplacementOperationId);
 
-public sealed record CorrectionCommandResult(int StatusCode, string? Error, OperationCorrectionResponse? Value, string? ErrorField)
+public sealed record CorrectionCommandResult(int StatusCode, string? Error, OperationCorrectionResponse? Value, string? ErrorField, string? Code = null)
 {
     public static CorrectionCommandResult Created(OperationCorrectionResponse value) => new(201, null, value, null);
     public static CorrectionCommandResult Ok(OperationCorrectionResponse value) => new(200, null, value, null);
     public static CorrectionCommandResult NotFound() => new(404, "Correction proposal was not found.", null, null);
     public static CorrectionCommandResult Forbidden(string? message = null) => new(403, message ?? "This action is not permitted.", null, null);
-    public static CorrectionCommandResult Conflict(string message) => new(409, message, null, null);
+    public static CorrectionCommandResult Conflict(string message) => new(409, message, null, null, "transition-conflict");
     public static CorrectionCommandResult Validation(string field, string message) => new(422, message, null, field);
 }

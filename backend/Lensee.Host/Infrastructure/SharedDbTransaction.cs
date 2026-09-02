@@ -22,7 +22,12 @@ public static class SharedDbTransaction
             return;
         }
 
-        await using var transaction = await primaryContext.Database.BeginTransactionAsync(cancellationToken);
+        var ownsTransaction = primaryContext.Database.CurrentTransaction is null;
+        await using var ownedTransaction = ownsTransaction
+            ? await primaryContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var transaction = primaryContext.Database.CurrentTransaction
+            ?? throw new InvalidOperationException("The primary relational context did not expose its transaction.");
         var dbTransaction = transaction.GetDbTransaction();
         var associatedContexts = new List<DbContext>();
 
@@ -35,7 +40,10 @@ public static class SharedDbTransaction
             }
 
             await action();
-            await transaction.CommitAsync(cancellationToken);
+            if (ownsTransaction)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
         }
         finally
         {

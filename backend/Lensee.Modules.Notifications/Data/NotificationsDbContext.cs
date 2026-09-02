@@ -86,6 +86,10 @@ public partial class NotificationsDbContext : DbContext
 
             entity.HasIndex(e => new { e.TargetUserId, e.IsRead }, "idx_notif_logs_user_unread").HasFilter("(is_read = false)");
 
+            entity.HasIndex(e => new { e.TargetRole, e.IsRead, e.CreatedAt }, "idx_notif_logs_role_unread_created")
+                .HasFilter("(target_role IS NOT NULL)")
+                .IsDescending(false, false, true);
+
             entity.HasIndex(e => e.NotificationNumber, "uq_notif_logs_notification_number").IsUnique();
 
             entity.Property(e => e.Id)

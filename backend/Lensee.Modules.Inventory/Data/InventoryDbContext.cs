@@ -13,6 +13,8 @@ public partial class InventoryDbContext : DbContext
 
     public virtual DbSet<InventoryBatch> InventoryBatches { get; set; }
 
+    public virtual DbSet<InventoryReceiptCommand> InventoryReceiptCommands { get; set; }
+
     public virtual DbSet<Location> Locations { get; set; }
 
     public virtual DbSet<OpenedPieceLot> OpenedPieceLots { get; set; }
@@ -24,6 +26,31 @@ public partial class InventoryDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<InventoryReceiptCommand>(entity =>
+        {
+            entity.HasKey(value => value.Id).HasName("inventory_receipt_commands_pkey");
+            entity.ToTable("inventory_receipt_commands", "inventory", table =>
+            {
+                table.HasCheckConstraint("chk_inventory_receipt_command_status", "status in ('Pending','Completed')");
+            });
+            entity.HasIndex(value => value.Key, "uq_inventory_receipt_commands_key").IsUnique();
+            entity.HasIndex(value => value.StockTransactionId, "uq_inventory_receipt_commands_stock_transaction")
+                .IsUnique().HasFilter("(stock_transaction_id IS NOT NULL)");
+            entity.Property(value => value.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(value => value.Key).HasColumnName("key");
+            entity.Property(value => value.RequestHash).HasMaxLength(128).HasColumnName("request_hash");
+            entity.Property(value => value.Status).HasMaxLength(50).HasColumnName("status");
+            entity.Property(value => value.BatchId).HasColumnName("batch_id");
+            entity.Property(value => value.StockTransactionId).HasColumnName("stock_transaction_id");
+            entity.Property(value => value.ResponseBatchQuantity).HasColumnName("response_batch_quantity");
+            entity.Property(value => value.ResponseStatusCode).HasColumnName("response_status_code");
+            entity.Property(value => value.ResponseBody).HasColumnType("jsonb").HasColumnName("response_body");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(value => value.LastSeenAt).HasColumnType("timestamp without time zone").HasColumnName("last_seen_at");
+            entity.HasOne<InventoryBatch>().WithMany().HasForeignKey(value => value.BatchId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<StockTransaction>().WithMany().HasForeignKey(value => value.StockTransactionId).OnDelete(DeleteBehavior.Restrict);
+        });
 
         modelBuilder.Entity<InventoryBatch>(entity =>
         {

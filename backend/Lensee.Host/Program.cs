@@ -261,6 +261,7 @@ builder.Services.AddScoped<IAppEventHandler<PaymentWorkflowChangedEvent>, Paymen
 builder.Services.AddScoped<IAppEventHandler<OperationCorrectionChangedEvent>, OperationCorrectionNotificationHandler>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<RefreshTokenSessionService>();
 builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<CatalogMutationTransaction>();
@@ -275,6 +276,9 @@ else
     builder.Services.AddScoped<ICatalogEventPublisher, TransactionalCatalogEventPublisher>();
 }
 builder.Services.AddScoped<StockLedgerService>();
+builder.Services.AddScoped<InventoryReceiptCommandService>();
+builder.Services.AddScoped<PaymentIdempotencyService>();
+builder.Services.AddScoped<StocktakeBalanceLockService>();
 builder.Services.AddScoped<MerchantBalanceService>();
 builder.Services.AddScoped<MerchantBatchHistoryService>();
 builder.Services.AddScoped<MerchantExpiryRecallService>();
@@ -408,6 +412,10 @@ builder.Services.AddAuthorization(options =>
 
     options.AddPolicy("operations.write", policy =>
         policy.RequireClaim("permission", LenseePermissions.OperationsWrite));
+
+    options.AddPolicy("crm.write", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.OperationsWrite));
 
     options.AddPolicy("operations.corrections.request", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
@@ -693,6 +701,7 @@ static async Task RunDatabaseMigrationsWithAdvisoryLockAsync(WebApplication app)
             create schema if not exists shared;
         """);
 
+        await EnsureNoHistoricalPendingPaymentIdempotencyKeysAsync(services);
         await EnsurePreMigrationCompatibilityAsync(services);
 
         await services.GetRequiredService<SharedDbContext>().Database.MigrateAsync();
@@ -810,6 +819,59 @@ static async Task EnsurePreMigrationCompatibilityAsync(IServiceProvider services
 
     // Fresh databases must let EF migrations create payments.financial_adjustments.
     // Legacy databases are handled by post-migration compatibility.
+}
+
+static async Task EnsureNoHistoricalPendingPaymentIdempotencyKeysAsync(IServiceProvider services)
+{
+    var paymentsDbContext = services.GetRequiredService<PaymentsDbContext>();
+    if (!paymentsDbContext.Database.IsRelational())
+    {
+        return;
+    }
+
+    var connection = paymentsDbContext.Database.GetDbConnection();
+    var openedHere = connection.State != System.Data.ConnectionState.Open;
+    if (openedHere)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select id, scope, created_at, last_seen_at
+            from payments.payment_idempotency_keys
+            where status = 'Pending'
+            order by created_at, id
+            limit 20;
+            """;
+        var pending = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            pending.Add($"id={reader.GetGuid(0)}, scope={reader.GetString(1)}, created_at={reader.GetDateTime(2):O}, last_seen_at={reader.GetDateTime(3):O}");
+        }
+
+        if (pending.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Migration aborted because historical payment idempotency keys are Pending. " +
+                "Resolve them explicitly using the payment idempotency reconciliation runbook before retrying: " +
+                string.Join("; ", pending));
+        }
+    }
+    catch (PostgresException exception) when (exception.SqlState == "42P01")
+    {
+        // The payment idempotency table is created by a later migration on a fresh database.
+    }
+    finally
+    {
+        if (openedHere)
+        {
+            await connection.CloseAsync();
+        }
+    }
 }
 
 static async Task BaselineExistingSchemaAsync(IServiceProvider services)

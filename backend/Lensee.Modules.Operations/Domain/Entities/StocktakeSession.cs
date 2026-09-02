@@ -7,6 +7,8 @@ public partial class StocktakeSession
 {
     public Guid Id { get; set; }
 
+    public uint ConcurrencyVersion { get; private set; }
+
     public Guid LocationId { get; set; }
 
     public DateTime SessionDate { get; set; }

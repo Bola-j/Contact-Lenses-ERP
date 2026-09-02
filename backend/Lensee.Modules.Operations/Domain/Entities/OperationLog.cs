@@ -7,6 +7,8 @@ public partial class OperationLog
 {
     public Guid Id { get; set; }
 
+    public uint ConcurrencyVersion { get; private set; }
+
     public string OperationNumber { get; set; } = null!;
 
     public string OperationType { get; set; } = null!;

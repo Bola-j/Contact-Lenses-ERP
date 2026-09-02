@@ -7,6 +7,8 @@ public partial class SupplyShipment
 {
     public Guid Id { get; set; }
 
+    public uint ConcurrencyVersion { get; private set; }
+
     public string ShipmentNumber { get; set; } = null!;
 
     public string SupplierName { get; set; } = null!;
