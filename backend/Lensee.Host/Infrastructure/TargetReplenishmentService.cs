@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Notifications.Data;
@@ -76,7 +77,7 @@ public sealed class TargetReplenishmentService
                     if (quantity > 0) { lines.Add((balance.SkuId, quantity)); mainBalances[balance.SkuId] -= quantity; }
                 }
                 if (lines.Count == 0) continue;
-                var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}", OperationType = "WarehouseTransfer", Status = "Draft", SourceLocationId = main.Id, DestinationLocationId = destination.Id, Notes = "Target-stock replenishment", CreatedBy = Guid.Empty, CreatedActorName = "System - Target replenishment", CreatedAt = now, AutomationType = "TargetReplenishment" };
+                var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}", OperationType = "WarehouseTransfer", Status = "Draft", SourceLocationId = main.Id, DestinationLocationId = destination.Id, Notes = "Target-stock replenishment", CreatedBy = Guid.Empty, CreatedActorName = "System - Target replenishment", CreatedAt = now, AutomationType = "TargetReplenishment" };
                 foreach (var line in lines)
                 {
                     var sku = await _catalog.Skus.Include(value => value.Product).FirstAsync(value => value.Id == line.SkuId, cancellationToken);

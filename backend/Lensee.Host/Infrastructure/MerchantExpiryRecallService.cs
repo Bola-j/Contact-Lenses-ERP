@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
@@ -281,7 +282,7 @@ public sealed class MerchantExpiryRecallService
         var operation = new OperationLog
         {
             Id = Guid.NewGuid(),
-            OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}",
+            OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}",
             OperationType = "Return",
             Status = "Draft",
             SourceLocationId = receivingLocationId,
