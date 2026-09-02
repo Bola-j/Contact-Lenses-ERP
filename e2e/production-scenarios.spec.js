@@ -12,6 +12,7 @@ const {
   latestOperationId,
   apiRequest,
   apiJson,
+  accountantIdByUsername,
   expectOneTransitionSucceeds,
   expectNoNegativeStock
 } = require("./support/helpers");
@@ -142,10 +143,11 @@ test("production: payment approval race allows one terminal transition", async (
   const { response: usersResponse, data: userList } = await apiJson(page, "GET", "/api/v1/users?page=1&pageSize=100");
   expect(usersResponse.ok()).toBeTruthy();
   const userItems = Array.isArray(userList) ? userList : userList?.items || userList?.data || [];
-  const accountant = userItems.find((user) => user.username === users.accountant.username || user.role === "Accountant");
-  expect(accountant).toBeTruthy();
-  const assignResponse = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountant.id });
-  expect(assignResponse.ok()).toBeTruthy();
+  const accountantId = await accountantIdByUsername(page);
+  expect(userItems.some((user) => user.id === accountantId && user.username === users.accountant.username)).toBeTruthy();
+  const assignResponse = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
+  const assignBody = await assignResponse.text();
+  expect(assignResponse.ok(), `Assign payment ${payment.id} to ${users.accountant.username} failed with HTTP ${assignResponse.status()}: ${assignBody}`).toBeTruthy();
 
   await logout(page);
   await login(page, users.accountant);

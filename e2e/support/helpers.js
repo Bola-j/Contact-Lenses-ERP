@@ -40,7 +40,9 @@ function makeRunData(prefix = "E2E") {
 async function installApiBase(page) {
   await page.addInitScript((value) => {
     window.localStorage.setItem("lensee.apiBase", value);
-    window.localStorage.setItem("lensee.language", "en");
+    if (!window.localStorage.getItem("lensee.language")) {
+      window.localStorage.setItem("lensee.language", "en");
+    }
   }, apiBaseUrl);
   page.on("pageerror", (error) => {
     throw error;
@@ -79,10 +81,35 @@ async function logout(page) {
 async function gotoRoute(page, route) {
   await page.goto(`/#${route}`);
   await expect(page.locator("#view")).toBeVisible();
+  await waitForRouteReady(page, route);
 }
 
 async function expectNotice(page, text) {
   await expect(page.locator("#notification-area")).toContainText(text, { timeout: 20_000 });
+}
+
+async function waitForRouteReady(page, route) {
+  const path = String(route).split("?")[0];
+  if (path === "/operations") {
+    await expect(page.locator("#operation-rows")).toBeVisible();
+    if (await page.locator("#operation-form").isVisible().catch(() => false)) {
+      await expect(page.locator("#op-type")).toBeVisible();
+      await expect.poll(async () => page.locator("#op-source option").count(), { timeout: 20_000 }).toBeGreaterThan(0);
+      await expect(page.locator(".line-editor-row").first()).toBeVisible();
+    }
+    return;
+  }
+
+  if (path === "/supply") {
+    await expect(page.locator("#supply-rows")).toBeVisible();
+    await expect(page.locator(".supply-line-row").first()).toBeVisible().catch(() => undefined);
+    return;
+  }
+
+  if (path === "/payments") {
+    await expect(page.locator("#payment-rows")).toBeVisible();
+    await expect(page.locator("#payment-history-rows")).toBeVisible();
+  }
 }
 
 async function selectOptionByText(select, textOrRegex) {
@@ -251,11 +278,8 @@ async function selectSupplyLineSku(row, textOrRegex) {
   const availableResults = results.locator(".op-line-search-result:not([disabled])");
   await expect(availableResults.first()).toBeVisible({ timeout: 25_000 });
   const result = availableResults.filter({ hasText: textOrRegex }).first();
-  if (await result.isVisible().catch(() => false)) {
-    await result.click();
-  } else {
-    await availableResults.first().click();
-  }
+  await expect(result, `Expected supply SKU search result matching ${String(textOrRegex)}`).toBeVisible({ timeout: 25_000 });
+  await result.click();
   await expect(hiddenSku).not.toHaveValue("");
 }
 
@@ -337,19 +361,33 @@ async function selectOperationLineSku(row, textOrRegex) {
   const search = row.locator(".op-line-search");
   const results = row.locator(".op-line-search-results");
   await expect(search).toBeVisible();
+  await waitForOperationSkuOption(row, textOrRegex);
   const query = textOrRegex instanceof RegExp ? textOrRegex.source.replace(/\\/g, "") : String(textOrRegex);
   await search.fill(query);
   await expect(results).toBeVisible();
   const availableResults = results.locator(".op-line-search-result:not([disabled])");
   await expect(availableResults.first()).toBeVisible({ timeout: 25_000 });
   const result = availableResults.filter({ hasText: textOrRegex }).first();
-  if (await result.isVisible().catch(() => false)) {
-    await result.click();
-  } else {
-    await availableResults.first().click();
-  }
+  await expect(result, `Expected operation SKU search result matching ${String(textOrRegex)}`).toBeVisible({ timeout: 25_000 });
+  await result.click();
   await expect(hiddenSku).not.toHaveValue("");
   await expect(row.locator(".op-line-resolved")).toContainText(/Resolved SKU/i);
+}
+
+async function waitForOperationSkuOption(row, textOrRegex) {
+  const productSelect = row.locator(".op-line-product");
+  if (!await productSelect.isVisible().catch(() => false)) {
+    return;
+  }
+
+  const source = textOrRegex instanceof RegExp ? textOrRegex.source : escapeRegex(String(textOrRegex));
+  const flags = textOrRegex instanceof RegExp ? textOrRegex.flags : "i";
+  await expect.poll(async () => {
+    return await productSelect.locator("option").evaluateAll((options, args) => {
+      const re = new RegExp(args.source, args.flags);
+      return Array.from(options).some((option) => re.test(option.textContent || ""));
+    }, { source, flags });
+  }, { timeout: 30_000 }).toBeTruthy();
 }
 
 async function waitForStockOptions(row, textOrRegex) {
@@ -419,12 +457,16 @@ async function getAuth(page) {
 
 async function apiRequest(page, method, path, body) {
   const auth = await getAuth(page);
+  const headers = {
+    "Content-Type": "application/json",
+    ...(auth?.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {})
+  };
+  if (method.toUpperCase() !== "GET" && path.startsWith("/api/v1/payments")) {
+    headers["Idempotency-Key"] = randomUuid();
+  }
   const response = await page.request.fetch(`${apiBaseUrl}${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(auth?.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {})
-    },
+    headers,
     data: body
   });
   return response;
@@ -457,6 +499,59 @@ async function latestOperationId(page, operationType, status) {
     operation.operationType === operationType && (!status || operation.status === status));
   expect(match, `Expected latest operation ${operationType}${status ? ` in ${status}` : ""}`).toBeTruthy();
   return match.id;
+}
+
+function operationRowByNumber(page, operationNumber) {
+  return page.locator("#operation-rows tr[data-operation-number]").filter({ hasText: operationNumber }).first();
+}
+
+async function runOperationActionByNumber(page, operationNumber, labelRegex) {
+  const showCompleted = page.locator("#operations-show-completed");
+  if (await showCompleted.isVisible().catch(() => false)) {
+    await showCompleted.check({ force: true }).catch(() => undefined);
+  }
+  const row = operationRowByNumber(page, operationNumber);
+  await expect(row).toBeVisible();
+  const button = row.getByRole("button", { name: labelRegex });
+  const operationId = await button.getAttribute("data-op-id");
+  const action = await button.getAttribute("data-op-action");
+  const responsePromise = page.waitForResponse((response) =>
+    Boolean(operationId) && Boolean(action) &&
+    response.url().includes(`/api/v1/operations/${operationId}/${action}`) &&
+    response.request().method() === "POST", { timeout: 30_000 });
+  await button.click();
+  const response = await responsePromise;
+  if (!response.ok()) {
+    throw new Error(`Operation ${operationNumber} action ${action} failed with HTTP ${response.status()}: ${await response.text()}`);
+  }
+  await expect(page.locator("#operation-rows")).toContainText(operationNumber, { timeout: 20_000 });
+  return response;
+}
+
+async function paymentForOperation(page, operationId) {
+  const { response, data } = await apiJson(page, "GET", `/api/v1/payments?operationId=${encodeURIComponent(operationId)}&page=1&pageSize=10`);
+  expect(response.ok()).toBeTruthy();
+  const items = Array.isArray(data) ? data : data?.items || data?.data || [];
+  const match = items.find((item) => String(item.operationId) === String(operationId));
+  expect(match, `Expected payment log for operation ${operationId}`).toBeTruthy();
+  return match;
+}
+
+async function accountantIdByUsername(page, username = users.accountant.username) {
+  const { response, data } = await apiJson(page, "GET", "/api/v1/users?page=1&pageSize=100");
+  expect(response.ok()).toBeTruthy();
+  const items = Array.isArray(data) ? data : data?.items || data?.data || [];
+  const accountant = items.find((user) => user.username === username && user.role === "Accountant" && user.isActive !== false);
+  expect(accountant, `Expected active accountant user ${username}`).toBeTruthy();
+  return accountant.id;
+}
+
+function paymentQueueRowById(page, paymentId) {
+  return page.locator(`#payment-rows tr[data-payment-id="${paymentId}"]`).first();
+}
+
+function paymentHistoryRowById(page, paymentId) {
+  return page.locator(`#payment-history-rows tr[data-payment-id="${paymentId}"]`).first();
 }
 
 async function expectOneTransitionSucceeds(page, requests) {
@@ -496,6 +591,16 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function randomUuid() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (marker) => {
+    const value = Math.floor(Math.random() * 16);
+    return (marker === "x" ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
 module.exports = {
   apiBaseUrl,
   users,
@@ -515,6 +620,8 @@ module.exports = {
   createOperationDraft,
   createSupplyReceipt,
   runLatestOperationAction,
+  runOperationActionByNumber,
+  operationRowByNumber,
   selectOperationLineSku,
   waitForStockOptions,
   createChangeDraft,
@@ -524,6 +631,10 @@ module.exports = {
   apiRequest,
   apiJson,
   latestOperationId,
+  paymentForOperation,
+  accountantIdByUsername,
+  paymentQueueRowById,
+  paymentHistoryRowById,
   expectOneTransitionSucceeds,
   getStockBalances,
   expectNoNegativeStock,

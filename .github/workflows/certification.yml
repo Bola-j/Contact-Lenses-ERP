@@ -1,0 +1,144 @@
+name: Certification Evidence
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  phase4-10-static-image-config:
+    name: Certification / Phase 4-10 static image config
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup-certification
+
+      - name: Run Phase 4-10 static image config validation
+        run: pwsh -NoProfile -File scripts/verify-phase4-10.ps1
+
+      - name: Upload Phase 4-10 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-phase4-10-static-image-config
+          path: artifacts/certification/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  phase0-3-runtime:
+    name: Certification / Phase 0-3 runtime
+    needs: phase4-10-static-image-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up toolchains and browsers
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+
+      - name: Run Phase 0-3 runtime certification
+        run: pwsh -NoProfile -File scripts/verify-phase0-3-runtime.ps1
+
+      - name: Upload Phase 0-3 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-phase0-3-runtime
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  complete-browser-suite:
+    name: Certification / Complete browser suite
+    needs: phase4-10-static-image-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up toolchains and browsers
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+
+      - name: Reset isolated E2E stack
+        run: pwsh -NoProfile -File scripts/e2e-setup.ps1
+
+      - name: Run complete browser certification suite
+        env:
+          LENSEE_E2E_SKIP_WEBSERVER: "1"
+        run: npm run e2e
+
+      - name: Collect bounded browser Compose logs
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification/browser-compose-logs
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/certification/browser-compose-logs/compose-ps.txt 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/certification/browser-compose-logs/db.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/certification/browser-compose-logs/api.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/certification/browser-compose-logs/frontend.log 2>&1 || true
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-complete-browser-suite
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Clean up isolated E2E stack
+        if: always()
+        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
+
+  recovery-drill:
+    name: Certification / Recovery drill
+    needs: phase4-10-static-image-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup-certification
+
+      - name: Run recovery drill
+        run: pwsh -NoProfile -File scripts/verify-recovery-drill.ps1
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-recovery-drill
+          path: artifacts/certification/**
+          if-no-files-found: warn
+          retention-days: 30

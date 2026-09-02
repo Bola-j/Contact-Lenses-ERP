@@ -2,7 +2,8 @@ const { test, expect } = require("@playwright/test");
 const {
   installApiBase, login, logout, users, makeRunData, gotoRoute, expectNotice,
   selectOptionByText, ensureCoreData, createOperationDraft,
-  runLatestOperationAction, createChangeDraft, expectDownload
+  runLatestOperationAction, runOperationActionByNumber, createChangeDraft, expectDownload,
+  accountantIdByUsername, paymentForOperation, paymentQueueRowById, paymentHistoryRowById
 } = require("./support/helpers");
 
 test.describe.configure({ mode: "serial" });
@@ -46,13 +47,21 @@ test("AUTH-010/012/NFR/PERM: deep links, language persistence, responsive shell,
   await gotoRoute(page, "/unknown-route");
   await expect(page.locator("#view")).toBeVisible();
   await page.locator("#language-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ar-EG");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ar-EG");
+  await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await gotoRoute(page, "/operations");
+  // The unknown-route assertion above already verifies a cold deep link. Keep
+  // the responsive/role-boundary checks in the same authenticated SPA session
+  // so they do not race refresh-cookie restoration on every navigation.
+  await page.evaluate(() => { location.hash = "/operations"; });
   await expect(page.locator("#view")).toBeVisible();
+  await expect(page.locator("#operation-rows")).toBeVisible();
   await expect.soft.poll(async () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
   await logout(page);
 
@@ -63,7 +72,7 @@ test("AUTH-010/012/NFR/PERM: deep links, language persistence, responsive shell,
     ["onlineClerk", /Online/i]
   ]) {
     await login(page, users[role]);
-    await gotoRoute(page, "/inventory");
+    await page.evaluate(() => { location.hash = "/inventory"; });
     await expect(page.locator("#view")).toBeVisible();
     await expect(page.locator("#inventory-locations")).toContainText(location);
     await expect(page.locator("#nav a", { hasText: "Admin" })).toHaveCount(0);
@@ -71,9 +80,9 @@ test("AUTH-010/012/NFR/PERM: deep links, language persistence, responsive shell,
   }
 
   await login(page, users.accountant);
-  await gotoRoute(page, "/catalog");
+  await page.evaluate(() => { location.hash = "/catalog"; });
   await expect(page.locator("#product-form")).toHaveCount(0);
-  await gotoRoute(page, "/inventory");
+  await page.evaluate(() => { location.hash = "/inventory"; });
   await expect(page.locator("#inventory-balances")).toHaveCount(0);
 });
 
@@ -183,24 +192,27 @@ test("PAY: accountant draft and admin approval are visible in queue, detail, and
     lot: data.mainLot, expiry: data.expiry, supplier: data.runId + " Supplier", invoice: data.runId + "-INV"
   });
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale", skuText: data.product, quantity: "2", price: "125",
     stockText: data.mainLot, merchantText: data.merchant, paymentMethod: "Installment", sourceText: /Roxy|Main/i
   });
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  const payment = await paymentForOperation(page, sale.id);
+  const accountantId = await accountantIdByUsername(page);
 
   await gotoRoute(page, "/payments");
-  await expect(page.locator("#payment-rows tr", { hasText: "Installment" }).first()).toBeVisible();
-  await selectOptionByText(page.locator("#payment-accountant"), /accountant/i);
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: /Assign/i }).click();
+  const paymentRow = paymentQueueRowById(page, payment.id);
+  await expect(paymentRow).toBeVisible();
+  await page.locator("#payment-accountant").selectOption(accountantId);
+  await paymentRow.getByRole("button", { name: /Assign/i }).click();
   await expectNotice(page, /assigned|Payment log/i);
   await logout(page);
 
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("50");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-11");
@@ -211,10 +223,13 @@ test("PAY: accountant draft and admin approval are visible in queue, detail, and
 
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Details" }).click();
-  await page.locator("[data-sublog-approve]").first().click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  const paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await paymentDetail.locator("[data-sublog-approve]").first().click();
   await expectNotice(page, /Payment approved/i);
-  await expect(page.locator("#payment-rows")).toContainText(/Completed|Paid/i);
+  // The test drafts 50 against a 250 sale; approval records the installment
+  // but correctly leaves the payment log pending until the liability is paid.
+  await expect(paymentHistoryRowById(page, payment.id)).toContainText("PendingAccountant");
 });
 
 test("STK/NOT/REPORT: stocktake confirmation, alerts, read state, and CSV export are UI reachable", async ({ page }) => {
@@ -276,7 +291,9 @@ test("ROLE-CLEVEL/ACCOUNTANT: oversight and accounting users execute their own r
   await gotoRoute(page, "/payments");
   await expect(page.locator("#payment-rows")).toBeVisible();
   await gotoRoute(page, "/reports");
-  await expect(page.locator("#report-stock")).toBeVisible();
+  // Accountants can use financial/operations reports, but stock reporting is
+  // deliberately withheld by both the UI and the reports endpoint.
+  await expect(page.locator("#report-stock")).toHaveCount(0);
   await gotoRoute(page, "/operations");
   await expect(page.locator("#operation-form")).toHaveCount(0);
   await gotoRoute(page, "/catalog");
@@ -317,32 +334,61 @@ test("ROLE-CLERKS: Roxy, Retail, and Online clerks create UI drafts within their
   await logout(page);
 
   const clerks = [
-    [users.roxyClerk, /Roxy/i, /Roxy|Main/i],
-    [users.retailClerk, /Retail|Mohamed/i, /Retail|Mohamed/i],
-    [users.onlineClerk, /Online/i, /Online/i]
+    {
+      user: users.roxyClerk,
+      locationText: /Roxy/i,
+      draft: {
+        type: "InventoryReceipt",
+        skuText: data.product,
+        quantity: "1",
+        lot: `${data.mainLot}-ROXY`,
+        expiry: data.expiry,
+        supplier: `${data.runId} Roxy supplier`,
+        invoice: `${data.runId}-ROXY-INV`
+      }
+    },
+    {
+      user: users.retailClerk,
+      locationText: /Retail|Mohamed/i,
+      draft: {
+        type: "RetailSale",
+        skuText: data.product,
+        quantity: "1",
+        price: "10",
+        stockText: data.mainLot,
+        sourceText: /Retail|Mohamed/i,
+        paymentMethod: "CashHandToHand",
+        buyerName: `${data.runId} retail buyer`
+      }
+    },
+    {
+      user: users.onlineClerk,
+      locationText: /Online/i,
+      draft: {
+        type: "RetailSale",
+        skuText: data.product,
+        quantity: "1",
+        price: "10",
+        stockText: data.mainLot,
+        sourceText: /Online/i,
+        paymentMethod: "CashHandToHand",
+        buyerName: `${data.runId} online buyer`
+      }
+    }
   ];
 
-  for (const [user, locationText, sourceText] of clerks) {
+  for (const { user, locationText, draft } of clerks) {
     await login(page, user);
     await gotoRoute(page, "/inventory");
     await expect(page.locator("#inventory-locations")).toContainText(locationText);
     await gotoRoute(page, "/operations");
     await expect(page.locator("#operation-form")).toBeVisible();
-    await createOperationDraft(page, {
-      type: "RetailSale",
-      skuText: data.product,
-      quantity: "1",
-      price: "10",
-      stockText: data.mainLot,
-      sourceText,
-      paymentMethod: "CashHandToHand",
-      buyerName: data.runId + " " + user.username + " buyer"
-    });
-    await expect(page.locator("#operation-rows")).toContainText("RetailSale");
-    await gotoRoute(page, "/payments");
-    await expect(page.locator("#payment-form")).toHaveCount(0);
-    await gotoRoute(page, "/reports");
-    await expect(page.locator("#report-stock")).toHaveCount(0);
+    await createOperationDraft(page, draft);
+    await expect(page.locator("#operation-rows")).toContainText(draft.type);
+    await page.goto("/#/payments");
+    await expect(page.locator("#view")).toContainText(/Access denied/i);
+    await page.goto("/#/reports");
+    await expect(page.locator("#view")).toContainText(/Access denied/i);
     await logout(page);
   }
 });

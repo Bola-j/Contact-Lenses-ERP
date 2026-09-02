@@ -10,7 +10,12 @@ const {
   selectOptionByText,
   ensureCoreData,
   createOperationDraft,
-  runLatestOperationAction
+  runLatestOperationAction,
+  runOperationActionByNumber,
+  accountantIdByUsername,
+  paymentForOperation,
+  paymentQueueRowById,
+  paymentHistoryRowById
 } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
@@ -32,7 +37,7 @@ async function createInstallmentSale(page, data) {
   });
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
 
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale",
     skuText: data.product,
     quantity: "2",
@@ -42,26 +47,29 @@ async function createInstallmentSale(page, data) {
     paymentMethod: "Installment",
     sourceText: /Roxy|Main/i
   });
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  return sale;
 }
 
 test("payments: assignment, accountant draft, admin reject/approve, balance, and completed unassignable", async ({ page }) => {
   const data = makeRunData("PAY");
-  await createInstallmentSale(page, data);
+  const sale = await createInstallmentSale(page, data);
+  const payment = await paymentForOperation(page, sale.id);
+  const accountantId = await accountantIdByUsername(page);
 
   await gotoRoute(page, "/payments");
-  await expect(page.locator("#payment-rows")).toContainText("Installment");
-  const paymentRow = page.locator("#payment-rows tr", { hasText: "Installment" }).first();
-  await selectOptionByText(page.locator("#payment-accountant"), /accountant/i);
+  const paymentRow = paymentQueueRowById(page, payment.id);
+  await expect(paymentRow).toBeVisible();
+  await page.locator("#payment-accountant").selectOption(accountantId);
   await paymentRow.getByRole("button", { name: /Assign/i }).click();
   await expectNotice(page, /assigned|Payment log/i);
   await logout(page);
 
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("50");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-07");
@@ -72,8 +80,9 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
 
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Details" }).click();
-  await page.locator("[data-sublog-reject]").first().click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  let paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await paymentDetail.locator("[data-sublog-reject]").first().click();
   await page.locator(".dialog-input").fill("Bad receipt image");
   await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();
   await expectNotice(page, /Payment rejected/i);
@@ -82,7 +91,7 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
 
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("250");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-07");
@@ -93,13 +102,14 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
 
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Details" }).click();
-  await page.locator("[data-sublog-approve]").first().click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await paymentDetail.locator("[data-sublog-approve]").first().click();
   await expectNotice(page, /Payment approved/i);
-  await expect(page.locator("#payment-rows tr", { hasText: "Installment" }).first()).toContainText("Completed");
-  await expect(page.locator("#payment-rows tr", { hasText: "Completed" }).first().getByRole("button", { name: "Assign" })).toHaveCount(0);
+  await expect(paymentHistoryRowById(page, payment.id)).toContainText("Completed");
+  await expect(paymentQueueRowById(page, payment.id)).toHaveCount(0);
 
   await selectOptionByText(page.locator("#payment-merchant"), data.merchant);
   await page.locator("#load-merchant-balance").click();
-  await expect(page.locator("#merchant-balance-panel")).toContainText(/Balance|Payments/i);
+  await expect(page.locator("#merchant-balance-panel")).toContainText(/Remaining|Sales|Net collected/i);
 });
