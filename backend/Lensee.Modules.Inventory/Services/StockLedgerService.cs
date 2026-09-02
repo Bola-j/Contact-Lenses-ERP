@@ -39,6 +39,37 @@ public sealed class StockLedgerService
             cancellationToken);
     }
 
+    public async Task<InventoryReceiptLedgerResult> ReceiveReceiptWithLedgerAsync(
+        Guid locationId,
+        Guid skuId,
+        int quantity,
+        Guid userId,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(quantity, nameof(quantity));
+        var now = _clock.EgyptNow;
+        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+        if (batch is null)
+        {
+            batch = new InventoryBatch { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, LotNumber = NormalizeBlank(lotNumber), ExpiryDate = expiryDate, Quantity = 0, Notes = NormalizeBlank(notes), CreatedBy = userId, CreatedAt = now };
+            _dbContext.InventoryBatches.Add(batch);
+        }
+        else if (!string.IsNullOrWhiteSpace(notes))
+        {
+            batch.Notes = notes.Trim();
+        }
+
+        batch.Quantity += quantity;
+        var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
+        ApplyAvailableDelta(balance, quantity, now);
+        var transaction = AddTransaction(locationId, skuId, InventoryTransactionTypes.Receipt, quantity, userId, null, now);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return new InventoryReceiptLedgerResult(batch, transaction.Id);
+    }
+
     public async Task<InventoryBatch> ReceiveSupplyAsync(
         Guid locationId,
         Guid skuId,
@@ -1034,10 +1065,10 @@ public sealed class StockLedgerService
         balance.LastUpdated = now;
     }
 
-    private void AddTransaction(Guid locationId, Guid skuId, string transactionType, int quantityChange, Guid userId, Guid? referenceOperationId, DateTime now)
+    private StockTransaction AddTransaction(Guid locationId, Guid skuId, string transactionType, int quantityChange, Guid userId, Guid? referenceOperationId, DateTime now)
     {
         EnsureTransactionType(transactionType);
-        _dbContext.StockTransactions.Add(new StockTransaction
+        var transaction = new StockTransaction
         {
             Id = Guid.NewGuid(),
             LocationId = locationId,
@@ -1047,7 +1078,9 @@ public sealed class StockLedgerService
             ReferenceOperationId = referenceOperationId,
             UserId = userId,
             CreatedAt = now
-        });
+        };
+        _dbContext.StockTransactions.Add(transaction);
+        return transaction;
     }
 
     private static void EnsurePositive(int value, string name)
@@ -1072,5 +1105,7 @@ public sealed class StockLedgerService
 }
 
 public sealed record BatchAllocation(Guid BatchId, int Quantity, string? LotNumber = null, DateOnly? ExpiryDate = null);
+
+public sealed record InventoryReceiptLedgerResult(InventoryBatch Batch, Guid StockTransactionId);
 
 public sealed record PieceAllocation(Guid OpenedPieceLotId, Guid? SourceBatchId, int Quantity, string? LotNumber, DateOnly? BatchExpiryDate, DateOnly? PieceExpiryDate, bool OpenedPack);

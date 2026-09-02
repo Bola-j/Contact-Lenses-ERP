@@ -87,20 +87,23 @@ public static class ReportsEndpoints
         PaymentsDbContext paymentsDbContext,
         CancellationToken cancellationToken)
     {
-        var totalSales = await operationsDbContext.OperationLogs
+        var operations = await operationsDbContext.OperationLogs
             .Include(operation => operation.OperationLines)
-            .Where(operation => !operation.IsDeleted && operation.Status == Completed && (operation.OperationType == WholesaleSale || operation.OperationType == RetailSale))
-            .SumAsync(operation => operation.OperationLines.Sum(line => line.LineTotal), cancellationToken);
-
-        var paymentLogs = await paymentsDbContext.MainPaymentLogs
-            .Where(log => !log.IsDeleted)
-            .Select(log => new { log.TotalAmount, log.AmountPaid })
+            .Where(operation => !operation.IsDeleted)
             .ToListAsync(cancellationToken);
 
-        var actualCollected = paymentLogs.Sum(log => log.AmountPaid);
-        var remainingReceivable = paymentLogs.Sum(log => Math.Max(log.TotalAmount - log.AmountPaid, 0));
+        var installmentSubLogs = await paymentsDbContext.InstallmentSubLogs
+            .Include(sub => sub.MainLog)
+            .Where(sub => !sub.MainLog.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var cashRecords = await paymentsDbContext.CashRecords
+            .Where(record => record.Status == Completed)
+            .ToListAsync(cancellationToken);
+        var adjustments = await paymentsDbContext.FinancialAdjustments
+            .ToListAsync(cancellationToken);
+        var projection = FinancialProjection.Calculate(operations, installmentSubLogs, cashRecords, adjustments);
 
-        return Results.Ok(new FinancialSummaryResponse(totalSales, actualCollected, remainingReceivable));
+        return Results.Ok(new FinancialSummaryResponse(projection.OperationNet, projection.PaymentsReceived - projection.CashRefunded, projection.Balance));
     }
     private static async Task<IResult> GetStockReportAsync(
         Guid? locationId,
@@ -2384,4 +2387,3 @@ internal sealed record PdfSection(
     IReadOnlyList<PdfFact>? Facts = null,
     IReadOnlyList<PdfTableSection>? Tables = null,
     string? Note = null);
-

@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  core:
+    name: CI / Core
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup-certification
+
+      - name: Restore .NET solution
+        run: dotnet restore Lensee.slnx
+
+      - name: Build Release with warnings as errors
+        run: dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror
+
+      - name: Run backend unit and contract tests
+        run: dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
+
+      - name: Run PostgreSQL integration tests
+        env:
+          LENSEE_RUN_POSTGRES_TESTS: "true"
+        run: dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
+
+      - name: Verify formatting
+        run: dotnet format Lensee.slnx --verify-no-changes --no-restore
+
+      - name: Run frontend guards
+        run: npm run check
+
+      - name: Build deterministic frontend
+        env:
+          LENSEE_API_BASE_URL: http://127.0.0.1:5000
+        run: npm run vercel:build
+
+  full-acceptance:
+    name: CI / Full acceptance
+    needs: core
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up toolchains and browsers
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+
+      - name: Reset isolated E2E stack
+        run: pwsh -NoProfile -File scripts/e2e-setup.ps1
+
+      - name: Run complete Playwright acceptance suite
+        env:
+          LENSEE_E2E_SKIP_WEBSERVER: "1"
+        run: npm run e2e
+
+      - name: Collect bounded E2E Compose logs
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci/e2e-compose-logs
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/ci/e2e-compose-logs/compose-ps.txt 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/ci/e2e-compose-logs/db.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/ci/e2e-compose-logs/api.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/ci/e2e-compose-logs/frontend.log 2>&1 || true
+
+      - name: Upload failed acceptance evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-full-acceptance-failure
+          path: |
+            playwright-report/**
+            test-results/**
+            artifacts/ci/e2e-compose-logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Clean up isolated E2E stack
+        if: always()
+        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
+
+  secret-scan:
+    name: CI / Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

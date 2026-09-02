@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.27" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.27" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
@@ -18,9 +19,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Lensee.Host\Lensee.Host.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Catalog\Lensee.Modules.Catalog.csproj" />
     <ProjectReference Include="..\Lensee.Modules.Payments\Lensee.Modules.Payments.csproj" />
     <ProjectReference Include="..\Lensee.Modules.Inventory\Lensee.Modules.Inventory.csproj" />
     <ProjectReference Include="..\Lensee.Modules.Operations\Lensee.Modules.Operations.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.CRM\Lensee.Modules.CRM.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Identity\Lensee.Modules.Identity.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Notifications\Lensee.Modules.Notifications.csproj" />
+    <ProjectReference Include="..\Lensee.Modules.Reporting\Lensee.Modules.Reporting.csproj" />
     <ProjectReference Include="..\Lensee.SharedKernel\Lensee.SharedKernel.csproj" />
   </ItemGroup>
 

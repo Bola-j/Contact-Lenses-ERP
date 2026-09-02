@@ -63,7 +63,7 @@ New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
 $verificationEnv = Join-Path ([System.IO.Path]::GetTempPath()) "lensee-production-config-$runId.env"
 Push-Location $repoRoot
 try {
-    "candidate-sha=$candidateSha`nstarted-at=$(Get-Date -Format o)" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt") -NoNewline
+    "candidate-sha=$candidateSha`nstarted-at=$(Get-Date -Format o)" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt")
     $statusBefore = & git status --short
     $statusBefore | Set-Content -LiteralPath (Join-Path $evidenceDirectory "git-status-before.txt")
     if (-not $AllowDirtyWorktree -and @($statusBefore).Count -gt 0) {

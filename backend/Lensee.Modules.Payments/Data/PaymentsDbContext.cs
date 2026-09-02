@@ -39,6 +39,9 @@ public partial class PaymentsDbContext : DbContext
             entity.HasIndex(e => e.PaymentDate, "idx_cash_records_date").IsDescending();
 
             entity.HasIndex(e => e.OperationId, "idx_cash_records_operation");
+            entity.HasIndex(e => e.FinancialAdjustmentId, "uq_cash_records_adjustment")
+                .IsUnique()
+                .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -47,6 +50,7 @@ public partial class PaymentsDbContext : DbContext
                 .HasPrecision(18, 4)
                 .HasColumnName("amount");
             entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.FinancialAdjustmentId).HasColumnName("financial_adjustment_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.PaymentDate)

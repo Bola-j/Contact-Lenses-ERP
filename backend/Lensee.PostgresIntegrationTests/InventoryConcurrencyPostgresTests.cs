@@ -111,6 +111,86 @@ public sealed class InventoryConcurrencyPostgresTests : IAsyncLifetime
         Assert.Single(await verification.StockTransactions.ToListAsync());
     }
 
+    [PostgreSqlIntegrationFact]
+    public async Task ReceiptCommand_UniqueKeyAndLedgerLinkPreventDuplicateCompletion()
+    {
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var key = Guid.NewGuid();
+        Guid batchId;
+        Guid transactionId;
+        await using (var setup = CreateContext())
+        {
+            setup.Locations.Add(new Location
+            {
+                Id = locationId,
+                Name = "Receipt idempotency warehouse",
+                LocationType = "MainWarehouse",
+                IsActive = true
+            });
+            await setup.SaveChangesAsync();
+
+            var receipt = await new StockLedgerService(setup, new IntegrationClock())
+                .ReceiveReceiptWithLedgerAsync(locationId, skuId, 5, userId, "receipt-key");
+            batchId = receipt.Batch.Id;
+            transactionId = receipt.StockTransactionId;
+            setup.InventoryReceiptCommands.Add(new InventoryReceiptCommand
+            {
+                Id = Guid.NewGuid(),
+                Key = key,
+                RequestHash = "A",
+                Status = "Completed",
+                BatchId = batchId,
+                StockTransactionId = transactionId,
+                ResponseBatchQuantity = 5,
+                ResponseStatusCode = 201,
+                ResponseBody = "{}",
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified),
+                LastSeenAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+            await setup.SaveChangesAsync();
+        }
+
+        await using (var duplicateKey = CreateContext())
+        {
+            duplicateKey.InventoryReceiptCommands.Add(new InventoryReceiptCommand
+            {
+                Id = Guid.NewGuid(),
+                Key = key,
+                RequestHash = "B",
+                Status = "Pending",
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified),
+                LastSeenAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+            await Assert.ThrowsAsync<DbUpdateException>(() => duplicateKey.SaveChangesAsync());
+        }
+
+        await using (var duplicateLedgerLink = CreateContext())
+        {
+            duplicateLedgerLink.InventoryReceiptCommands.Add(new InventoryReceiptCommand
+            {
+                Id = Guid.NewGuid(),
+                Key = Guid.NewGuid(),
+                RequestHash = "C",
+                Status = "Completed",
+                BatchId = batchId,
+                StockTransactionId = transactionId,
+                ResponseBatchQuantity = 5,
+                ResponseStatusCode = 201,
+                ResponseBody = "{}",
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified),
+                LastSeenAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+            await Assert.ThrowsAsync<DbUpdateException>(() => duplicateLedgerLink.SaveChangesAsync());
+        }
+
+        await using var verification = CreateContext();
+        Assert.Single(await verification.InventoryReceiptCommands.ToListAsync());
+        Assert.Equal(5, await verification.InventoryBatches.Where(batch => batch.Id == batchId).Select(batch => batch.Quantity).SingleAsync());
+        Assert.Single(await verification.StockTransactions.Where(transaction => transaction.Id == transactionId).ToListAsync());
+    }
+
     private static async Task<Exception?> CaptureAsync(Func<Task> action)
     {
         try

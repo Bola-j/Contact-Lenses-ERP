@@ -12,8 +12,12 @@ const {
   createOperationDraft,
   createSupplyReceipt,
   runLatestOperationAction,
+  runOperationActionByNumber,
   createChangeDraft,
-  expectDownload
+  expectDownload,
+  accountantIdByUsername,
+  paymentForOperation,
+  paymentQueueRowById
 } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
@@ -52,7 +56,7 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   await runLatestOperationAction(page, "WarehouseTransfer", /Ship/i);
   await runLatestOperationAction(page, "WarehouseTransfer", /Receive/i);
 
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale",
     skuText: data.product,
     quantity: "2",
@@ -62,9 +66,11 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
     paymentMethod: "Installment",
     sourceText: /Roxy|Main/i
   });
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  const payment = await paymentForOperation(page, sale.id);
+  const accountantId = await accountantIdByUsername(page);
 
   await createOperationDraft(page, {
     type: "RetailSale",
@@ -81,15 +87,15 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   await runLatestOperationAction(page, "RetailSale", /Complete/i);
 
   await gotoRoute(page, "/payments");
-  await expect(page.locator("#payment-rows")).toContainText("Installment");
-  await selectOptionByText(page.locator("#payment-accountant"), /accountant/i);
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Assign" }).click();
+  await expect(paymentQueueRowById(page, payment.id)).toBeVisible();
+  await page.locator("#payment-accountant").selectOption(accountantId);
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Assign" }).click();
   await expect(page.locator("#notification-area")).toContainText(/assigned|Payment log/i);
   await logout(page);
 
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("250");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-07");
@@ -100,9 +106,10 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
 
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "PendingAdminReview" }).first().getByRole("button", { name: "Details" }).click();
-  await expect(page.locator("[data-sublog-approve]").first()).toBeVisible();
-  await page.locator("[data-sublog-approve]").first().click({ force: true });
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  const paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await expect(paymentDetail.locator("[data-sublog-approve]").first()).toBeVisible();
+  await paymentDetail.locator("[data-sublog-approve]").first().click({ force: true });
   await expect(page.locator("#notification-area")).toContainText(/Payment approved/i);
 
   await gotoRoute(page, "/operations");

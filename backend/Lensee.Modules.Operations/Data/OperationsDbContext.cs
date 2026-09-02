@@ -186,6 +186,7 @@ public partial class OperationsDbContext : DbContext
 
         modelBuilder.Entity<OperationLog>(entity =>
         {
+            entity.Property(e => e.ConcurrencyVersion).HasColumnName("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("operation_logs_pkey");
 
             entity.ToTable("operation_logs", "operations", table =>
@@ -432,6 +433,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.SessionId).HasColumnName("session_id");
             entity.Property(e => e.SkuId).HasColumnName("sku_id");
             entity.Property(e => e.SystemQtyBefore).HasColumnName("system_qty_before");
+            entity.Property(e => e.BaselineStockRowVersion).HasColumnName("baseline_stock_row_version");
 
             entity.HasOne(d => d.Session).WithMany(p => p.StocktakeAdjustmentLines)
                 .HasForeignKey(d => d.SessionId)
@@ -441,6 +443,7 @@ public partial class OperationsDbContext : DbContext
 
         modelBuilder.Entity<StocktakeSession>(entity =>
         {
+            entity.Property(e => e.ConcurrencyVersion).HasColumnName("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("stocktake_sessions_pkey");
 
             entity.ToTable("stocktake_sessions", "operations", table =>
@@ -478,6 +481,7 @@ public partial class OperationsDbContext : DbContext
 
         modelBuilder.Entity<SupplyShipment>(entity =>
         {
+            entity.Property(e => e.ConcurrencyVersion).HasColumnName("xmin").IsRowVersion();
             entity.HasKey(e => e.Id).HasName("supply_shipments_pkey");
 
             entity.ToTable("supply_shipments", "operations", table =>
@@ -490,7 +494,9 @@ public partial class OperationsDbContext : DbContext
 
             entity.HasIndex(e => e.CreatedAt, "idx_supply_shipments_created_at").IsDescending();
             entity.HasIndex(e => e.DestinationLocationId, "idx_supply_shipments_destination");
-            entity.HasIndex(e => e.InventoryReceiptOperationId, "idx_supply_shipments_operation");
+            entity.HasIndex(e => e.InventoryReceiptOperationId, "uq_supply_shipments_operation")
+                .IsUnique()
+                .HasFilter("(inventory_receipt_operation_id IS NOT NULL)");
             entity.HasIndex(e => e.ShipmentNumber, "supply_shipments_shipment_number_key").IsUnique();
             entity.HasIndex(e => e.Status, "idx_supply_shipments_status");
 

@@ -149,16 +149,10 @@ public static class NotificationsEndpoints
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
-        var notifications = await VisibleNotifications(dbContext, currentUser)
+        await VisibleNotifications(dbContext, currentUser)
             .Where(notification => !notification.IsRead)
-            .ToListAsync(cancellationToken);
-
-        foreach (var notification in notifications)
-        {
-            notification.IsRead = true;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(notification => notification.IsRead, true), cancellationToken);
         return Results.Ok(new UnreadCountResponse(0));
     }
 
@@ -312,10 +306,22 @@ public static class NotificationsEndpoints
     {
         var userId = currentUser.UserId;
         var role = currentUser.Role;
+        var notifications = dbContext.NotificationLogs.AsQueryable();
 
-        return dbContext.NotificationLogs.Where(notification =>
-            (userId.HasValue && notification.TargetUserId == userId.Value) ||
-            (!string.IsNullOrWhiteSpace(role) && notification.TargetRole == role));
+        if (userId.HasValue && !string.IsNullOrWhiteSpace(role))
+        {
+            return notifications.Where(notification => notification.TargetUserId == userId.Value)
+                .Union(notifications.Where(notification => notification.TargetRole == role));
+        }
+
+        if (userId.HasValue)
+        {
+            return notifications.Where(notification => notification.TargetUserId == userId.Value);
+        }
+
+        return string.IsNullOrWhiteSpace(role)
+            ? notifications.Where(_ => false)
+            : notifications.Where(notification => notification.TargetRole == role);
     }
 
     private static async Task<int> AddForRolesAsync(

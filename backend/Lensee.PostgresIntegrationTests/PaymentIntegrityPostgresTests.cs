@@ -135,6 +135,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Assert.Contains("20260820090000_AddOutboxMessages", migrations);
         Assert.Contains("20260825091000_AddOutboxContractMetadata", migrations);
         Assert.Contains("20260825090000_AddOperationCorrections", migrations);
+        Assert.Contains("20260830173958_AddConcurrencyAndStocktakeBaseline", migrations);
+        Assert.Contains("20260830174008_AddFinancialAdjustmentRefundLineage", migrations);
     }
 
     [PostgreSqlIntegrationFact]
@@ -196,6 +198,115 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Assert.DoesNotContain(await verificationShared.OutboxMessages.ToListAsync(), message => message.EventType == "Catalog.BrandCreated");
     }
 
+    [PostgreSqlIntegrationFact]
+    public async Task OperationMutationAuditTransaction_RollsBackDomainVersionAndAuditOnInjectedFailure()
+    {
+        var operationId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
+        await using (var setupConnection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await setupConnection.OpenAsync();
+            await InsertOperationAsync(setupConnection, operationId, "Standard", null, "Draft");
+        }
+
+        await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var operations = CreateOperationsContext(connection);
+            await using var identity = CreateIdentityContext(connection);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => SharedDbTransaction.ExecuteAsync(
+                operations,
+                async () =>
+                {
+                    var operation = await operations.OperationLogs.SingleAsync(value => value.Id == operationId);
+                    operation.Status = "Reserved";
+                    operations.OperationVersions.Add(new OperationVersion
+                    {
+                        Id = versionId,
+                        OperationId = operationId,
+                        VersionNumber = 1,
+                        SnapshotData = "{}",
+                        Reason = "Injected failure proof",
+                        EditedBy = Guid.NewGuid(),
+                        EditedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                    });
+                    await operations.SaveChangesAsync();
+
+                    identity.AuditLogs.Add(new AuditLog
+                    {
+                        Id = auditId,
+                        EntityType = "Operation",
+                        EntityId = operationId,
+                        Action = "Confirm",
+                        ActorType = "Integration",
+                        ActorName = "Rollback proof",
+                        CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                    });
+                    await identity.SaveChangesAsync();
+                    throw new InvalidOperationException("Injected operation audit failure.");
+                },
+                CancellationToken.None,
+                identity));
+        }
+
+        await using var verificationConnection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await verificationConnection.OpenAsync();
+        await using var verificationOperations = CreateOperationsContext(verificationConnection);
+        await using var verificationIdentity = CreateIdentityContext(verificationConnection);
+        Assert.Equal("Draft", await verificationOperations.OperationLogs.Where(value => value.Id == operationId).Select(value => value.Status).SingleAsync());
+        Assert.False(await verificationOperations.OperationVersions.AnyAsync(value => value.Id == versionId));
+        Assert.False(await verificationIdentity.AuditLogs.AnyAsync(value => value.Id == auditId));
+    }
+
+    [PostgreSqlIntegrationFact]
+    public async Task OperationMutationAuditTransaction_CommitsExactlyOneAuditWithDomainState()
+    {
+        var operationId = Guid.NewGuid();
+        await using (var setupConnection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await setupConnection.OpenAsync();
+            await InsertOperationAsync(setupConnection, operationId, "Standard", null, "Draft");
+        }
+
+        await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var operations = CreateOperationsContext(connection);
+            await using var identity = CreateIdentityContext(connection);
+
+            await SharedDbTransaction.ExecuteAsync(
+                operations,
+                async () =>
+                {
+                    var operation = await operations.OperationLogs.SingleAsync(value => value.Id == operationId);
+                    operation.Status = "Reserved";
+                    await operations.SaveChangesAsync();
+                    identity.AuditLogs.Add(new AuditLog
+                    {
+                        Id = Guid.NewGuid(),
+                        EntityType = "Operation",
+                        EntityId = operationId,
+                        Action = "Confirm",
+                        ActorType = "Integration",
+                        ActorName = "Commit proof",
+                        CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+                    });
+                    await identity.SaveChangesAsync();
+                },
+                CancellationToken.None,
+                identity);
+        }
+
+        await using var verificationConnection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await verificationConnection.OpenAsync();
+        await using var verificationOperations = CreateOperationsContext(verificationConnection);
+        await using var verificationIdentity = CreateIdentityContext(verificationConnection);
+        Assert.Equal("Reserved", await verificationOperations.OperationLogs.Where(value => value.Id == operationId).Select(value => value.Status).SingleAsync());
+        Assert.Single(await verificationIdentity.AuditLogs.Where(value => value.EntityType == "Operation" && value.EntityId == operationId).ToListAsync());
+    }
+
     private static SharedDbContext CreateSharedContext(NpgsqlConnection connection) =>
         new(new DbContextOptionsBuilder<SharedDbContext>().UseNpgsql(connection).Options);
 
@@ -211,18 +322,24 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     private static OperationsDbContext CreateOperationsContext(NpgsqlConnection connection) =>
         new(new DbContextOptionsBuilder<OperationsDbContext>().UseNpgsql(connection).Options);
 
-    private static async Task InsertOperationAsync(NpgsqlConnection connection, Guid id, string recordKind, Guid? reversesOperationId)
+    private static async Task InsertOperationAsync(
+        NpgsqlConnection connection,
+        Guid id,
+        string recordKind,
+        Guid? reversesOperationId,
+        string status = "Completed")
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
             insert into operations.operation_logs
                 (id, operation_number, operation_type, status, created_by, created_at, record_kind, reverses_operation_id, is_deleted)
             values
-                (@id, @number, 'WholesaleSale', 'Completed', @user_id, now(), @record_kind, @reverses_operation_id, false);
+                (@id, @number, 'WholesaleSale', @status, @user_id, now(), @record_kind, @reverses_operation_id, false);
             """;
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("number", $"PG-{id:N}");
         command.Parameters.AddWithValue("user_id", Guid.NewGuid());
+        command.Parameters.AddWithValue("status", status);
         command.Parameters.AddWithValue("record_kind", recordKind);
         command.Parameters.AddWithValue("reverses_operation_id", (object?)reversesOperationId ?? DBNull.Value);
         await command.ExecuteNonQueryAsync();

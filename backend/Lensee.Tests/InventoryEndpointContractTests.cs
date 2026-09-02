@@ -33,7 +33,7 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
 
-        var receipt = await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        var receipt = await PostReceiptAsync(client, new
         {
             locationId = seed.LocationA,
             skuId = seed.SkuId,
@@ -102,7 +102,7 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
 
-        await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        await PostReceiptAsync(client, new
         {
             locationId = seed.LocationB,
             skuId = seed.SkuId,
@@ -223,7 +223,7 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
 
-        var response = await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        var response = await PostReceiptAsync(client, new
         {
             locationId = Guid.Empty,
             skuId = Guid.Empty,
@@ -232,6 +232,51 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("LocationId", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Receipt_RequiresAndDurablyReplaysIdempotencyKey()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+        var payload = new { locationId = seed.LocationA, skuId = seed.SkuId, packQuantity = 3, lotNumber = "replay-1" };
+
+        var missing = await client.PostAsJsonAsync("/api/v1/inventory/receipts", payload);
+        var key = Guid.NewGuid();
+        var first = await PostReceiptAsync(client, payload, key);
+        var replay = await PostReceiptAsync(client, payload, key);
+        var changed = await PostReceiptAsync(client, new { locationId = seed.LocationA, skuId = seed.SkuId, packQuantity = 4, lotNumber = "replay-1" }, key);
+        var balances = await client.GetFromJsonAsync<PagedContract<StockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.LocationA}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, replay.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, changed.StatusCode);
+        Assert.Contains(balances!.Items, value => value.LocationId == seed.LocationA && value.SkuId == seed.SkuId && value.AvailablePacks == 3);
+    }
+
+    [Fact]
+    public async Task Receipt_ReplaysCompletedCommandAfterReferencedRecordsBecomeInactive()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
+        var key = Guid.NewGuid();
+        var payload = new { locationId = seed.LocationA, skuId = seed.SkuId, packQuantity = 3, lotNumber = "inactive-replay" };
+
+        var first = await PostReceiptAsync(client, payload, key);
+        var firstBody = await first.Content.ReadFromJsonAsync<InventoryReceiptContract>();
+        await _factory.DeactivateSeedAsync(seed.LocationA, seed.SkuId);
+        var replay = await PostReceiptAsync(client, payload, key);
+        var replayBody = await replay.Content.ReadFromJsonAsync<InventoryReceiptContract>();
+        var changed = await PostReceiptAsync(client, new { locationId = seed.LocationA, skuId = seed.SkuId, packQuantity = 4, lotNumber = "inactive-replay" }, key);
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, replay.StatusCode);
+        Assert.Equal(firstBody, replayBody);
+        Assert.Equal(HttpStatusCode.Conflict, changed.StatusCode);
     }
 
     [Fact]
@@ -242,7 +287,7 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead, LenseePermissions.InventoryWrite);
 
-        var response = await client.PostAsJsonAsync("/api/v1/inventory/receipts", new
+        var response = await PostReceiptAsync(client, new
         {
             locationId = seed.LocationA,
             skuId = seed.SkuId,
@@ -250,6 +295,17 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("LocationId", await response.Content.ReadAsStringAsync());
+    }
+
+    private static Task<HttpResponseMessage> PostReceiptAsync(HttpClient client, object body, Guid? idempotencyKey = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/inventory/receipts")
+        {
+            Content = JsonContent.Create(body)
+        };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", (idempotencyKey ?? Guid.NewGuid()).ToString());
+        return client.SendAsync(request);
     }
 
     [Fact]
@@ -467,6 +523,8 @@ public sealed record InventorySeed(Guid LocationA, Guid LocationB, Guid SkuId);
 public sealed record LocationContract(Guid Id, string Name, string LocationType, bool IsActive);
 
 public sealed record StockBalanceContract(Guid LocationId, string LocationType, Guid SkuId, int AvailablePacks, int? AvailablePieces);
+
+public sealed record InventoryReceiptContract(Guid BatchId, Guid LocationId, Guid SkuId, int BatchPackQuantity);
 
 public sealed record ProductCategoryTotalContract(Guid CategoryId, string CategoryName, int ProductCount, int SkuCount, int TotalPacks, int? TotalPieces, IReadOnlyList<ProductTotalContract> Products);
 

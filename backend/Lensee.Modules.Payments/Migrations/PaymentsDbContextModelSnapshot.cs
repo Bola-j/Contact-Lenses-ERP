@@ -40,6 +40,10 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<Guid?>("FinancialAdjustmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("financial_adjustment_id");
+
                     b.Property<string>("Notes")
                         .HasColumnType("text")
                         .HasColumnName("notes");
@@ -83,6 +87,10 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasIndex(new[] { "OperationId" }, "idx_cash_records_operation");
 
+                    b.HasIndex(new[] { "FinancialAdjustmentId" }, "uq_cash_records_adjustment")
+                        .IsUnique()
+                        .HasFilter("(financial_adjustment_id IS NOT NULL)");
+
                     b.ToTable("cash_records", "payments", t =>
                         {
                             t.HasCheckConstraint("chk_cash_amount", "amount > 0");
@@ -122,6 +130,14 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<string>("LineageKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("lineage_kind")
+                        .HasDefaultValueSql("'SourceLinked'::character varying");
+
                     b.Property<Guid>("MerchantId")
                         .HasColumnType("uuid")
                         .HasColumnName("merchant_id");
@@ -134,13 +150,33 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("operation_id");
 
+                    b.Property<Guid?>("PaymentLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_log_id");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<Guid?>("ReversesAdjustmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reverses_adjustment_id");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
                         .HasColumnName("status")
-                        .HasDefaultValueSql("'Completed'::character varying");
+                        .HasDefaultValueSql("'PendingApproval'::character varying");
 
                     b.HasKey("Id")
                         .HasName("financial_adjustments_pkey");
@@ -154,7 +190,7 @@ namespace Lensee.Modules.Payments.Migrations
                         {
                             t.HasCheckConstraint("chk_financial_adjustment_amount", "amount > 0");
 
-                            t.HasCheckConstraint("chk_financial_adjustment_status", "status in ('Completed','Cancelled')");
+                            t.HasCheckConstraint("chk_financial_adjustment_status", "status in ('PendingApproval','Approved','Rejected','Completed','Cancelled','LegacyUnlinked')");
 
                             t.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('MerchantCredit','BalanceReduction','CashRefund')");
                         });
@@ -304,6 +340,13 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnName("payment_method")
                         .HasDefaultValueSql("'Installment'::character varying");
 
+                    b.Property<decimal>("PendingAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("pending_amount");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -330,17 +373,87 @@ namespace Lensee.Modules.Payments.Migrations
                     b.HasIndex(new[] { "Status" }, "idx_main_payment_status")
                         .HasFilter("(is_deleted = false)");
 
+                    b.HasIndex(new[] { "OperationId" }, "uq_main_payment_operation_active")
+                        .IsUnique()
+                        .HasFilter("(is_deleted = false)");
+
                     b.ToTable("main_payment_logs", "payments", t =>
                         {
                             t.HasCheckConstraint("chk_main_payment_amount_paid", "amount_paid >= 0");
 
                             t.HasCheckConstraint("chk_main_payment_method", "payment_method in ('CashHandToHand','CashTransaction','Installment')");
 
-                            t.HasCheckConstraint("chk_main_payment_paid_lte_total", "amount_paid <= total_amount");
+                            t.HasCheckConstraint("chk_main_payment_paid_lte_total", "amount_paid + pending_amount <= total_amount");
+
+                            t.HasCheckConstraint("chk_main_payment_pending_amount", "pending_amount >= 0");
 
                             t.HasCheckConstraint("chk_main_payment_status", "status in ('PendingAdmin','PendingAccountant','PendingAdminReview','Completed','Rejected','Cancelled')");
 
                             t.HasCheckConstraint("chk_main_payment_total_amount", "total_amount >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.PaymentIdempotencyKey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid>("Key")
+                        .HasColumnType("uuid")
+                        .HasColumnName("key");
+
+                    b.Property<DateTime>("LastSeenAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<string>("ResponseBody")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("response_body");
+
+                    b.Property<int?>("ResponseStatusCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("response_status_code");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("scope");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("payment_idempotency_keys_pkey");
+
+                    b.HasIndex(new[] { "ExpiresAt" }, "idx_payment_idempotency_expires_at");
+
+                    b.HasIndex(new[] { "Key", "Scope" }, "uq_payment_idempotency_key_scope")
+                        .IsUnique();
+
+                    b.ToTable("payment_idempotency_keys", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_payment_idempotency_status", "status in ('Pending','Completed')");
                         });
                 });
 

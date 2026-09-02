@@ -36,25 +36,48 @@ public static class CrmEndpoints
 
         group.MapGet("/merchants", ListMerchantsAsync).RequireAuthorization("operations.read");
         group.MapGet("/merchants/{id:guid}", GetMerchantAsync).RequireAuthorization("operations.read");
-        group.MapPost("/merchants", CreateMerchantAsync).RequireAuthorization("operations.write");
-        group.MapPut("/merchants/{id:guid}", UpdateMerchantAsync).RequireAuthorization("operations.write");
-        group.MapPatch("/merchants/{id:guid}/deactivate", SetMerchantInactiveAsync).RequireAuthorization("operations.write");
-        group.MapPatch("/merchants/{id:guid}/reactivate", SetMerchantActiveAsync).RequireAuthorization("operations.write");
-        group.MapPost("/merchants/{id:guid}/notes", AddMerchantNoteAsync).RequireAuthorization("operations.write");
+        group.MapPost("/merchants", CreateMerchantAsync).RequireAuthorization("crm.write");
+        group.MapPut("/merchants/{id:guid}", UpdateMerchantAsync).RequireAuthorization("crm.write");
+        group.MapPatch("/merchants/{id:guid}/deactivate", SetMerchantInactiveAsync).RequireAuthorization("crm.write");
+        group.MapPatch("/merchants/{id:guid}/reactivate", SetMerchantActiveAsync).RequireAuthorization("crm.write");
+        group.MapPost("/merchants/{id:guid}/notes", AddMerchantNoteAsync).RequireAuthorization("crm.write");
         group.MapGet("/merchants/{id:guid}/batch-history", GetMerchantBatchHistoryAsync).RequireAuthorization("merchant-recalls.read");
         group.MapGet("/representatives", ListRepresentativesAsync).RequireAuthorization("operations.read");
-        group.MapPost("/representatives", CreateRepresentativeAsync).RequireAuthorization("operations.write");
-        group.MapPut("/representatives/{id:guid}", UpdateRepresentativeAsync).RequireAuthorization("operations.write");
-        group.MapPatch("/representatives/{id:guid}/deactivate", SetRepresentativeInactiveAsync).RequireAuthorization("operations.write");
-        group.MapPatch("/representatives/{id:guid}/reactivate", SetRepresentativeActiveAsync).RequireAuthorization("operations.write");
+        group.MapPost("/representatives", CreateRepresentativeAsync).RequireAuthorization("crm.write");
+        group.MapPut("/representatives/{id:guid}", UpdateRepresentativeAsync).RequireAuthorization("crm.write");
+        group.MapPatch("/representatives/{id:guid}/deactivate", SetRepresentativeInactiveAsync).RequireAuthorization("crm.write");
+        group.MapPatch("/representatives/{id:guid}/reactivate", SetRepresentativeActiveAsync).RequireAuthorization("crm.write");
 
         return group;
     }
 
-    private static async Task<IResult> ListMerchantsAsync(bool? includeInactive, int? page, int? pageSize, string? search, CrmDbContext dbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> ListMerchantsAsync(
+        bool? includeInactive,
+        int? page,
+        int? pageSize,
+        string? search,
+        CrmDbContext dbContext,
+        OperationsDbContext operationsDbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
     {
         var request = new PageRequest(page ?? 1, pageSize ?? 25);
         var query = dbContext.Merchants.Where(merchant => !merchant.IsDeleted);
+        if (IsWarehouseClerk(currentUser))
+        {
+            if (currentUser.LocationId is not { } locationId)
+            {
+                return Results.Forbid();
+            }
+
+            var accessibleMerchantIds = await operationsDbContext.OperationLogs
+                .Where(operation => !operation.IsDeleted && operation.ClientId.HasValue &&
+                    (operation.SourceLocationId == locationId || operation.DestinationLocationId == locationId))
+                .Select(operation => operation.ClientId!.Value)
+                .Distinct()
+                .ToArrayAsync(cancellationToken);
+            query = query.Where(merchant => accessibleMerchantIds.Contains(merchant.Id));
+        }
         if (includeInactive != true)
         {
             query = query.Where(merchant => merchant.Status == "Active");
@@ -81,8 +104,29 @@ public static class CrmEndpoints
         CrmDbContext crmDbContext,
         OperationsDbContext operationsDbContext,
         MerchantBalanceService merchantBalanceService,
+        ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
+        Guid? scopedLocationId = null;
+        if (IsWarehouseClerk(currentUser))
+        {
+            if (currentUser.LocationId is not { } locationId)
+            {
+                return Results.Forbid();
+            }
+
+            var canAccess = await operationsDbContext.OperationLogs.AnyAsync(operation =>
+                operation.ClientId == id && !operation.IsDeleted &&
+                (operation.SourceLocationId == locationId || operation.DestinationLocationId == locationId),
+                cancellationToken);
+            if (!canAccess)
+            {
+                return Results.NotFound();
+            }
+
+            scopedLocationId = locationId;
+        }
+
         var merchant = await crmDbContext.Merchants
             .Include(value => value.MerchantNotes.OrderByDescending(note => note.CreatedAt).Take(10))
             .FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
@@ -91,9 +135,17 @@ public static class CrmEndpoints
             return Results.NotFound();
         }
 
-        var operationCount = await operationsDbContext.OperationLogs.CountAsync(operation => operation.ClientId == id && !operation.IsDeleted, cancellationToken);
-        var recentOperations = await operationsDbContext.OperationLogs
-            .Where(operation => operation.ClientId == id && !operation.IsDeleted)
+        var operationQuery = operationsDbContext.OperationLogs
+            .Where(operation => operation.ClientId == id && !operation.IsDeleted);
+        if (scopedLocationId.HasValue)
+        {
+            operationQuery = operationQuery.Where(operation =>
+                operation.SourceLocationId == scopedLocationId.Value ||
+                operation.DestinationLocationId == scopedLocationId.Value);
+        }
+
+        var operationCount = await operationQuery.CountAsync(cancellationToken);
+        var recentOperations = await operationQuery
             .OrderByDescending(operation => operation.CreatedAt)
             .Take(10)
             .Select(operation => new MerchantOperationResponse(
@@ -108,12 +160,12 @@ public static class CrmEndpoints
                 operation.OperationLines.Sum(line => line.BonusQuantity),
                 operation.OperationLines.Sum(line => line.LineTotal)))
             .ToListAsync(cancellationToken);
-        var sold = await operationsDbContext.OperationLogs
+        var sold = await operationQuery
             .Include(operation => operation.OperationLines)
-            .Where(operation => operation.ClientId == id && operation.Status == Completed && (operation.OperationType == WholesaleSale || operation.OperationType == RetailSale))
+            .Where(operation => operation.RecordKind != "Reversal" && operation.Status == Completed && (operation.OperationType == WholesaleSale || operation.OperationType == RetailSale))
             .SelectMany(operation => operation.OperationLines)
             .ToListAsync(cancellationToken);
-        var balance = await merchantBalanceService.CalculateAsync(id, cancellationToken);
+        var balance = await merchantBalanceService.CalculateAsync(id, cancellationToken, scopedLocationId);
 
         return Results.Ok(new MerchantDetailResponse(
             ToResponse(merchant),
@@ -268,9 +320,22 @@ public static class CrmEndpoints
         return Results.Ok(rows);
     }
 
-    private static async Task<IResult> ListRepresentativesAsync(bool? includeInactive, CrmDbContext dbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> ListRepresentativesAsync(
+        bool? includeInactive,
+        CrmDbContext dbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
     {
         var query = dbContext.Representatives.Where(rep => !rep.IsDeleted);
+        if (IsWarehouseClerk(currentUser))
+        {
+            if (currentUser.LocationId is not { } locationId)
+            {
+                return Results.Forbid();
+            }
+
+            query = query.Where(rep => rep.AssignedLocationId == locationId);
+        }
         if (includeInactive != true)
         {
             query = query.Where(rep => rep.Status == "Active");
@@ -386,6 +451,9 @@ public static class CrmEndpoints
 
     private static string? NormalizeBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool IsWarehouseClerk(ICurrentUser currentUser) =>
+        string.Equals(currentUser.Role, LenseeRoles.WarehouseClerk, StringComparison.OrdinalIgnoreCase);
 
     private static string? NormalizeRepresentativeType(string? value)
     {

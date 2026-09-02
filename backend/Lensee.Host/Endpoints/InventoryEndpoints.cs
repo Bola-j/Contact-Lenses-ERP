@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
@@ -646,11 +649,33 @@ public static class InventoryEndpoints
         InventoryReceiptRequest request,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
-        StockLedgerService ledgerService,
-        ICurrentUser currentUser,
-        IAuditLogWriter auditLogWriter,
+        InventoryReceiptCommandService receiptCommandService,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        if (!Guid.TryParse(idempotencyKey, out var commandKey) || commandKey == Guid.Empty)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["Idempotency-Key"] = ["A UUID Idempotency-Key header is required."]
+            });
+        }
+
+        var requestHash = ComputeReceiptRequestHash(request);
+        var replay = await receiptCommandService.TryReplayAsync(commandKey, requestHash, cancellationToken);
+        if (replay.IsKeyReused)
+        {
+            return Results.Conflict(new
+            {
+                code = "idempotency-key-reused",
+                detail = "The Idempotency-Key has already been used with a different request."
+            });
+        }
+        if (replay.Response is not null)
+        {
+            return CreatedReceiptResponse(replay.Response);
+        }
+
         var errors = ValidateReceipt(request);
         if (errors.Count > 0)
         {
@@ -673,19 +698,51 @@ public static class InventoryEndpoints
             });
         }
 
-        var userId = currentUser.UserId ?? Guid.Empty;
-        var batch = await ledgerService.ReceiveAsync(
+        var execution = await receiptCommandService.ExecuteAsync(
+            commandKey,
+            requestHash,
             request.LocationId,
             request.SkuId,
             request.PackQuantity,
-            userId,
             request.LotNumber,
             request.ExpiryDate,
             request.Notes,
-            cancellationToken: cancellationToken);
-        await auditLogWriter.WriteAsync("InventoryReceipt", batch.Id, "Create", new { request.LocationId, request.SkuId, request.PackQuantity, request.LotNumber, request.ExpiryDate }, request.PackQuantity, cancellationToken);
+            cancellationToken);
+        if (execution.IsKeyReused)
+        {
+            return Results.Conflict(new
+            {
+                code = "idempotency-key-reused",
+                detail = "The Idempotency-Key has already been used with a different request."
+            });
+        }
+        if (execution.InvalidReference is not null)
+        {
+            return execution.InvalidReference == nameof(request.LocationId)
+                ? Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    [nameof(request.LocationId)] = ["Location must exist and be active."]
+                })
+                : Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    [nameof(request.SkuId)] = ["SKU must exist and be active."]
+                });
+        }
 
-        return Results.Created($"/api/v1/inventory/batches/{batch.Id}", new InventoryReceiptResponse(batch.Id, batch.LocationId, batch.SkuId, batch.Quantity));
+        return CreatedReceiptResponse(execution.Response
+            ?? throw new InvalidOperationException("The receipt command did not return a replayable response."));
+    }
+
+    private static IResult CreatedReceiptResponse(InventoryReceiptExecutionResponse stored)
+    {
+        var response = new InventoryReceiptResponse(stored.BatchId, stored.LocationId, stored.SkuId, stored.BatchPackQuantity);
+        return Results.Created($"/api/v1/inventory/batches/{response.BatchId}", response);
+    }
+
+    private static string ComputeReceiptRequestHash(InventoryReceiptRequest request)
+    {
+        var canonical = JsonSerializer.Serialize(request, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
     private static Dictionary<string, string[]> ValidateReceipt(InventoryReceiptRequest request)

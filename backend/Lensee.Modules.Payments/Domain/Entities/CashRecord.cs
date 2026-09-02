@@ -9,6 +9,8 @@ public partial class CashRecord
 
     public Guid OperationId { get; set; }
 
+    public Guid? FinancialAdjustmentId { get; set; }
+
     public string PaymentType { get; set; } = null!;
 
     public string? SubType { get; set; }

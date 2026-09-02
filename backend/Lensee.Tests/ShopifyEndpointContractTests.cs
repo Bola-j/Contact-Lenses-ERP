@@ -182,6 +182,57 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     }
 
     [Fact]
+    public async Task ShopifyAllocation_WritesOneExplicitAuditWithoutMiddlewareDuplicate()
+    {
+        using var factory = new OperationsEndpointFactory(useRealAuditWriter: true);
+        var seed = await factory.SeedAsync();
+        using var client = factory.CreateClient();
+        using var request = CreateWebhookRequest("orders/create", "webhook-audit-allocation", OrderPayload("audit-allocation", SkuCode(seed.SkuId)));
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(request)).StatusCode);
+
+        using (var processingScope = factory.Services.CreateScope())
+        {
+            var service = processingScope.ServiceProvider.GetRequiredService<Lensee.Host.Infrastructure.ShopifyIntegrationService>();
+            foreach (var eventId in await service.ClaimDueEventsAsync(CancellationToken.None))
+            {
+                await service.ProcessQueuedEventAsync(eventId, CancellationToken.None);
+            }
+        }
+
+        Guid operationId;
+        Guid operationLineId;
+        DateOnly expiry = new(2028, 6, 1);
+        using (var setupScope = factory.Services.CreateScope())
+        {
+            var operations = setupScope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+            var inventory = setupScope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+            var operation = await operations.OperationLogs.Include(value => value.OperationLines).SingleAsync();
+            operationId = operation.Id;
+            operationLineId = Assert.Single(operation.OperationLines).Id;
+            inventory.InventoryBatches.Add(new InventoryBatch
+            {
+                Id = Guid.NewGuid(),
+                LocationId = seed.OnlineLocationId,
+                SkuId = seed.SkuId,
+                LotNumber = "ONLINE-AUDIT",
+                ExpiryDate = expiry,
+                Quantity = 4,
+                CreatedAt = DateTime.UtcNow
+            });
+            await inventory.SaveChangesAsync();
+        }
+
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsWrite, LenseePermissions.OperationsRead);
+        using var allocationResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new
+        {
+            lines = new[] { new { operationLineId, lotNumber = "ONLINE-AUDIT", expiryDate = expiry } }
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, allocationResponse.StatusCode);
+        Assert.Equal(["UpdateAllocation"], await factory.GetOperationAuditActionsAsync(operationId));
+    }
+
+    [Fact]
     public async Task CancelWebhook_CancelsDraftImportedBySku()
     {
         var seed = await _factory.SeedAsync();

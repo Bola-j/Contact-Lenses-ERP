@@ -41,11 +41,9 @@ public static class AuthEndpoints
         InventoryDbContext inventoryDbContext,
         IPasswordHasher passwordHasher,
         ITokenService tokenService,
-        IClock clock,
+        RefreshTokenSessionService refreshTokenSessionService,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
-        IConfiguration configuration,
-        IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
     {
         var errors = ValidateLogin(request);
@@ -62,37 +60,24 @@ public static class AuthEndpoints
             return TypedResults.Unauthorized();
         }
 
-        var refreshToken = tokenService.CreateRefreshToken();
-        var refreshTokenDays = configuration.GetValue("Jwt:RefreshTokenDays", 30);
-        var refreshTokenExpiresAt = clock.EgyptNow.AddDays(refreshTokenDays);
-        dbContext.RefreshTokens.Add(new RefreshToken
-        {
-            Id = Guid.NewGuid(),
-            UserId = user.Id,
-            TokenHash = tokenService.HashRefreshToken(refreshToken),
-            CreatedAt = clock.EgyptNow,
-            ExpiresAt = refreshTokenExpiresAt,
-            CreatedByIp = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString()
-        });
+        var issuedToken = await refreshTokenSessionService.IssueAsync(
+            user.Id,
+            user.Username,
+            httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            cancellationToken);
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-
-        await auditLogWriter.WriteForUserAsync(user.Id, user.FullName, "User", user.Id, "Login", new { user.Username }, cancellationToken: cancellationToken);
-
-        SetRefreshCookie(httpContextAccessor.HttpContext!, refreshToken, refreshTokenExpiresAt, environment);
+        SetRefreshCookie(httpContextAccessor.HttpContext!, issuedToken.RawToken, issuedToken.ExpiresAt, environment);
 
         return TypedResults.Ok(await CreateAuthResponseAsync(user, tokenService.CreateAccessToken(user), inventoryDbContext, cancellationToken));
     }
 
     private static async Task<Results<Ok<AuthResponse>, NoContent, UnauthorizedHttpResult>> RefreshAsync(
         RefreshRequest request,
-        IdentityDbContext dbContext,
         InventoryDbContext inventoryDbContext,
         ITokenService tokenService,
-        IClock clock,
+        RefreshTokenSessionService refreshTokenSessionService,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
-        IConfiguration configuration,
         CancellationToken cancellationToken)
     {
         var incomingRefreshToken = ReadRefreshToken(request.RefreshToken, httpContextAccessor.HttpContext);
@@ -104,63 +89,33 @@ public static class AuthEndpoints
             return TypedResults.NoContent();
         }
 
-        var tokenHash = tokenService.HashRefreshToken(incomingRefreshToken);
-        var existingToken = await dbContext.RefreshTokens
-            .Include(token => token.User)
-            .SingleOrDefaultAsync(token => token.TokenHash == tokenHash, cancellationToken);
-
-        if (existingToken is null)
-        {
-            return TypedResults.Unauthorized();
-        }
-
-        if (existingToken.RevokedAt.HasValue)
-        {
-            await RevokeAllRefreshTokensAsync(dbContext, existingToken.UserId, clock.EgyptNow, httpContextAccessor, cancellationToken);
-            ClearRefreshCookie(httpContextAccessor.HttpContext!, environment);
-            return TypedResults.Unauthorized();
-        }
-
-        if (existingToken.ExpiresAt <= clock.EgyptNow || !existingToken.User.IsActive)
+        var rotation = await refreshTokenSessionService.RotateAsync(
+            incomingRefreshToken,
+            httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            cancellationToken);
+        if (rotation.Status != RefreshRotationStatus.Success ||
+            rotation.User is null ||
+            rotation.RawToken is null ||
+            !rotation.ExpiresAt.HasValue)
         {
             ClearRefreshCookie(httpContextAccessor.HttpContext!, environment);
             return TypedResults.Unauthorized();
         }
 
-        var refreshToken = tokenService.CreateRefreshToken();
-        var refreshTokenDays = configuration.GetValue("Jwt:RefreshTokenDays", 30);
-        var refreshTokenExpiresAt = clock.EgyptNow.AddDays(refreshTokenDays);
-        var replacement = new RefreshToken
-        {
-            Id = Guid.NewGuid(),
-            UserId = existingToken.UserId,
-            TokenHash = tokenService.HashRefreshToken(refreshToken),
-            CreatedAt = clock.EgyptNow,
-            ExpiresAt = refreshTokenExpiresAt,
-            CreatedByIp = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString()
-        };
-
-        existingToken.RevokedAt = clock.EgyptNow;
-        existingToken.RevokedByIp = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
-        existingToken.ReplacedBy = replacement.Id;
-        dbContext.RefreshTokens.Add(replacement);
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-
-        SetRefreshCookie(httpContextAccessor.HttpContext!, refreshToken, refreshTokenExpiresAt, environment);
-
-        return TypedResults.Ok(await CreateAuthResponseAsync(existingToken.User, tokenService.CreateAccessToken(existingToken.User), inventoryDbContext, cancellationToken));
+        SetRefreshCookie(httpContextAccessor.HttpContext!, rotation.RawToken, rotation.ExpiresAt.Value, environment);
+        return TypedResults.Ok(await CreateAuthResponseAsync(
+            rotation.User,
+            tokenService.CreateAccessToken(rotation.User),
+            inventoryDbContext,
+            cancellationToken));
     }
 
     private static async Task<NoContent> LogoutAsync(
         LogoutRequest request,
-        IdentityDbContext dbContext,
-        ITokenService tokenService,
+        RefreshTokenSessionService refreshTokenSessionService,
         ICurrentUser currentUser,
-        IClock clock,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
-        IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
     {
         var incomingRefreshToken = ReadRefreshToken(request.RefreshToken, httpContextAccessor.HttpContext);
@@ -168,23 +123,20 @@ public static class AuthEndpoints
         {
             if (currentUser.UserId is { } userId)
             {
-                await RevokeAllRefreshTokensAsync(dbContext, userId, clock.EgyptNow, httpContextAccessor, cancellationToken);
-                await auditLogWriter.WriteAsync("User", userId, "Logout", cancellationToken: cancellationToken);
+                await refreshTokenSessionService.RevokeAllAsync(
+                    userId,
+                    httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                    true,
+                    cancellationToken);
             }
         }
         else
         {
-            var tokenHash = tokenService.HashRefreshToken(incomingRefreshToken);
-            var token = await dbContext.RefreshTokens
-                .SingleOrDefaultAsync(value => value.TokenHash == tokenHash, cancellationToken);
-
-            if (token is not null && token.RevokedAt is null)
-            {
-                token.RevokedAt = clock.EgyptNow;
-                token.RevokedByIp = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
-                await dbContext.SaveChangesAsync(cancellationToken);
-                await auditLogWriter.WriteAsync("User", token.UserId, "Logout", cancellationToken: cancellationToken);
-            }
+            await refreshTokenSessionService.RevokeOneAsync(
+                incomingRefreshToken,
+                httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                true,
+                cancellationToken);
         }
 
         ClearRefreshCookie(httpContextAccessor.HttpContext!, environment);
@@ -203,26 +155,6 @@ public static class AuthEndpoints
             ? await inventoryDbContext.Locations.Where(location => location.Id == locationId && location.IsActive).Select(location => location.LocationType).SingleOrDefaultAsync(cancellationToken)
             : null;
         return TypedResults.Ok(new SessionResponse(userId, currentUser.Role, currentUser.LocationId, locationType));
-    }
-
-    private static async Task RevokeAllRefreshTokensAsync(
-        IdentityDbContext dbContext,
-        Guid userId,
-        DateTime revokedAt,
-        IHttpContextAccessor httpContextAccessor,
-        CancellationToken cancellationToken)
-    {
-        var tokens = await dbContext.RefreshTokens
-            .Where(token => token.UserId == userId && token.RevokedAt == null)
-            .ToListAsync(cancellationToken);
-
-        foreach (var token in tokens)
-        {
-            token.RevokedAt = revokedAt;
-            token.RevokedByIp = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static Dictionary<string, string[]> ValidateLogin(LoginRequest request)

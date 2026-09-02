@@ -14,7 +14,9 @@ const {
   waitForStockOptions,
   apiRequest,
   apiJson,
-  latestOperationId,
+  runOperationActionByNumber,
+  paymentQueueRowById,
+  paymentHistoryRowById,
   expectOneTransitionSucceeds,
   expectNoNegativeStock
 } = require("./support/helpers");
@@ -123,13 +125,15 @@ async function createApiRepresentative(page, data) {
   return representative;
 }
 
-async function openLatestOperationForEdit(page, operationType, buttonName = /Edit/i) {
+async function openLatestOperationForEdit(page, operationType, buttonName = /Edit/i, operationNumber = null) {
   await gotoRoute(page, "/operations");
   const showCompleted = page.locator("#operations-show-completed");
   if (await showCompleted.isVisible().catch(() => false)) {
     await showCompleted.check({ force: true }).catch(() => undefined);
   }
-  const row = page.locator("#operation-rows tr", { hasText: operationType }).first();
+  const row = operationNumber
+    ? page.locator("#operation-rows tr[data-operation-number]").filter({ hasText: operationNumber }).first()
+    : page.locator("#operation-rows tr", { hasText: operationType }).first();
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: buttonName }).click();
   await expect(page.locator("#op-type")).toHaveValue(operationType);
@@ -160,7 +164,7 @@ async function expectOperationEditorPrefilled(page, type, data, quantity = "2") 
 async function createInstallmentSale(page, data, amount = "100") {
   await seedMainStock(page, data, "10");
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale",
     skuText: data.product,
     quantity: "2",
@@ -170,10 +174,10 @@ async function createInstallmentSale(page, data, amount = "100") {
     paymentMethod: "Installment",
     sourceText: /Roxy|Main/i
   });
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
-  return await latestOperationId(page, "WholesaleSale", "Completed");
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  return sale.id;
 }
 
 async function latestPaymentForOperation(page, operationId) {
@@ -189,7 +193,7 @@ async function firstAccountantId(page) {
   const { response, data } = await apiJson(page, "GET", "/api/v1/users?page=1&pageSize=100");
   expect(response.ok()).toBeTruthy();
   const items = Array.isArray(data) ? data : data?.items || data?.data || [];
-  const accountant = items.find((user) => user.username === users.accountant.username || user.role === "Accountant");
+  const accountant = items.find((user) => user.username === users.accountant.username && user.role === "Accountant" && user.isActive !== false);
   expect(accountant).toBeTruthy();
   return accountant.id;
 }
@@ -199,7 +203,7 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
   await seedMainStock(page, data, "6");
 
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale",
     skuText: data.product,
     quantity: "1",
@@ -209,9 +213,9 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
     paymentMethod: "CashHandToHand",
     sourceText: /Roxy|Main/i
   });
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
 
   await gotoRoute(page, "/catalog");
   await page.locator("#category-list [data-category-id]", { hasText: data.category }).first().click();
@@ -233,7 +237,7 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
 
   await gotoRoute(page, "/operations");
   await page.locator("#operations-show-completed").check({ force: true }).catch(() => undefined);
-  await page.locator("#operation-rows tr", { hasText: "WholesaleSale" }).first().getByRole("button", { name: /Show|Details/i }).click();
+  await page.locator("#operation-rows tr[data-operation-number]").filter({ hasText: sale.operationNumber }).first().getByRole("button", { name: /Show|Details/i }).click();
   await expect(page.locator(".operation-detail").first()).toContainText(data.product);
   await expect(page.locator(".operation-detail").first()).toContainText(data.merchant);
 
@@ -256,7 +260,7 @@ test("editing: operation drafts and shipped revisions prefill lines, preserve ro
   await seedMainStock(page, data, "20");
 
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale",
     skuText: data.product,
     quantity: "2",
@@ -267,18 +271,18 @@ test("editing: operation drafts and shipped revisions prefill lines, preserve ro
     sourceText: /Roxy|Main/i
   });
 
-  await openLatestOperationForEdit(page, "WholesaleSale", /Edit/i);
+  await openLatestOperationForEdit(page, "WholesaleSale", /Edit/i, sale.operationNumber);
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "2");
   await expect(page.locator("#op-merchant option:checked")).toContainText(data.merchant);
   await expect(page.locator("#op-payment")).toHaveValue("Installment");
   await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("3");
   await submitOperationEditor(page, /Draft updated/i);
 
-  await openLatestOperationForEdit(page, "WholesaleSale", /Edit/i);
+  await openLatestOperationForEdit(page, "WholesaleSale", /Edit/i, sale.operationNumber);
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "3");
 
-  await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
-  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
+  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i, sale.operationNumber);
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "3");
   await expect(page.locator("#op-revision-reason-field")).toBeVisible();
   await page.locator("#operation-submit-button").click();
@@ -287,26 +291,26 @@ test("editing: operation drafts and shipped revisions prefill lines, preserve ro
   await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("2");
   await submitOperationEditor(page, /Operation revised/i);
 
-  await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
-  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i, sale.operationNumber);
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "2");
   await page.locator("#op-revision-reason").fill(`${data.runId} shipped sale correction`);
   await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("1");
   await submitOperationEditor(page, /Operation revised/i);
 
   await page.locator("#operations-show-completed").check({ force: true }).catch(() => undefined);
-  const row = page.locator("#operation-rows tr", { hasText: "WholesaleSale" }).first();
+  const row = page.locator("#operation-rows tr[data-operation-number]").filter({ hasText: sale.operationNumber }).first();
   await row.getByRole("button", { name: /Show|Details/i }).click();
   await expect(page.locator(".operation-detail").first()).toContainText(/Current version|v\d+|Created by|Confirmed by/i);
 
-  await createOperationDraft(page, {
+  const transfer = await createOperationDraft(page, {
     type: "WarehouseTransfer",
     skuText: data.product,
     quantity: "1",
     stockText: data.mainLot,
     destinationText: /Retail|Online|Mohamed/i
   });
-  await openLatestOperationForEdit(page, "WarehouseTransfer", /Edit/i);
+  await openLatestOperationForEdit(page, "WarehouseTransfer", /Edit/i, transfer.operationNumber);
   const destination = await page.locator("#op-destination").inputValue();
   await page.locator("#op-add-line").click();
   await expect(page.locator("#op-destination")).toHaveValue(destination);
@@ -320,8 +324,8 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   const accountantId = await firstAccountantId(page);
 
   await gotoRoute(page, "/payments");
-  await selectOptionByText(page.locator("#payment-accountant"), /\(accountant\)/i);
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Assign" }).click();
+  await page.locator("#payment-accountant").selectOption(accountantId);
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Assign" }).click();
   await expectNotice(page, /accountant queue|assigned/i);
   const reassign = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
   expect([200, 204]).toContain(reassign.status());
@@ -329,7 +333,7 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await logout(page);
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("50");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-09");
@@ -340,8 +344,9 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await logout(page);
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Details" }).click();
-  await page.locator("[data-sublog-reject]").first().click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  let paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await paymentDetail.locator("[data-sublog-reject]").first().click();
   await page.locator(".dialog-input").fill(`${data.runId} rejected for test`);
   await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();
   await expectNotice(page, /Payment rejected/i);
@@ -350,7 +355,7 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await logout(page);
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Use" }).click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
   await page.locator("#payment-amount").fill("300");
   await page.locator("#payment-method").selectOption("CashTransaction");
   await page.locator("#payment-date").fill("2026-07-09");
@@ -361,17 +366,18 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await logout(page);
   await login(page, users.admin);
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-rows tr", { hasText: "Installment" }).first().getByRole("button", { name: "Details" }).click();
-  await page.locator("[data-sublog-approve]").first().click();
+  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
+  paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
+  await paymentDetail.locator("[data-sublog-approve]").first().click();
   await expectNotice(page, /Payment approved/i);
-  await expect(page.locator("#payment-rows tr", { hasText: "Installment" }).first()).toContainText("Completed");
-  await expect(page.locator("#payment-rows tr", { hasText: "Completed" }).first().getByRole("button", { name: "Assign" })).toHaveCount(0);
+  await expect(paymentHistoryRowById(page, payment.id)).toContainText("Completed");
+  await expect(paymentQueueRowById(page, payment.id)).toHaveCount(0);
   const assignCompleted = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
   expect([400, 409, 422]).toContain(assignCompleted.status());
 
   await selectOptionByText(page.locator("#payment-merchant"), data.merchant);
   await page.locator("#load-merchant-balance").click();
-  await expect(page.locator("#merchant-balance-panel")).toContainText(/Balance|Payments|Completed/i);
+  await expect(page.locator("#merchant-balance-panel")).toContainText(/Remaining|Sales|Net collected/i);
 });
 
 test("editing: stocktake draft lines can be revised before confirmation and lock after confirmation", async ({ page }) => {
@@ -408,14 +414,14 @@ test("editing: stale operations and double transitions fail safely without negat
   await seedMainStock(page, data, "3");
 
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
+  const transfer = await createOperationDraft(page, {
     type: "WarehouseTransfer",
     skuText: data.product,
     quantity: "2",
     stockText: data.mainLot,
     destinationText: /Retail|Online|Mohamed/i
   });
-  const transferId = await latestOperationId(page, "WarehouseTransfer", "Draft");
+  const transferId = transfer.id;
   await expectOneTransitionSucceeds(page, [
     apiRequest(page, "POST", `/api/v1/operations/${transferId}/confirm`),
     apiRequest(page, "POST", `/api/v1/operations/${transferId}/confirm`)

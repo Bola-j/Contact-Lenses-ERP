@@ -92,6 +92,76 @@ namespace Lensee.Modules.Inventory.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.InventoryReceiptCommand", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<Guid?>("BatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("batch_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("Key")
+                        .HasColumnType("uuid")
+                        .HasColumnName("key");
+
+                    b.Property<DateTime>("LastSeenAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<int?>("ResponseBatchQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("response_batch_quantity");
+
+                    b.Property<string>("ResponseBody")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("response_body");
+
+                    b.Property<int?>("ResponseStatusCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("response_status_code");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("StockTransactionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("stock_transaction_id");
+
+                    b.HasKey("Id")
+                        .HasName("inventory_receipt_commands_pkey");
+
+                    b.HasIndex("BatchId");
+
+                    b.HasIndex(new[] { "Key" }, "uq_inventory_receipt_commands_key")
+                        .IsUnique();
+
+                    b.HasIndex(new[] { "StockTransactionId" }, "uq_inventory_receipt_commands_stock_transaction")
+                        .IsUnique()
+                        .HasFilter("(stock_transaction_id IS NOT NULL)");
+
+                    b.ToTable("inventory_receipt_commands", "inventory", t =>
+                        {
+                            t.HasCheckConstraint("chk_inventory_receipt_command_status", "status in ('Pending','Completed')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Inventory.Data.Location", b =>
                 {
                     b.Property<Guid>("Id")
@@ -347,6 +417,19 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasConstraintName("inventory_batches_location_id_fkey");
 
                     b.Navigation("Location");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.InventoryReceiptCommand", b =>
+                {
+                    b.HasOne("Lensee.Modules.Inventory.Data.InventoryBatch", null)
+                        .WithMany()
+                        .HasForeignKey("BatchId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Lensee.Modules.Inventory.Data.StockTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("StockTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Lensee.Modules.Inventory.Data.OpenedPieceLot", b =>

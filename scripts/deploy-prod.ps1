@@ -3,12 +3,150 @@ param(
     [string]$ProjectName = "lenseeproduction",
     [string]$EnvFile = ".env",
     [string[]]$AdditionalComposeFiles = @(),
-    [string]$EvidenceDirectory
+    [string]$EvidenceDirectory,
+    [ValidatePattern("^[0-9a-fA-F]{40}$")]
+    [string]$ApprovedCandidateSha,
+    [string]$CertificationEvidenceDirectory,
+    [string]$ReleaseApprovalPath
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+
+function Assert-CleanCheckout {
+    $currentCandidateSha = (& git -C $repoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $currentCandidateSha -notmatch "^[0-9a-f]{40}$") {
+        throw "Deployment requires a checked-out Git commit."
+    }
+
+    $changes = @(& git -C $repoRoot status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not determine Git checkout status."
+    }
+    if ($changes.Count -gt 0) {
+        throw "Refusing deployment from a dirty checkout. Commit, stash, or remove all tracked and untracked changes first."
+    }
+
+    return $currentCandidateSha.ToLowerInvariant()
+}
+
+function Assert-CertificationEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$CandidateSha
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "Certification evidence directory '$Path' was not found."
+    }
+
+    $evidenceRoot = (Resolve-Path -LiteralPath $Path).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $metadataPath = Join-Path $evidenceRoot "run-metadata.txt"
+    $manifestPath = Join-Path $evidenceRoot "sha256-manifest.txt"
+    $statusBeforePath = Join-Path $evidenceRoot "git-status-before.txt"
+    $statusAfterPath = Join-Path $evidenceRoot "git-status-after.txt"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf) -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or -not (Test-Path -LiteralPath $statusBeforePath -PathType Leaf) -or -not (Test-Path -LiteralPath $statusAfterPath -PathType Leaf)) {
+        throw "Certification evidence must contain run metadata, before/after Git status, and a SHA-256 manifest."
+    }
+
+    $metadata = @{}
+    foreach ($line in Get-Content -LiteralPath $metadataPath) {
+        if ($line -match "^([^=]+)=(.*)$") {
+            $metadata[$Matches[1].Trim()] = $Matches[2].Trim()
+        }
+    }
+    if (-not $metadata.ContainsKey("candidate-sha") -or $metadata["candidate-sha"].ToLowerInvariant() -cne $CandidateSha) {
+        throw "Certification evidence candidate SHA does not match the checked-out commit."
+    }
+    if (-not $metadata.ContainsKey("completed-at") -or [string]::IsNullOrWhiteSpace($metadata["completed-at"])) {
+        throw "Certification evidence is incomplete because run-metadata.txt has no completed-at value."
+    }
+    if (-not [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $statusBeforePath -Raw)) -or -not [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $statusAfterPath -Raw))) {
+        throw "Certification evidence was produced from or left a dirty checkout."
+    }
+
+    $evidenceRootPrefix = $evidenceRoot + [System.IO.Path]::DirectorySeparatorChar
+    $manifestEntries = @{}
+    foreach ($line in Get-Content -LiteralPath $manifestPath) {
+        if ($line -notmatch "^([0-9a-fA-F]{64})  (.+)$") {
+            throw "Certification evidence manifest contains an invalid entry."
+        }
+
+        $expectedHash = $Matches[1].ToLowerInvariant()
+        $relativePath = $Matches[2]
+        if ($manifestEntries.ContainsKey($relativePath)) {
+            throw "Certification evidence manifest contains a duplicate entry for '$relativePath'."
+        }
+
+        $candidatePath = [System.IO.Path]::GetFullPath((Join-Path $evidenceRoot $relativePath))
+        if (-not $candidatePath.StartsWith($evidenceRootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+            throw "Certification evidence manifest references a file outside its evidence directory or a missing file."
+        }
+
+        $actualHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -cne $expectedHash) {
+            throw "Certification evidence hash mismatch for '$relativePath'."
+        }
+        $manifestEntries[$relativePath] = $true
+    }
+    foreach ($requiredEvidenceFile in @("run-metadata.txt", "git-status-before.txt", "git-status-after.txt")) {
+        if (-not $manifestEntries.ContainsKey($requiredEvidenceFile)) {
+            throw "Certification evidence manifest does not protect $requiredEvidenceFile."
+        }
+    }
+
+    return (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-ReleaseApproval {
+    param([Parameter(Mandatory = $true)][string]$CandidateSha)
+
+    if ([string]::IsNullOrWhiteSpace($ApprovedCandidateSha) -or [string]::IsNullOrWhiteSpace($CertificationEvidenceDirectory) -or [string]::IsNullOrWhiteSpace($ReleaseApprovalPath)) {
+        throw "Production deployment requires -ApprovedCandidateSha, -CertificationEvidenceDirectory, and -ReleaseApprovalPath."
+    }
+    if ($ApprovedCandidateSha.ToLowerInvariant() -cne $CandidateSha) {
+        throw "Approved candidate SHA does not match the checked-out commit."
+    }
+    if (-not (Test-Path -LiteralPath $ReleaseApprovalPath -PathType Leaf)) {
+        throw "Release approval record '$ReleaseApprovalPath' was not found."
+    }
+
+    try {
+        $approval = Get-Content -LiteralPath $ReleaseApprovalPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Release approval record must be valid JSON."
+    }
+
+    foreach ($property in @("candidateSha", "certificationManifestSha256", "decision", "approver", "approvedAtUtc")) {
+        if ($null -eq $approval.$property -or [string]::IsNullOrWhiteSpace([string]$approval.$property)) {
+            throw "Release approval record is missing required property '$property'."
+        }
+    }
+    if ([string]$approval.candidateSha -cne $CandidateSha) {
+        throw "Release approval record candidate SHA does not match the checked-out commit."
+    }
+    if ([string]$approval.decision -cne "GO") {
+        throw "Release approval record decision must be GO."
+    }
+    try {
+        [DateTimeOffset]::Parse([string]$approval.approvedAtUtc, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind) | Out-Null
+    }
+    catch {
+        throw "Release approval record approvedAtUtc must be an ISO 8601 timestamp."
+    }
+
+    $manifestHash = Assert-CertificationEvidence -Path $CertificationEvidenceDirectory -CandidateSha $CandidateSha
+    if ([string]$approval.certificationManifestSha256 -notmatch "^[0-9a-fA-F]{64}$" -or [string]$approval.certificationManifestSha256.ToLowerInvariant() -cne $manifestHash) {
+        throw "Release approval record does not match the certification evidence manifest."
+    }
+
+    return [pscustomobject]@{
+        ApprovalRecord = (Resolve-Path -LiteralPath $ReleaseApprovalPath).Path
+        CertificationManifestSha256 = $manifestHash
+    }
+}
 
 function Invoke-Compose {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -71,6 +209,7 @@ function Write-ImageEvidence {
 
 Push-Location $repoRoot
 try {
+    $candidateSha = Assert-CleanCheckout
     $resolvedEnvFile = if ([System.IO.Path]::IsPathRooted($EnvFile)) { $EnvFile } else { Join-Path $repoRoot $EnvFile }
     if (-not (Test-Path -LiteralPath $resolvedEnvFile)) {
         throw "Missing environment file '$EnvFile'. Copy .env.production.example to .env and fill real values first."
@@ -88,6 +227,17 @@ try {
         }
 
         $composeFiles += @("-f", (Resolve-Path -LiteralPath $resolvedComposeFile).Path)
+    }
+
+    $isCertificationDeployment = $ProjectName -match "^lensee-certification-[a-z0-9_-]+$" -and @($normalizedComposeFiles | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -contains "docker-compose.certification.yml"
+    if ($isCertificationDeployment) {
+        Write-Host "Certification Compose project detected; release approval gate is not applicable."
+    }
+    else {
+        if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+            throw "Production deployment requires -EvidenceDirectory for deployment evidence."
+        }
+        $releaseApproval = Assert-ReleaseApproval -CandidateSha $candidateSha
     }
 
     $envLines = Get-Content -LiteralPath $resolvedEnvFile | Where-Object { $_ -match "^\s*[^#][^=]+=" }
@@ -119,6 +269,14 @@ try {
         $resolvedEvidenceDirectory = if ([System.IO.Path]::IsPathRooted($EvidenceDirectory)) { $EvidenceDirectory } else { Join-Path $repoRoot $EvidenceDirectory }
         New-Item -ItemType Directory -Force -Path $resolvedEvidenceDirectory | Out-Null
         $migrationLog = Join-Path $resolvedEvidenceDirectory "migrator-$ProjectName-$timestamp.log"
+        if (-not $isCertificationDeployment) {
+            @(
+                "candidate-sha=$candidateSha"
+                "approval-record=$($releaseApproval.ApprovalRecord)"
+                "certification-manifest-sha256=$($releaseApproval.CertificationManifestSha256)"
+                "validated-at=$(Get-Date -Format o)"
+            ) | Set-Content -LiteralPath (Join-Path $resolvedEvidenceDirectory "release-approval-$ProjectName-$timestamp.txt") -NoNewline
+        }
     }
     else {
         $migrationLog = Join-Path ([System.IO.Path]::GetTempPath()) "lensee-migrator-$timestamp.log"

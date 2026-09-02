@@ -24,6 +24,7 @@ let operationLocations = [];
 let operationSkuOptions = [];
 let operationProductOptions = [];
 let operationAvailableSkuIds = null;
+let operationSkuLoadPromise = null;
 let operationMerchantOptions = [];
 let operationRepresentativeOptions = [];
 let selectedSupplyShipmentId = null;
@@ -34,6 +35,7 @@ let supplySkuSearchIndex = [];
 let operationsUiState = {
   mode: "create",
   operationId: null,
+  concurrencyVersion: null,
   operationType: "WarehouseTransfer",
   revisionReason: "",
   revisionFingerprint: null,
@@ -51,11 +53,13 @@ let selectedMerchantId = null;
 let selectedRepresentativeId = null;
 let auditPageState = { page: 1, pageSize: 50 };
 let notificationPageState = { page: 1, pageSize: 10 };
+let notificationLoadGeneration = 0;
 let shopifyIntegrationPageState = { page: 1, pageSize: 25 };
 let shopifySkuPageState = { page: 1, pageSize: 50 };
 let activeRefreshTimer = null;
 let activeRefreshController = null;
 let activeRefreshInFlight = false;
+let routeRenderGeneration = 0;
 let notificationBadgeInFlight = false;
 let refreshSessionPromise = null;
 let noticeSequence = 0;
@@ -2021,6 +2025,7 @@ function currentRouteQuery() {
 }
 
 async function renderRoute() {
+  const renderGeneration = ++routeRenderGeneration;
   const auth = getAuth();
   const path = currentPath();
   const route = routes[path];
@@ -2047,12 +2052,21 @@ async function renderRoute() {
     return;
   }
 
+  // Hash changes and auth restoration can overlap. A superseded render must
+  // never replace the workspace selected by the latest route.
+  if (renderGeneration !== routeRenderGeneration || path !== currentPath()) {
+    return;
+  }
+
   document.getElementById("page-title").textContent = route.title;
   document.getElementById("route-label").textContent = route.label;
   renderNav(auth);
   renderSession(auth);
   updateNotificationBadge();
   await route.render();
+  if (renderGeneration !== routeRenderGeneration || path !== currentPath()) {
+    return;
+  }
   applyLanguage();
   startVisibleIdentifierMasking();
   sanitizeVisibleIdentifiers(document.getElementById("view"));
@@ -3089,6 +3103,7 @@ async function saveCatalogEntity(path, method, payload, successMessage, errorId)
   clearFormError(errorId);
   try {
     await request(path, { method, body: payload === null ? undefined : JSON.stringify(payload) });
+    invalidateOperationSkuCaches();
     notice(successMessage, "success");
     return true;
   } catch (exception) {
@@ -3099,6 +3114,13 @@ async function saveCatalogEntity(path, method, payload, successMessage, errorId)
     notice(message, "error");
     return false;
   }
+}
+
+function invalidateOperationSkuCaches() {
+  operationSkuOptions = [];
+  operationProductOptions = [];
+  operationAvailableSkuIds = null;
+  supplySkuSearchIndex = [];
 }
 
 function validateProductForm() {
@@ -4676,6 +4698,19 @@ async function hydrateOperationLocations() {
 }
 
 async function hydrateOperationSkus() {
+  if (operationSkuLoadPromise) {
+    await operationSkuLoadPromise;
+    return;
+  }
+
+  operationSkuLoadPromise = hydrateOperationSkusCore()
+    .finally(() => {
+      operationSkuLoadPromise = null;
+    });
+  await operationSkuLoadPromise;
+}
+
+async function hydrateOperationSkusCore() {
   const products = [];
   let page = 1;
   let totalCount = 0;
@@ -4727,6 +4762,10 @@ async function hydrateOperationSkus() {
     populateOperationProductOptions(row);
     if (skuId) {
       seedOperationLineSkuSelection(row, skuId);
+    }
+    const search = row.querySelector(".op-line-search");
+    if (search?.value.trim()) {
+      renderOperationSkuSearchResults(row);
     }
   });
 }
@@ -5359,6 +5398,7 @@ function applyShopifyCommercialLocks() {
 function resetOperationEditorMode() {
   operationsUiState.mode = "create";
   operationsUiState.operationId = null;
+  operationsUiState.concurrencyVersion = null;
   operationsUiState.revisionFingerprint = null;
   operationsUiState.revisionReason = "";
   const form = document.getElementById("operation-form");
@@ -5382,6 +5422,7 @@ function resetOperationEditorMode() {
 function seedOperationEditor(detail, mode) {
   operationsUiState.mode = mode;
   operationsUiState.operationId = detail.id;
+  operationsUiState.concurrencyVersion = detail.concurrencyVersion;
   operationsUiState.operationType = detail.operationType;
   operationsUiState.revisionFingerprint = mode === "revise" ? canonicalOperationPayload({
     operationType: detail.operationType,
@@ -5572,7 +5613,7 @@ async function loadOperations() {
       : result.items.filter((operation) => !["Received", "Completed", "Confirmed", "Cancelled"].includes(operation.status));
     count.textContent = showCompleted ? `${result.totalCount} operations` : `${items.length} active`;
     tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">No active operations.</td></tr>` : items.map((operation) => `
-      <tr>
+      <tr data-operation-id="${escapeHtml(operation.id)}" data-operation-number="${escapeHtml(operation.operationNumber)}" data-operation-type="${escapeHtml(operation.operationType)}" data-operation-status="${escapeHtml(operation.status)}">
         <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">Allocation pending</span>` : ""}</td>
         <td>${escapeHtml(operation.operationType)}</td>
         <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operation.status)}</span></td>
@@ -5612,7 +5653,7 @@ async function submitOperationEditor(event) {
     try {
       await request(`/api/v1/operations/${operationsUiState.operationId}/shopify-allocation`, {
         method: "PUT",
-        body: JSON.stringify({ lines: lines.map((line) => ({ operationLineId: line.operationLineId, lotNumber: line.lotNumber, expiryDate: line.expiryDate })) })
+        body: JSON.stringify({ expectedVersion: operationsUiState.concurrencyVersion, lines: lines.map((line) => ({ operationLineId: line.operationLineId, lotNumber: line.lotNumber, expiryDate: line.expiryDate })) })
       });
       notice("Shopify batch allocation saved.", "success");
       resetOperationEditorMode();
@@ -5640,7 +5681,8 @@ async function submitOperationEditor(event) {
     paymentMethod: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? canonicalSelectValue("op-payment") || null : null,
     notes: document.getElementById("op-notes").value || null,
     receipt: type === "InventoryReceipt" ? { supplierName: document.getElementById("op-supplier").value || "Supplier", invoiceNumber: document.getElementById("op-invoice").value || null } : null,
-    lines: payloadLines
+    lines: payloadLines,
+    expectedVersion: ["edit", "revise"].includes(operationsUiState.mode) ? operationsUiState.concurrencyVersion : null
   };
 
   try {
@@ -5706,7 +5748,7 @@ function validateOperationForm(type, lines) {
   })) {
     return "Every pack quantity must be a whole number greater than zero.";
   }
-  if (!main) {
+  if (["InventoryReceipt", "WarehouseTransfer"].includes(type) && !main) {
     return "MainWarehouse must exist before operations can be created.";
   }
   if (type === "InventoryReceipt" && destination !== main.id) {
@@ -6120,7 +6162,7 @@ async function loadPayments() {
     tbody.innerHTML = queueItems.length === 0
       ? `<tr><td colspan="9">No payment confirmations are waiting.</td></tr>`
       : queueItems.map((log) => `
-        <tr>
+        <tr data-payment-id="${escapeHtml(log.id)}" data-payment-operation-id="${escapeHtml(log.operationId)}" data-payment-operation-number="${escapeHtml(log.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(log.merchantId || "")}" data-payment-method="${escapeHtml(log.paymentMethod)}" data-payment-status="${escapeHtml(log.status)}">
           <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}">Use</button>` : ""}<strong>${escapeHtml(shortId(log.id, "PAY"))}</strong></td>
           <td><strong>${escapeHtml(log.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(log.merchantId, "MER"))}</div></td>
           <td><strong>${escapeHtml(log.operationNumber || shortId(log.operationId, "OP"))}</strong><div class="muted-cell">${escapeHtml(log.operationType || "-")}</div></td>
@@ -6162,7 +6204,7 @@ async function loadPaymentHistory() {
     tbody.innerHTML = paymentHistoryRows.length === 0
       ? `<tr><td colspan="9">No payment history yet.</td></tr>`
       : paymentHistoryRows.map((row) => `
-        <tr>
+        <tr data-payment-id="${escapeHtml(row.id)}" data-payment-operation-id="${escapeHtml(row.operationId)}" data-payment-operation-number="${escapeHtml(row.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(row.merchantId || "")}" data-payment-method="${escapeHtml(row.paymentMethod || "")}" data-payment-status="${escapeHtml(row.status || "")}">
           <td>${escapeHtml(formatDateTime(row.lastModifiedAt))}</td>
           <td><strong>${escapeHtml(shortId(row.id, "PAY"))}</strong><div class="muted-cell">${escapeHtml(row.status || "-")}</div></td>
           <td><strong>${escapeHtml(row.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(row.merchantId, "MER"))}</div></td>
@@ -7004,10 +7046,6 @@ function supplyText(english, arabic) {
 }
 
 async function hydrateSupplySkus() {
-  if (operationSkuOptions.length > 0) {
-    buildSupplySkuSearchIndex();
-    return;
-  }
   if (!supplySkuLoadPromise) {
     supplySkuLoadPromise = hydrateOperationSkus()
       .then(buildSupplySkuSearchIndex)
@@ -7385,6 +7423,9 @@ async function saveSupplyShipment(event) {
   const id = document.getElementById("supply-id").value;
   clearSupplyValidation();
   const payload = collectSupplyFormPayload();
+  if (id) {
+    payload.expectedVersion = supplyCurrentDetail?.id === id ? supplyCurrentDetail.concurrencyVersion : null;
+  }
   const validation = validateSupplyFormPayload(payload);
   if (validation.length > 0) {
     showSupplyValidation(validation);
@@ -7952,6 +7993,7 @@ async function loadNotificationTypes() {
 }
 
 async function loadNotifications(page = notificationPageState.page || 1) {
+  const loadGeneration = ++notificationLoadGeneration;
   const list = document.getElementById("notification-list");
   const count = document.getElementById("notification-count");
   const visible = document.getElementById("notification-visible-count");
@@ -7976,6 +8018,12 @@ async function loadNotifications(page = notificationPageState.page || 1) {
       request(`/api/v1/notifications?${params.toString()}`),
       request("/api/v1/notifications/unread-count")
     ]);
+    // A refresh, route change, or mark-all-read can start another load while
+    // this request is in flight. Never let a stale response write into a
+    // detached notification view.
+    if (loadGeneration !== notificationLoadGeneration || document.getElementById("notification-list") !== list) {
+      return;
+    }
     count.textContent = `${result.totalCount} visible`;
     visible.textContent = result.totalCount;
     unread.textContent = unreadResult.count;
@@ -8000,6 +8048,9 @@ async function loadNotifications(page = notificationPageState.page || 1) {
     list.querySelectorAll("[data-resolve-notification]").forEach((button) => button.addEventListener("click", () => resolveNotificationDestination(button.dataset.resolveNotification)));
     updateNotificationBadge();
   } catch (exception) {
+    if (!count || !list || loadGeneration !== notificationLoadGeneration || document.getElementById("notification-list") !== list) {
+      return;
+    }
     count.textContent = "Failed";
     list.innerHTML = `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`;
     if (pagination) {

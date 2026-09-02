@@ -424,6 +424,12 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("client_name");
 
+                    b.Property<uint>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.Property<DateTime?>("ConfirmedAt")
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("confirmed_at");
@@ -877,6 +883,10 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
+                    b.Property<int>("BaselineStockRowVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("baseline_stock_row_version");
+
                     b.Property<int>("Delta")
                         .HasColumnType("integer")
                         .HasColumnName("delta");
@@ -928,6 +938,12 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<uint>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.Property<DateTime?>("ConfirmedAt")
                         .HasColumnType("timestamp without time zone")
@@ -1003,6 +1019,12 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Property<Guid?>("CancelledBy")
                         .HasColumnType("uuid")
                         .HasColumnName("cancelled_by");
+
+                    b.Property<uint>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.Property<DateTime?>("ConfirmedAt")
                         .HasColumnType("timestamp without time zone")
@@ -1094,12 +1116,14 @@ namespace Lensee.Modules.Operations.Migrations
 
                     b.HasIndex(new[] { "DestinationLocationId" }, "idx_supply_shipments_destination");
 
-                    b.HasIndex(new[] { "InventoryReceiptOperationId" }, "idx_supply_shipments_operation");
-
                     b.HasIndex(new[] { "Status" }, "idx_supply_shipments_status");
 
                     b.HasIndex(new[] { "ShipmentNumber" }, "supply_shipments_shipment_number_key")
                         .IsUnique();
+
+                    b.HasIndex(new[] { "InventoryReceiptOperationId" }, "uq_supply_shipments_operation")
+                        .IsUnique()
+                        .HasFilter("(inventory_receipt_operation_id IS NOT NULL)");
 
                     b.ToTable("supply_shipments", "operations", t =>
                         {
