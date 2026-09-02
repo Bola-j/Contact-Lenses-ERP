@@ -12,9 +12,32 @@
 2. Run the staged, read-only workload with dedicated synthetic users: 2, then 4, then 8 sessions. Stop if readiness fails, errors exceed 1%, p95 exceeds 2 seconds, a container restarts, or OOM is reported.
 3. Create and hash a fresh backup before migration. Copy it to the approved encrypted off-host destination, verify its age is at most 15 minutes, and record the storage reference without recording credentials.
 4. Validate the deployed TLS certificate, exact CORS origin, proxy network, persistent Data Protection keys, alert delivery, and non-public database listener.
-5. Run the explicit migrator once. If it fails, stop promotion, preserve logs, and follow `migration-rollback.md`; do not start application containers as a workaround.
-6. After the API is healthy, start frontend and Caddy. Verify `/health`, `/ready`, one valid login, one read-only authorization check, one controlled catalog-to-stock transaction, and its audit/outbox records.
-7. Record image digest, timestamps, restart counts, migration log, smoke-test result, rollback owner, and the PR workflow URL in the certification checklist.
+5. Create a release-approval JSON file outside the checkout and source-control. It must name the exact 40-character candidate SHA, the SHA-256 of the completed certification bundle's `sha256-manifest.txt`, decision `GO`, approver, and ISO-8601 approval time. The bundle's `run-metadata.txt` must record the same candidate SHA and its manifest must verify every listed file.
+
+   ```json
+   {
+     "candidateSha": "<40-character Git commit SHA>",
+     "certificationManifestSha256": "<SHA-256 of sha256-manifest.txt>",
+     "decision": "GO",
+     "approver": "<release approver>",
+     "approvedAtUtc": "2026-09-01T12:00:00Z"
+   }
+   ```
+6. From a clean checkout of that SHA, deploy with all approval inputs and a separate deployment-evidence directory. For example:
+
+   ```powershell
+   $candidateSha = (git rev-parse HEAD).Trim()
+   pwsh -NoProfile -File scripts/deploy-prod.ps1 `
+     -ApprovedCandidateSha $candidateSha `
+     -CertificationEvidenceDirectory 'D:\release-evidence\candidate' `
+     -ReleaseApprovalPath 'D:\release-evidence\release-approval.json' `
+     -EvidenceDirectory 'D:\release-evidence\deployment'
+   ```
+
+   The script refuses dirty checkouts, mismatched candidate SHA/evidence, modified certification files, absent/invalid approval records, and non-`GO` decisions before it runs Docker Compose.
+7. Run the explicit migrator once. If it fails, stop promotion, preserve logs, and follow `migration-rollback.md`; do not start application containers as a workaround.
+8. After the API is healthy, start frontend and Caddy. Verify `/health`, `/ready`, one valid login, one read-only authorization check, one controlled catalog-to-stock transaction, and its audit/outbox records.
+9. Record image digest, timestamps, restart counts, migration log, smoke-test result, rollback owner, and the PR workflow URL in the certification checklist.
 
 ## Non-negotiable safety rules
 

@@ -1,5 +1,35 @@
 # LenseeProduction Production Certification Checklist
 
+## 2026-09-02 release-preparation update
+
+This update supersedes historical local test counts only; it does **not** grant
+production approval. The current checkout is still dirty at baseline
+`d5663e300b9dd78bc2cc45df50cd0c36064bb5a1`, so all evidence below is
+diagnostic rather than certificate evidence bound to an immutable candidate.
+
+- [x] Docker Desktop Linux engine is available for the latest run (2 CPUs,
+  approximately 4.1 GB memory).
+- [x] Release build with warnings as errors passed.
+- [x] Ordinary backend suite passed: 176 passed, 0 failed, 0 skipped.
+- [x] PostgreSQL/Testcontainers suite passed with
+  `LENSEE_RUN_POSTGRES_TESTS=true`: 21 passed, 0 failed, 0 skipped.
+- [x] New real-HTTP PostgreSQL barriers cover duplicate operation confirmation,
+  edit-versus-confirm serialization, concurrent correction creation,
+  correction settlement persistence, and rejection of a second correction
+  after a reversal.
+- [x] The release gate exposed and corrected the correction aggregate's missing
+  `xmin` projection when locking an operation row.
+- [ ] The full endpoint-level concurrency matrix remains incomplete (payments,
+  adjustment/installment decisions, supply, stocktake, receipt response-loss,
+  and the remaining correction terminal races).
+- [ ] Complete Playwright evidence, isolated recovery drill, image security
+  evidence, clean-candidate certification, CI evidence, and target-VPS checks
+  remain required.
+
+**Current decision: NO-GO.** Do not run the clean-candidate certification,
+create release approval, or deploy until the remaining items above pass against
+one committed, clean candidate SHA.
+
 ## Document control
 
 | Field | Value |
