@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
@@ -119,7 +120,7 @@ public static class SupplyEndpoints
         var shipment = new SupplyShipment
         {
             Id = Guid.NewGuid(),
-            ShipmentNumber = $"SUP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}",
+            ShipmentNumber = $"SUP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}",
             SupplierName = request.SupplierName!.Trim(),
             InvoiceNumber = TrimToNull(request.InvoiceNumber),
             ShipmentDate = request.ShipmentDate ?? now,
@@ -280,7 +281,7 @@ public static class SupplyEndpoints
             var operation = new OperationLog
             {
                 Id = Guid.NewGuid(),
-                OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}",
+                OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}",
                 OperationType = InventoryReceipt,
                 Status = Received,
                 DestinationLocationId = shipment.DestinationLocationId,

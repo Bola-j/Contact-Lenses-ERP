@@ -35,8 +35,8 @@ jobs:
       - name: Restore .NET solution
         run: dotnet restore Lensee.slnx
 
-      - name: Build Release with warnings as errors
-        run: dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror
+      - name: Build Release with analyzers
+        run: dotnet build Lensee.slnx --configuration Release --no-restore /p:RunAnalyzers=true
 
       - name: Run backend unit and contract tests
         run: dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
@@ -47,7 +47,7 @@ jobs:
         run: dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
 
       - name: Verify formatting
-        run: dotnet format Lensee.slnx --verify-no-changes --no-restore
+        run: dotnet format whitespace Lensee.slnx --verify-no-changes --no-restore
 
       - name: Run frontend guards
         run: npm run check

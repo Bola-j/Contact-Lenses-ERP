@@ -14,6 +14,13 @@ using Xunit;
 
 namespace Lensee.Tests;
 
+[CollectionDefinition(CollectionName, DisableParallelization = true)]
+public sealed class ShopifyEndpointContractTestCollection
+{
+    public const string CollectionName = "Shopify endpoint contract tests";
+}
+
+[Collection(ShopifyEndpointContractTestCollection.CollectionName)]
 public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpointFactory>
 {
     private readonly OperationsEndpointFactory _factory;
