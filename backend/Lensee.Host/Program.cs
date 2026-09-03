@@ -1014,17 +1014,8 @@ static void ValidateProductionConfiguration(IHostEnvironment environment, IConfi
         throw new InvalidOperationException("Production DataProtection:KeyRingPath must be an absolute path backed by durable storage.");
     }
 
-    var allowedOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-        ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
-        .ToArray()
-        ?? [];
-    if (allowedOrigins.Length == 0 || allowedOrigins.Any(origin =>
-            !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-            !string.IsNullOrEmpty(uri.PathAndQuery.Trim('/'))))
-    {
-        throw new InvalidOperationException("Production Cors:AllowedOrigins must contain one or more exact HTTPS origins without paths.");
-    }
+    ProductionConfigurationValidator.ValidateCorsAllowedOrigins(
+        configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? []);
 }
 
 public partial class Program;
