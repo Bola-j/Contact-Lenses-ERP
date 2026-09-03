@@ -103,8 +103,11 @@ builder.Services.AddSwaggerGen(options =>
 
 builder.Services.AddCors(options =>
 {
-    var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-        ?? ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://localhost:8080", "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:5173", "http://127.0.0.1:8080"];
+    var configuredOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+    var allowedOrigins = builder.Environment.IsProduction()
+        ? ProductionConfigurationValidator.GetValidatedCorsAllowedOrigins(configuredOrigins ?? [])
+        : configuredOrigins
+          ?? ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://localhost:8080", "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:5173", "http://127.0.0.1:8080"];
     var allowedOriginSuffixes = builder.Configuration.GetSection("Cors:AllowedOriginSuffixes").Get<string[]>()
         ?? [];
 
@@ -1014,7 +1017,7 @@ static void ValidateProductionConfiguration(IHostEnvironment environment, IConfi
         throw new InvalidOperationException("Production DataProtection:KeyRingPath must be an absolute path backed by durable storage.");
     }
 
-    ProductionConfigurationValidator.ValidateCorsAllowedOrigins(
+    ProductionConfigurationValidator.GetValidatedCorsAllowedOrigins(
         configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? []);
 }
 

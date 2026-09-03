@@ -2,28 +2,27 @@ namespace Lensee.Host.Infrastructure;
 
 public static class ProductionConfigurationValidator
 {
-    public static void ValidateCorsAllowedOrigins(IEnumerable<string?> configuredOrigins)
+    public static string[] GetValidatedCorsAllowedOrigins(IEnumerable<string?> configuredOrigins)
     {
         var allowedOrigins = configuredOrigins
             .Where(origin => !string.IsNullOrWhiteSpace(origin))
             .Select(origin => origin!.Trim())
             .ToArray();
 
-        if (allowedOrigins.Length == 0)
-        {
-            throw new InvalidOperationException("Production Cors:AllowedOrigins must contain one or more exact HTTPS origins without paths.");
-        }
-
-        var invalidOrigins = allowedOrigins
-            .Where(origin => !IsExactHttpsOrigin(origin))
+        var exactHttpsOrigins = allowedOrigins
+            .Where(IsExactHttpsOrigin)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (invalidOrigins.Length > 0)
+        if (exactHttpsOrigins.Length == 0)
         {
+            var invalidOrigins = allowedOrigins.Length == 0 ? "none" : string.Join(", ", allowedOrigins);
             throw new InvalidOperationException(
                 "Production Cors:AllowedOrigins must contain one or more exact HTTPS origins without paths. Invalid origins: " +
-                string.Join(", ", invalidOrigins));
+                invalidOrigins);
         }
+
+        return exactHttpsOrigins;
     }
 
     private static bool IsExactHttpsOrigin(string origin)

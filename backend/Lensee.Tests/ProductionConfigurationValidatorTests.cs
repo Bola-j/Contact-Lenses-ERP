@@ -8,9 +8,25 @@ public sealed class ProductionConfigurationValidatorTests
     [Fact]
     public void ValidateCorsAllowedOrigins_AcceptsExactHttpsOrigin()
     {
-        ProductionConfigurationValidator.ValidateCorsAllowedOrigins([
+        var allowedOrigins = ProductionConfigurationValidator.GetValidatedCorsAllowedOrigins([
             "https://portal.lensee-egypt.com"
         ]);
+
+        Assert.Equal(["https://portal.lensee-egypt.com"], allowedOrigins);
+    }
+
+    [Fact]
+    public void ValidateCorsAllowedOrigins_UsesExactHttpsOriginsWhenDevelopmentDefaultsAreMerged()
+    {
+        var allowedOrigins = ProductionConfigurationValidator.GetValidatedCorsAllowedOrigins([
+            "https://portal.lensee-egypt.com",
+            "http://localhost:3001",
+            "http://localhost:5000",
+            "http://localhost:5173",
+            "http://localhost:8080"
+        ]);
+
+        Assert.Equal(["https://portal.lensee-egypt.com"], allowedOrigins);
     }
 
     [Theory]
@@ -22,7 +38,7 @@ public sealed class ProductionConfigurationValidatorTests
     public void ValidateCorsAllowedOrigins_RejectsInvalidProductionOrigins(string origin)
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            ProductionConfigurationValidator.ValidateCorsAllowedOrigins([origin]));
+            ProductionConfigurationValidator.GetValidatedCorsAllowedOrigins([origin]));
 
         Assert.Contains(origin, exception.Message);
     }
