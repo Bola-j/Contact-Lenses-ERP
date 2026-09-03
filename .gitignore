@@ -26,6 +26,7 @@ artifacts/workload/
 # Local configuration and secrets
 .env
 .env.production.example
+.env.production
 .env.example
 
 
