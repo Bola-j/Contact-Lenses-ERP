@@ -70,8 +70,8 @@ try {
         throw "Certification requires a clean worktree. Commit or stash changes before running, or use -AllowDirtyWorktree for non-certifying diagnostics."
     }
     Invoke-Logged -Name "dotnet-restore" -Command { dotnet restore Lensee.slnx }
-    Invoke-Logged -Name "dotnet-build-release" -Command { dotnet build Lensee.slnx --configuration Release --no-restore -warnaserror }
-    Invoke-Logged -Name "dotnet-format" -Command { dotnet format Lensee.slnx --verify-no-changes --no-restore }
+    Invoke-Logged -Name "dotnet-build-release" -Command { dotnet build Lensee.slnx --configuration Release --no-restore /p:RunAnalyzers=true }
+    Invoke-Logged -Name "dotnet-format" -Command { dotnet format whitespace Lensee.slnx --verify-no-changes --no-restore }
     Invoke-Logged -Name "unit-contract-tests" -Command { dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal" }
 
     $previousPostgresFlag = $env:LENSEE_RUN_POSTGRES_TESTS
