@@ -1,3 +1,5 @@
+using Lensee.Modules.Payments.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -8,6 +10,8 @@ namespace Lensee.Modules.Payments.Migrations;
 /// Reclassifies the old, misleading merchant-credit name without changing the
 /// amount, approval history, or cash records of any financial event.
 /// </summary>
+[DbContext(typeof(PaymentsDbContext))]
+[Migration("20260909090000_ReclassifyMerchantCreditAsAdditionalCharge")]
 public partial class ReclassifyMerchantCreditAsAdditionalCharge : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
