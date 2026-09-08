@@ -6104,7 +6104,7 @@ async function renderPayments() {
         <p class="muted-text">Every adjustment is linked to its source operation. Cash refunds are approved first, then recorded when cash is actually paid.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
-          <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
+          <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required disabled><option value="">Enter an operation first</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="AdditionalCharge">Additional charge</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
           <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required source" required></div>
           <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
@@ -6123,6 +6123,8 @@ async function renderPayments() {
   document.getElementById("payment-sublog-form")?.addEventListener("submit", draftPaymentSubLog);
   document.getElementById("cash-record-form")?.addEventListener("submit", createCashRecord);
   document.getElementById("financial-adjustment-form")?.addEventListener("submit", createFinancialAdjustment);
+  document.getElementById("adjustment-operation-id")?.addEventListener("change", resolveAdjustmentOperation);
+  document.getElementById("adjustment-operation-id")?.addEventListener("blur", resolveAdjustmentOperation);
   document.getElementById("load-merchant-balance").addEventListener("click", loadMerchantBalance);
   await Promise.all([loadPayments(), loadPaymentHistory()]);
 }
@@ -6527,12 +6529,15 @@ async function createFinancialAdjustment(event) {
   const adjustmentType = canonicalSelectValue("adjustment-type");
   const operationId = document.getElementById("adjustment-operation-id").value.trim();
   const amount = Number(document.getElementById("adjustment-amount").value);
-  if (!document.getElementById("adjustment-merchant").value || !Number.isFinite(amount) || amount <= 0) {
-    showFormError("financial-adjustment-error", "Merchant and positive amount are required.");
-    return;
-  }
   if (!operationId) {
     showFormError("financial-adjustment-error", "Every financial adjustment must reference an operation ID.");
+    return;
+  }
+  if (!await resolveAdjustmentOperation()) {
+    return;
+  }
+  if (!document.getElementById("adjustment-merchant").value || !Number.isFinite(amount) || amount <= 0) {
+    showFormError("financial-adjustment-error", "Merchant and positive amount are required.");
     return;
   }
   if (adjustmentType === "AdditionalCharge" && !document.getElementById("adjustment-notes").value.trim()) {
@@ -6557,6 +6562,40 @@ async function createFinancialAdjustment(event) {
     await loadMerchantBalance();
   } catch (exception) {
     showFormError("financial-adjustment-error", getFriendlyWorkspaceError(exception));
+  }
+}
+
+async function resolveAdjustmentOperation() {
+  const errorId = "financial-adjustment-error";
+  const operationInput = document.getElementById("adjustment-operation-id");
+  const merchantSelect = document.getElementById("adjustment-merchant");
+  const reference = operationInput?.value.trim();
+  if (!operationInput || !merchantSelect || !reference) {
+    if (merchantSelect) {
+      merchantSelect.value = "";
+      merchantSelect.disabled = true;
+    }
+    return false;
+  }
+
+  try {
+    const operation = await request(`/api/v1/payments/operations/resolve?reference=${encodeURIComponent(reference)}`);
+    if (!operation.merchantId || !merchantSelect.querySelector(`option[value="${CSS.escape(operation.merchantId)}"]`)) {
+      merchantSelect.value = "";
+      merchantSelect.disabled = true;
+      showFormError(errorId, "The operation has no active merchant available for a financial adjustment.");
+      return false;
+    }
+
+    merchantSelect.value = operation.merchantId;
+    merchantSelect.disabled = true;
+    clearFormError(errorId);
+    return true;
+  } catch (exception) {
+    merchantSelect.value = "";
+    merchantSelect.disabled = true;
+    showFormError(errorId, getFriendlyWorkspaceError(exception));
+    return false;
   }
 }
 

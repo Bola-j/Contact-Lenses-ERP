@@ -729,6 +729,32 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task PaymentOperationResolution_ResolvesMerchantFromOperationNumber()
+    {
+        var seed = await _factory.SeedAsync(withMainStock: true);
+        var merchantId = await _factory.CreateMerchantAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead, LenseePermissions.PaymentsRead);
+
+        var operation = await CreateOperationAsync(client, new
+        {
+            operationType = "WholesaleSale",
+            sourceLocationId = seed.MainLocationId,
+            merchantId,
+            paymentMethod = "Installment",
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
+        });
+
+        var response = await client.GetAsync($"/api/v1/payments/operations/resolve?reference={Uri.EscapeDataString(operation.OperationNumber)}");
+        var resolved = await response.Content.ReadFromJsonAsync<PaymentOperationResolutionContract>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(resolved);
+        Assert.Equal(operation.Id, resolved!.OperationId);
+        Assert.Equal(merchantId, resolved.MerchantId);
+    }
+
+    [Fact]
     public async Task InstallmentSale_RequiresAdminApprovalBeforeBalanceIsReduced()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
@@ -2449,6 +2475,8 @@ public sealed record FinancialAdjustmentContract(
     Guid CreatedBy,
     string? CreatedByName,
     DateTime CreatedAt);
+
+public sealed record PaymentOperationResolutionContract(Guid OperationId, string OperationNumber, Guid? MerchantId, string? MerchantName, string OperationType);
 
 public sealed record OperationCorrectionContract(Guid Id, Guid OperationId, string Status, Guid? ReversalOperationId, Guid? ReplacementOperationId);
 

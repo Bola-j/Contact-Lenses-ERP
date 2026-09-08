@@ -50,6 +50,7 @@ public static class PaymentsEndpoints
 
         group.MapGet("/", ListPaymentLogsAsync).RequireAuthorization("payments.read");
         group.MapGet("/history", ListPaymentHistoryAsync).RequireAuthorization("payments.read");
+        group.MapGet("/operations/resolve", ResolvePaymentOperationAsync).RequireAuthorization("payments.read");
         group.MapGet("/{id:guid}", GetPaymentLogAsync).RequireAuthorization("payments.read");
         group.MapGet("/merchants/{merchantId:guid}/balance", GetMerchantBalanceAsync).RequireAuthorization("payments.read");
         group.MapPost("/initialize", InitializePaymentLogAsync).RequireAuthorization("payments.write");
@@ -882,6 +883,25 @@ public static class PaymentsEndpoints
 
         return await operationsDbContext.OperationLogs
             .FirstOrDefaultAsync(value => value.OperationNumber == reference && !value.IsDeleted, cancellationToken);
+    }
+
+    private static async Task<IResult> ResolvePaymentOperationAsync(
+        string? reference,
+        OperationsDbContext operationsDbContext,
+        CancellationToken cancellationToken)
+    {
+        var operation = await ResolveOperationReferenceAsync(operationsDbContext, reference, cancellationToken);
+        if (operation is null)
+        {
+            return Results.NotFound(new { code = "operation-not-found", detail = "Operation must exist. Use the full operation ID or operation code." });
+        }
+
+        return Results.Ok(new PaymentOperationResolutionResponse(
+            operation.Id,
+            operation.OperationNumber,
+            operation.ClientId,
+            operation.ClientName,
+            operation.OperationType));
     }
 
     private static async Task<List<CashRecord>> LoadCashRecordsForLogAsync(
@@ -2128,6 +2148,8 @@ public sealed record RejectionRequest(string? Reason);
 public sealed record CashRecordRequest(string? OperationId, string? PaymentType, string? SubType, decimal Amount, string? Notes);
 
 public sealed record FinancialAdjustmentRequest(Guid MerchantId, string? OperationId, string AdjustmentType, decimal Amount, string? Notes);
+
+public sealed record PaymentOperationResolutionResponse(Guid OperationId, string OperationNumber, Guid? MerchantId, string? MerchantName, string OperationType);
 
 public sealed record CashRefundPayoutRequest(decimal Amount, string? Notes);
 
