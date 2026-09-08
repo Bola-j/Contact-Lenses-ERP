@@ -281,20 +281,33 @@ public static class NotificationsEndpoints
         foreach (var alert in retired) alert.IsRead = true;
         var weekStart = DateOnly.FromDateTime(now).AddDays(-((int)now.DayOfWeek + 2) % 7);
         var weekKey = $"OPENPAY-{weekStart:yyyyMMdd}";
-        var logs = await paymentsDbContext.MainPaymentLogs.Where(value => !value.IsDeleted && value.Status != "Completed" && value.Status != "Cancelled" && value.Status != "Rejected").ToListAsync(cancellationToken);
-        var total = logs.Sum(value => value.TotalAmount);
-        var paid = logs.Sum(value => value.AmountPaid);
-        var remaining = logs.Sum(value => Math.Max(value.TotalAmount - value.AmountPaid, 0));
+        var logs = await paymentsDbContext.MainPaymentLogs
+            .Include(value => value.InstallmentSubLogs)
+            .Where(value => !value.IsDeleted && value.Status != "Completed" && value.Status != "Cancelled" && value.Status != "Rejected")
+            .ToListAsync(cancellationToken);
+        var operationIds = logs.Select(value => value.OperationId).ToArray();
+        var logIds = logs.Select(value => value.Id).ToArray();
+        var cashByOperation = (await paymentsDbContext.CashRecords.Where(value => operationIds.Contains(value.OperationId)).ToListAsync(cancellationToken))
+            .GroupBy(value => value.OperationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var adjustmentsByLog = (await paymentsDbContext.FinancialAdjustments.Where(value => value.PaymentLogId.HasValue && logIds.Contains(value.PaymentLogId.Value)).ToListAsync(cancellationToken))
+            .GroupBy(value => value.PaymentLogId!.Value)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
+        var balances = logs.Select(log => PaymentBalanceCalculator.Calculate(log, adjustmentsByLog.GetValueOrDefault(log.Id, []), cashByOperation.GetValueOrDefault(log.OperationId, []))).ToList();
+        var total = balances.Sum(value => value.AdjustedAmount);
+        var paid = balances.Sum(value => value.ConfirmedCollections);
+        var remaining = balances.Sum(value => value.RemainingAmount);
+        var refundDue = balances.Sum(value => value.RefundDue);
         var merchants = logs.Select(value => value.MerchantId).Where(value => value.HasValue).Distinct().Count();
         var statuses = string.Join(", ", logs.GroupBy(value => value.Status).OrderBy(value => value.Key).Select(value => $"{value.Key}: {value.Count()}"));
-        var message = $"Open-payment weekly summary: {logs.Count} log(s), {merchants} merchant(s), total {total:0.##}, paid {paid:0.##}, remaining {remaining:0.##}. Statuses: {(statuses.Length == 0 ? "none" : statuses)}.";
+        var message = $"Open-payment weekly summary: {logs.Count} log(s), {merchants} merchant(s), total {total:0.##}, paid {paid:0.##}, remaining {remaining:0.##}, refund due {refundDue:0.##}. Statuses: {(statuses.Length == 0 ? "none" : statuses)}.";
         var created = 0;
         foreach (var role in new[] { LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel, LenseeRoles.Accountant })
         {
             var exists = await notificationsDbContext.NotificationLogs.AnyAsync(value => value.AlertType == OpenPaymentWeeklySummary && value.ReferenceCode == weekKey && value.TargetRole == role, cancellationToken);
             if (exists) continue;
             var id = Guid.NewGuid();
-            notificationsDbContext.NotificationLogs.Add(new NotificationLog { Id = id, AlertType = OpenPaymentWeeklySummary, Message = message, ReferenceType = "PaymentLog", ReferenceCode = weekKey, ReferenceTitle = "Open-payment weekly summary", ReferenceContextJson = System.Text.Json.JsonSerializer.Serialize(new { weekKey, logCount = logs.Count, merchants, total, paid, remaining, statuses }), TargetRole = role, Channel = InApp, CreatedAt = now, NotificationNumber = RecordCode("NOT", id) });
+            notificationsDbContext.NotificationLogs.Add(new NotificationLog { Id = id, AlertType = OpenPaymentWeeklySummary, Message = message, ReferenceType = "PaymentLog", ReferenceCode = weekKey, ReferenceTitle = "Open-payment weekly summary", ReferenceContextJson = System.Text.Json.JsonSerializer.Serialize(new { weekKey, logCount = logs.Count, merchants, total, paid, remaining, refundDue, statuses }), TargetRole = role, Channel = InApp, CreatedAt = now, NotificationNumber = RecordCode("NOT", id) });
             created++;
         }
 

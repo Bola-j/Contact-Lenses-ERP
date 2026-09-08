@@ -95,9 +95,21 @@ public sealed class OperationalAlertScheduler
         await _notifications.SaveChangesAsync(cancellationToken);
         if (now.DayOfWeek != DayOfWeek.Friday) return;
         var weekKey = $"OPENPAY-{DateOnly.FromDateTime(now):yyyyMMdd}";
-        var logs = await _payments.MainPaymentLogs.Where(value => !value.IsDeleted && value.Status != "Completed" && value.Status != "Cancelled" && value.Status != "Rejected").ToListAsync(cancellationToken);
+        var logs = await _payments.MainPaymentLogs
+            .Include(value => value.InstallmentSubLogs)
+            .Where(value => !value.IsDeleted && value.Status != "Completed" && value.Status != "Cancelled" && value.Status != "Rejected")
+            .ToListAsync(cancellationToken);
+        var operationIds = logs.Select(value => value.OperationId).ToArray();
+        var logIds = logs.Select(value => value.Id).ToArray();
+        var cashByOperation = (await _payments.CashRecords.Where(value => operationIds.Contains(value.OperationId)).ToListAsync(cancellationToken))
+            .GroupBy(value => value.OperationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var adjustmentsByLog = (await _payments.FinancialAdjustments.Where(value => value.PaymentLogId.HasValue && logIds.Contains(value.PaymentLogId.Value)).ToListAsync(cancellationToken))
+            .GroupBy(value => value.PaymentLogId!.Value)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
+        var balances = logs.Select(log => PaymentBalanceCalculator.Calculate(log, adjustmentsByLog.GetValueOrDefault(log.Id, []), cashByOperation.GetValueOrDefault(log.OperationId, []))).ToList();
         var statuses = string.Join(", ", logs.GroupBy(value => value.Status).OrderBy(value => value.Key).Select(value => $"{value.Key}: {value.Count()}"));
-        var message = $"Open-payment weekly summary: {logs.Count} log(s), {logs.Select(value => value.MerchantId).Where(value => value.HasValue).Distinct().Count()} merchant(s), total {logs.Sum(value => value.TotalAmount):0.##}, paid {logs.Sum(value => value.AmountPaid):0.##}, remaining {logs.Sum(value => Math.Max(value.TotalAmount - value.AmountPaid, 0)):0.##}. Statuses: {(statuses.Length == 0 ? "none" : statuses)}.";
+        var message = $"Open-payment weekly summary: {logs.Count} log(s), {logs.Select(value => value.MerchantId).Where(value => value.HasValue).Distinct().Count()} merchant(s), total {balances.Sum(value => value.AdjustedAmount):0.##}, paid {balances.Sum(value => value.ConfirmedCollections):0.##}, remaining {balances.Sum(value => value.RemainingAmount):0.##}, refund due {balances.Sum(value => value.RefundDue):0.##}. Statuses: {(statuses.Length == 0 ? "none" : statuses)}.";
         foreach (var role in new[] { LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel, LenseeRoles.Accountant })
         {
             if (await _notifications.NotificationLogs.AnyAsync(value => value.AlertType == "OpenPaymentWeeklySummary" && value.ReferenceCode == weekKey && value.TargetRole == role, cancellationToken)) continue;

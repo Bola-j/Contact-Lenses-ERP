@@ -143,7 +143,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
     }
 
     [PostgreSqlIntegrationFact]
-    public async Task CorrectionSettlement_PersistsTheLockedProposalValues()
+    public async Task CorrectionSettlement_PersistsCashRefundValues()
     {
         var seed = await _factory.SeedOperationReferencesAsync();
         var operationId = await _factory.SeedFinalizedCorrectionOperationAsync(seed);
@@ -154,7 +154,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
 
         var settlement = await client.PostAsJsonAsync($"/api/v1/operations/corrections/{proposalId}/settlement", new
         {
-            settlementMethod = "MerchantCredit",
+            settlementMethod = "CashRefund",
             settlementAmount = 25m
         });
         Assert.Equal(HttpStatusCode.OK, settlement.StatusCode);
@@ -162,7 +162,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         await using var scope = _factory.Services.CreateAsyncScope();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
         var proposal = await operations.OperationCorrectionProposals.SingleAsync(value => value.Id == proposalId);
-        Assert.Equal("MerchantCredit", proposal.SettlementMethod);
+        Assert.Equal("CashRefund", proposal.SettlementMethod);
         Assert.Equal(25m, proposal.SettlementAmount);
     }
 

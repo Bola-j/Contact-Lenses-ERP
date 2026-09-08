@@ -25,7 +25,7 @@ public static class PaymentsEndpoints
     private const string Confirmed = "Confirmed";
     private const string CashReceived = "CashReceived";
     private const string CashRefund = "CashRefund";
-    private const string MerchantCredit = "MerchantCredit";
+    private const string AdditionalCharge = "AdditionalCharge";
     private const string BalanceReduction = "BalanceReduction";
     private const string Draft = "Draft";
     private const string ConfirmedPayment = "Confirmed";
@@ -62,6 +62,7 @@ public static class PaymentsEndpoints
         group.MapGet("/adjustments", ListFinancialAdjustmentsAsync).RequireAuthorization("payments.read");
         group.MapPost("/adjustments", CreateFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.request");
         group.MapPost("/adjustments/{id:guid}/approve", ApproveFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
+        group.MapPost("/adjustments/{id:guid}/payout", PayoutCashRefundAsync).RequireAuthorization("payments.adjustments.approve");
         group.MapPost("/adjustments/{id:guid}/reject", RejectFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
 
         return group;
@@ -103,9 +104,19 @@ public static class PaymentsEndpoints
             .Skip(request.Skip)
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
+        var operationIds = rows.Select(row => row.OperationId).ToArray();
+        var logIds = rows.Select(row => row.Id).ToArray();
+        var cashRecords = operationIds.Length == 0 ? [] : await paymentsDbContext.CashRecords
+            .Where(record => operationIds.Contains(record.OperationId)).ToListAsync(cancellationToken);
+        var adjustments = logIds.Length == 0 ? [] : await paymentsDbContext.FinancialAdjustments
+            .Where(adjustment => adjustment.PaymentLogId.HasValue && logIds.Contains(adjustment.PaymentLogId.Value)).ToListAsync(cancellationToken);
+        var cashByOperation = cashRecords.GroupBy(record => record.OperationId).ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var adjustmentsByLog = adjustments.GroupBy(adjustment => adjustment.PaymentLogId!.Value).ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
         var userLookup = await LoadUserLookupAsync(identityDbContext, rows, cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, rows.Select(row => row.OperationId), cancellationToken);
-        var responses = rows.Select(log => ToListResponse(log, userLookup, operationLookup)).ToList();
+        var responses = rows.Select(log => ToListResponse(log, userLookup, operationLookup,
+            cashByOperation.GetValueOrDefault(log.OperationId, []),
+            adjustmentsByLog.GetValueOrDefault(log.Id, []))).ToList();
 
         return Results.Ok(new PagedResult<PaymentLogListResponse>(responses, request.Page, request.PageSize, total));
     }
@@ -448,8 +459,14 @@ public static class PaymentsEndpoints
                 return;
             }
 
-            RecalculateInstallmentAggregates(log);
-            var remaining = log.TotalAmount - log.AmountPaid - log.PendingAmount;
+            var cashRecords = await paymentsDbContext.CashRecords
+                .Where(record => record.OperationId == log.OperationId)
+                .ToListAsync(cancellationToken);
+            var adjustments = await paymentsDbContext.FinancialAdjustments
+                .Where(adjustment => adjustment.PaymentLogId == log.Id)
+                .ToListAsync(cancellationToken);
+            var paymentBalance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
+            var remaining = Math.Max(paymentBalance.RemainingAmount - paymentBalance.PendingCollections, 0m);
             if (request.Amount > remaining)
             {
                 transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = [$"Amount exceeds remaining payable amount ({remaining:0.####})."] });
@@ -589,9 +606,18 @@ public static class PaymentsEndpoints
 
             var now = clock.EgyptNow;
             cashRecord.Status = PaymentCompleted;
-            log.AmountPaid = log.TotalAmount;
-            log.PendingAmount = 0;
-            log.Status = PaymentCompleted;
+            var cashRecords = await paymentsDbContext.CashRecords
+                .Where(record => record.OperationId == log.OperationId)
+                .ToListAsync(cancellationToken);
+            var adjustments = await paymentsDbContext.FinancialAdjustments
+                .Where(adjustment => adjustment.PaymentLogId == log.Id)
+                .ToListAsync(cancellationToken);
+            var balance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
+            log.AmountPaid = balance.ConfirmedCollections;
+            log.PendingAmount = balance.PendingCollections;
+            log.Status = balance.RemainingAmount == 0m && balance.RefundDue == 0m
+                ? PaymentCompleted
+                : PendingAccountant;
             log.LastModifiedBy = currentUser.UserId;
             log.LastModifiedAt = now;
 
@@ -931,7 +957,11 @@ public static class PaymentsEndpoints
         }
         if (NormalizeAdjustmentType(request.AdjustmentType) is not { } adjustmentType)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AdjustmentType)] = ["Adjustment type must be MerchantCredit, BalanceReduction, or CashRefund."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AdjustmentType)] = ["Adjustment type must be AdditionalCharge, BalanceReduction, or CashRefund."] });
+        }
+        if (adjustmentType == AdditionalCharge && string.IsNullOrWhiteSpace(request.Notes))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Notes)] = ["An additional charge requires a reason."] });
         }
         if (!await crmDbContext.Merchants.AnyAsync(merchant => merchant.Id == request.MerchantId && !merchant.IsDeleted, cancellationToken))
         {
@@ -972,9 +1002,9 @@ public static class PaymentsEndpoints
 
             paymentLog = await LoadPaymentLogForUpdateAsync(paymentLog.Id, paymentsDbContext, cancellationToken);
             var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog!, adjustmentType, null, cancellationToken);
-            if (request.Amount > cap)
+            if (cap.HasValue && request.Amount > cap.Value)
             {
-                transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap:0.####})." });
+                transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
                 return;
             }
 
@@ -1062,33 +1092,16 @@ public static class PaymentsEndpoints
                 return;
             }
             var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog, adjustment.AdjustmentType, adjustment.Id, cancellationToken);
-            if (adjustment.Amount > cap)
+            if (cap.HasValue && adjustment.Amount > cap.Value)
             {
-                transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap:0.####})." });
+                transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
                 return;
             }
 
             var now = clock.EgyptNow;
-            adjustment.Status = PaymentCompleted;
+            adjustment.Status = adjustment.AdjustmentType == CashRefund ? "Approved" : PaymentCompleted;
             adjustment.ReviewedBy = currentUser.UserId;
             adjustment.ReviewedAt = now;
-
-            if (adjustment.AdjustmentType == CashRefund && adjustment.OperationId.HasValue)
-            {
-                paymentsDbContext.CashRecords.Add(new CashRecord
-                {
-                    Id = Guid.NewGuid(),
-                    OperationId = adjustment.OperationId.Value,
-                    PaymentType = CashRefund,
-                    SubType = "AdjustmentApproval",
-                    Amount = adjustment.Amount,
-                    Status = PaymentCompleted,
-                    PaymentDate = now,
-                    CreatedBy = currentUser.UserId ?? Guid.Empty,
-                    Notes = adjustment.Notes,
-                    FinancialAdjustmentId = adjustment.Id
-                });
-            }
 
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount }, now, cancellationToken);
             await paymentsDbContext.SaveChangesAsync(cancellationToken);
@@ -1100,6 +1113,90 @@ public static class PaymentsEndpoints
             return await PaymentIdempotencyService.AbortAsync(idempotency, transactionResult);
         }
 
+        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
+        return await paymentIdempotencyService.CompleteAsync(idempotency, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status200OK, cancellationToken);
+    }
+
+    private static async Task<IResult> PayoutCashRefundAsync(
+        Guid id,
+        CashRefundPayoutRequest request,
+        PaymentsDbContext paymentsDbContext,
+        IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        HttpContext httpContext,
+        ICurrentUser currentUser,
+        PaymentIdempotencyService paymentIdempotencyService,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey, $"POST /api/v1/payments/adjustments/{id}/payout", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsAdjustmentReviewer(currentUser)) return Results.Forbid();
+        if (request.Amount <= 0m)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Payout amount must be greater than zero."] });
+        }
+
+        FinancialAdjustment? adjustment = null;
+        IResult? transactionResult = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            adjustment = await LoadFinancialAdjustmentForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (adjustment is null)
+            {
+                transactionResult = Results.NotFound();
+                return;
+            }
+            if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved" || adjustment.OperationId is not { } operationId)
+            {
+                transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only an approved cash refund can be paid out." });
+                return;
+            }
+
+            var alreadyPaid = await paymentsDbContext.CashRecords
+                .Where(record => record.FinancialAdjustmentId == adjustment.Id && record.Status == PaymentCompleted)
+                .SumAsync(record => record.Amount, cancellationToken);
+            var due = adjustment.Amount - alreadyPaid;
+            if (request.Amount > due)
+            {
+                transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the remaining approved refund ({due:0.####})." });
+                return;
+            }
+
+            var paymentLog = await LoadPaymentLogForUpdateAsync(adjustment.PaymentLogId!.Value, paymentsDbContext, cancellationToken);
+            if (paymentLog is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentLog"] = ["The source payment log no longer exists."] });
+                return;
+            }
+
+            var now = clock.EgyptNow;
+            paymentsDbContext.CashRecords.Add(new CashRecord
+            {
+                Id = Guid.NewGuid(),
+                OperationId = operationId,
+                PaymentType = CashRefund,
+                SubType = "ApprovedRefundPayout",
+                Amount = request.Amount,
+                Status = PaymentCompleted,
+                PaymentDate = now,
+                CreatedBy = currentUser.UserId ?? Guid.Empty,
+                Notes = string.IsNullOrWhiteSpace(request.Notes) ? adjustment.Notes : request.Notes.Trim(),
+                FinancialAdjustmentId = adjustment.Id
+            });
+            if (request.Amount == due)
+            {
+                adjustment.Status = PaymentCompleted;
+                adjustment.ReviewedAt = now;
+            }
+            paymentLog.LastModifiedBy = currentUser.UserId;
+            paymentLog.LastModifiedAt = now;
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashRefundPaidOut", paymentLog.Id, new { adjustment.Id, request.Amount, remaining = due - request.Amount }, now, cancellationToken);
+            await PaymentPersistence.PersistAsync(paymentsDbContext, identityDbContext, cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext);
+
+        if (transactionResult is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, transactionResult);
         var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
         return await paymentIdempotencyService.CompleteAsync(idempotency, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status200OK, cancellationToken);
     }
@@ -1180,7 +1277,7 @@ public static class PaymentsEndpoints
         return Results.Ok(balance);
     }
 
-    private static async Task<decimal> CalculateAdjustmentCapAsync(
+    private static async Task<decimal?> CalculateAdjustmentCapAsync(
         PaymentsDbContext paymentsDbContext,
         MainPaymentLog paymentLog,
         string adjustmentType,
@@ -1192,18 +1289,11 @@ public static class PaymentsEndpoints
             return await PaymentFinancialCapacity.CashRefundCapacityAsync(paymentsDbContext, paymentLog, excludingAdjustmentId, cancellationToken);
         }
 
-        if (string.Equals(adjustmentType, MerchantCredit, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(adjustmentType, AdditionalCharge, StringComparison.OrdinalIgnoreCase))
         {
-            return await PaymentFinancialCapacity.MerchantCreditCapacityAsync(paymentsDbContext, paymentLog, excludingAdjustmentId, cancellationToken);
+            return null;
         }
-
-        var priorReductions = await paymentsDbContext.FinancialAdjustments
-            .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
-                adjustment.Id != excludingAdjustmentId &&
-                adjustment.AdjustmentType == BalanceReduction &&
-                (adjustment.Status == PendingApproval || adjustment.Status == PaymentCompleted))
-            .SumAsync(adjustment => adjustment.Amount, cancellationToken);
-        return Math.Max(paymentLog.TotalAmount - paymentLog.AmountPaid - priorReductions, 0);
+        return await PaymentFinancialCapacity.BalanceReductionCapacityAsync(paymentsDbContext, paymentLog, excludingAdjustmentId, cancellationToken);
     }
 
     private static bool IsPaymentEligible(OperationLog operation)
@@ -1432,9 +1522,15 @@ public static class PaymentsEndpoints
             .ToDictionaryAsync(operation => operation.OperationId, cancellationToken);
     }
 
-    private static PaymentLogListResponse ToListResponse(MainPaymentLog log, IReadOnlyDictionary<Guid, User> userLookup, IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup)
+    private static PaymentLogListResponse ToListResponse(
+        MainPaymentLog log,
+        IReadOnlyDictionary<Guid, User> userLookup,
+        IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup,
+        IReadOnlyList<CashRecord>? cashRecords = null,
+        IReadOnlyList<FinancialAdjustment>? adjustments = null)
     {
         operationLookup.TryGetValue(log.OperationId, out var operation);
+        var balance = PaymentBalanceCalculator.Calculate(log, adjustments ?? [], cashRecords ?? []);
         return
         new(
             log.Id,
@@ -1444,15 +1540,21 @@ public static class PaymentsEndpoints
             operation?.OperationType,
             operation?.BuyerName,
             log.TotalAmount,
-            log.AmountPaid,
-            Math.Max(log.TotalAmount - log.AmountPaid, 0),
+            balance.ConfirmedCollections,
+            balance.RemainingAmount,
             log.PaymentMethod,
             log.Status,
             log.AssignedTo,
             log.LastModifiedAt,
             GetUserDisplayName(log.InitializedBy, userLookup),
             GetUserDisplayName(log.AssignedTo, userLookup),
-            GetUserDisplayName(log.LastModifiedBy, userLookup));
+            GetUserDisplayName(log.LastModifiedBy, userLookup),
+            balance.RefundDue,
+            balance.AdjustedAmount,
+            balance.AdditionalCharges,
+            balance.BalanceReductions,
+            balance.PendingCollections,
+            balance.CompletedRefunds);
     }
 
     private static PaymentLogDetailResponse ToDetailResponse(
@@ -1468,7 +1570,7 @@ public static class PaymentsEndpoints
 
         return
         new(
-            ToListResponse(log, userLookup, operationLookup),
+            ToListResponse(log, userLookup, operationLookup, cashRecords, adjustments),
             log.InstallmentSubLogs.OrderByDescending(sub => sub.DraftedAt).Select(sub => new PaymentSubLogResponse(
                 sub.Id,
                 sub.Amount,
@@ -1527,9 +1629,9 @@ public static class PaymentsEndpoints
 
     private static string? NormalizeAdjustmentType(string? value)
     {
-        if (string.Equals(value, MerchantCredit, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0631\u0635\u064a\u062f \u0644\u0644\u062a\u0627\u062c\u0631", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(value, AdditionalCharge, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "MerchantCredit", StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0631\u0635\u064a\u062f \u0644\u0644\u062a\u0627\u062c\u0631", StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0631\u0633\u0648\u0645 \u0625\u0636\u0627\u0641\u064a\u0629", StringComparison.OrdinalIgnoreCase))
         {
-            return MerchantCredit;
+            return AdditionalCharge;
         }
         if (string.Equals(value, BalanceReduction, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u062a\u062e\u0641\u064a\u0636 \u0627\u0644\u0631\u0635\u064a\u062f", StringComparison.OrdinalIgnoreCase))
         {
@@ -2027,7 +2129,9 @@ public sealed record CashRecordRequest(string? OperationId, string? PaymentType,
 
 public sealed record FinancialAdjustmentRequest(Guid MerchantId, string? OperationId, string AdjustmentType, decimal Amount, string? Notes);
 
-public sealed record PaymentLogListResponse(Guid Id, Guid OperationId, Guid? MerchantId, string? OperationNumber, string? OperationType, string? BuyerName, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string PaymentMethod, string Status, Guid? AssignedTo, DateTime LastModifiedAt, string? InitializedByName, string? AssignedToName, string? LastModifiedByName);
+public sealed record CashRefundPayoutRequest(decimal Amount, string? Notes);
+
+public sealed record PaymentLogListResponse(Guid Id, Guid OperationId, Guid? MerchantId, string? OperationNumber, string? OperationType, string? BuyerName, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string PaymentMethod, string Status, Guid? AssignedTo, DateTime LastModifiedAt, string? InitializedByName, string? AssignedToName, string? LastModifiedByName, decimal RefundDue, decimal AdjustedAmount, decimal AdditionalCharges, decimal BalanceReductions, decimal PendingCollections, decimal CompletedRefunds);
 
 public sealed record PaymentLogDetailResponse(PaymentLogListResponse Log, IReadOnlyList<PaymentSubLogResponse> SubLogs, IReadOnlyList<CashRecordResponse> CashRecords, IReadOnlyList<FinancialAdjustmentResponse> Adjustments, IReadOnlyList<PaymentStageResponse> Stages, string? Notes);
 

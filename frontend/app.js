@@ -551,6 +551,10 @@ const arabicTranslations = Object.freeze({
   "Sold packs": "العبوات المباعة",
   "Sold pieces": "القطع المباعة",
   "Remaining": "المتبقي",
+  "Adjusted amount": "المبلغ بعد التسويات",
+  "Remaining to collect": "المتبقي للتحصيل",
+  "Refund due": "استرداد مستحق",
+  "Pending collection": "تحصيل قيد الاعتماد",
   "Operation": "العملية",
   "Qty": "الكمية",
   "Total": "الإجمالي",
@@ -667,7 +671,7 @@ const arabicTranslations = Object.freeze({
   "Loading history": "جارٍ تحميل السجل",
   "Draft payment entry": "إضافة حركة دفع كمسودة",
   "Cash / refund record": "حركة نقدية / استرداد",
-  "Use for return/change outcomes that become merchant credit, remaining reduction, or cash refund.": "استخدم هذا القسم لنتائج المرتجع أو الاستبدال التي تتحول إلى رصيد دائن للتاجر أو تخفيض للمتبقي أو استرداد نقدي.",
+  "Use source-linked additional charges, remaining reductions, and separately paid cash refunds.": "استخدم الرسوم الإضافية المرتبطة بالمصدر وتخفيضات المتبقي والاستردادات النقدية التي تُصرف بشكل منفصل.",
   "Operation ID": "معرّف العملية",
   "Merchant remaining": "المتبقي على التاجر",
   "Use": "الاستخدام",
@@ -697,6 +701,10 @@ const arabicTranslations = Object.freeze({
   "Financial adjustment requested.": "\u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0637\u0644\u0628 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
   "Financial adjustment approved.": "\u062a\u0645 \u0627\u0639\u062a\u0645\u0627\u062f \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
   "Financial adjustment rejected.": "\u062a\u0645 \u0631\u0641\u0636 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629.",
+  "Record cash refund payout": "\u062a\u0633\u062c\u064a\u0644 \u0635\u0631\u0641 \u0627\u0644\u0627\u0633\u062a\u0631\u062f\u0627\u062f \u0627\u0644\u0646\u0642\u062f\u064a",
+  "Enter the amount that was actually paid to the merchant.": "\u0623\u062f\u062e\u0644 \u0627\u0644\u0645\u0628\u0644\u063a \u0627\u0644\u0630\u064a \u062a\u0645 \u0635\u0631\u0641\u0647 \u0641\u0639\u0644\u0627\u064b \u0644\u0644\u062a\u0627\u062c\u0631.",
+  "Cash refund payout recorded.": "\u062a\u0645 \u062a\u0633\u062c\u064a\u0644 \u0635\u0631\u0641 \u0627\u0644\u0627\u0633\u062a\u0631\u062f\u0627\u062f \u0627\u0644\u0646\u0642\u062f\u064a.",
+  "Record payout": "\u062a\u0633\u062c\u064a\u0644 \u0627\u0644\u0635\u0631\u0641",
   "Reject Financial Adjustment": "\u0631\u0641\u0636 \u0627\u0644\u062a\u0633\u0648\u064a\u0629 \u0627\u0644\u0645\u0627\u0644\u064a\u0629",
   "Record the reason. Rejected adjustments remain visible in the log.": "\u0633\u062c\u0644 \u0633\u0628\u0628 \u0627\u0644\u0631\u0641\u0636. \u062a\u0628\u0642\u0649 \u0627\u0644\u062a\u0633\u0648\u064a\u0627\u062a \u0627\u0644\u0645\u0631\u0641\u0648\u0636\u0629 \u0638\u0627\u0647\u0631\u0629 \u0641\u064a \u0627\u0644\u0633\u062c\u0644.",
   "Cash record saved.": "تم حفظ الحركة النقدية.",
@@ -705,7 +713,7 @@ const arabicTranslations = Object.freeze({
   "PendingAccountant": "بانتظار المحاسب",
   "CashReceived": "تحصيل نقدي",
   "CashRefund": "استرداد نقدي",
-  "MerchantCredit": "رصيد دائن للتاجر",
+  "AdditionalCharge": "رسوم إضافية",
   "BalanceReduction": "تخفيض المتبقي على التاجر",
   "Required for cash refund": "مطلوب عند الاسترداد النقدي",
   "Download operational, inventory, payment, and statement outputs in CSV and PDF formats.": "نزّل تقارير العمليات والمخزون والمدفوعات وكشوف الحساب بصيغ CSV وPDF.",
@@ -6093,12 +6101,12 @@ async function renderPayments() {
       </section>` : ""}
       ${canDraft ? `<section class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
-        <p class="muted-text">Submit a source-linked request. Admin or ERPAdmin approval posts the financial effect.</p>
+        <p class="muted-text">Every adjustment is linked to its source operation. Cash refunds are approved first, then recorded when cash is actually paid.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
           <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
-          <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="MerchantCredit">Merchant credit</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
-          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required source"></div>
+          <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="AdditionalCharge">Additional charge</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
+          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required source" required></div>
           <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field full-span"><label for="adjustment-notes">Notes</label><input id="adjustment-notes" class="input"></div>
           <button class="button" type="submit">Request adjustment</button>
@@ -6255,6 +6263,7 @@ async function togglePaymentDetails(id, button) {
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
+    target.querySelectorAll("[data-adjustment-payout]").forEach((payout) => payout.addEventListener("click", () => payoutCashRefund(payout.dataset.adjustmentPayout, id)));
   } catch (exception) {
     target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
   }
@@ -6299,6 +6308,10 @@ function renderPaymentDetail(detail) {
       <div class="metric"><span>Assigned to</span><strong>${escapeHtml(log.assignedToName || "-")}</strong></div>
       <div class="metric"><span>Last modified by</span><strong>${escapeHtml(log.lastModifiedByName || "-")}</strong></div>
       <div class="metric"><span>Status</span><strong>${escapeHtml(log.status || "-")}</strong></div>
+      <div class="metric"><span>Adjusted amount</span><strong>${escapeHtml(formatMoney(log.adjustedAmount))}</strong></div>
+      <div class="metric"><span>Remaining to collect</span><strong>${escapeHtml(formatMoney(log.remainingAmount))}</strong></div>
+      <div class="metric"><span>Refund due</span><strong>${escapeHtml(formatMoney(log.refundDue))}</strong></div>
+      <div class="metric"><span>Pending collection</span><strong>${escapeHtml(formatMoney(log.pendingCollections))}</strong></div>
     </div>
     <div class="table-wrap compact-table"><table><thead><tr><th>Stage</th><th>When</th><th>Actor</th><th>Method</th><th>Amount</th><th>Status</th><th>Notes</th></tr></thead><tbody>${stages.length === 0
     ? `<tr><td colspan="7">No stage history yet.</td></tr>`
@@ -6341,7 +6354,7 @@ function renderPaymentDetail(detail) {
         <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(adjustment.status || "-")}</span></td>
         <td>${escapeHtml(adjustment.createdByName || "-")}</td>
         <td>${escapeHtml(adjustment.notes || "-")}</td>
-        <td>${isAdmin && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">Approve</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">Reject</button>` : "-"}</td>
+        <td>${isAdmin && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">Approve</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">Reject</button>` : isAdmin && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">Record payout</button>` : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
   </div>`;
 }
@@ -6356,7 +6369,8 @@ function paymentStageLabel(stageType) {
     CashReceiptRecorded: "Cash receipt recorded",
     CashReceiptApproved: "Cash receipt approved",
     CashRefundRecorded: "Cash refund recorded",
-    MerchantCredit: "Merchant credit",
+    AdditionalCharge: "Additional charge",
+    MerchantCredit: "Additional charge",
     BalanceReduction: "Remaining reduction",
     CashRefund: "Financial cash refund"
   };
@@ -6438,6 +6452,28 @@ async function approveAdjustment(id, paymentLogId = null) {
   }
 }
 
+async function payoutCashRefund(id, paymentLogId = null) {
+  const amount = await promptDialog({
+    title: "Record cash refund payout",
+    label: "Enter the amount that was actually paid to the merchant.",
+    required: true,
+    inputType: "number"
+  });
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) return;
+  try {
+    await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/payout`, {
+      method: "POST",
+      body: JSON.stringify({ amount: value })
+    });
+    notice("Cash refund payout recorded.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
 async function rejectAdjustment(id, paymentLogId = null) {
   const reason = await promptDialog({
     title: "Reject Financial Adjustment",
@@ -6495,8 +6531,12 @@ async function createFinancialAdjustment(event) {
     showFormError("financial-adjustment-error", "Merchant and positive amount are required.");
     return;
   }
-  if (adjustmentType === "CashRefund" && !operationId) {
-    showFormError("financial-adjustment-error", "Cash refund adjustments must reference an operation ID.");
+  if (!operationId) {
+    showFormError("financial-adjustment-error", "Every financial adjustment must reference an operation ID.");
+    return;
+  }
+  if (adjustmentType === "AdditionalCharge" && !document.getElementById("adjustment-notes").value.trim()) {
+    showFormError("financial-adjustment-error", "An additional charge requires a reason.");
     return;
   }
 
@@ -6554,7 +6594,7 @@ async function loadMerchantBalance() {
     const cashRefunded = Number(balance.cashRefunded || 0);
     const netCollected = paymentsReceived - cashRefunded;
     const corrections = Number(balance.returnTotal || 0) +
-      Number(balance.merchantCredits || 0) +
+      Number(balance.additionalCharges || balance.merchantCredits || 0) +
       Number(balance.balanceReductions || 0) -
       Number(balance.changeNet || 0);
     status.textContent = "Loaded";
@@ -6760,7 +6800,7 @@ async function loadMerchantBalancesReport() {
         const paymentsReceived = Number(row.paymentsReceived || 0);
         const cashRefunded = Number(row.cashRefunded || 0);
         const corrections = Number(row.returnTotal || 0) +
-          Number(row.merchantCredits || 0) +
+          Number(row.additionalCharges || row.merchantCredits || 0) +
           Number(row.balanceReductions || 0) -
           Number(row.changeNet || 0);
         return `<tr><td>${escapeHtml(row.businessName)}</td><td>${escapeHtml(formatMoney(row.balance))}</td><td>${escapeHtml(formatMoney(row.saleTotal))}</td><td>${escapeHtml(formatMoney(paymentsReceived - cashRefunded))}</td><td>${escapeHtml(formatMoney(corrections))}</td></tr>`;

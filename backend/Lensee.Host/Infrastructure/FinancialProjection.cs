@@ -22,7 +22,8 @@ public static class FinancialProjection
     private const string Confirmed = "Confirmed";
     private const string CashReceived = "CashReceived";
     private const string CashRefund = "CashRefund";
-    private const string MerchantCredit = "MerchantCredit";
+    private const string AdditionalCharge = "AdditionalCharge";
+    private const string LegacyMerchantCredit = "MerchantCredit";
     private const string BalanceReduction = "BalanceReduction";
 
     public static FinancialProjectionSnapshot Calculate(
@@ -71,8 +72,8 @@ public static class FinancialProjection
         var completedAdjustments = adjustments
             .Where(adjustment => adjustment.Status == Completed)
             .ToArray();
-        var merchantCredits = completedAdjustments
-            .Where(adjustment => adjustment.AdjustmentType == MerchantCredit)
+        var additionalCharges = completedAdjustments
+            .Where(adjustment => adjustment.AdjustmentType is AdditionalCharge or LegacyMerchantCredit)
             .Sum(adjustment => adjustment.Amount);
         var balanceReductions = completedAdjustments
             .Where(adjustment => adjustment.AdjustmentType == BalanceReduction)
@@ -82,7 +83,7 @@ public static class FinancialProjection
         // A refund reverses a previously collected receipt, so it increases the
         // amount still owed even though PaymentsReceived remains gross receipts.
         var balance = saleTotal + changeNet - returnTotal
-            - paymentsReceived + cashRefunded - merchantCredits - balanceReductions;
+            + additionalCharges - paymentsReceived + cashRefunded - balanceReductions;
 
         return new FinancialProjectionSnapshot(
             saleTotal,
@@ -90,7 +91,7 @@ public static class FinancialProjection
             changeNet,
             paymentsReceived,
             cashRefunded,
-            merchantCredits,
+            additionalCharges,
             balanceReductions,
             balance);
     }
@@ -131,7 +132,7 @@ public sealed record FinancialProjectionSnapshot(
     decimal ChangeNet,
     decimal PaymentsReceived,
     decimal CashRefunded,
-    decimal MerchantCredits,
+    decimal AdditionalCharges,
     decimal BalanceReductions,
     decimal Balance)
 {

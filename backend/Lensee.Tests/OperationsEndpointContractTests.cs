@@ -673,13 +673,20 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         });
         using var approver = _factory.CreateClient();
         approver.AuthorizeAs(LenseeRoles.Admin, Guid.NewGuid(), LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsApprove);
-        var refund = refundRequest.StatusCode == HttpStatusCode.Created
-            ? await PostPaymentAsync(approver, $"/api/v1/payments/adjustments/{(await refundRequest.Content.ReadFromJsonAsync<FinancialAdjustmentContract>())!.Id}/approve")
+        var refundAdjustment = refundRequest.StatusCode == HttpStatusCode.Created
+            ? await refundRequest.Content.ReadFromJsonAsync<FinancialAdjustmentContract>()
+            : null;
+        var refund = refundAdjustment is not null
+            ? await PostPaymentAsync(approver, $"/api/v1/payments/adjustments/{refundAdjustment.Id}/approve")
+            : refundRequest;
+        var payout = refundAdjustment is not null
+            ? await PostPaymentJsonAsync(approver, $"/api/v1/payments/adjustments/{refundAdjustment.Id}/payout", new { amount = 200m })
             : refundRequest;
         var balance = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
 
         Assert.Equal(HttpStatusCode.Created, refundRequest.StatusCode);
         Assert.Equal(HttpStatusCode.OK, refund.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, payout.StatusCode);
         Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
         Assert.Equal(200m, balance!.SaleTotal);
         Assert.Equal(200m, balance.PaymentsReceived);

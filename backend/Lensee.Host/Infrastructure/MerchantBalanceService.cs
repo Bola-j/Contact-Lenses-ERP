@@ -65,7 +65,7 @@ public sealed class MerchantBalanceService
             projection.ChangeNet,
             projection.PaymentsReceived,
             projection.CashRefunded,
-            projection.MerchantCredits,
+            projection.AdditionalCharges,
             projection.BalanceReductions,
             projection.Balance);
     }
@@ -78,6 +78,6 @@ public sealed record MerchantBalanceSnapshot(
     decimal ChangeNet,
     decimal PaymentsReceived,
     decimal CashRefunded,
-    decimal MerchantCredits,
+    decimal AdditionalCharges,
     decimal BalanceReductions,
     decimal Balance);

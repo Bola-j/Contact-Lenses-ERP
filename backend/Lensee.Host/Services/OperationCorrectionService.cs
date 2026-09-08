@@ -22,7 +22,6 @@ public sealed class OperationCorrectionService
     private const string Approved = "Approved";
     private const string Rejected = "Rejected";
     private const string CashRefund = "CashRefund";
-    private const string MerchantCredit = "MerchantCredit";
 
     private readonly OperationsDbContext _operations;
     private readonly InventoryDbContext _inventory;
@@ -391,7 +390,7 @@ public sealed class OperationCorrectionService
             : await PaymentFinancialCapacity.FinalizedPaidValueAsync(_payments, payment, cancellationToken);
         if (settledAmount > 0m && (proposal.SettlementMethod is null || proposal.SettlementAmount is null))
         {
-            throw new CorrectionBusinessException("A completed payment requires a CashRefund or MerchantCredit settlement before approval.", 422);
+            throw new CorrectionBusinessException("A completed payment requires a CashRefund settlement before approval.", 422);
         }
         if (proposal.SettlementMethod is null) return;
         if (proposal.SettlementAmount is null) throw new CorrectionBusinessException("Settlement amount is required.", 422);
@@ -404,9 +403,7 @@ public sealed class OperationCorrectionService
         }
         else
         {
-            if (original.ClientId is null) throw new CorrectionBusinessException("Merchant credit requires a source merchant.", 422);
-            if (payment is null) throw new CorrectionBusinessException("Merchant credit requires an active payment log.", 409);
-            remaining = await PaymentFinancialCapacity.MerchantCreditCapacityAsync(_payments, payment, null, cancellationToken);
+            throw new CorrectionBusinessException("Only cash refunds are supported for a completed payment correction.", 422);
         }
 
         if (proposal.SettlementAmount.Value > remaining)
@@ -429,7 +426,7 @@ public sealed class OperationCorrectionService
                 PaymentLogId = payment.Id,
                 AdjustmentType = CashRefund,
                 Amount = proposal.SettlementAmount.Value,
-                Status = "Completed",
+                Status = "Approved",
                 Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}.",
                 CreatedBy = reviewerId,
                 CreatedAt = now,
@@ -438,39 +435,10 @@ public sealed class OperationCorrectionService
                 LineageKind = "OperationCorrection"
             };
             _payments.FinancialAdjustments.Add(adjustment);
-            _payments.CashRecords.Add(new CashRecord
-            {
-                Id = Guid.NewGuid(),
-                OperationId = original.Id,
-                PaymentType = CashRefund,
-                Amount = proposal.SettlementAmount.Value,
-                Status = "Completed",
-                PaymentDate = now,
-                CreatedBy = reviewerId,
-                FinancialAdjustmentId = adjustment.Id,
-                Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}."
-            });
             return Task.CompletedTask;
         }
 
-        if (payment is null) throw new CorrectionBusinessException("Merchant credit requires an active payment log.", 409);
-        _payments.FinancialAdjustments.Add(new FinancialAdjustment
-        {
-            Id = Guid.NewGuid(),
-            MerchantId = original.ClientId!.Value,
-            OperationId = original.Id,
-            PaymentLogId = payment.Id,
-            AdjustmentType = MerchantCredit,
-            Amount = proposal.SettlementAmount.Value,
-            Status = "Completed",
-            Notes = $"Approved correction {proposal.Id:N} for operation {original.OperationNumber}.",
-            CreatedBy = reviewerId,
-            CreatedAt = now,
-            ReviewedBy = reviewerId,
-            ReviewedAt = now,
-            LineageKind = "OperationCorrection"
-        });
-        return Task.CompletedTask;
+        throw new CorrectionBusinessException("Only cash refunds are supported for a completed payment correction.", 422);
     }
 
     private async Task CompensateStockAsync(OperationLog original, Guid reversalOperationId, Guid reviewerId, CancellationToken cancellationToken)
@@ -625,7 +593,7 @@ public sealed class OperationCorrectionService
     {
         var normalized = NormalizeSettlement(method);
         if (normalized is null && amount is null) return null;
-        if (normalized is null) return CorrectionCommandResult.Validation("settlementMethod", "Settlement method must be CashRefund or MerchantCredit.");
+        if (normalized is null) return CorrectionCommandResult.Validation("settlementMethod", "Settlement method must be CashRefund.");
         if (amount is null || amount <= 0m) return CorrectionCommandResult.Validation("settlementAmount", "Settlement amount must be greater than zero.");
         return null;
     }
@@ -633,7 +601,6 @@ public sealed class OperationCorrectionService
     private static string? NormalizeSettlement(string? method) => method?.Trim() switch
     {
         CashRefund => CashRefund,
-        MerchantCredit => MerchantCredit,
         _ => null
     };
 

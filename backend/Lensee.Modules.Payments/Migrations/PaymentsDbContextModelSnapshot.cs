@@ -87,8 +87,7 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasIndex(new[] { "OperationId" }, "idx_cash_records_operation");
 
-                    b.HasIndex(new[] { "FinancialAdjustmentId" }, "uq_cash_records_adjustment")
-                        .IsUnique()
+                    b.HasIndex(new[] { "FinancialAdjustmentId" }, "idx_cash_records_adjustment")
                         .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
                     b.ToTable("cash_records", "payments", t =>
@@ -192,7 +191,7 @@ namespace Lensee.Modules.Payments.Migrations
 
                             t.HasCheckConstraint("chk_financial_adjustment_status", "status in ('PendingApproval','Approved','Rejected','Completed','Cancelled','LegacyUnlinked')");
 
-                            t.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('MerchantCredit','BalanceReduction','CashRefund')");
+                            t.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('AdditionalCharge','BalanceReduction','CashRefund')");
                         });
                 });
 

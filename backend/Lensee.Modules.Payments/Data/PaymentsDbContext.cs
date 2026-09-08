@@ -39,8 +39,7 @@ public partial class PaymentsDbContext : DbContext
             entity.HasIndex(e => e.PaymentDate, "idx_cash_records_date").IsDescending();
 
             entity.HasIndex(e => e.OperationId, "idx_cash_records_operation");
-            entity.HasIndex(e => e.FinancialAdjustmentId, "uq_cash_records_adjustment")
-                .IsUnique()
+            entity.HasIndex(e => e.FinancialAdjustmentId, "idx_cash_records_adjustment")
                 .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
             entity.Property(e => e.Id)
@@ -124,7 +123,7 @@ public partial class PaymentsDbContext : DbContext
 
             entity.ToTable("financial_adjustments", "payments", table =>
             {
-                table.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('MerchantCredit','BalanceReduction','CashRefund')");
+                table.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('AdditionalCharge','BalanceReduction','CashRefund')");
                 table.HasCheckConstraint("chk_financial_adjustment_status", "status in ('PendingApproval','Approved','Rejected','Completed','Cancelled','LegacyUnlinked')");
                 table.HasCheckConstraint("chk_financial_adjustment_amount", "amount > 0");
             });

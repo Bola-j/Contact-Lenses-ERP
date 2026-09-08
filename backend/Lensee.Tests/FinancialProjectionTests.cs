@@ -37,9 +37,9 @@ public sealed class FinancialProjectionTests
         Assert.Equal(0m, projection.ChangeNet);
         Assert.Equal(50m, projection.PaymentsReceived);
         Assert.Equal(10m, projection.CashRefunded);
-        Assert.Equal(5m, projection.MerchantCredits);
+        Assert.Equal(5m, projection.AdditionalCharges);
         Assert.Equal(2m, projection.BalanceReductions);
-        Assert.Equal(-47m, projection.Balance);
+        Assert.Equal(-37m, projection.Balance);
     }
 
     [Fact]

@@ -272,26 +272,45 @@ public static class ReportsEndpoints
         PaymentsDbContext paymentsDbContext,
         CancellationToken cancellationToken)
     {
-        var rows = await paymentsDbContext.MainPaymentLogs
+        var logs = await paymentsDbContext.MainPaymentLogs
             .Include(log => log.InstallmentSubLogs)
             .Where(log => !log.IsDeleted)
             .OrderByDescending(log => log.LastModifiedAt)
             .Take(500)
-            .Select(log => new PaymentReportRow(
+            .ToListAsync(cancellationToken);
+        var operationIds = logs.Select(log => log.OperationId).Distinct().ToArray();
+        var logIds = logs.Select(log => log.Id).ToArray();
+        var cashByOperation = (await paymentsDbContext.CashRecords
+            .Where(record => operationIds.Contains(record.OperationId))
+            .ToListAsync(cancellationToken))
+            .GroupBy(record => record.OperationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var adjustmentsByLog = (await paymentsDbContext.FinancialAdjustments
+            .Where(adjustment => adjustment.PaymentLogId.HasValue && logIds.Contains(adjustment.PaymentLogId.Value))
+            .ToListAsync(cancellationToken))
+            .GroupBy(adjustment => adjustment.PaymentLogId!.Value)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
+        var rows = logs.Select(log =>
+        {
+            var balance = PaymentBalanceCalculator.Calculate(
+                log,
+                adjustmentsByLog.GetValueOrDefault(log.Id, []),
+                cashByOperation.GetValueOrDefault(log.OperationId, []));
+            return new PaymentReportRow(
                 log.Id,
                 log.OperationId,
                 null,
                 log.MerchantId,
                 log.PaymentMethod,
                 log.TotalAmount,
-                log.AmountPaid,
-                log.TotalAmount - log.AmountPaid,
+                balance.ConfirmedCollections,
+                balance.RemainingAmount,
                 log.Status,
                 log.AssignedTo,
-                log.LastModifiedAt))
-            .ToListAsync(cancellationToken);
+                log.LastModifiedAt,
+                balance.RefundDue);
+        }).ToList();
 
-        var operationIds = rows.Select(row => row.OperationId).Distinct().ToArray();
         var operationNumbers = await operationsDbContext.OperationLogs
             .Where(operation => operationIds.Contains(operation.Id))
             .ToDictionaryAsync(operation => operation.Id, operation => operation.OperationNumber, cancellationToken);
@@ -317,7 +336,7 @@ public static class ReportsEndpoints
         if (result is IValueHttpResult { Value: IEnumerable<PaymentReportRow> rows })
         {
             await LogExportAsync(reportingDbContext, currentUser, clock, "payments.csv", "download://reports/payments.csv", cancellationToken);
-            return Csv("payments.csv", CsvHeaders(language, "Payment", "Operation", "Merchant", "Method", "Total", "Paid", "Remaining", "Status"), rows.Select(row => new[]
+            return Csv("payments.csv", CsvHeaders(language, "Payment", "Operation", "Merchant", "Method", "Total", "Paid", "Remaining", "RefundDue", "Status"), rows.Select(row => new[]
             {
                 row.Id.ToString(),
                 row.OperationNumber ?? row.OperationId.ToString(),
@@ -326,6 +345,7 @@ public static class ReportsEndpoints
                 row.TotalAmount.ToString("0.####"),
                 row.AmountPaid.ToString("0.####"),
                 row.RemainingAmount.ToString("0.####"),
+                row.RefundDue.ToString("0.####"),
                 ReportText(row.Status, language)
             }));
         }
@@ -554,7 +574,7 @@ public static class ReportsEndpoints
                 balance.ChangeNet,
                 balance.PaymentsReceived,
                 balance.CashRefunded,
-                balance.MerchantCredits,
+                balance.AdditionalCharges,
                 balance.BalanceReductions,
                 balance.Balance));
         }
@@ -575,7 +595,7 @@ public static class ReportsEndpoints
         if (result is IValueHttpResult { Value: IEnumerable<MerchantBalanceReportRow> rows })
         {
             await LogExportAsync(reportingDbContext, currentUser, clock, "merchant-balances.csv", "download://reports/merchant-balances.csv", cancellationToken);
-            return Csv("merchant-balances.csv", CsvHeaders(language, "Merchant", "Status", "Sales", "Returns", "ChangeNet", "Payments", "Refunds", "Credits", "RemainingReductions", "Remaining"), rows.Select(row => new[]
+            return Csv("merchant-balances.csv", CsvHeaders(language, "Merchant", "Status", "Sales", "Returns", "ChangeNet", "Payments", "Refunds", "AdditionalCharges", "RemainingReductions", "Remaining"), rows.Select(row => new[]
             {
                 row.BusinessName,
                 ReportText(row.Status, language),
@@ -584,7 +604,7 @@ public static class ReportsEndpoints
                 row.ChangeNet.ToString("0.####"),
                 row.PaymentsReceived.ToString("0.####"),
                 row.CashRefunded.ToString("0.####"),
-                row.MerchantCredits.ToString("0.####"),
+                row.AdditionalCharges.ToString("0.####"),
                 row.BalanceReductions.ToString("0.####"),
                 row.Balance.ToString("0.####")
             }));
@@ -646,6 +666,9 @@ public static class ReportsEndpoints
         var balance = merchant is not null
             ? await merchantBalanceService.CalculateAsync(merchant.Id, cancellationToken)
             : null;
+        var paymentBalance = paymentLog is null
+            ? null
+            : PaymentBalanceCalculator.Calculate(paymentLog, adjustments, cashRecords);
         var totalQty = operation.OperationLines.Sum(line => line.Quantity);
         var totalBonus = operation.OperationLines.Sum(line => line.BonusQuantity);
         var totalValue = operation.OperationLines.Sum(line => line.LineTotal);
@@ -708,8 +731,9 @@ public static class ReportsEndpoints
                 [
                     new PdfFact("Operation total", FormatMoney(totalValue)),
                     new PdfFact("Payment method", paymentLog is null ? DescribePaymentMethod(operation.PaymentMethod) : DescribePaymentMethod(paymentLog.PaymentMethod)),
-                    new PdfFact("Paid to date", paymentLog is null ? FormatMoney(cashRecords.Where(value => value.PaymentType == CashReceived).Sum(value => value.Amount)) : FormatMoney(paymentLog.AmountPaid)),
-                    new PdfFact("Remaining", paymentLog is null ? "-" : FormatMoney(Math.Max(paymentLog.TotalAmount - paymentLog.AmountPaid, 0))),
+                    new PdfFact("Paid to date", paymentBalance is null ? FormatMoney(cashRecords.Where(value => value.PaymentType == CashReceived).Sum(value => value.Amount)) : FormatMoney(paymentBalance.ConfirmedCollections)),
+                    new PdfFact("Remaining", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RemainingAmount)),
+                    new PdfFact("Refund due", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RefundDue)),
                     new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.Balance))
                 ]),
             new(
@@ -791,6 +815,7 @@ public static class ReportsEndpoints
         var balance = log.MerchantId.HasValue
             ? await merchantBalanceService.CalculateAsync(log.MerchantId.Value, cancellationToken)
             : null;
+        var paymentBalance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
 
         var summary = new List<PdfFact>
         {
@@ -800,8 +825,9 @@ public static class ReportsEndpoints
             new("Method", DescribePaymentMethod(log.PaymentMethod)),
             new("Status", log.Status),
             new("Total", FormatMoney(log.TotalAmount)),
-            new("Paid", FormatMoney(log.AmountPaid)),
-            new("Remaining", FormatMoney(Math.Max(log.TotalAmount - log.AmountPaid, 0)))
+            new("Paid", FormatMoney(paymentBalance.ConfirmedCollections)),
+            new("Remaining", FormatMoney(paymentBalance.RemainingAmount)),
+            new("Refund due", FormatMoney(paymentBalance.RefundDue))
         };
 
         var paymentRows = log.InstallmentSubLogs
@@ -843,8 +869,10 @@ public static class ReportsEndpoints
                 [
                     new PdfFact("Method", DescribePaymentMethod(log.PaymentMethod)),
                     new PdfFact("Total amount", FormatMoney(log.TotalAmount)),
-                    new PdfFact("Paid amount", FormatMoney(log.AmountPaid)),
-                    new PdfFact("Remaining amount", FormatMoney(Math.Max(log.TotalAmount - log.AmountPaid, 0))),
+                    new PdfFact("Adjusted amount", FormatMoney(paymentBalance.AdjustedAmount)),
+                    new PdfFact("Paid amount", FormatMoney(paymentBalance.ConfirmedCollections)),
+                    new PdfFact("Remaining amount", FormatMoney(paymentBalance.RemainingAmount)),
+                    new PdfFact("Refund due", FormatMoney(paymentBalance.RefundDue)),
                     new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.Balance))
                 ]),
             new(
@@ -918,12 +946,25 @@ public static class ReportsEndpoints
             .OrderByDescending(value => value.CreatedAt)
             .Take(20)
             .ToListAsync(cancellationToken);
-        var operationIds = operations.Select(value => value.Id).ToArray();
+        var operationIds = operations.Select(value => value.Id)
+            .Concat(paymentLogs.Select(value => value.OperationId))
+            .Distinct()
+            .ToArray();
         var cashRecords = await paymentsDbContext.CashRecords
             .Where(value => operationIds.Contains(value.OperationId))
             .OrderByDescending(value => value.PaymentDate)
             .Take(30)
             .ToListAsync(cancellationToken);
+        var cashByOperation = cashRecords
+            .GroupBy(value => value.OperationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var adjustmentsByLog = adjustments
+            .Where(value => value.PaymentLogId.HasValue)
+            .GroupBy(value => value.PaymentLogId!.Value)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
+        var paymentBalances = paymentLogs.ToDictionary(
+            log => log.Id,
+            log => PaymentBalanceCalculator.Calculate(log, adjustmentsByLog.GetValueOrDefault(log.Id, []), cashByOperation.GetValueOrDefault(log.OperationId, [])));
         var userLookup = await LoadUserLookupAsync(identityDbContext, operations, paymentLogs, cashRecords, adjustments, notes, cancellationToken);
 
         var summary = new List<PdfFact>
@@ -940,7 +981,7 @@ public static class ReportsEndpoints
             new("Change net", FormatMoney(balance.ChangeNet)),
             new("Payments received", FormatMoney(balance.PaymentsReceived)),
             new("Cash refunded", FormatMoney(balance.CashRefunded)),
-            new("Merchant credits", FormatMoney(balance.MerchantCredits)),
+            new("Additional charges", FormatMoney(balance.AdditionalCharges)),
             new("Remaining reductions", FormatMoney(balance.BalanceReductions)),
             new("Current remaining", FormatMoney(balance.Balance))
         };
@@ -966,7 +1007,7 @@ public static class ReportsEndpoints
                     new PdfFact("Change net", FormatMoney(balance.ChangeNet)),
                     new PdfFact("Payments received", FormatMoney(balance.PaymentsReceived)),
                     new PdfFact("Cash refunded", FormatMoney(balance.CashRefunded)),
-                    new PdfFact("Merchant credits", FormatMoney(balance.MerchantCredits)),
+                    new PdfFact("Additional charges", FormatMoney(balance.AdditionalCharges)),
                     new PdfFact("Remaining reductions", FormatMoney(balance.BalanceReductions)),
                     new PdfFact("Remaining balance", FormatMoney(balance.Balance))
                 ]),
@@ -1004,8 +1045,8 @@ public static class ReportsEndpoints
                             DescribePaymentMethod(log.PaymentMethod),
                             log.Status,
                             FormatMoney(log.TotalAmount),
-                            FormatMoney(log.AmountPaid),
-                            FormatMoney(Math.Max(log.TotalAmount - log.AmountPaid, 0)),
+                            FormatMoney(paymentBalances[log.Id].ConfirmedCollections),
+                            FormatMoney(paymentBalances[log.Id].RemainingAmount),
                             GetUserDisplayName(log.InitializedBy, userLookup)
                         }).ToList(),
                         "No payment logs were recorded."),
@@ -2368,11 +2409,11 @@ public sealed record FinancialSummaryResponse(decimal TotalSales, decimal Actual
 
 public sealed record OperationReportRow(Guid Id, string OperationNumber, string OperationType, string Status, Guid? MerchantId, string? ClientName, string? PaymentMethod, int Quantity, int BonusQuantity, decimal Total, DateTime CreatedAt, DateTime? ConfirmedAt);
 
-public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? OperationNumber, Guid? MerchantId, string PaymentMethod, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string Status, Guid? AssignedTo, DateTime LastModifiedAt);
+public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? OperationNumber, Guid? MerchantId, string PaymentMethod, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string Status, Guid? AssignedTo, DateTime LastModifiedAt, decimal RefundDue);
 
 public sealed record SupplyLandedCostReportRow(Guid Id, string ShipmentNumber, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, int Quantity, decimal ProductSubtotal, decimal CostSubtotal, decimal LandedTotal, Guid? InventoryReceiptOperationId);
 
-public sealed record MerchantBalanceReportRow(Guid MerchantId, string BusinessName, string Status, decimal SaleTotal, decimal ReturnTotal, decimal ChangeNet, decimal PaymentsReceived, decimal CashRefunded, decimal MerchantCredits, decimal BalanceReductions, decimal Balance);
+public sealed record MerchantBalanceReportRow(Guid MerchantId, string BusinessName, string Status, decimal SaleTotal, decimal ReturnTotal, decimal ChangeNet, decimal PaymentsReceived, decimal CashRefunded, decimal AdditionalCharges, decimal BalanceReductions, decimal Balance);
 
 public sealed record CreateExportLogRequest(string ReportType, string? GeneratedUrl);
 

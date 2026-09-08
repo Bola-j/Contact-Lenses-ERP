@@ -13,7 +13,7 @@ public static class PaymentFinancialCapacity
     private const string Confirmed = "Confirmed";
     private const string CashReceived = "CashReceived";
     private const string CashRefund = "CashRefund";
-    private const string MerchantCredit = "MerchantCredit";
+    private const string AdditionalCharge = "AdditionalCharge";
     private const string PendingApproval = "PendingApproval";
 
     public static Task<decimal> CompletedInstallmentsAsync(
@@ -59,26 +59,21 @@ public static class PaymentFinancialCapacity
             excludingAdjustmentId,
             cancellationToken);
         var completedRefunds = await CompletedCashRefundedAsync(paymentsDbContext, paymentLog, cancellationToken);
-        var credits = await PendingOrCompletedMerchantCreditsAsync(
-            paymentsDbContext,
-            paymentLog,
-            excludingAdjustmentId,
-            cancellationToken);
         var cashCapacity = await CompletedCashReceivedAsync(paymentsDbContext, paymentLog, cancellationToken) -
             completedRefunds - pendingRefunds;
         var totalSettlementCapacity = await FinalizedPaidValueAsync(paymentsDbContext, paymentLog, cancellationToken) -
-            completedRefunds - pendingRefunds - credits;
+            completedRefunds - pendingRefunds;
 
         return Math.Max(Math.Min(cashCapacity, totalSettlementCapacity), 0);
     }
 
-    public static async Task<decimal> MerchantCreditCapacityAsync(
+    public static async Task<decimal> BalanceReductionCapacityAsync(
         PaymentsDbContext paymentsDbContext,
         MainPaymentLog paymentLog,
         Guid? excludingAdjustmentId,
         CancellationToken cancellationToken)
     {
-        var credits = await PendingOrCompletedMerchantCreditsAsync(
+        var pendingReductions = await PendingBalanceReductionsAsync(
             paymentsDbContext,
             paymentLog,
             excludingAdjustmentId,
@@ -90,10 +85,10 @@ public static class PaymentFinancialCapacity
             excludingAdjustmentId,
             cancellationToken);
 
-        return Math.Max(
-            await FinalizedPaidValueAsync(paymentsDbContext, paymentLog, cancellationToken) -
-            credits - completedRefunds - pendingRefunds,
-            0);
+        var additionalCharges = await CompletedAdditionalChargesAsync(paymentsDbContext, paymentLog, excludingAdjustmentId, cancellationToken);
+        return Math.Max(paymentLog.TotalAmount + additionalCharges -
+            await FinalizedPaidValueAsync(paymentsDbContext, paymentLog, cancellationToken) +
+            completedRefunds - pendingReductions - pendingRefunds, 0);
     }
 
     private static Task<decimal> PendingCashRefundsAsync(
@@ -105,10 +100,10 @@ public static class PaymentFinancialCapacity
             .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
                 adjustment.Id != excludingAdjustmentId &&
                 adjustment.AdjustmentType == CashRefund &&
-                adjustment.Status == PendingApproval)
+                (adjustment.Status == PendingApproval || adjustment.Status == "Approved"))
             .SumAsync(adjustment => adjustment.Amount, cancellationToken);
 
-    private static Task<decimal> PendingOrCompletedMerchantCreditsAsync(
+    private static Task<decimal> CompletedAdditionalChargesAsync(
         PaymentsDbContext paymentsDbContext,
         MainPaymentLog paymentLog,
         Guid? excludingAdjustmentId,
@@ -116,7 +111,19 @@ public static class PaymentFinancialCapacity
         paymentsDbContext.FinancialAdjustments
             .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
                 adjustment.Id != excludingAdjustmentId &&
-                adjustment.AdjustmentType == MerchantCredit &&
-                (adjustment.Status == PendingApproval || adjustment.Status == Completed))
+                (adjustment.AdjustmentType == AdditionalCharge || adjustment.AdjustmentType == "MerchantCredit") &&
+                adjustment.Status == Completed)
+            .SumAsync(adjustment => adjustment.Amount, cancellationToken);
+
+    private static Task<decimal> PendingBalanceReductionsAsync(
+        PaymentsDbContext paymentsDbContext,
+        MainPaymentLog paymentLog,
+        Guid? excludingAdjustmentId,
+        CancellationToken cancellationToken) =>
+        paymentsDbContext.FinancialAdjustments
+            .Where(adjustment => adjustment.PaymentLogId == paymentLog.Id &&
+                adjustment.Id != excludingAdjustmentId &&
+                adjustment.AdjustmentType == "BalanceReduction" &&
+                adjustment.Status == PendingApproval)
             .SumAsync(adjustment => adjustment.Amount, cancellationToken);
 }

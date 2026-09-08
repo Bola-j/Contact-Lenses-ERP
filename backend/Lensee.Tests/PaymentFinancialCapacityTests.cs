@@ -8,7 +8,51 @@ namespace Lensee.Tests;
 public sealed class PaymentFinancialCapacityTests
 {
     [Fact]
-    public async Task MerchantCreditCapacity_CompletedLinkedCashRefundConsumesSettlementOnce()
+    public void PaymentBalance_SeparatesCollectionRemainingAndRefundDue()
+    {
+        var paymentLog = PaymentLog();
+        paymentLog.TotalAmount = 1000m;
+        paymentLog.InstallmentSubLogs =
+        [
+            new InstallmentSubLog { MainLogId = paymentLog.Id, Amount = 600m, SubLogStatus = "Confirmed" }
+        ];
+        var reduction = Adjustment(paymentLog, Guid.NewGuid(), "BalanceReduction", "Completed", 500m);
+
+        var beforePayout = PaymentBalanceCalculator.Calculate(paymentLog, [reduction], []);
+        Assert.Equal(500m, beforePayout.AdjustedAmount);
+        Assert.Equal(0m, beforePayout.RemainingAmount);
+        Assert.Equal(100m, beforePayout.RefundDue);
+
+        var afterPayout = PaymentBalanceCalculator.Calculate(
+            paymentLog,
+            [reduction],
+            [CashRecord(paymentLog, "CashRefund", 100m)]);
+        Assert.Equal(0m, afterPayout.RemainingAmount);
+        Assert.Equal(0m, afterPayout.RefundDue);
+    }
+
+    [Fact]
+    public void PaymentBalance_AdditionalChargeIncreasesRemainingAmount()
+    {
+        var paymentLog = PaymentLog();
+        paymentLog.TotalAmount = 1000m;
+        paymentLog.InstallmentSubLogs =
+        [
+            new InstallmentSubLog { MainLogId = paymentLog.Id, Amount = 600m, SubLogStatus = "Confirmed" }
+        ];
+
+        var balance = PaymentBalanceCalculator.Calculate(
+            paymentLog,
+            [Adjustment(paymentLog, Guid.NewGuid(), "AdditionalCharge", "Completed", 100m)],
+            []);
+
+        Assert.Equal(1100m, balance.AdjustedAmount);
+        Assert.Equal(500m, balance.RemainingAmount);
+        Assert.Equal(0m, balance.RefundDue);
+    }
+
+    [Fact]
+    public async Task BalanceReductionCapacity_CompletedLinkedCashRefundReopensReceivable()
     {
         await using var context = CreateContext();
         var paymentLog = PaymentLog();
@@ -26,19 +70,19 @@ public sealed class PaymentFinancialCapacityTests
             30m));
         await context.SaveChangesAsync();
 
-        var capacity = await PaymentFinancialCapacity.MerchantCreditCapacityAsync(
+        var capacity = await PaymentFinancialCapacity.BalanceReductionCapacityAsync(
             context,
             paymentLog,
             excludingAdjustmentId: null,
             CancellationToken.None);
 
-        Assert.Equal(70m, capacity);
+        Assert.Equal(30m, capacity);
     }
 
     [Theory]
     [InlineData("PendingApproval")]
     [InlineData("Completed")]
-    public async Task CashRefundCapacity_PendingOrCompletedMerchantCreditConsumesSettlement(string creditStatus)
+    public async Task CashRefundCapacity_AdditionalChargeDoesNotConsumeCollectedCash(string creditStatus)
     {
         await using var context = CreateContext();
         var paymentLog = PaymentLog();
@@ -48,7 +92,7 @@ public sealed class PaymentFinancialCapacityTests
         context.FinancialAdjustments.Add(Adjustment(
             paymentLog,
             Guid.NewGuid(),
-            "MerchantCredit",
+            "AdditionalCharge",
             creditStatus,
             35m));
         await context.SaveChangesAsync();
@@ -59,7 +103,7 @@ public sealed class PaymentFinancialCapacityTests
             excludingAdjustmentId: null,
             CancellationToken.None);
 
-        Assert.Equal(65m, capacity);
+        Assert.Equal(100m, capacity);
     }
 
     private static PaymentsDbContext CreateContext() =>
