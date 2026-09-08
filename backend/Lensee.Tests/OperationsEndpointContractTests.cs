@@ -699,8 +699,9 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
+        var adminRequesterId = Guid.NewGuid();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsRequest);
+        client.AuthorizeAs(LenseeRoles.Admin, adminRequesterId, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsRequest);
 
         var operation = await CreateOperationAsync(client, new
         {
@@ -734,6 +735,24 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
 
         Assert.Equal(HttpStatusCode.Created, adjustment.StatusCode);
         Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
+
+        var adminOwnRequest = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new
+        {
+            merchantId,
+            operationId = detail.OperationNumber,
+            adjustmentType = "AdditionalCharge",
+            amount = 25m,
+            notes = "Admin approval contract"
+        });
+        var adminOwnAdjustment = await adminOwnRequest.Content.ReadFromJsonAsync<FinancialAdjustmentContract>();
+        using var adminApprover = _factory.CreateClient();
+        adminApprover.AuthorizeAs(LenseeRoles.Admin, adminRequesterId, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsApprove);
+        var adminOwnApproval = adminOwnAdjustment is null
+            ? adminOwnRequest
+            : await PostPaymentAsync(adminApprover, $"/api/v1/payments/adjustments/{adminOwnAdjustment.Id}/approve");
+
+        Assert.Equal(HttpStatusCode.Created, adminOwnRequest.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, adminOwnApproval.StatusCode);
     }
 
     [Fact]

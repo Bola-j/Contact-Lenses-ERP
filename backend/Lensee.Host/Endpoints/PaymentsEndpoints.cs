@@ -1094,15 +1094,6 @@ public static class PaymentsEndpoints
                 transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only pending adjustment requests can be approved." });
                 return;
             }
-            if (adjustment.CreatedBy == currentUser.UserId)
-            {
-                transactionResult = Results.Conflict(new
-                {
-                    code = "separation-of-duties",
-                    detail = "A different administrative user must approve an adjustment request."
-                });
-                return;
-            }
             if (adjustment.PaymentLogId is not { } paymentLogId)
             {
                 transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["lineage"] = ["Legacy unlinked adjustments cannot be approved or reversed."] });
