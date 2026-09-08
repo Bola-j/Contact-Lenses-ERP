@@ -6299,6 +6299,7 @@ async function togglePaymentHistoryDetails(id, button) {
 
 function renderPaymentDetail(detail) {
   const isAdmin = isSystemAdminRole(getAuth()?.user.role);
+  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user.role);
   const subLogs = detail.subLogs || [];
   const cashRecords = detail.cashRecords || [];
   const adjustments = detail.adjustments || [];
@@ -6356,7 +6357,7 @@ function renderPaymentDetail(detail) {
         <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(adjustment.status || "-")}</span></td>
         <td>${escapeHtml(adjustment.createdByName || "-")}</td>
         <td>${escapeHtml(adjustment.notes || "-")}</td>
-        <td>${isAdmin && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">Approve</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">Reject</button>` : isAdmin && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">Record payout</button>` : "-"}</td>
+        <td>${canApproveAdjustments && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">Approve</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">Reject</button>` : canApproveAdjustments && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">Record payout</button>` : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
   </div>`;
 }

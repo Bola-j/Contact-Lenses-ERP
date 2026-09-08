@@ -36,6 +36,7 @@ public sealed class PermissionTests
         var permissions = LenseePermissions.ForRole(LenseeRoles.CLevel);
 
         Assert.Contains(LenseePermissions.SupplyRead, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsApprove, permissions);
         Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
     }
 

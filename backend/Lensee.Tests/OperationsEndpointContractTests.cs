@@ -695,7 +695,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
-    public async Task FinancialAdjustment_AcceptsOperationNumberReference()
+    public async Task FinancialAdjustment_AcceptsOperationNumberReferenceAndCLevelApproval()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
@@ -725,7 +725,15 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             notes = "Operation code reference"
         });
 
+        var adjustmentRecord = await adjustment.Content.ReadFromJsonAsync<FinancialAdjustmentContract>();
+        using var approver = _factory.CreateClient();
+        approver.AuthorizeAs(LenseeRoles.CLevel, Guid.NewGuid(), LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsApprove);
+        var approval = adjustmentRecord is null
+            ? adjustment
+            : await PostPaymentAsync(approver, $"/api/v1/payments/adjustments/{adjustmentRecord.Id}/approve");
+
         Assert.Equal(HttpStatusCode.Created, adjustment.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
     }
 
     [Fact]

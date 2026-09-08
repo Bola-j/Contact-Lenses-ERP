@@ -1096,7 +1096,11 @@ public static class PaymentsEndpoints
             }
             if (adjustment.CreatedBy == currentUser.UserId)
             {
-                transactionResult = Results.Forbid();
+                transactionResult = Results.Conflict(new
+                {
+                    code = "separation-of-duties",
+                    detail = "A different administrative user must approve an adjustment request."
+                });
                 return;
             }
             if (adjustment.PaymentLogId is not { } paymentLogId)
@@ -1325,7 +1329,8 @@ public static class PaymentsEndpoints
 
     private static bool IsAdjustmentReviewer(ICurrentUser currentUser) =>
         string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(currentUser.Role, LenseeRoles.ERPAdmin, StringComparison.OrdinalIgnoreCase);
+        string.Equals(currentUser.Role, LenseeRoles.ERPAdmin, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(currentUser.Role, LenseeRoles.CLevel, StringComparison.OrdinalIgnoreCase);
 
     public static async Task CreatePaymentArtifactsForCompletedSaleAsync(
         OperationLog operation,

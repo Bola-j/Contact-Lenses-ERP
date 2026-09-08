@@ -33,7 +33,7 @@ public static class LenseePermissions
         {
             LenseeRoles.CLevel => new[]
             {
-                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, ReportsRead, SupplyRead, IntegrationsShopifyRead
+                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, PaymentsAdjustmentsApprove, ReportsRead, SupplyRead, IntegrationsShopifyRead
             },
             LenseeRoles.Admin => new[]
             {

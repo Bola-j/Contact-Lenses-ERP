@@ -455,7 +455,7 @@ builder.Services.AddAuthorization(options =>
             .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsRequest));
 
     options.AddPolicy("payments.adjustments.approve", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
             .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsApprove));
 
     options.AddPolicy("reports.read", policy =>
