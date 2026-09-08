@@ -1,9 +1,13 @@
+using Lensee.Modules.Payments.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace Lensee.Modules.Payments.Migrations;
 
+[DbContext(typeof(PaymentsDbContext))]
+[Migration("20260711010000_AllowCashHandToHandPaymentLogs")]
 public partial class AllowCashHandToHandPaymentLogs : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
