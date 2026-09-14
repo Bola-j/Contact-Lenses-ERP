@@ -61,6 +61,23 @@ public sealed class CatalogEndpointContractTests : IClassFixture<CatalogEndpoint
     }
 
     [Fact]
+    public async Task SkuSearch_IsPaged_Filtered_AndSupportsDirectLookup()
+    {
+        var skuId = await _factory.CreateSkuAsync("Searchable Lens", "SKU-PERF-125", "+", 1.25m, "Blue");
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.CLevel, LenseePermissions.CatalogRead);
+
+        var search = await client.GetFromJsonAsync<PagedContract<SkuOptionContract>>("/api/v1/catalog/skus?search=Searchable%20Blue&pageSize=1");
+        var selected = await client.GetFromJsonAsync<SkuOptionContract>($"/api/v1/catalog/skus/{skuId}");
+
+        Assert.NotNull(search);
+        Assert.Single(search!.Items);
+        Assert.Equal(skuId, search.Items[0].Id);
+        Assert.Equal(1, search.PageSize);
+        Assert.Equal("SKU-PERF-125", selected!.SkuCode);
+    }
+
+    [Fact]
     public async Task WarehouseClerk_CannotWriteCatalog()
     {
         using var client = _factory.CreateClient();
@@ -274,6 +291,42 @@ public sealed class CatalogEndpointFactory : WebApplicationFactory<Program>
         await dbContext.SaveChangesAsync();
         return productId;
     }
+
+    public async Task<Guid> CreateSkuAsync(string productName, string skuCode, string powerSign, decimal powerValue, string colorName)
+    {
+        using var scope = Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var category = new Category { Id = Guid.NewGuid(), Name = $"Category {Guid.NewGuid():N}" };
+        var brand = new Brand { Id = Guid.NewGuid(), Name = $"Brand {Guid.NewGuid():N}" };
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            CategoryId = category.Id,
+            BrandId = brand.Id,
+            Name = productName,
+            ProductType = "Lens",
+            ExpiryType = "Batch",
+            PiecesPerPack = 1,
+            SellMode = "SinglePiece",
+            ClinicalParams = "{}",
+            ExtendedAttributes = "{}",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        };
+        var sku = new Sku
+        {
+            Id = Guid.NewGuid(),
+            ProductId = product.Id,
+            SkuCode = skuCode,
+            PowerSign = powerSign,
+            PowerValue = powerValue,
+            ColorName = colorName,
+            IsActive = true
+        };
+        dbContext.AddRange(category, brand, product, sku);
+        await dbContext.SaveChangesAsync();
+        return sku.Id;
+    }
 }
 
 internal sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
@@ -349,5 +402,7 @@ internal static class CatalogEndpointClientExtensions
 internal sealed record PagedContract<T>(IReadOnlyList<T> Items, int Page, int PageSize, int TotalCount);
 
 internal sealed record ProductListContract(Guid Id, string Name, string ProductType, bool IsActive);
+
+internal sealed record SkuOptionContract(Guid Id, string SkuCode, string ProductName);
 
 internal sealed record ValidationProblemContract(Dictionary<string, string[]> Errors);

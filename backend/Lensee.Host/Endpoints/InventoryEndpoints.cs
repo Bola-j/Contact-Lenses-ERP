@@ -32,6 +32,7 @@ public static class InventoryEndpoints
         group.MapGet("/stock-balances/{locationId:guid}/{skuId:guid}", GetStockBalanceAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-balances/{id:guid}", GetStockBalanceByIdAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-options", ListStockOptionsAsync).RequireAuthorization("inventory.read");
+        group.MapGet("/available-sku-ids", ListAvailableSkuIdsAsync).RequireAuthorization("inventory.read");
         group.MapPut("/stock-balances/{locationId:guid}/{skuId:guid}/target", SetTargetQuantityAsync).RequireAuthorization("inventory.write");
         group.MapGet("/batches", ListBatchesAsync).RequireAuthorization("inventory.read");
         group.MapGet("/batches/{id:guid}", GetBatchByIdAsync).RequireAuthorization("inventory.read");
@@ -163,7 +164,10 @@ public static class InventoryEndpoints
         }
 
         var request = new PageRequest(page ?? 1, pageSize ?? 25);
-        var query = inventoryDbContext.StockBalances.Include(balance => balance.Location).AsQueryable();
+        var query = inventoryDbContext.StockBalances
+            .AsNoTracking()
+            .Include(balance => balance.Location)
+            .AsQueryable();
         if (scopedLocationId.HasValue)
         {
             query = query.Where(balance => balance.LocationId == scopedLocationId.Value);
@@ -173,37 +177,70 @@ public static class InventoryEndpoints
             query = query.Where(balance => balance.SkuId == skuId.Value);
         }
 
-        var rows = await query
-            .OrderBy(balance => balance.Location.Name)
-            .ThenBy(balance => balance.SkuId)
-            .ToListAsync(cancellationToken);
-        var skuLookup = await LoadSkuLookupAsync(catalogDbContext, rows.Select(row => row.SkuId), cancellationToken);
-        var loosePieces = await LoadLoosePiecesAsync(inventoryDbContext, rows.Select(row => (row.LocationId, row.SkuId)), cancellationToken);
-        var response = rows
-            .Select(balance => ToResponse(balance, skuLookup, loosePieces.GetValueOrDefault((balance.LocationId, balance.SkuId))))
-            .ToList();
-
-        if (includeZeroStock == true)
+        if (includeZeroStock != true)
         {
-            response.AddRange(await BuildZeroStockRowsAsync(
-                inventoryDbContext,
-                catalogDbContext,
-                scopedLocationId,
-                skuId,
-                rows,
-                cancellationToken));
+            var total = await query.CountAsync(cancellationToken);
+            var pageRows = await query
+                .OrderBy(balance => balance.Location.Name)
+                .ThenBy(balance => balance.SkuId)
+                .ThenBy(balance => balance.Id)
+                .Skip(request.Skip)
+                .Take(request.PageSize)
+                .ToListAsync(cancellationToken);
+            var pageSkuLookup = await LoadSkuLookupAsync(catalogDbContext, pageRows.Select(row => row.SkuId), cancellationToken);
+            var pageLoosePieces = await LoadLoosePiecesAsync(inventoryDbContext, pageRows.Select(row => (row.LocationId, row.SkuId)), cancellationToken);
+            var pageResponse = pageRows
+                .Select(balance => ToResponse(balance, pageSkuLookup, pageLoosePieces.GetValueOrDefault((balance.LocationId, balance.SkuId))))
+                .ToList();
+
+            return Results.Ok(new PagedResult<StockBalanceResponse>(pageResponse, request.Page, request.PageSize, total));
         }
 
-        var ordered = response
-            .OrderBy(balance => balance.LocationName)
-            .ThenBy(balance => balance.SkuCode ?? balance.SkuId.ToString())
-            .ToList();
-        var pageItems = ordered
-            .Skip(request.Skip)
-            .Take(request.PageSize)
-            .ToList();
+        var locationsQuery = inventoryDbContext.Locations.AsNoTracking().Where(location => location.IsActive);
+        if (scopedLocationId.HasValue)
+        {
+            locationsQuery = locationsQuery.Where(location => location.Id == scopedLocationId.Value);
+        }
+        var locations = await locationsQuery.OrderBy(location => location.Name).ThenBy(location => location.Id).ToListAsync(cancellationToken);
+        var skuQuery = catalogDbContext.Skus.AsNoTracking()
+            .Where(sku => sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null);
+        if (skuId.HasValue)
+        {
+            skuQuery = skuQuery.Where(sku => sku.Id == skuId.Value);
+        }
+        var skuCount = await skuQuery.CountAsync(cancellationToken);
+        var totalCount = checked(locations.Count * skuCount);
+        var pageCombinations = new List<(Location Location, SkuLookup Sku)>(request.PageSize);
+        var pageStart = request.Skip;
+        var pageEnd = Math.Min(totalCount, pageStart + request.PageSize);
+        for (var locationIndex = 0; locationIndex < locations.Count && pageStart < pageEnd; locationIndex++)
+        {
+            var locationStart = locationIndex * skuCount;
+            var from = Math.Max(pageStart, locationStart);
+            var to = Math.Min(pageEnd, locationStart + skuCount);
+            if (from >= to) continue;
+            var segment = await skuQuery
+                .OrderBy(sku => sku.SkuCode).ThenBy(sku => sku.Id)
+                .Skip(from - locationStart).Take(to - from)
+                .Select(sku => new SkuLookup(sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.CategoryId, sku.Product.Category.Name, sku.Product.PiecesPerPack, sku.Product.SellMode, sku.Product.OpenedExpiryDuration, sku.Product.SealedExpiryDuration, sku.Product.OpenedExpiryRate, true))
+                .ToListAsync(cancellationToken);
+            pageCombinations.AddRange(segment.Select(sku => (locations[locationIndex], sku)));
+        }
 
-        return Results.Ok(new PagedResult<StockBalanceResponse>(pageItems, request.Page, request.PageSize, ordered.Count));
+        var pageLocationIds = pageCombinations.Select(value => value.Location.Id).Distinct().ToArray();
+        var pageSkuIds = pageCombinations.Select(value => value.Sku.Id).Distinct().ToArray();
+        var pageBalances = await inventoryDbContext.StockBalances.AsNoTracking().Include(balance => balance.Location)
+            .Where(balance => pageLocationIds.Contains(balance.LocationId) && pageSkuIds.Contains(balance.SkuId))
+            .ToListAsync(cancellationToken);
+        var balancesByKey = pageBalances.ToDictionary(balance => (balance.LocationId, balance.SkuId));
+        var loosePieces = await LoadLoosePiecesAsync(inventoryDbContext, pageCombinations.Select(value => (value.Location.Id, value.Sku.Id)), cancellationToken);
+        var skuLookup = pageCombinations.Select(value => value.Sku).DistinctBy(value => value.Id).ToDictionary(value => value.Id);
+        var pageItems = pageCombinations.Select(value =>
+            balancesByKey.TryGetValue((value.Location.Id, value.Sku.Id), out var balance)
+                ? ToResponse(balance, skuLookup, loosePieces.GetValueOrDefault((value.Location.Id, value.Sku.Id)))
+                : ToZeroStockResponse(value.Location, value.Sku)).ToList();
+
+        return Results.Ok(new PagedResult<StockBalanceResponse>(pageItems, request.Page, request.PageSize, totalCount));
     }
 
     private static async Task<IResult> GetStockBalanceAsync(
@@ -267,6 +304,8 @@ public static class InventoryEndpoints
 
     private static async Task<IResult> ListProductTotalsAsync(
         Guid? locationId,
+        Guid? categoryId,
+        bool? includeProducts,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         ICurrentUser currentUser,
@@ -278,7 +317,7 @@ public static class InventoryEndpoints
         }
 
         var query = inventoryDbContext.StockBalances
-            .Include(balance => balance.Location)
+            .AsNoTracking()
             .Where(balance => balance.AvailableQty > 0)
             .AsQueryable();
         if (scopedLocationId.HasValue)
@@ -286,11 +325,24 @@ public static class InventoryEndpoints
             query = query.Where(balance => balance.LocationId == scopedLocationId.Value);
         }
 
-        var balances = await query.ToListAsync(cancellationToken);
+        var balances = await query
+            .GroupBy(balance => balance.SkuId)
+            .Select(group => new { SkuId = group.Key, AvailableQty = group.Sum(balance => balance.AvailableQty) })
+            .ToListAsync(cancellationToken);
         var skuLookup = await LoadSkuLookupAsync(catalogDbContext, balances.Select(balance => balance.SkuId), cancellationToken);
-        var loosePieces = await LoadLoosePiecesAsync(inventoryDbContext, balances.Select(balance => (balance.LocationId, balance.SkuId)), cancellationToken);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var looseQuery = inventoryDbContext.OpenedPieceLots.AsNoTracking()
+            .Where(lot => lot.LoosePieceQuantity > 0 && (lot.PieceExpiryDate == null || lot.PieceExpiryDate >= today));
+        if (scopedLocationId.HasValue)
+        {
+            looseQuery = looseQuery.Where(lot => lot.LocationId == scopedLocationId.Value);
+        }
+        var loosePieces = await looseQuery
+            .GroupBy(lot => lot.SkuId)
+            .Select(group => new { SkuId = group.Key, Quantity = group.Sum(lot => lot.LoosePieceQuantity) })
+            .ToDictionaryAsync(value => value.SkuId, value => value.Quantity, cancellationToken);
 
-        var rows = balances
+        var skuRows = balances
             .Select(balance =>
             {
                 skuLookup.TryGetValue(balance.SkuId, out var sku);
@@ -298,11 +350,33 @@ public static class InventoryEndpoints
                 {
                     Balance = balance,
                     Sku = sku,
-                    AvailablePieces = ToTotalPieces(balance.AvailableQty, sku, loosePieces.GetValueOrDefault((balance.LocationId, balance.SkuId)))
+                    AvailablePieces = ToTotalPieces(balance.AvailableQty, sku, loosePieces.GetValueOrDefault(balance.SkuId))
                 };
             })
             .Where(row => row.Sku is not null)
+            .Where(row => !categoryId.HasValue || row.Sku!.CategoryId == categoryId.Value)
+            .ToList();
+
+        // The collapsed inventory panel needs category totals only.  Do not build every
+        // product and expiry-rate breakdown just to discard it before serialization.
+        var categoryGroups = skuRows
             .GroupBy(row => new { row.Sku!.CategoryId, row.Sku.CategoryName })
+            .OrderBy(group => group.Key.CategoryName)
+            .ToList();
+
+        if (includeProducts == false)
+        {
+            return Results.Ok(categoryGroups.Select(categoryGroup => new InventoryProductCategoryTotalResponse(
+                categoryGroup.Key.CategoryId,
+                categoryGroup.Key.CategoryName,
+                categoryGroup.Select(row => row.Sku!.ProductId).Distinct().Count(),
+                categoryGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
+                categoryGroup.Sum(row => row.Balance.AvailableQty),
+                categoryGroup.Any(row => row.AvailablePieces.HasValue) ? categoryGroup.Sum(row => row.AvailablePieces ?? 0) : null,
+                [])).ToList());
+        }
+
+        var rows = categoryGroups
             .Select(categoryGroup => new InventoryProductCategoryTotalResponse(
                 categoryGroup.Key.CategoryId,
                 categoryGroup.Key.CategoryName,
@@ -337,11 +411,10 @@ public static class InventoryEndpoints
                             .ToList()))
                     .OrderBy(row => row.ProductName)
                     .ToList()))
-            .OrderBy(row => row.CategoryName)
             .ToList();
-
         return Results.Ok(rows);
     }
+
     private static async Task<IResult> ListStockOptionsAsync(
         Guid locationId,
         Guid skuId,
@@ -448,6 +521,25 @@ public static class InventoryEndpoints
             .ToList();
 
         return Results.Ok(options);
+    }
+
+    private static async Task<IResult> ListAvailableSkuIdsAsync(
+        Guid locationId,
+        InventoryDbContext inventoryDbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (!CanAccessLocation(currentUser, locationId))
+        {
+            return Results.Forbid();
+        }
+
+        var ids = await inventoryDbContext.StockBalances.AsNoTracking()
+            .Where(balance => balance.LocationId == locationId && balance.AvailableQty > 0)
+            .OrderBy(balance => balance.SkuId)
+            .Select(balance => balance.SkuId)
+            .ToListAsync(cancellationToken);
+        return Results.Ok(ids);
     }
 
     private static async Task<IResult> SetTargetQuantityAsync(
@@ -566,6 +658,9 @@ public static class InventoryEndpoints
     private static async Task<IResult> ListTransferBlockedBatchesAsync(
         Guid? locationId,
         Guid? skuId,
+        bool? paged,
+        int? page,
+        int? pageSize,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         ICurrentUser currentUser,
@@ -577,9 +672,10 @@ public static class InventoryEndpoints
             return forbidden;
         }
 
-        var query = inventoryDbContext.InventoryBatches
+        var today = DateOnly.FromDateTime(clock.EgyptNow);
+        var query = inventoryDbContext.InventoryBatches.AsNoTracking()
             .Include(batch => batch.Location)
-            .Where(batch => batch.Quantity > 0 && batch.ExpiryDate != null)
+            .Where(batch => batch.Quantity > 0 && batch.ExpiryDate != null && batch.ExpiryDate < today)
             .AsQueryable();
         if (scopedLocationId.HasValue)
         {
@@ -590,10 +686,16 @@ public static class InventoryEndpoints
             query = query.Where(batch => batch.SkuId == skuId.Value);
         }
 
-        var batches = await query
+        var total = paged == true ? await query.CountAsync(cancellationToken) : 0;
+        var orderedQuery = query
             .OrderBy(batch => batch.ExpiryDate)
             .ThenBy(batch => batch.Location.Name)
             .ThenBy(batch => batch.LotNumber)
+            .ThenBy(batch => batch.Id);
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var batches = await (paged == true
+                ? orderedQuery.Skip(request.Skip).Take(request.PageSize)
+                : orderedQuery)
             .ToListAsync(cancellationToken);
         var skuIds = batches.Select(batch => batch.SkuId).Distinct().ToArray();
         var skuLookup = await catalogDbContext.Skus
@@ -610,17 +712,10 @@ public static class InventoryEndpoints
             })
             .ToDictionaryAsync(sku => sku.Id, cancellationToken);
 
-        var today = DateOnly.FromDateTime(clock.EgyptNow);
         var rows = new List<TransferBlockedBatchResponse>();
         foreach (var batch in batches)
         {
             if (!skuLookup.TryGetValue(batch.SkuId, out var sku))
-            {
-                continue;
-            }
-
-            var isExpired = batch.ExpiryDate < today;
-            if (!isExpired)
             {
                 continue;
             }
@@ -642,7 +737,9 @@ public static class InventoryEndpoints
                 "Expired"));
         }
 
-        return Results.Ok(rows);
+        return paged == true
+            ? Results.Ok(new PagedResult<TransferBlockedBatchResponse>(rows, request.Page, request.PageSize, total))
+            : Results.Ok(rows);
     }
 
     private static async Task<IResult> CreateReceiptAsync(

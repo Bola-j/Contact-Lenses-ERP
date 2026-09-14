@@ -1,8 +1,8 @@
 services:
   db:
     restart: always
-    cpus: "0.75"
-    mem_limit: 768m
+    cpus: "0.80"
+    mem_limit: 1536m
     environment:
       POSTGRES_DB: lensee
       POSTGRES_USER: lensee_user
@@ -12,11 +12,11 @@ services:
   lensee.host:
     restart: always
     cpus: "1.00"
-    mem_limit: 1024m
+    mem_limit: 1536m
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_HTTP_PORTS: 8080
-      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:?DB_PASSWORD is required}
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:?DB_PASSWORD is required};Maximum Pool Size=20
       Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
       Jwt__Issuer: ${JWT_ISSUER:-Lensee}
       Jwt__Audience: ${JWT_AUDIENCE:-Lensee.App}
@@ -38,6 +38,17 @@ services:
       RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
+      Reporting__MaxExportRows: ${REPORTING_MAX_EXPORT_ROWS:-10000}
+      Reporting__QuestPdfLicense: ${REPORTING_QUESTPDF_LICENSE:-Community}
+      Reporting__Branding__CompanyNameArabic: ${REPORTING_COMPANY_NAME_AR:-لينسي}
+      Reporting__Branding__CompanyNameEnglish: ${REPORTING_COMPANY_NAME_EN:-Lensee}
+      Reporting__Branding__LogoBase64: ${REPORTING_LOGO_BASE64:-}
+      Reporting__Branding__AddressArabic: ${REPORTING_ADDRESS_AR:-}
+      Reporting__Branding__AddressEnglish: ${REPORTING_ADDRESS_EN:-}
+      Reporting__Branding__Phone: ${REPORTING_PHONE:-}
+      Reporting__Branding__TaxNumber: ${REPORTING_TAX_NUMBER:-}
+      Reporting__Branding__CommercialRegistration: ${REPORTING_COMMERCIAL_REGISTRATION:-}
+      Reporting__Branding__CurrencyCode: ${REPORTING_CURRENCY_CODE:-EGP}
 
   migrator:
     cpus: "0.75"
@@ -55,7 +66,7 @@ services:
 
   frontend:
     restart: always
-    cpus: "0.10"
+    cpus: "0.05"
     mem_limit: 128m
     environment:
       FRONTEND_API_BASE_URL: ${FRONTEND_API_BASE_URL:?FRONTEND_API_BASE_URL is required}

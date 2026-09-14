@@ -1,8 +1,10 @@
 {
   "name": "lensee-frontend",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "scripts": {
-    "build": "node build-vercel.mjs"
+    "build": "node build-vercel.mjs",
+    "check": "cd .. && node scripts/check-frontend-localization.mjs"
   }
 }

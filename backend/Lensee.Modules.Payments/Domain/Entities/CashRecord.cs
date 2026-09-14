@@ -15,6 +15,8 @@ public partial class CashRecord
 
     public string? SubType { get; set; }
 
+    public string? TransactionReference { get; set; }
+
     public decimal Amount { get; set; }
 
     public string Status { get; set; } = null!;
@@ -22,6 +24,10 @@ public partial class CashRecord
     public DateTime PaymentDate { get; set; }
 
     public Guid CreatedBy { get; set; }
+
+    public Guid? ConfirmedBy { get; set; }
+
+    public DateTime? ConfirmedAt { get; set; }
 
     public string? Notes { get; set; }
 }

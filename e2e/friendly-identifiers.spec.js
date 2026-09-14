@@ -14,10 +14,12 @@ test("friendly identifiers: UUID-like visible text is masked without changing DO
     row.dataset.internalId = value;
     row.textContent = `Saved record ${value}`;
     document.querySelector("#view").appendChild(row);
+    window.__lenseeSanitizeVisibleIdentifiers();
   }, uuid);
 
   await expect(page.locator("#view")).not.toContainText(uuid);
-  await expect(page.locator("#view")).toContainText(/REF-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/);
+  await expect(page.locator("#view")).toContainText("Related record");
+  await expect.poll(() => page.evaluate(() => window.__lenseeFindVisibleUuidLeaks())).toEqual([]);
   await expect(page.locator("#view div[data-internal-id]")).toHaveAttribute("data-internal-id", uuid);
 });
 
@@ -33,6 +35,24 @@ test("report search pickers stay collapsed until queried and close when focus mo
       return json(auth);
     }
     if (path === "/api/v1/notifications/unread-count") return json({ count: 0 });
+    if (path === "/api/v1/reports/catalog") return json([
+      { key: "stock", formats: ["pdf", "xlsx", "csv"], languages: ["ar", "en", "bi"] },
+      { key: "operations", formats: ["pdf", "xlsx", "csv"], languages: ["ar", "en", "bi"] },
+      { key: "payments", formats: ["pdf", "xlsx", "csv"], languages: ["ar", "en", "bi"] },
+      { key: "supply", formats: ["pdf", "xlsx", "csv"], languages: ["ar", "en", "bi"] },
+      { key: "merchant-balances", formats: ["pdf", "xlsx", "csv"], languages: ["ar", "en", "bi"] }
+    ]);
+    if (path === "/api/v1/reports/operations/export") {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/csv",
+        headers: {
+          "content-disposition": "attachment; filename*=UTF-8''OperationsReport_2026-09-10.csv",
+          "access-control-expose-headers": "Content-Disposition"
+        },
+        body: "\uFEFFOperation,Total\r\nOP-TEST-100,50"
+      });
+    }
     if (path === "/api/v1/reports/operations") return json([{ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", operationNumber: "OP-TEST-100", operationType: "RetailSale", status: "Completed", clientName: "Test merchant", quantity: 1, total: 50, createdAt: "2026-08-16T12:00:00Z" }]);
     if (["/api/v1/reports/stock", "/api/v1/reports/payments", "/api/v1/reports/supply", "/api/v1/reports/merchant-balances"].includes(path)) return json([]);
     if (path === "/api/v1/stocktakes") return json({ items: [], page: 1, pageSize: 100, totalCount: 0 });
@@ -43,6 +63,12 @@ test("report search pickers stay collapsed until queried and close when focus mo
   await login(page, { username: "test-admin", password: "test-password" });
   await page.goto("/#/reports");
   await expect(page.locator("#report-picker-operation-bill-search")).toBeVisible();
+  await expect(page.locator('[data-report-key="operations"] [data-export-format="xlsx"]')).toBeVisible();
+  await page.locator('input[name="report-export-language"][value="bi"]').check();
+  await expect(page.locator("#export-docket-language")).toHaveText("العربية + الإنجليزية");
+  await page.locator('[data-report-key="operations"] [data-export-format="csv"]').click();
+  await expect(page.locator("#export-docket-filename")).toHaveText("OperationsReport_2026-09-10.csv");
+  await expect(page.locator("#report-export-status")).toContainText("completed");
 
   const operationResults = page.locator("#report-picker-operation-bill-results");
   const paymentSearch = page.locator("#report-picker-payment-receipt-search");

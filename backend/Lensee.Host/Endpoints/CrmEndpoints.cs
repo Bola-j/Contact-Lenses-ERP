@@ -104,6 +104,7 @@ public static class CrmEndpoints
         CrmDbContext crmDbContext,
         OperationsDbContext operationsDbContext,
         MerchantBalanceService merchantBalanceService,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -165,11 +166,17 @@ public static class CrmEndpoints
             .Where(operation => operation.RecordKind != "Reversal" && operation.Status == Completed && (operation.OperationType == WholesaleSale || operation.OperationType == RetailSale))
             .SelectMany(operation => operation.OperationLines)
             .ToListAsync(cancellationToken);
-        var balance = await merchantBalanceService.CalculateAsync(id, cancellationToken, scopedLocationId);
+        var balance = scopedLocationId.HasValue
+            ? await merchantBalanceService.CalculateAsync(id, cancellationToken, scopedLocationId)
+            : null;
+        var accountSnapshot = scopedLocationId.HasValue
+            ? null
+            : await merchantAccountService.GetSnapshotAsync(id, cancellationToken);
+        var displayedBalance = accountSnapshot?.AmountDue ?? balance?.Balance ?? 0m;
 
         return Results.Ok(new MerchantDetailResponse(
             ToResponse(merchant),
-            new MerchantSummaryResponse(operationCount, sold.Where(line => line.EntryMode == "Packs").Sum(line => line.Quantity), sold.Where(line => line.EntryMode == "Pieces").Sum(line => line.Quantity), balance.Balance),
+            new MerchantSummaryResponse(operationCount, sold.Where(line => line.EntryMode == "Packs").Sum(line => line.Quantity), sold.Where(line => line.EntryMode == "Pieces").Sum(line => line.Quantity), displayedBalance),
             recentOperations,
             merchant.MerchantNotes.OrderByDescending(note => note.CreatedAt).Select(note => new MerchantNoteResponse(note.Id, note.Note, note.AddedBy, note.CreatedAt)).ToList()));
     }

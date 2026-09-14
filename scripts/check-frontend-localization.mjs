@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { canonicalSystemValue } from "../frontend/localization.js";
 
 const appPath = "frontend/app.js";
 const htmlPath = "frontend/index.html";
@@ -21,6 +22,24 @@ const duplicates = entries
   .map(([key]) => key)
   .filter((key, index, keys) => keys.indexOf(key) !== index)
   .filter((key, index, keys) => keys.indexOf(key) === index);
+const optionsWithoutCanonicalValue = [...applicationSource.matchAll(/<option(?![^>]*\bvalue=)[^>]*>\s*[A-Za-z][^<]*<\/option>/g)]
+  .map((match) => match[0]);
+const canonicalContractFailures = [];
+for (const [value, domain] of [["RetailSale", "operationType"], ["MerchantAccount", "paymentMethod"], ["WarehouseClerk", "role"], ["Retail", "locationType"]]) {
+  try {
+    if (canonicalSystemValue(value, domain) !== value) canonicalContractFailures.push(`${domain}:${value}`);
+  } catch {
+    canonicalContractFailures.push(`${domain}:${value}`);
+  }
+}
+for (const [value, domain] of [["بيع قطاعي / أونلاين", "operationType"], ["تقسيط", "paymentMethod"], ["أمين المخزن", "role"]]) {
+  try {
+    canonicalSystemValue(value, domain);
+    canonicalContractFailures.push(`${domain}:${value}`);
+  } catch {
+    // Translated labels must never be accepted as API values.
+  }
+}
 
 const candidates = new Set();
 const ignored = new Set([
@@ -94,15 +113,21 @@ const requiredDynamicRules = [
 ];
 const missingDynamicRules = requiredDynamicRules.filter((fragment) => !applicationSource.includes(fragment));
 
-if (missing.length || missingDynamicRules.length) {
+if (missing.length || missingDynamicRules.length || duplicates.length || optionsWithoutCanonicalValue.length || canonicalContractFailures.length || applicationSource.includes("systemValueAliases")) {
   console.error("Frontend localization check failed.");
   if (missing.length) {
     console.error("English UI text without an Arabic translation:");
     for (const text of missing) console.error(`- ${text}`);
   }
   if (missingDynamicRules.length) console.error(`Missing dynamic translation rules: ${missingDynamicRules.join(", ")}`);
+  if (duplicates.length) console.error(`Duplicate Arabic translation keys: ${duplicates.join(", ")}`);
+  if (optionsWithoutCanonicalValue.length) {
+    console.error("System options without explicit canonical values:");
+    for (const option of optionsWithoutCanonicalValue) console.error(`- ${option}`);
+  }
+  if (canonicalContractFailures.length) console.error(`Canonical value contract failures: ${canonicalContractFailures.join(", ")}`);
+  if (applicationSource.includes("systemValueAliases")) console.error("Arabic-to-English system value aliases are not allowed.");
   process.exit(1);
 }
 
-if (duplicates.length) console.warn(`Frontend localization note: ${duplicates.length} legacy duplicate keys use their final declared translation.`);
 console.log(`Frontend localization check passed for ${translations.size} Arabic translations and ${candidates.size} checked UI strings.`);

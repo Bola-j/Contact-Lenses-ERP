@@ -13,6 +13,8 @@ public static class PaymentFinancialCapacity
     private const string Confirmed = "Confirmed";
     private const string CashReceived = "CashReceived";
     private const string CashRefund = "CashRefund";
+    private const string PendingAccountant = "PendingAccountant";
+    private const string PendingAdminReview = "PendingAdminReview";
     private const string AdditionalCharge = "AdditionalCharge";
     private const string PendingApproval = "PendingApproval";
 
@@ -38,6 +40,22 @@ public static class PaymentFinancialCapacity
         CancellationToken cancellationToken) =>
         paymentsDbContext.CashRecords
             .Where(value => value.OperationId == paymentLog.OperationId && value.Status == Completed && value.PaymentType == CashRefund)
+            .SumAsync(value => value.Amount, cancellationToken);
+
+    public static Task<decimal> PendingInstallmentsAsync(
+        PaymentsDbContext paymentsDbContext,
+        MainPaymentLog paymentLog,
+        CancellationToken cancellationToken) =>
+        paymentsDbContext.InstallmentSubLogs
+            .Where(value => value.MainLogId == paymentLog.Id && (value.SubLogStatus == "Draft" || value.SubLogStatus == PendingAdminReview))
+            .SumAsync(value => value.Amount, cancellationToken);
+
+    public static Task<decimal> PendingCashReceivedAsync(
+        PaymentsDbContext paymentsDbContext,
+        MainPaymentLog paymentLog,
+        CancellationToken cancellationToken) =>
+        paymentsDbContext.CashRecords
+            .Where(value => value.OperationId == paymentLog.OperationId && (value.Status == PendingAccountant || value.Status == PendingAdminReview) && value.PaymentType == CashReceived)
             .SumAsync(value => value.Amount, cancellationToken);
 
     public static async Task<decimal> FinalizedPaidValueAsync(

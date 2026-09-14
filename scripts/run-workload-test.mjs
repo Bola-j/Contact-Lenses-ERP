@@ -7,9 +7,13 @@ const defaultPassword = "E2E-only-not-production-2026!";
 const liveTargetConfirmation = "I_UNDERSTAND_THIS_HITS_A_LIVE_SYSTEM";
 const workloadRoutes = [
   "/api/v1/auth/me",
-  "/api/v1/catalog/categories",
-  "/api/v1/catalog/brands",
-  "/api/v1/catalog/products",
+  "/api/v1/catalog/skus?search=lens&page=1&pageSize=25",
+  "/api/v1/inventory/stock-balances?page=1&pageSize=50",
+  "/api/v1/inventory/batches?page=1&pageSize=50",
+  "/api/v1/inventory/transactions?page=1&pageSize=50",
+  "/api/v1/inventory/transfer-blocked-batches?paged=true&page=1&pageSize=50",
+  "/api/v1/supply/shipments?paged=true&page=1&pageSize=25",
+  "/api/v1/reports/financial-summary",
   "/api/v1/notifications/unread-count"
 ];
 
@@ -58,17 +62,19 @@ async function request(url, options, timeoutMs) {
   const startedAt = performance.now();
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
-    await response.arrayBuffer();
+    const body = await response.arrayBuffer();
     return {
       elapsedMs: Math.round(performance.now() - startedAt),
       status: response.status,
-      success: response.ok
+      success: response.ok,
+      responseBytes: body.byteLength
     };
   } catch (error) {
     return {
       elapsedMs: Math.round(performance.now() - startedAt),
       status: error.name === "AbortError" ? "timeout" : "network-error",
-      success: false
+      success: false,
+      responseBytes: 0
     };
   } finally {
     clearTimeout(timer);
@@ -132,7 +138,9 @@ async function monitorReadiness(baseUrl, timeoutMs, monitor) {
 
 async function runStage(config, users) {
   const startedAt = new Date().toISOString();
-  const tokens = await Promise.all(users.map((username) => login(config.baseUrl, username, config.password, config.timeoutMs)));
+  const tokens = config.bearerToken
+    ? users.map(() => config.bearerToken)
+    : await Promise.all(users.map((username) => login(config.baseUrl, username, config.password, config.timeoutMs)));
   const requests = [];
   const monitor = { active: true, probes: 0, failures: 0, results: [] };
   const monitorPromise = monitorReadiness(config.baseUrl, config.timeoutMs, monitor);
@@ -156,6 +164,7 @@ async function runStage(config, users) {
 
   const latencies = requests.map((entry) => entry.elapsedMs);
   const failedRequests = requests.filter((entry) => !entry.success);
+  const responseBytes = requests.reduce((total, entry) => total + entry.responseBytes, 0);
   const statusCounts = Object.fromEntries(Object.entries(requests.reduce((counts, entry) => {
     counts[`${entry.route} ${entry.status}`] = (counts[`${entry.route} ${entry.status}`] ?? 0) + 1;
     return counts;
@@ -166,6 +175,7 @@ async function runStage(config, users) {
     startedAt,
     completedAt: new Date().toISOString(),
     totalRequests: requests.length,
+    responseBytes,
     failedRequests: failedRequests.length,
     errorRate: Number(errorRate.toFixed(4)),
     statusCounts,
@@ -208,9 +218,10 @@ function loadConfig() {
     throw new Error("A non-E2E target requires --allow-live-target and LENSEE_ALLOW_LIVE_WORKLOAD_TEST=I_UNDERSTAND_THIS_HITS_A_LIVE_SYSTEM.");
   }
 
+  const bearerToken = process.env.LENSEE_WORKLOAD_BEARER_TOKEN;
   const password = process.env.LENSEE_WORKLOAD_PASSWORD ?? (isDefaultTarget ? defaultPassword : undefined);
-  if (!password) {
-    throw new Error("Set LENSEE_WORKLOAD_PASSWORD for a non-E2E target; never place it on the command line.");
+  if (!password && !bearerToken) {
+    throw new Error("Set LENSEE_WORKLOAD_PASSWORD or LENSEE_WORKLOAD_BEARER_TOKEN; never place credentials on the command line.");
   }
 
   const maxErrorRate = nonNegativeNumber("--max-error-rate", optionValue("--max-error-rate") ?? "0.01");
@@ -222,6 +233,7 @@ function loadConfig() {
     baseUrl,
     usernames,
     password,
+    bearerToken,
     stages,
     durationSeconds: positiveInteger("--duration-seconds", optionValue("--duration-seconds") ?? "60"),
     thinkMs: nonNegativeNumber("--think-ms", optionValue("--think-ms") ?? "500"),

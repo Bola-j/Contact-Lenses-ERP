@@ -35,6 +35,8 @@ public static class CatalogEndpoints
         group.MapPatch("/products/{id:guid}/reactivate", ReactivateProductAsync).RequireAuthorization("catalog.write");
 
         group.MapPost("/products/{productId:guid}/skus", CreateSkuAsync).RequireAuthorization("catalog.write");
+        group.MapGet("/skus", SearchSkusAsync).RequireAuthorization("catalog.read");
+        group.MapGet("/skus/{id:guid}", GetSkuOptionAsync).RequireAuthorization("catalog.read");
         group.MapPut("/skus/{id:guid}", UpdateSkuAsync).RequireAuthorization("catalog.write");
         group.MapPatch("/skus/{id:guid}/deactivate", DeactivateSkuAsync).RequireAuthorization("catalog.write");
         group.MapPatch("/skus/{id:guid}/reactivate", ReactivateSkuAsync).RequireAuthorization("catalog.write");
@@ -277,6 +279,86 @@ public static class CatalogEndpoints
             .ToListAsync(cancellationToken);
 
         return TypedResults.Ok(new PagedResult<ProductListResponse>(products, request.Page, request.PageSize, total));
+    }
+
+    private static async Task<Ok<PagedResult<SkuOptionResponse>>> SearchSkusAsync(
+        string? search,
+        Guid? productId,
+        Guid? categoryId,
+        Guid? brandId,
+        string? powerSign,
+        decimal? powerValue,
+        string? colorName,
+        string? size,
+        bool? includeInactive,
+        int? page,
+        int? pageSize,
+        CatalogDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var query = dbContext.Skus.AsNoTracking().AsQueryable();
+
+        if (includeInactive != true)
+        {
+            query = query.Where(sku => sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null);
+        }
+        if (productId.HasValue) query = query.Where(sku => sku.ProductId == productId.Value);
+        if (categoryId.HasValue) query = query.Where(sku => sku.Product.CategoryId == categoryId.Value);
+        if (brandId.HasValue) query = query.Where(sku => sku.Product.BrandId == brandId.Value);
+        if (!string.IsNullOrWhiteSpace(powerSign)) query = query.Where(sku => sku.PowerSign == powerSign.Trim());
+        if (powerValue.HasValue) query = query.Where(sku => sku.PowerValue == powerValue.Value);
+        if (!string.IsNullOrWhiteSpace(colorName)) query = query.Where(sku => sku.ColorName == colorName.Trim());
+        if (!string.IsNullOrWhiteSpace(size)) query = query.Where(sku => sku.Size == size.Trim());
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            foreach (var searchTerm in search.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(8))
+            {
+                var term = searchTerm.ToLowerInvariant();
+                query = query.Where(sku =>
+                    sku.SkuCode.ToLower().Contains(term) ||
+                    sku.Product.Name.ToLower().Contains(term) ||
+                    sku.Product.Brand.Name.ToLower().Contains(term) ||
+                    sku.Product.Category.Name.ToLower().Contains(term) ||
+                    (sku.Barcode != null && sku.Barcode.ToLower().Contains(term)) ||
+                    (sku.ColorName != null && sku.ColorName.ToLower().Contains(term)) ||
+                    (sku.Size != null && sku.Size.ToLower().Contains(term)));
+            }
+        }
+
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query
+            .OrderBy(sku => sku.SkuCode)
+            .ThenBy(sku => sku.Id)
+            .Skip(request.Skip)
+            .Take(request.PageSize)
+            .Select(sku => new SkuOptionResponse(
+                sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.BrandId,
+                sku.Product.Brand.Name, sku.Product.CategoryId, sku.Product.Category.Name,
+                sku.Product.ProductType, sku.Product.ExpiryType, sku.Product.PiecesPerPack,
+                sku.Product.SellMode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size,
+                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
+            .ToListAsync(cancellationToken);
+
+        return TypedResults.Ok(new PagedResult<SkuOptionResponse>(rows, request.Page, request.PageSize, total));
+    }
+
+    private static async Task<Results<Ok<SkuOptionResponse>, NotFound>> GetSkuOptionAsync(
+        Guid id,
+        CatalogDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var row = await dbContext.Skus.AsNoTracking()
+            .Where(sku => sku.Id == id)
+            .Select(sku => new SkuOptionResponse(
+                sku.Id, sku.ProductId, sku.SkuCode, sku.Product.Name, sku.Product.BrandId,
+                sku.Product.Brand.Name, sku.Product.CategoryId, sku.Product.Category.Name,
+                sku.Product.ProductType, sku.Product.ExpiryType, sku.Product.PiecesPerPack,
+                sku.Product.SellMode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size,
+                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
+            .SingleOrDefaultAsync(cancellationToken);
+
+        return row is null ? TypedResults.NotFound() : TypedResults.Ok(row);
     }
 
     private static async Task<Results<Ok<ProductDetailResponse>, NotFound>> GetProductAsync(
@@ -766,3 +848,23 @@ public sealed record SkuResponse(
     string? Barcode,
     bool IsActive,
     DateTime? DeletedAt);
+
+public sealed record SkuOptionResponse(
+    Guid Id,
+    Guid ProductId,
+    string SkuCode,
+    string ProductName,
+    Guid BrandId,
+    string BrandName,
+    Guid CategoryId,
+    string CategoryName,
+    string ProductType,
+    string? ExpiryType,
+    int? PiecesPerPack,
+    string? SellMode,
+    string? PowerSign,
+    decimal? PowerValue,
+    string? ColorName,
+    string? Size,
+    string? Barcode,
+    bool IsActive);

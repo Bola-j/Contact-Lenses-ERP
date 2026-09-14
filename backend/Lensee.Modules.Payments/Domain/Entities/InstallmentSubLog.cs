@@ -13,6 +13,8 @@ public partial class InstallmentSubLog
 
     public string? PaymentMethod { get; set; }
 
+    public string? TransactionReference { get; set; }
+
     public DateOnly DateReceived { get; set; }
 
     public string SubLogStatus { get; set; } = null!;

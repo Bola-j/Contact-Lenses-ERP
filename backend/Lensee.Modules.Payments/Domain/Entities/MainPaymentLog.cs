@@ -11,6 +11,13 @@ public partial class MainPaymentLog
 
     public Guid? MerchantId { get; set; }
 
+    /// <summary>
+    /// Immutable accounting scope for this payment workflow. The source
+    /// operation is still authoritative for legacy rows, but new rows persist
+    /// the classification so a movement cannot silently cross workspaces.
+    /// </summary>
+    public string Scope { get; set; } = "DirectOperation";
+
     public decimal TotalAmount { get; set; }
 
     public decimal AmountPaid { get; set; }

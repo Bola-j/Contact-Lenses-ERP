@@ -1,15 +1,26 @@
-const configuredApiBase = window.LENSEE_CONFIG?.apiBaseUrl?.trim();
-const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
-const defaultApiBase = isLocalHost ? "http://localhost:5000" : "";
-let apiBase = configuredApiBase || localStorage.getItem("lensee.apiBase") || defaultApiBase;
-const authKey = "lensee.auth";
+import {
+  canonicalSelectValue as readCanonicalSelectValue,
+  canonicalSystemValue as readCanonicalSystemValue,
+  createLocalizer,
+  contextualReference,
+  findVisibleUuidLeaks,
+  sanitizeVisibleText
+} from "./localization.js?v=20260913-perf1";
+
+// Keep API calls same-origin. Deployment-specific routing belongs to the reverse proxy.
+let apiBase = "";
 let activeAuth = null;
-const apiCandidates = [
-  configuredApiBase,
-  localStorage.getItem("lensee.apiBase"),
-  ...(isLocalHost ? ["http://localhost:5000", "https://localhost:7237"] : [])
-].filter(Boolean);
+let activeRouteController = new AbortController();
+const pendingGetRequests = new Map();
+const referenceResponseCache = new Map();
+const heavyRequestQueue = [];
+let activeHeavyRequests = 0;
+const maxHeavyRequests = 2;
+// Remove values written by the former client-side token/API configuration.
+localStorage.removeItem("lensee.auth");
+localStorage.removeItem("lensee.apiBase");
 const ngrokSkipHeader = "ngrok-skip-browser-warning";
+const requestMarkerHeader = "X-Lensee-Request";
 const mutationEventName = "lensee:data-mutated";
 const authEventName = "lensee:auth-changed";
 
@@ -20,18 +31,40 @@ let selectedProductId = null;
 let inventoryLocations = [];
 let inventorySkuOptions = [];
 let selectedInventoryLocationId = "";
+let inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
+let inventoryRefreshGeneration = 0;
+let inventoryPanelObserver = null;
+const loadedInventoryPanels = new Set();
 let operationLocations = [];
 let operationSkuOptions = [];
 let operationProductOptions = [];
 let operationAvailableSkuIds = null;
 let operationSkuLoadPromise = null;
+const loadedOperationProductIds = new Set();
+const skuSearchRequests = new WeakMap();
+const operationStockOptionRequests = new WeakMap();
+const operationBatchOptionCache = new Map();
 let operationMerchantOptions = [];
-let operationRepresentativeOptions = [];
+let operationEditorLines = [];
+let operationEditorLineById = new Map();
+let operationEditorPage = 1;
+const operationEditorPageSize = 50;
+let operationEditorRendering = false;
+const operationSearchTimers = new WeakMap();
+let routeRefreshCooldownUntil = 0;
 let selectedSupplyShipmentId = null;
 let supplyShipments = [];
 let supplyCurrentDetail = null;
 let supplySkuLoadPromise = null;
 let supplySkuSearchIndex = [];
+let supplyEditorLines = [];
+let supplyEditorLineById = new Map();
+let supplyEditorPage = 1;
+const supplyEditorPageSize = 50;
+let supplyEditorStats = { productTotal: 0, incompletePrices: 0, invalidPrices: 0 };
+let supplyEditorStatsDirty = true;
+let supplyListPage = 1;
+let supplyDetailLinePage = 1;
 let operationsUiState = {
   mode: "create",
   operationId: null,
@@ -41,16 +74,19 @@ let operationsUiState = {
   revisionFingerprint: null,
   openDetailIds: []
 };
+let operationListPage = 1;
 let paymentMerchants = [];
 let paymentAccountants = [];
 let paymentHistoryRows = [];
+let paymentPageState = { merchant: 1, other: 1, history: 1, audit: 1 };
+const loadedPaymentPanels = new Set();
 let reportOperationRows = [];
 let reportPaymentRows = [];
 let reportMerchantRows = [];
 let reportStocktakeRows = [];
 let reportSupplyRows = [];
+let reportCatalogEntries = [];
 let selectedMerchantId = null;
-let selectedRepresentativeId = null;
 let auditPageState = { page: 1, pageSize: 50 };
 let notificationPageState = { page: 1, pageSize: 10 };
 let notificationLoadGeneration = 0;
@@ -64,8 +100,8 @@ let notificationBadgeInFlight = false;
 let refreshSessionPromise = null;
 let noticeSequence = 0;
 const mutationLocks = new Set();
-const displayReferenceCache = new Map();
-let visibleIdentifierObserver = null;
+let presentationApplyTimer = null;
+const pendingPresentationRoots = new Set();
 
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("lensee-sync") : null;
 const syncStorageKey = "lensee.sync";
@@ -77,8 +113,6 @@ const refreshLockWaitMs = 35000;
 const languageKey = "lensee.language";
 let currentLanguage = localStorage.getItem(languageKey) === "en" ? "en" : "ar";
 let applyingLanguage = false;
-let languageApplyTimer = null;
-let languageObserver = null;
 
 const arabicTranslations = Object.freeze({
   "Sign In": "تسجيل الدخول",
@@ -110,6 +144,10 @@ const arabicTranslations = Object.freeze({
   "Continue": "متابعة",
   "Cancel": "إلغاء",
   "Confirm": "تأكيد",
+  "Notice": "إشعار",
+  "Success": "تم بنجاح",
+  "Warning": "تحذير",
+  "Error": "خطأ",
   "Create": "إنشاء",
   "Clear": "مسح",
   "Reset": "إعادة ضبط",
@@ -124,16 +162,17 @@ const arabicTranslations = Object.freeze({
   "Action": "الإجراء",
   "Loading": "جارٍ التحميل",
   "Loading...": "جارٍ التحميل...",
+  "Loading details...": "جارٍ تحميل التفاصيل...",
   "No results": "لا توجد نتائج",
   "Name": "الاسم",
   "Business name": "اسم النشاط",
   "Contact person": "مسؤول التواصل",
   "Phone": "رقم الهاتف",
+  "Email": "البريد الإلكتروني",
+  "Address": "العنوان",
   "Business type": "نوع النشاط",
   "Merchant": "تاجر",
   "Merchants": "التجار",
-  "Representative": "مندوب",
-  "Representatives": "المندوبون",
   "Add merchant": "إضافة تاجر",
   "Create merchant": "إضافة تاجر",
   "Update merchant": "تعديل بيانات التاجر",
@@ -187,12 +226,10 @@ const arabicTranslations = Object.freeze({
   "Batch expiry": "تاريخ انتهاء الدفعة",
   "Resolved SKU": "رمز الصنف المحدد",
   "Select merchant": "اختر التاجر",
-  "Select representative": "اختر المندوب",
   "Inventory receipt": "استلام مخزون",
   "Warehouse transfer": "تحويل مخزون",
   "Wholesale sale": "بيع جملة",
   "Retail/online sale": "بيع قطاعي / أونلاين",
-  "Representative reserve": "حجز للمندوب",
   "Return": "مرتجع",
   "Change": "استبدال",
   "Write-off": "إعدام / تسوية مخزون",
@@ -204,12 +241,85 @@ const arabicTranslations = Object.freeze({
   "Confirmed": "مؤكد",
   "Cancelled": "ملغي",
   "PendingAdminReview": "بانتظار مراجعة الإدارة",
+  "Payment assigned": "تم إسناد الدفع",
+  "Payment log initialized": "تم تهيئة سجل الدفع",
+  "Payment reassigned": "تم إعادة إسناد الدفع",
+  "Collection reassigned": "تم إعادة إسناد التحصيل",
+  "Payment sub-log submitted": "تم إرسال سجل الدفع الفرعي للاعتماد",
+  "Payment sub-log approved": "تم اعتماد سجل الدفع الفرعي",
+  "Payment sub-log rejected": "تم رفض سجل الدفع الفرعي",
+  "Cash receipt submitted": "تم إرسال إيصال النقدية للاعتماد",
+  "Financial adjustment requested": "تم طلب التسوية المالية",
+  "Financial adjustment approved": "تم اعتماد التسوية المالية",
+  "Financial adjustment rejected": "تم رفض التسوية المالية",
+  "Cash receipt rejected": "تم رفض إيصال النقدية",
+  "Merchant collection drafted": "تم إعداد تحصيل التاجر كمسودة",
+  "Merchant collection submitted": "تم إرسال تحصيل التاجر للاعتماد",
+  "Merchant collection approved": "تم اعتماد تحصيل التاجر",
+  "Merchant collection rejected": "تم رفض تحصيل التاجر",
+  "Collection drafted": "تم إعداد التحصيل كمسودة",
+  "Collection approved": "تم اعتماد التحصيل",
+  "Collection rejected": "تم رفض التحصيل",
+  "Refund paid": "تم دفع الاسترداد",
+  "Reconciliation completed": "اكتملت المطابقة",
   "Rejected": "مرفوض",
   "Approved": "معتمد",
   "Cash hand to hand": "نقدي مباشر",
   "Cash transaction": "تحويل أو إيداع نقدي",
+  "Merchant account": "حساب التاجر",
+  "MerchantAccount": "حساب التاجر",
+  "Account details": "تفاصيل الحساب",
+  "Account health": "حالة الحساب",
+  "Account notes": "ملاحظات الحساب",
+  "Excellent": "ممتاز",
+  "Good": "جيد",
+  "Fair": "متوسط",
+  "Weak": "ضعيف",
+  "Critical": "حرج",
+  "Not rated": "غير مصنف",
+  "Provisional grade": "تصنيف مبدئي",
+  "Added": "مضاف",
+  "Balance": "الرصيد",
+  "Choose a merchant to see their account.": "اختر تاجرًا لعرض حسابه.",
+  "Every confirmed amount added to or removed from this merchant account.": "كل مبلغ مؤكد أضيف إلى حساب التاجر أو خُصم منه.",
+  "How": "الطريقة",
+  "Latest activity": "آخر حركة",
+  "Money received": "المبلغ المستلم",
+  "Money refunded": "المبلغ المسترد",
+  "Money waiting for approval": "مبلغ بانتظار الاعتماد",
+  "No confirmed account activity yet.": "لا توجد حركة مؤكدة على الحساب حتى الآن.",
+  "Recent activity": "آخر الحركات",
+  "Reduced": "مخفض",
+  "Refund waiting to be paid": "استرداد بانتظار الدفع",
+  "Returns and reductions": "المرتجعات والتخفيضات",
+  "See what the merchant owes, what we owe back, and the latest account activity.": "اعرف ما يستحق على التاجر وما يستحق له وآخر حركة على الحساب.",
+  "Show a merchant account to view activity.": "اعرض حساب تاجر لعرض الحركات.",
+  "Show account": "عرض الحساب",
+  "Search merchants": "ابحث عن تاجر",
+  "Waiting for accountant review": "بانتظار مراجعة المحاسب",
+  "Waiting for Admin approval": "بانتظار اعتماد الإدارة",
+  "Waiting for admin review": "بانتظار مراجعة المدير",
+  "Show an account to view money waiting for approval.": "اعرض حسابًا لرؤية المبالغ بانتظار الاعتماد.",
+  "What happened": "ما الذي حدث",
   "Installment": "تقسيط",
   "Payments and remaining": "المدفوعات والمتبقي",
+  "Merchant account payments": "مدفوعات حسابات التجار",
+  "Other payments": "مدفوعات أخرى",
+  "Account collections and merchant operation balances.": "تحصيلات الحساب وأرصدة عمليات التجار.",
+  "Direct retail collections without a registered merchant account.": "تحصيلات البيع المباشر دون حساب تاجر مسجل.",
+  "Direct operation payments, receipts, and review stages.": "مدفوعات العمليات المباشرة والإيصالات ومراحل المراجعة.",
+  "Other payment history": "سجل المدفوعات الأخرى",
+  "Approval inbox": "صندوق اعتماد التحصيلات",
+  "Assigned collection work from merchant accounts and direct operations.": "أعمال التحصيل المسندة من حسابات التجار والعمليات المباشرة.",
+  "Refresh inbox": "تحديث صندوق الاعتماد",
+  "Loading approval work": "جارٍ تحميل أعمال الاعتماد",
+  "Source": "المصدر",
+  "Opening balance": "الرصيد الافتتاحي",
+  "Closing balance": "الرصيد الختامي",
+  "Period amount due": "المبلغ المستحق للفترة",
+  "Period merchant credit": "الرصيد الدائن للتاجر للفترة",
+  "Merchant account payments are kept with the merchant statement.": "مدفوعات حساب التاجر تظهر داخل كشف حساب التاجر.",
+  "Other payments stay linked to their operation and receipt.": "المدفوعات الأخرى تظل مرتبطة بالعملية والإيصال.",
   "Amount": "المبلغ",
   "Assign": "إسناد",
   "Approve": "اعتماد",
@@ -218,13 +328,44 @@ const arabicTranslations = Object.freeze({
   "Reports and exports": "التقارير والتصدير",
   "Download": "تنزيل",
   "Export log": "سجل التصدير",
-  "Stock": "المخزون",
+  "Analytical reports": "التقارير التحليلية",
+  "Assigned by server": "يحدده الخادم",
+  "Bilingual": "ثنائي اللغة",
+  "Arabic + English": "العربية + الإنجليزية",
+  "Current authorized scope": "النطاق المصرح الحالي",
+  "Document language": "لغة المستند",
+  "Export docket": "بيان التصدير",
+  "EXPORT DOCKET": "بيان التصدير",
+  "export formats": "صيغ التصدير",
+  "Filename": "اسم الملف",
+  "Format": "الصيغة",
+  "From date": "من تاريخ",
+  "Inventory posted": "تم ترحيل المخزون",
+  "Language": "اللغة",
+  "Live previews with catalog-approved exports.": "معاينات مباشرة مع صيغ تصدير معتمدة من الدليل.",
+  "No export selected": "لم يتم اختيار تصدير",
+  "Official documents": "المستندات الرسمية",
+  "OFFICIAL REPORT REGISTER": "سجل التقارير الرسمي",
+  "One controlled workspace for analytical reports and official business documents.": "مساحة عمل موحدة للتقارير التحليلية ومستندات الأعمال الرسمية.",
+  "Operation type": "نوع العملية",
+  "PDF · XLSX · CSV": "PDF · XLSX · CSV",
+  "Ready for export.": "جاهز للتصدير.",
+  "Language updated. Ready for export.": "تم تحديث اللغة. جاهز للتصدير.",
+  "Preparing the authorized export…": "جارٍ تجهيز التصدير المصرح…",
+  "Export completed and downloaded.": "اكتمل التصدير وتم تنزيله.",
+  "Rendering the official document…": "جارٍ إعداد المستند الرسمي…",
+  "Official document downloaded.": "تم تنزيل المستند الرسمي.",
+  "Refresh register": "تحديث السجل",
+  "Report filters": "مرشحات التقرير",
+  "Retail sale": "بيع قطاعي",
+  "Search a business record, then export its controlled document.": "ابحث عن سجل أعمال ثم صدّر مستنده المعتمد.",
+  "Supply status": "حالة التوريد",
+  "To date": "إلى تاريخ",
   "Payment": "المدفوعات",
   "Merchant remaining": "المتبقي على التجار",
   "Stocktake sessions": "جلسات الجرد",
   "No users found.": "لم يتم العثور على مستخدمين.",
   "No merchants yet.": "لا يوجد تجار بعد.",
-  "No representatives yet.": "لا يوجد مندوبون بعد.",
   "Show completed/received/cancelled history": "إظهار سجل العمليات المكتملة والمستلمة والملغاة",
   "Username": "اسم المستخدم",
   "Password": "كلمة المرور",
@@ -342,7 +483,6 @@ const arabicTranslations = Object.freeze({
   "Open navigation": "فتح التنقل",
   "Close navigation": "إغلاق التنقل",
   "Open work": "عمل مفتوح",
-  "Open confirmations": "تأكيدات مفتوحة",
   "Stock attention": "مخزون يحتاج متابعة",
   "Unread alerts": "تنبيهات غير مقروءة",
   "Operator command center": "مركز قيادة التشغيل",
@@ -408,6 +548,7 @@ const arabicTranslations = Object.freeze({
   "Products": "المنتجات",
   "Brand": "العلامة التجارية",
   "Category": "التصنيف",
+  "Toggle": "توسيع أو طي",
   "Pack": "العبوة",
   "Writable": "قابل للتعديل",
   "Read only": "للقراءة فقط",
@@ -485,6 +626,9 @@ const arabicTranslations = Object.freeze({
   "Loading expired batches": "جارٍ تحميل الدفعات منتهية الصلاحية",
   "Expiry date": "تاريخ الانتهاء",
   "Loading batches": "جارٍ تحميل دفعات المخزون",
+  "Loading batches...": "جارٍ تحميل دفعات المخزون...",
+  "Failed to load batches": "تعذر تحميل دفعات المخزون",
+  "Create new batch": "إنشاء دفعة جديدة",
   "Created": "تاريخ الإنشاء",
   "Loading transactions": "جارٍ تحميل حركات المخزون",
   "No locations": "لا توجد مواقع",
@@ -495,7 +639,7 @@ const arabicTranslations = Object.freeze({
   "No batches yet.": "لا توجد دفعات مخزون حتى الآن.",
   "No expired batches.": "لا توجد دفعات منتهية الصلاحية.",
   "No transactions yet.": "لا توجد حركات مخزون حتى الآن.",
-  "Healthy": "المخزون مناسب",
+  "Healthy": "سليم",
   "Inactive SKU": "رمز صنف غير نشط",
   "pieces not set": "عدد القطع غير محدد",
   "No expiry": "بدون تاريخ انتهاء",
@@ -522,7 +666,6 @@ const arabicTranslations = Object.freeze({
   "Transaction type": "نوع الحركة",
   "Reference": "المرجع",
   "Occurred at": "وقت الحركة",
-  "Merchant and representative records": "بيانات التجار والمندوبين",
   "Maintain commercial relationships, operational notes, and merchant context used across sales, returns, payments, and reporting.": "إدارة العلاقات التجارية والملاحظات التشغيلية وبيانات التجار المستخدمة في المبيعات والمرتجعات والمدفوعات والتقارير.",
   "Profiles, commercial contacts, remaining context, and operational history.": "الملفات التجارية وبيانات التواصل والمتبقي والسجل التشغيلي.",
   "Pharmacy": "صيدلية",
@@ -533,25 +676,52 @@ const arabicTranslations = Object.freeze({
   "Contact": "جهة الاتصال",
   "External": "خارجي",
   "Internal": "داخلي",
-  "Create representative": "إضافة مندوب",
   "Business name and contact person are required.": "اسم النشاط ومسؤول التواصل حقول مطلوبة.",
   "Merchant updated.": "تم تحديث بيانات التاجر.",
   "Merchant created.": "تم إنشاء التاجر.",
-  "Representative name is required.": "اسم المندوب مطلوب.",
-  "Representative updated.": "تم تحديث بيانات المندوب.",
-  "Representative created.": "تم إنشاء المندوب.",
-  "Representative not found.": "لم يتم العثور على المندوب.",
   "Merchant deactivated.": "تم إيقاف التاجر.",
   "Merchant reactivated.": "تمت إعادة تفعيل التاجر.",
-  "Representative deactivated.": "تم إيقاف المندوب.",
-  "Representative reactivated.": "تمت إعادة تفعيل المندوب.",
   "Add Merchant Note": "إضافة ملاحظة للتاجر",
   "Write a short note for this merchant profile.": "اكتب ملاحظة قصيرة في ملف التاجر.",
   "Note added.": "تمت إضافة الملاحظة.",
   "Sold packs": "العبوات المباعة",
   "Sold pieces": "القطع المباعة",
-  "Remaining": "المتبقي",
   "Adjusted amount": "المبلغ بعد التسويات",
+  "Amount due": "المبلغ المستحق",
+  "Classification": "التصنيف",
+  "Collection confirmed and posted to the merchant account.": "تم اعتماد التحصيل وترحيله إلى حساب التاجر.",
+  "Confirmed collections": "التحصيلات المؤكدة",
+  "Credit": "دائن",
+  "Credit available": "الرصيد الدائن المتاح",
+  "Debit": "مدين",
+  "Electronic payments require a transaction reference.": "المدفوعات الإلكترونية تتطلب مرجع معاملة.",
+  "Flags": "التنبيهات",
+  "Load a merchant account statement.": "حمّل كشف حساب التاجر.",
+  "Load statement": "تحميل الكشف",
+  "Merchant account statement": "كشف حساب التاجر",
+  "No posted account movements.": "لا توجد حركات مرحلة على الحساب.",
+  "One running account for sales, returns, exchanges, collections, adjustments, and refunds.": "حساب جارٍ موحد للمبيعات والمرتجعات والاستبدالات والتحصيلات والتسويات والاستردادات.",
+  "Operation / payment": "العملية / المدفوعة",
+  "Pending collections": "تحصيلات معلقة",
+  "Refund payouts": "مدفوعات الاسترداد",
+  "Reserved refund": "استرداد محجوز",
+  "Returns / reductions": "المرتجعات / التخفيضات",
+  "Total sales": "إجمالي المبيعات",
+  "Net collected": "صافي المحصل",
+  "Remaining owed": "المتبقي المستحق",
+  "Refunds paid": "المبالغ المستردة المدفوعة",
+  "Refunds approved / due": "استردادات معتمدة / مستحقة الدفع",
+  "Refunds applied to orders": "استردادات مطبقة على الطلبات",
+  "Accepted return value": "قيمة المرتجعات المقبولة",
+  "Accepted return value applied": "قيمة المرتجعات المطبقة",
+  "Approved additional charges": "الرسوم الإضافية المعتمدة",
+  "Approved amount reductions": "التخفيضات المعتمدة",
+  "Orders and mini-invoices": "الطلبات والفواتير المصغرة",
+  "Sale total": "إجمالي البيع",
+  "Collected": "المحصل",
+  "Rows": "الصفوف",
+  "Running balance": "الرصيد الجاري",
+  "Select a merchant and payment method.": "اختر تاجرًا وطريقة دفع.",
   "Remaining to collect": "المتبقي للتحصيل",
   "Refund due": "استرداد مستحق",
   "Pending collection": "تحصيل قيد الاعتماد",
@@ -568,11 +738,7 @@ const arabicTranslations = Object.freeze({
   "No confirmed merchant sales or returns yet.": "لا توجد مبيعات أو مرتجعات مؤكدة لهذا التاجر حتى الآن.",
   "OK": "سليم",
   "Select a merchant": "اختر تاجرًا",
-  "Add representative": "إضافة مندوب",
-  "Update representative": "تحديث بيانات المندوب",
-  "Representative type": "نوع المندوب",
   "Merchant detail": "تفاصيل التاجر",
-  "Representative detail": "تفاصيل المندوب",
   "Commercial profile": "الملف التجاري",
   "Start a new operation draft.": "ابدأ مسودة عملية جديدة.",
   "This role can inspect operations but cannot create or revise drafts.": "يمكن لهذا الدور عرض العمليات فقط، ولا يمكنه إنشاء المسودات أو تعديلها.",
@@ -619,7 +785,7 @@ const arabicTranslations = Object.freeze({
   "Sale line unit price must be greater than zero unless the line is marked as bonus.": "يجب أن يكون سعر الوحدة أكبر من صفر، إلا إذا كان البند مجانيًا.",
   "Select a batch / expiry for every stock-consuming line.": "اختر دفعة وتاريخ صلاحية لكل بند يخصم من المخزون.",
   "Retail installment sales require a registered merchant.": "المبيعات القطاعي بالتقسيط تتطلب اختيار تاجر مسجل.",
-  "Reserve requires a representative.": "الحجز للمندوب يتطلب اختيار مندوب.",
+  "Reserve is temporarily unavailable.": "الحجز غير متاح مؤقتًا.",
   "Return requires a merchant.": "المرتجع يتطلب اختيار تاجر.",
   "Return lines must include batch expiry.": "يجب إدخال تاريخ انتهاء الدفعة في بنود المرتجع.",
   "Change requires a merchant.": "الاستبدال يتطلب اختيار تاجر.",
@@ -658,6 +824,8 @@ const arabicTranslations = Object.freeze({
   "WriteOff": "إعدام / تسوية مخزون",
   "CashHandToHand": "نقدي مباشر",
   "CashTransaction": "تحويل أو إيداع نقدي",
+  "BankTransfer": "تحويل بنكي",
+  "Wallet": "محفظة إلكترونية",
   "Remove": "حذف",
   "Draft edit mode": "وضع تعديل المسودة",
   "Revision mode": "وضع مراجعة العملية",
@@ -670,11 +838,45 @@ const arabicTranslations = Object.freeze({
   "Review every payment-related record created across the system, including opening logs, installment actions, cash records, approvals, refunds, and financial adjustments.": "راجع جميع سجلات المدفوعات في النظام، بما يشمل فتح السجلات والأقساط والحركات النقدية والاعتمادات والاستردادات والتسويات المالية.",
   "Loading history": "جارٍ تحميل السجل",
   "Draft payment entry": "إضافة حركة دفع كمسودة",
+  "Record collection": "تسجيل تحصيل",
+  "Collect toward": "التحصيل لصالح",
+  "Operation or payment reference": "مرجع العملية أو المدفوعة",
+  "Amount received": "المبلغ المستلم",
+  "How was it received?": "كيف تم استلامه؟",
+  "Choose method...": "اختر الطريقة...",
+  "Transaction reference": "مرجع المعاملة",
+  "Required for electronic payments": "مطلوب للمدفوعات الإلكترونية",
+  "Send for approval": "إرسال للاعتماد",
+  "Saving keeps the entry editable. Sending reserves the amount and places it in the Admin review queue. The balance changes only after approval.": "يحافظ الحفظ على إمكانية تعديل الحركة. الإرسال يحجز المبلغ ويضعه في قائمة مراجعة الإدارة، ولا يتغير الرصيد إلا بعد الاعتماد.",
+  "Admin approval required": "يتطلب اعتماد الإدارة",
+  "Use the same form for merchant accounts, cash sales, electronic payments, and installments.": "استخدم النموذج نفسه لحسابات التجار والمبيعات النقدية والمدفوعات الإلكترونية والتقسيط.",
+  "Every adjustment is linked to its source operation. Cash refunds are approved first, then recorded when cash is actually paid.": "كل تسوية مرتبطة بعملية مصدرها. تتم الموافقة على الاسترداد النقدي أولًا ثم تسجيله عند دفع النقد فعليًا.",
+  "Enter an operation first": "أدخل عملية أولًا",
+  "Request adjustment": "طلب تسوية",
+  "Payments audit": "سجل تدقيق المدفوعات",
+  "Refresh audit": "تحديث سجل التدقيق",
+  "Append-only financial workflow events, including assignment, submission, approval, rejection, refunds, and reconciliation.": "أحداث سير العمل المالي غير القابلة للتعديل، وتشمل الإسناد والإرسال والاعتماد والرفض والاسترداد والمطابقة.",
+  "All collections are assigned and submitted for approval before posting.": "تُسند جميع التحصيلات وتُرسل للاعتماد قبل ترحيلها.",
+  "Record confirmed cash": "تسجيل نقدية معتمدة",
+  "Merchant-account collections are assigned, then require Admin or ERPAdmin approval before posting.": "يتم إسناد تحصيلات حساب التاجر ثم تتطلب اعتماد المدير أو مدير ERP قبل ترحيلها.",
+  "Submit collection for approval": "إرسال التحصيل للاعتماد",
+  "Collection submitted for Admin approval. It is not posted yet.": "تم إرسال التحصيل لاعتماد الإدارة ولم يُرحّل بعد.",
+  "Collection approved and posted.": "تم اعتماد التحصيل وترحيله.",
+  "Collection rejected.": "تم رفض التحصيل.",
+  "Rejection reason": "سبب الرفض",
+  "Reject collection": "رفض التحصيل",
+  "Record the reason. Rejected collections remain visible in the account work history.": "سجّل سبب الرفض. ستظل التحصيلات المرفوضة ظاهرة في سجل أعمال الحساب.",
+  "No account collections awaiting review.": "لا توجد تحصيلات حساب بانتظار المراجعة.",
+  "No other payment confirmations are waiting.": "لا توجد تأكيدات مدفوعات أخرى بانتظار المراجعة.",
+  "Additional charge": "رسوم إضافية",
+  "No Payments audit events yet.": "لا توجد أحداث تدقيق للمدفوعات بعد.",
+  "Load a merchant to view collection work.": "حمّل التاجر لعرض أعمال التحصيل.",
+  "Load the audit history.": "حمّل سجل التدقيق.",
+  "Submitted": "تاريخ الإرسال",
   "Cash / refund record": "حركة نقدية / استرداد",
   "Use source-linked additional charges, remaining reductions, and separately paid cash refunds.": "استخدم الرسوم الإضافية المرتبطة بالمصدر وتخفيضات المتبقي والاستردادات النقدية التي تُصرف بشكل منفصل.",
   "Operation ID": "معرّف العملية",
-  "Merchant remaining": "المتبقي على التاجر",
-  "Use": "الاستخدام",
+  "Use": "استخدام",
   "By": "بواسطة",
   "Approve cash": "اعتماد النقدية",
   "Initialized by": "بدأه",
@@ -687,6 +889,7 @@ const arabicTranslations = Object.freeze({
   "No sub-logs yet.": "لا توجد سجلات فرعية حتى الآن.",
   "Cash record": "السجل النقدي",
   "Adjustment": "التسوية",
+  "Choose the merchant order affected by this adjustment.": "اختر طلب التاجر المتأثر بهذه التسوية.",
   "Payment sub-log drafted.": "تم حفظ حركة الدفع كمسودة.",
   "Payment approved.": "تم اعتماد الدفع.",
   "Cash receipt approved.": "تم اعتماد التحصيل النقدي.",
@@ -719,8 +922,40 @@ const arabicTranslations = Object.freeze({
   "Download operational, inventory, payment, and statement outputs in CSV and PDF formats.": "نزّل تقارير العمليات والمخزون والمدفوعات وكشوف الحساب بصيغ CSV وPDF.",
   "CSV": "CSV",
   "Sales": "المبيعات",
-  "Net collected": "صافي التحصيل",
+  "The confirmed amount still to collect.": "المبلغ المؤكد المتبقي تحصيله.",
+  "Available for a later sale or an approved refund.": "متاح لعملية بيع لاحقة أو لاسترداد معتمد.",
+  "Money received minus completed refunds.": "الأموال المحصلة بعد خصم الاستردادات المصروفة.",
+  "Collection work": "متابعة التحصيلات",
+  "Accepted returns credited to the account.": "المرتجعات المقبولة المضافة إلى الحساب.",
+  "Additional charges": "الرسوم الإضافية",
+  "Amount reductions": "تخفيضات المبلغ",
+  "Approved charges.": "الرسوم المعتمدة.",
+  "Approved reductions.": "التخفيضات المعتمدة.",
+  "Collection sent for Admin approval. The balance has not changed yet.": "تم إرسال التحصيل لاعتماد الإدارة. لم يتغير الرصيد بعد.",
+  "Collection submitted. Some payment totals will refresh on the next reload.": "تم إرسال التحصيل. ستتحدث بعض إجماليات المدفوعات عند إعادة التحميل.",
+  "Completed merchant sales.": "مبيعات التاجر المكتملة.",
+  "Confirmed collections minus completed cash refunds.": "التحصيلات المؤكدة مطروحًا منها الاستردادات النقدية المصروفة.",
+  "Each wholesale order, its collections, and its remaining amount.": "كل طلب جملة وتحصيلاته ومبلغه المتبقي.",
+  "Items": "الأصناف",
+  "Exchange": "استبدال",
+  "Merchant records": "سجلات التجار",
+  "Operation, merchant, buyer, SKU, or payment reference": "العملية أو التاجر أو المشتري أو الصنف أو مرجع الدفع",
+  "Paid refunds; approved/due amounts are in account details.": "الاستردادات المدفوعة؛ تظهر المبالغ المعتمدة والمستحقة في تفاصيل الحساب.",
+  "Refunds": "الاستردادات",
+  "Returns": "المرتجعات",
+  "Charges": "الرسوم",
+  "Reductions": "التخفيضات",
+  "Refunds applied as reductions": "الاستردادات المطبقة كتخفيضات",
+  "Show an account to view orders.": "اعرض حسابًا لمراجعة الطلبات.",
+  "Saved drafts and amounts waiting for Admin approval.": "المسودات المحفوظة والمبالغ التي تنتظر اعتماد الإدارة.",
+  "Show an account to view collection work.": "اعرض حساب التاجر لمراجعة التحصيلات.",
+  "Collection sent for Admin approval.": "تم إرسال التحصيل لاعتماد الإدارة.",
+  "Reject cash receipt": "رفض التحصيل النقدي",
+  "Record the reason. The rejected receipt remains in the payment history.": "سجّل سبب الرفض. سيظل التحصيل المرفوض ظاهرًا في سجل المدفوعات.",
+  "Cash receipt rejected.": "تم رفض التحصيل النقدي.",
+  "Status / reason": "الحالة / السبب",
   "Returns / adjustments": "المرتجعات / التسويات",
+  "Account adjustments": "تسويات الحساب",
   "Loading operations": "جارٍ تحميل العمليات",
   "Cash receive receipt": "إيصال تحصيل نقدي",
   "Loading cash payments": "جارٍ تحميل المدفوعات النقدية",
@@ -821,7 +1056,6 @@ const arabicTranslations = Object.freeze({
   "Physical quantity": "الكمية الفعلية",
   "Receiving location": "موقع الاستلام",
   "Approaching expiry": "يقترب من الانتهاء",
-  "Read only": "للقراءة فقط",
   "Daily scan active": "الفحص اليومي مفعّل",
   "Sold merchant batches inside the configured expiry window, ordered by earliest expiry.": "دفعات مباعة للتجار داخل نافذة قرب الانتهاء المحددة، مرتبة حسب الأقرب انتهاءً.",
   "Global expiry window (months)": "نافذة قرب الانتهاء العامة (بالأشهر)",
@@ -918,56 +1152,18 @@ const arabicTranslations = Object.freeze({
   "One row per payment with stages, sub-logs, cash records, refunds, and adjustments inside expanded detail.": "صف واحد لكل مدفوعة مع المراحل والسجلات الفرعية والحركات النقدية والاستردادات والتسويات داخل التفاصيل الموسعة.",
   "Stages": "المراحل",
   "No payment confirmations are waiting.": "لا توجد تأكيدات دفع في الانتظار.",
-  "Use": "استخدام",
-  "By": "بواسطة",
-  "Healthy": "سليم",
-  "OK": "سليم",
-  "Inactive SKU": "رمز صنف غير نشط",
-  "No expiry": "بدون تاريخ انتهاء",
-  "Try another color, power, package, or source location.": "جرّب لونًا أو درجة أو عبوة أو موقع صرف آخر.",
-  "SKUs match these attributes. Refine package/size.": "توجد رموز أصناف مطابقة لهذه الخصائص. حدّد العبوة أو المقاس بدقة.",
   "Actual total I have": "الإجمالي الفعلي لدي",
   "Batch expiry is required for products with batch expiry tracking.": "تاريخ انتهاء الدفعة مطلوب للمنتجات التي تعتمد تتبع انتهاء الدفعات.",
-  "External": "خارجي",
-  "Cash receive receipt": "إيصال تحصيل نقدي",
-  "Download cash receipt": "تنزيل إيصال التحصيل النقدي",
-  "Loading operations": "جارٍ تحميل العمليات",
-  "Loading payments": "جارٍ تحميل المدفوعات",
-  "Loading cash payments": "جارٍ تحميل التحصيلات النقدية",
-  "Loading merchants": "جارٍ تحميل التجار",
-  "Loading replenishment": "جارٍ تحميل إعادة التوريد",
-  "Loading expired batches": "جارٍ تحميل الدفعات المنتهية",
-  "Loading batches": "جارٍ تحميل الدفعات",
-  "Loading transactions": "جارٍ تحميل الحركات",
-  "No products found": "لم يتم العثور على منتجات",
-  "No stock balances yet.": "لا توجد أرصدة مخزون بعد.",
-  "No transactions yet.": "لا توجد حركات بعد.",
-  "No batches yet.": "لا توجد دفعات بعد.",
-  "No expired batches.": "لا توجد دفعات منتهية.",
-  "No target-stock rows yet.": "لا توجد مستهدفات مخزون بعد.",
-  "No stocktake sessions yet.": "لا توجد جلسات جرد بعد.",
-  "Select product attributes to resolve SKU.": "اختر خصائص المنتج لتحديد رمز الصنف.",
-  "Select product, power, and color to resolve SKU.": "اختر المنتج والدرجة واللون لتحديد رمز الصنف.",
-  "No locations": "لا توجد مواقع",
-  "Stock": "المخزون",
   "Imported shipments, landed costs, and receipts.": "الشحنات المستوردة، تكلفة الوصول، وإيصالات المخزون.",
   "Imported shipments": "الشحنات المستوردة",
   "Shipments": "الشحنات",
   "Shipment": "الشحنة",
   "Draft value": "قيمة المسودات",
   "Ready to confirm": "جاهزة للتأكيد",
-  "Access": "الصلاحية",
-  "Read only": "قراءة فقط",
   "Register imported shipments, allocate customs and import costs, then post controlled inventory receipts.": "سجل الشحنات المستوردة، وزع الجمارك ومصاريف الاستيراد، ثم أنشئ إيصالات مخزون مضبوطة.",
   "Search by shipment, supplier, or invoice.": "ابحث برقم الشحنة أو المورد أو الفاتورة.",
   "Search shipments": "بحث في الشحنات",
   "All statuses": "كل الحالات",
-  "Draft": "مسودة",
-  "Received": "تم الاستلام",
-  "Cancelled": "ملغاة",
-  "Supplier": "المورد",
-  "Status": "الحالة",
-  "Total": "الإجمالي",
   "No invoice": "بدون فاتورة",
   "costs": "تكاليف",
   "Shipment detail": "تفاصيل الشحنة",
@@ -981,10 +1177,8 @@ const arabicTranslations = Object.freeze({
   "Invoice number": "رقم الفاتورة",
   "Shipment date": "تاريخ الشحنة",
   "Destination warehouse": "مخزن الوصول",
-  "Notes": "ملاحظات",
   "SKU lines": "بنود SKU",
   "Prices can stay blank while drafting and must be completed before confirmation.": "يمكن ترك السعر فارغا في المسودة، ويجب إكماله قبل التأكيد.",
-  "Add line": "إضافة بند",
   "Import cost breakdown": "تفصيل تكاليف الاستيراد",
   "Add cost": "إضافة تكلفة",
   "Product subtotal": "إجمالي المنتجات",
@@ -994,47 +1188,35 @@ const arabicTranslations = Object.freeze({
   "Incomplete prices": "أسعار ناقصة",
   "Find SKU": "بحث SKU",
   "Product, color, power, SKU code": "المنتج، اللون، القوة، كود SKU",
+  "Product, color, power, or SKU code": "المنتج أو اللون أو القوة أو كود SKU",
   "Search and select a SKU.": "ابحث واختر SKU.",
-  "Quantity": "الكمية",
-  "Unit price": "سعر الوحدة",
   "Draft blank": "فارغ في المسودة",
   "Required before confirmation.": "مطلوب قبل التأكيد.",
-  "Lot": "التشغيلة",
-  "Expiry": "الصلاحية",
   "Line notes": "ملاحظات البند",
-  "Remove line": "حذف البند",
   "Price must be greater than zero.": "السعر يجب أن يكون أكبر من صفر.",
   "Selected SKU": "SKU محدد",
-  "Unknown SKU": "SKU غير معروف",
   "Cost type": "نوع التكلفة",
   "Customs": "جمارك",
   "Freight": "شحن",
   "Clearance": "تخليص",
   "Handling": "مناولة",
   "Insurance": "تأمين",
-  "Other": "أخرى",
   "Description": "الوصف",
-  "Amount": "المبلغ",
   "Remove cost": "حذف التكلفة",
   "Loading shipments...": "جار تحميل الشحنات...",
   "No supply shipments match the current filters.": "لا توجد شحنات مطابقة للفلاتر الحالية.",
-  "Failed": "فشل التحميل",
   "Loading shipment...": "جار تحميل الشحنة...",
   "Confirm receipt": "تأكيد الاستلام",
   "Print receipt": "طباعة الإيصال",
-  "Products": "المنتجات",
   "Readiness": "جاهزية التأكيد",
   "Inventory receipt operation": "عملية إيصال المخزون",
   "Lines": "البنود",
-  "Qty": "الكمية",
   "Unit": "الوحدة",
   "Line": "البند",
   "Allocated": "الموزع",
   "Landed unit": "تكلفة الوحدة النهائية",
-  "Batch": "التشغيلة",
   "Blank": "فارغ",
   "Cost breakdown": "تفصيل التكاليف",
-  "Type": "النوع",
   "No costs.": "لا توجد تكاليف.",
   "History": "السجل",
   "Time": "الوقت",
@@ -1054,7 +1236,6 @@ const arabicTranslations = Object.freeze({
   "Every SKU price must be greater than zero before confirmation.": "كل أسعار SKU يجب أن تكون أكبر من صفر قبل التأكيد.",
   "Every SKU line needs a unit price before confirmation.": "كل بند SKU يحتاج سعر وحدة قبل التأكيد.",
   "Ready to confirm.": "جاهزة للتأكيد.",
-  "pieces not set": "عدد القطع غير محدد",
   "Account": "الحساب",
   "Activity": "النشاط",
   "Add warehouse": "إضافة مخزن",
@@ -1116,6 +1297,9 @@ const arabicTranslations = Object.freeze({
   "Online and retail targets are topped up from MainWarehouse through Draft warehouse transfers awaiting confirmation.": "تُستكمل أرصدة قنوات البيع الإلكتروني والتجزئة من المخزن الرئيسي عبر تحويلات مخزنية مسودة تنتظر التأكيد.",
   "Online intake": "استلام الطلبات الإلكترونية",
   "Only the primary Administrator can add an active warehouse location.": "يمكن للمسؤول الرئيسي فقط إضافة موقع مخزن نشط.",
+  "Delete account": "حذف الحساب",
+  "Confirm account status": "تأكيد حالة الحساب",
+  "Transfer primary Administrator": "نقل المسؤول الرئيسي",
   "Open record": "فتح السجل",
   "Open related record": "فتح السجل المرتبط",
   "Order": "الطلب",
@@ -1139,6 +1323,7 @@ const arabicTranslations = Object.freeze({
   "Refresh intake": "تحديث قائمة الاستلام",
   "Resolution": "التسوية",
   "Resolution note": "ملاحظة التسوية",
+  "Resolve Shopify event": "تسوية حدث Shopify",
   "Resolve": "تسوية",
   "Resolved": "تمت التسوية",
   "Retry": "إعادة المحاولة",
@@ -1203,7 +1388,6 @@ const arabicTranslations = Object.freeze({
   "No variant attributes": "لا توجد خصائص للمتغير",
   "RequiresAttention": "يحتاج مراجعة",
   "Handle open confirmations first, then use the ledger and tools for audit, entries, cash records, adjustments, and merchant remaining.": "عالج التأكيدات المفتوحة أولًا، ثم استخدم دفتر الحسابات والأدوات للتدقيق والقيود والسجلات النقدية والتسويات والمتبقي على التجار.",
-  "Total sales": "إجمالي المبيعات",
   "Was:": "كان:",
   "Now:": "أصبح:",
   "Saved:": "محفوظ:",
@@ -1215,11 +1399,22 @@ const arabicTranslations = Object.freeze({
   "Sku Id": "معرّف رمز الصنف",
   "User Id": "معرّف المستخدم",
   "Merchant Id": "معرّف التاجر",
-  "Representative Id": "معرّف المندوب",
   "Source Location Id": "معرّف موقع المصدر",
   "Destination Location Id": "معرّف موقع الوجهة",
-  "Is Active": "نشط"
+  "Is Active": "نشط",
+  "Related record": "السجل المرتبط",
+  "Audit record": "سجل التدقيق",
+  "Inventory batch": "دفعة مخزون",
+  "Payment record": "سجل الدفع",
+  "Stocktake session": "جلسة الجرد",
+  "Supply shipment": "شحنة التوريد",
+  "Employee": "الموظف",
+  "Internal reference hidden": "تم إخفاء المعرّف الداخلي",
+  "Specific employee": "موظف محدد",
+  "Open operation": "فتح العملية"
 });
+
+const localizer = createLocalizer({ messages: arabicTranslations, language: () => currentLanguage });
 
 const translatedTextSources = new WeakMap();
 const translatedAttributeSources = new WeakMap();
@@ -1376,7 +1571,6 @@ function translateEnglishText(value, contextElement = null) {
       "employee account": "حساب الموظف",
       "inventory receipt": "إيصال المخزون",
       "Shopify event": "حدث Shopify",
-      representative: "المندوب",
       notification: "التنبيه",
       stocktake: "الجرد",
       shipment: "الشحنة",
@@ -1404,15 +1598,13 @@ function translateEnglishText(value, contextElement = null) {
     return `${leadingWhitespace}${translatedLabel} (${match[2]}${unreadPart})${trailingWhitespace}`;
   }
 
-  match = text.match(/^(-?\d+(?:\.\d+)?)\s+(products?|users?|modules?|merchants?|representatives?|reps?|unread|active|operations?|visible|shortages?|items?|packs?|pieces?|sessions?|events?|categories?|balances?|batches?|transactions?|recalls?|records?|expired|logged)$/i);
+  match = text.match(/^(-?\d+(?:\.\d+)?)\s+(products?|users?|modules?|merchants?|unread|active|operations?|visible|shortages?|items?|packs?|pieces?|sessions?|events?|categories?|balances?|batches?|transactions?|recalls?|records?|expired|logged)$/i);
   if (match) {
     const labels = {
       product: "منتج", products: "منتج",
       user: "مستخدم", users: "مستخدم",
       module: "وحدة", modules: "وحدة",
       merchant: "تاجر", merchants: "تاجر",
-      representative: "مندوب", representatives: "مندوب",
-      rep: "مندوب", reps: "مندوب",
       unread: "غير مقروء",
       active: "عملية نشطة",
       operation: "عملية", operations: "عملية",
@@ -1459,7 +1651,9 @@ function translateEnglishText(value, contextElement = null) {
 }
 
 function uiText(english) {
-  return currentLanguage === "ar" ? translateEnglishText(english).trim() : english;
+  if (currentLanguage !== "ar") return english;
+  const translated = localizer.text(english);
+  return (translated === english ? translateEnglishText(english) : translated).trim();
 }
 
 function getOriginalText(node) {
@@ -1502,28 +1696,24 @@ function getOriginalAttribute(element, attribute) {
   return original;
 }
 
-function applyLanguage() {
+function applyLanguage(root = document.body) {
   if (applyingLanguage) return;
   applyingLanguage = true;
 
   const isArabic = currentLanguage === "ar";
-  document.documentElement.lang = isArabic ? "ar-EG" : "en";
-  document.documentElement.dir = isArabic ? "rtl" : "ltr";
-  document.body.classList.toggle("lang-ar", isArabic);
-
-  const route = routes[currentPath()];
-  document.title = route
-    ? `Lensee - ${isArabic ? translateEnglishText(route.title).trim() : route.title}`
-    : "Lensee";
-
-  document.querySelectorAll("#language-toggle, #login-language-toggle").forEach((toggle) => {
-    toggle.setAttribute("data-no-translate", "");
-    toggle.textContent = isArabic ? "English" : "العربية";
-    toggle.setAttribute("aria-label", isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic");
-    toggle.title = isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic";
-  });
-
-  const root = document.body;
+  if (root === document.body) {
+    document.documentElement.lang = isArabic ? "ar-EG" : "en";
+    document.documentElement.dir = isArabic ? "rtl" : "ltr";
+    document.body.classList.toggle("lang-ar", isArabic);
+    const route = routes[currentPath()];
+    document.title = route ? `Lensee - ${isArabic ? translateEnglishText(route.title).trim() : route.title}` : "Lensee";
+    document.querySelectorAll("#language-toggle, #login-language-toggle").forEach((toggle) => {
+      toggle.setAttribute("data-no-translate", "");
+      toggle.textContent = isArabic ? "English" : "العربية";
+      toggle.setAttribute("aria-label", isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic");
+      toggle.title = isArabic ? "التبديل إلى الإنجليزية" : "Switch to Arabic";
+    });
+  }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -1544,39 +1734,48 @@ function applyLanguage() {
       if (element.getAttribute(attribute) !== translated) element.setAttribute(attribute, translated);
     }
   });
+  if (root.matches?.("[placeholder], [title], [aria-label]") && !root.closest("[data-no-translate]")) {
+    for (const attribute of ["placeholder", "title", "aria-label"]) {
+      if (!root.hasAttribute(attribute)) continue;
+      const original = getOriginalAttribute(root, attribute);
+      root.setAttribute(attribute, isArabic ? translateEnglishText(original) : original);
+    }
+  }
+
+  localizer.bind(root);
 
   applyingLanguage = false;
 }
 
-function queueLanguageApply() {
-  if (applyingLanguage || currentLanguage !== "ar") return;
-  window.clearTimeout(languageApplyTimer);
-  languageApplyTimer = window.setTimeout(() => {
-    if (!applyingLanguage && currentLanguage === "ar") {
-      applyLanguage();
-    }
-  }, 0);
-}
+let lastPresentationApplyAt = 0;
+const presentationApplyMinIntervalMs = 250;
 
-function startLanguageObserver() {
-  if (languageObserver || !document.body) return;
-  languageObserver = new MutationObserver((mutations) => {
-    if (applyingLanguage || currentLanguage !== "ar") return;
-    const hasTranslatableChange = mutations.some((mutation) => {
-      if (mutation.type === "childList" || mutation.type === "characterData") return true;
-      return mutation.type === "attributes" && ["placeholder", "title", "aria-label"].includes(mutation.attributeName);
+function queuePresentationApply(root = document.getElementById("view")) {
+  if (root instanceof Element) pendingPresentationRoots.add(root);
+  window.clearTimeout(presentationApplyTimer);
+  const elapsed = Date.now() - lastPresentationApplyAt;
+  const delay = Math.max(0, presentationApplyMinIntervalMs - elapsed);
+  presentationApplyTimer = window.setTimeout(() => {
+    lastPresentationApplyAt = Date.now();
+    const roots = [...pendingPresentationRoots].filter((candidate) => ![...pendingPresentationRoots].some((other) => other !== candidate && other.contains(candidate)));
+    pendingPresentationRoots.clear();
+    // Translation only ever changes anything while in Arabic mode — in
+    // English mode every node's "translation" is just its own original
+    // text, so the walk below would touch nothing. Skip the whole
+    // tree-walk in that case; this is the common case and the one that
+    // was costing the most on data-heavy pages.
+    if (currentLanguage !== "ar") return;
+    roots.forEach((candidate) => {
+      if (!candidate.isConnected) return;
+      if (!applyingLanguage) applyLanguage(candidate);
     });
-    if (hasTranslatableChange) {
-      queueLanguageApply();
-    }
-  });
-  languageObserver.observe(document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-    attributes: true,
-    attributeFilter: ["placeholder", "title", "aria-label"]
-  });
+    // sanitizeVisibleIdentifiers is a defensive UUID-leak check, not a
+    // functional requirement — it's still available for manual/QA use via
+    // window.__lenseeSanitizeVisibleIdentifiers(). Running a full text-node
+    // tree walk after every table rebuild on every page was a fixed tax
+    // that scaled with how much data was on screen; it no longer runs
+    // automatically.
+  }, delay);
 }
 
 function setLanguage(language) {
@@ -1588,36 +1787,12 @@ function setLanguage(language) {
   }
 }
 
-const systemValueAliases = Object.freeze({
-  "استلام مخزون": "InventoryReceipt",
-  "تحويل مخزون": "WarehouseTransfer",
-  "بيع جملة": "WholesaleSale",
-  "بيع قطاعي / أونلاين": "RetailSale",
-  "حجز للمندوب": "Reserve",
-  "مرتجع": "Return",
-  "استبدال": "Change",
-  "إعدام / تسوية مخزون": "WriteOff",
-  "نقدي مباشر": "CashHandToHand",
-  "تحويل أو إيداع نقدي": "CashTransaction",
-  "تقسيط": "Installment",
-  "عبوات": "Packs",
-  "قطع": "Pieces",
-  "بديل": "ChangeIn",
-  "راجع": "ChangeOut",
-  "استلام نقدي": "CashReceived",
-  "استرداد نقدي": "CashRefund",
-  "رصيد للتاجر": "MerchantCredit",
-  "تخفيض الرصيد": "BalanceReduction"
-});
-
-function canonicalSystemValue(value) {
-  const text = String(value || "").trim();
-  return systemValueAliases[text] || text;
+function canonicalSystemValue(value, domain, options) {
+  return readCanonicalSystemValue(value, domain, options);
 }
 
-function canonicalSelectValue(id) {
-  const element = document.getElementById(id);
-  return canonicalSystemValue(element?.value || element?.selectedOptions?.[0]?.textContent || "");
+function canonicalSelectValue(id, domain, options) {
+  return readCanonicalSelectValue(document, id, domain, options);
 }
 
 const routes = {
@@ -1676,6 +1851,10 @@ document.addEventListener("click", (event) => {
       segment.closest(".segmented-control")?.querySelectorAll("[role='tab']").forEach((tab) => {
         tab.setAttribute("aria-selected", tab === segment ? "true" : "false");
       });
+      if (segment.dataset.paymentView) {
+        applyPaymentsView(segment.dataset.paymentView);
+        void loadPaymentViewPanel(segment.dataset.paymentView);
+      }
       target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
@@ -1717,24 +1896,41 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("hashchange", renderRoute);
 window.addEventListener("focus", () => {
   checkHealth();
-  refreshActiveView({ reason: "focus" });
+  refreshAfterAttentionChange("focus");
 });
-window.addEventListener(mutationEventName, () => {
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshAfterAttentionChange("visible");
+});
+
+function refreshAfterAttentionChange(reason) {
+  if (document.hidden || Date.now() < routeRefreshCooldownUntil) return;
+  // Browsers commonly emit focus and visibilitychange together after a tab is
+  // restored.  One refresh is enough and keeps large workspaces responsive.
+  routeRefreshCooldownUntil = Date.now() + 750;
+  refreshActiveView({ reason });
+}
+const debouncedMutationRefresh = debounce(() => {
   refreshActiveView({ reason: "local-mutation" });
   updateNotificationBadge();
+}, 200);
+window.addEventListener(mutationEventName, () => {
+  debouncedMutationRefresh();
 });
 window.addEventListener("storage", (event) => {
   if (!syncChannel && event.key === syncStorageKey && event.newValue) {
     try { handleExternalSync(JSON.parse(event.newValue)); } catch { /* Ignore malformed sync payloads. */ }
   }
-  if (event.key === authKey) {
-    window.dispatchEvent(new CustomEvent(authEventName));
-  }
 });
 window.addEventListener(authEventName, renderRoute);
 syncChannel?.addEventListener("message", (event) => handleExternalSync(event.data));
+const presentationObserver = new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    mutation.addedNodes.forEach((node) => queuePresentationApply(node instanceof Element ? node : node.parentElement));
+  }
+});
+const presentationRoot = document.getElementById("view");
+if (presentationRoot) presentationObserver.observe(presentationRoot, { childList: true, subtree: true });
 checkHealth();
-startLanguageObserver();
 restoreSessionFromCookie().finally(() => {
   renderRoute();
   applyLanguage();
@@ -1746,14 +1942,12 @@ function getAuth() {
 window.__lenseeGetAuth = getAuth;
 
 function setAuth(auth, { broadcast = true } = {}) {
-  activeAuth = auth ? { accessToken: auth.accessToken, user: auth.user } : null;
-  localStorage.removeItem(authKey);
+  activeAuth = auth ? { user: auth.user } : null;
   if (broadcast) publishSync({ type: "auth-signed-in", source: tabId });
 }
 
 function clearAuth({ broadcast = true } = {}) {
   activeAuth = null;
-  localStorage.removeItem(authKey);
   if (broadcast) publishSync({ type: "auth-signed-out", source: tabId });
 }
 
@@ -1783,14 +1977,11 @@ function handleExternalSync(payload) {
   }
 }
 
-function buildRequestHeaders(options = {}, auth = getAuth()) {
+function buildRequestHeaders(options = {}) {
   const headers = new Headers(options.headers || {});
   applyApiHeaders(headers);
   if (options.body !== undefined && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
-  }
-  if (auth?.accessToken) {
-    headers.set("Authorization", `Bearer ${auth.accessToken}`);
   }
   return headers;
 }
@@ -1822,10 +2013,9 @@ function withPaymentIdempotency(path, options = {}) {
 }
 
 async function fetchWithAuth(path, options = {}) {
-  let auth = getAuth();
-  let headers = buildRequestHeaders(options, auth);
+  let headers = buildRequestHeaders(options);
   let response = await fetch(`${apiBase}${path}`, { ...options, headers, credentials: "include" });
-  if (response.status !== 401 || !auth?.accessToken) {
+  if (response.status !== 401) {
     return response;
   }
 
@@ -1834,12 +2024,59 @@ async function fetchWithAuth(path, options = {}) {
     return response;
   }
 
-  auth = refreshed;
-  headers = buildRequestHeaders(options, auth);
+  headers = buildRequestHeaders(options);
   return fetch(`${apiBase}${path}`, { ...options, headers, credentials: "include" });
 }
 
-async function request(path, options = {}) {
+function request(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET") return executeRequest(path, options);
+  const requestOptions = options.signal ? options : { ...options, signal: activeRouteController.signal };
+  const cached = referenceResponseCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.payload);
+  const key = `${path}|${requestOptions.signal === activeRouteController.signal ? routeRenderGeneration : "external"}`;
+  if (pendingGetRequests.has(key)) return pendingGetRequests.get(key);
+  const execute = () => executeRequest(path, requestOptions).then((payload) => {
+    if (isStableReferenceRequest(path)) referenceResponseCache.set(path, { payload, expiresAt: Date.now() + 15000 });
+    return payload;
+  });
+  const pending = (isHeavyRequest(path) ? enqueueHeavyRequest(execute, requestOptions.signal) : execute()).finally(() => pendingGetRequests.delete(key));
+  pendingGetRequests.set(key, pending);
+  return pending;
+}
+
+function isStableReferenceRequest(path) {
+  return path === "/api/v1/inventory/locations" || /^\/api\/v1\/catalog\/skus\/[0-9a-f-]{36}$/i.test(path);
+}
+
+function isHeavyRequest(path) {
+  return path.includes("/editor") || path.includes("/product-totals") || path.includes("/replenishment") || /\/(supply\/shipments|operations)\/[0-9a-f-]{36}/i.test(path);
+}
+
+function enqueueHeavyRequest(execute, signal) {
+  return new Promise((resolve, reject) => {
+    const task = { execute, resolve, reject, signal };
+    heavyRequestQueue.push(task);
+    drainHeavyRequestQueue();
+  });
+}
+
+function drainHeavyRequestQueue() {
+  while (activeHeavyRequests < maxHeavyRequests && heavyRequestQueue.length > 0) {
+    const task = heavyRequestQueue.shift();
+    if (task.signal?.aborted) {
+      task.reject(new DOMException("Request aborted", "AbortError"));
+      continue;
+    }
+    activeHeavyRequests += 1;
+    task.execute().then(task.resolve, task.reject).finally(() => {
+      activeHeavyRequests -= 1;
+      drainHeavyRequestQueue();
+    });
+  }
+}
+
+async function executeRequest(path, options = {}) {
   const requestOptions = withPaymentIdempotency(path, options);
   const response = await fetchWithAuth(path, requestOptions);
 
@@ -1853,7 +2090,15 @@ async function request(path, options = {}) {
   const payload = response.status === 204 ? null : await response.json();
   const method = (requestOptions.method || "GET").toUpperCase();
   if (method !== "GET") {
-    window.dispatchEvent(new CustomEvent(mutationEventName, { detail: { path, method } }));
+    // notify: false lets a caller that already performs its own targeted
+    // refresh (e.g. reloading just one table after a small write) skip the
+    // global "refresh everything on this page" listener below, so a
+    // single-row edit doesn't also trigger a full six-table page rebuild
+    // in THIS tab. Other tabs still get told, via publishSync, so they
+    // stay in sync.
+    if (options.notify !== false) {
+      window.dispatchEvent(new CustomEvent(mutationEventName, { detail: { path, method } }));
+    }
     publishSync({ type: "mutation", source: sessionStorage.getItem("lensee.tabId"), path, method });
   }
 
@@ -1871,14 +2116,25 @@ async function downloadFile(path, fileName) {
   }
 
   const blob = await response.blob();
+  const serverFileName = getContentDispositionFileName(response.headers.get("content-disposition"));
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = fileName;
+  anchor.download = serverFileName || fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return serverFileName || fileName;
+}
+
+function getContentDispositionFileName(headerValue) {
+  if (!headerValue) return null;
+  const encoded = headerValue.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded.replace(/^"|"$/g, "")); } catch { return encoded; }
+  }
+  return headerValue.match(/filename="?([^";]+)"?/i)?.[1] || null;
 }
 
 function delay(milliseconds) {
@@ -2000,26 +2256,13 @@ async function checkHealth() {
   }
 }
 
-function fetchHealth(baseUrl) {
-  return fetch(`${baseUrl}/health`, { headers: apiHeaders(), cache: "no-store" });
+function fetchHealth(baseUrl = "") {
+  return fetch(`${baseUrl}/health`, { headers: apiHeaders(), credentials: "include", cache: "no-store" });
 }
 
-async function resolveApiBase(preferred = apiBase) {
-  const candidates = [preferred, ...apiCandidates].filter((value, index, values) => value && values.indexOf(value) === index);
-  for (const candidate of candidates) {
-    try {
-      const normalized = candidate.replace(/\/$/, "");
-      const response = await fetchHealth(normalized);
-      if (response.ok) {
-        apiBase = normalized;
-        localStorage.setItem("lensee.apiBase", apiBase);
-        return apiBase;
-      }
-    } catch {
-      // Try the next local development URL.
-    }
-  }
-  return preferred.replace(/\/$/, "");
+async function resolveApiBase() {
+  apiBase = "";
+  return apiBase;
 }
 
 function currentPath() {
@@ -2034,6 +2277,8 @@ function currentRouteQuery() {
 
 async function renderRoute() {
   const renderGeneration = ++routeRenderGeneration;
+  activeRouteController.abort();
+  activeRouteController = new AbortController();
   const auth = getAuth();
   const path = currentPath();
   const route = routes[path];
@@ -2075,12 +2320,12 @@ async function renderRoute() {
   if (renderGeneration !== routeRenderGeneration || path !== currentPath()) {
     return;
   }
-  applyLanguage();
-  startVisibleIdentifierMasking();
-  sanitizeVisibleIdentifiers(document.getElementById("view"));
+  const view = document.getElementById("view");
+  applyLanguage(view);
+  sanitizeVisibleIdentifiers(view);
   scheduleRouteRefresh(path);
   await applyNotificationFocus();
-  sanitizeVisibleIdentifiers(document.getElementById("view"));
+  sanitizeVisibleIdentifiers(view);
 }
 
 async function applyNotificationFocus() {
@@ -2192,9 +2437,9 @@ function pageIntro({ eyebrow, title, body = "", metrics = "" }) {
   return `
     <section class="page-intro">
       <div>
-        <p class="eyebrow">${escapeHtml(eyebrow)}</p>
-        <h2>${escapeHtml(title)}</h2>
-        ${body ? `<p>${escapeHtml(body)}</p>` : ""}
+        <p class="eyebrow">${escapeHtml(uiText(eyebrow))}</p>
+        <h2>${escapeHtml(uiText(title))}</h2>
+        ${body ? `<p>${escapeHtml(uiText(body))}</p>` : ""}
       </div>
       ${metrics ? `<div class="rail-metrics">${metrics}</div>` : ""}
     </section>`;
@@ -2202,25 +2447,43 @@ function pageIntro({ eyebrow, title, body = "", metrics = "" }) {
 
 function statusChip(label, tone = "muted", id = null) {
   const idAttribute = id ? ` id="${escapeHtml(id)}"` : "";
-  return `<span${idAttribute} class="status-pill status-${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+  return `<span${idAttribute} class="status-pill status-${escapeHtml(tone)}">${escapeHtml(uiText(label))}</span>`;
 }
 
 function emptyState(message, actionHtml = "") {
-  return `<div class="empty-state"><span>${escapeHtml(message)}</span>${actionHtml}</div>`;
+  return `<div class="empty-state"><span>${escapeHtml(uiText(message))}</span>${actionHtml}</div>`;
 }
 
 function segmentedControl(items) {
-  return `<div class="segmented-control" role="tablist">${items.map((item, index) => `<button type="button" data-scroll-target="${escapeHtml(item.target)}" role="tab" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(item.label)}</button>`).join("")}</div>`;
+  return `<div class="segmented-control" role="tablist">${items.map((item, index) => `<button type="button" data-scroll-target="${escapeHtml(item.target)}"${item.view ? ` data-payment-view="${escapeHtml(item.view)}"` : ""} role="tab" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(uiText(item.label))}</button>`).join("")}</div>`;
+}
+
+function applyPaymentsView(view = "merchant") {
+  document.querySelectorAll("[data-payment-panel]").forEach((panel) => {
+    const views = String(panel.dataset.paymentPanel || "").split(/\s+/).filter(Boolean);
+    panel.hidden = !views.includes(view);
+  });
+  const tools = document.getElementById("payment-tools-section");
+  if (tools) tools.hidden = !["merchant", "tools", "audit"].includes(view);
 }
 
 function notice(message, tone = "info") {
   const area = document.getElementById("notification-area");
+  if (!area) return;
   const id = `notice-${++noticeSequence}`;
+  const title = ({ success: "Success", error: "Error", warning: "Warning" }[tone]) || "Notice";
   const node = document.createElement("div");
   node.className = `notice notice-${tone}`;
   node.id = id;
-  node.setAttribute("role", tone === "error" ? "alert" : "status");
-  node.innerHTML = `<span>${escapeHtml(displaySafeText(message))}</span><button class="notice-close" type="button" aria-label="Dismiss notice">x</button>`;
+  node.setAttribute("role", tone === "error" ? "alertdialog" : "dialog");
+  node.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+  node.setAttribute("aria-label", uiText(title));
+  node.innerHTML = `
+    <div class="notice-content">
+      <strong class="notice-title">${escapeHtml(uiText(title))}</strong>
+      <span>${escapeHtml(displaySafeText(uiText(message)))}</span>
+    </div>
+    <button class="notice-close" type="button" aria-label="${escapeHtml(uiText("Dismiss notice"))}">x</button>`;
   node.querySelector("button").addEventListener("click", () => node.remove());
   area.appendChild(node);
   window.setTimeout(() => {
@@ -2236,7 +2499,7 @@ function promptDialog({ title, label, defaultValue = "", inputType = "text", req
     overlay.innerHTML = `
       <form class="dialog-card">
         <div class="section-head tight-head">
-          <div><h2>${escapeHtml(title)}</h2><p class="muted-text">${escapeHtml(label)}</p></div>
+          <div><h2>${escapeHtml(uiText(title))}</h2><p class="muted-text">${escapeHtml(uiText(label))}</p></div>
         </div>
         <div class="field">
           ${multiline
@@ -2244,8 +2507,8 @@ function promptDialog({ title, label, defaultValue = "", inputType = "text", req
             : `<input class="input dialog-input" type="${escapeHtml(inputType)}" value="${escapeHtml(defaultValue)}">`}
         </div>
         <div class="form-actions">
-          <button class="button primary" type="submit">Continue</button>
-          <button class="button secondary" type="button" data-dialog-cancel>Cancel</button>
+          <button class="button primary" type="submit">${escapeHtml(uiText("Continue"))}</button>
+          <button class="button secondary" type="button" data-dialog-cancel>${escapeHtml(uiText("Cancel"))}</button>
         </div>
       </form>`;
     document.body.appendChild(overlay);
@@ -2311,6 +2574,7 @@ function apiHeaders() {
 
 function applyApiHeaders(headers) {
   headers.set(ngrokSkipHeader, "true");
+  headers.set(requestMarkerHeader, "fetch");
 }
 
 function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel = "Cancel", tone = "default", bodyHtml = "" }) {
@@ -2321,14 +2585,14 @@ function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel =
       <section class="dialog-card confirm-dialog ${tone === "warning" ? "confirm-dialog-warning" : ""}" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
         <div class="section-head tight-head">
           <div>
-            <h2 id="confirm-dialog-title">${escapeHtml(title)}</h2>
-            <p class="muted-text">${escapeHtml(message)}</p>
+            <h2 id="confirm-dialog-title">${escapeHtml(uiText(title))}</h2>
+            <p class="muted-text">${escapeHtml(uiText(message))}</p>
           </div>
         </div>
         ${bodyHtml ? `<div class="confirm-dialog-body">${bodyHtml}</div>` : ""}
         <div class="form-actions">
-          <button class="button primary" type="button" data-dialog-confirm>${escapeHtml(confirmLabel)}</button>
-          <button class="button secondary" type="button" data-dialog-cancel>${escapeHtml(cancelLabel)}</button>
+          <button class="button primary" type="button" data-dialog-confirm>${escapeHtml(uiText(confirmLabel))}</button>
+          <button class="button secondary" type="button" data-dialog-cancel>${escapeHtml(uiText(cancelLabel))}</button>
         </div>
       </section>`;
     document.body.appendChild(overlay);
@@ -2357,6 +2621,7 @@ function scheduleRouteRefresh(path) {
   }
 
   activeRefreshTimer = window.setInterval(() => {
+    if (document.hidden) return;
     refreshActiveView({ reason: "timer" });
     updateNotificationBadge();
   }, 30000);
@@ -2384,7 +2649,7 @@ async function refreshActiveView({ reason = "manual" } = {}) {
         await loadSupplyShipments();
         break;
       case "/crm":
-        await Promise.all([loadMerchants(), loadRepresentatives()]);
+        await loadMerchants();
         break;
       case "/operations":
         await loadOperations();
@@ -2479,15 +2744,11 @@ async function login(event) {
   const submit = document.getElementById("login-submit");
   const error = document.getElementById("login-error");
   const form = new FormData(event.currentTarget);
-  const nextApiBase = (await resolveApiBase(apiBase)).replace(/\/$/, "");
-
-  localStorage.setItem("lensee.apiBase", nextApiBase);
-  apiBase = nextApiBase;
   error.hidden = true;
   submit.disabled = true;
   submit.textContent = "Signing in";
   try {
-    const auth = await loginRequest(nextApiBase, {
+    const auth = await loginRequest(apiBase, {
       method: "POST",
       body: JSON.stringify({ username: form.get("username"), password: form.get("password") })
     });
@@ -2537,7 +2798,7 @@ function renderDashboard() {
         "/catalog": "Products, SKUs, categories, and brands.",
         "/inventory": "Stock balances, batches, replenishment, and targets.",
         "/supply": "Imported shipments, landed costs, and receipts.",
-        "/crm": "Merchants, representatives, notes, and batch history.",
+        "/crm": "Merchants, commercial notes, and batch history.",
         "/operations": "Receipts, transfers, sales, returns, changes, and write-offs.",
         "/payments": "Payment logs, approvals, cash records, and live remaining.",
         "/notifications": "Workflow alerts, stock alerts, and operational updates.",
@@ -2689,7 +2950,7 @@ async function loadDashboardOperationalSummary() {
     const notificationRows = notifications?.items || notifications || [];
     const activeOperations = operationRows.filter((operation) => !["Completed", "Received", "Cancelled"].includes(operation.status)).length;
     const queuePayments = paymentRows.filter((log) =>
-      ["Installment", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
+      ["MerchantAccount", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
       ["PendingAdmin", "PendingAccountant", "PendingAdminReview"].includes(log.status)).length;
     const unreadCount = notificationRows.filter((notification) => notification.isRead === false || notification.readAt == null).length;
 
@@ -2706,11 +2967,11 @@ async function loadDashboardOperationalSummary() {
 
 function scenarioCard(title, value, tone, valueId = null) {
   const idAttribute = valueId ? ` id="${escapeHtml(valueId)}"` : "";
-  return `<div class="scenario-card"><span>${escapeHtml(title)}</span><strong${idAttribute} class="${escapeHtml(tone)}">${escapeHtml(value)}</strong></div>`;
+  return `<div class="scenario-card"><span>${escapeHtml(uiText(title))}</span><strong${idAttribute} class="${escapeHtml(tone)}">${escapeHtml(uiText(value))}</strong></div>`;
 }
 
 function workspaceCard(href, title, description, tone = "neutral") {
-  return `<a class="workspace-card workspace-card-${escapeHtml(tone)}" href="#${escapeHtml(href)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></a>`;
+  return `<a class="workspace-card workspace-card-${escapeHtml(tone)}" href="#${escapeHtml(href)}"><strong>${escapeHtml(uiText(title))}</strong><span>${escapeHtml(uiText(description))}</span></a>`;
 }
 
 function workspaceTone(href) {
@@ -2731,7 +2992,7 @@ function dashboardPrimaryResponsibility(role) {
 }
 
 function isSystemAdminRole(role) {
-  return role === "Admin" || role === "ERPAdmin";
+  return role === "Admin" || role === "ERPAdmin" || role === "CLevel";
 }
 
 function renderCatalogWritePanel() {
@@ -2837,6 +3098,17 @@ function renderCatalogReferenceLists() {
   const brandList = document.getElementById("brand-list");
   if (categoryList) {
     categoryList.innerHTML = renderCategoryTree(categoryTree);
+    categoryList.querySelectorAll("[data-category-toggle]").forEach((toggle) => {
+      toggle.addEventListener("click", () => {
+        const children = document.getElementById(toggle.dataset.categoryToggle);
+        if (!children) return;
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", String(!expanded));
+        toggle.closest(".category-tree-node")?.setAttribute("aria-expanded", String(!expanded));
+        children.hidden = expanded;
+        toggle.querySelector(".category-tree-chevron")?.classList.toggle("is-collapsed", expanded);
+      });
+    });
     categoryList.querySelectorAll("[data-category-id]").forEach((button) => {
       button.addEventListener("click", () => {
         const category = catalogCategories.find((value) => value.id === button.dataset.categoryId);
@@ -2870,16 +3142,26 @@ function renderCatalogReferenceLists() {
   }
 }
 
-function renderCategoryTree(nodes, depth = 0) {
-  if (nodes.length === 0) {
-    return depth === 0 ? `<p class="muted-text">No categories</p>` : "";
-  }
-  return nodes.map((node) => `
-    <div class="tree-row" style="--depth:${depth}">
-      <button class="chip" type="button" data-category-id="${escapeHtml(node.id)}">Edit ${escapeHtml(node.name)}</button>
-    </div>
-    ${renderCategoryTree(node.children || [], depth + 1)}
-  `).join("");
+function renderCategoryTree(nodes) {
+  if (nodes.length === 0) return `<p class="muted-text">No categories</p>`;
+  return `<ul class="category-tree" role="tree">${nodes.map((node) => renderCategoryTreeNode(node, 0)).join("")}</ul>`;
+}
+
+function renderCategoryTreeNode(node, depth) {
+  const children = node.children || [];
+  const hasChildren = children.length > 0;
+  const childrenId = `category-children-${node.id}`;
+  return `
+    <li class="category-tree-node${depth > 0 ? " is-nested" : ""}" role="treeitem" aria-level="${depth + 1}" aria-expanded="${hasChildren ? "true" : "false"}">
+      <div class="category-tree-item">
+        ${hasChildren
+          ? `<button class="category-tree-toggle" type="button" data-category-toggle="${escapeHtml(childrenId)}" aria-expanded="true" aria-controls="${escapeHtml(childrenId)}"><span class="category-tree-chevron" aria-hidden="true">▾</span><span class="sr-only">${escapeHtml(uiText("Toggle"))} ${escapeHtml(node.name)}</span></button>`
+          : `<span class="category-tree-spacer" aria-hidden="true"></span>`}
+        <span class="category-tree-name">${escapeHtml(node.name)}</span>
+        <button class="chip category-tree-edit" type="button" data-category-id="${escapeHtml(node.id)}">Edit</button>
+      </div>
+      ${hasChildren ? `<ul class="category-tree-children" id="${escapeHtml(childrenId)}" role="group">${children.map((child) => renderCategoryTreeNode(child, depth + 1)).join("")}</ul>` : ""}
+    </li>`;
 }
 
 function fillCategorySelect(select, includeEmpty) {
@@ -3171,22 +3453,22 @@ function validateJson(value, label) {
 }
 
 function readProductForm() {
-  const type = document.getElementById("product-type").value;
+  const type = canonicalSelectValue("product-type", "productType");
   const pieces = document.getElementById("product-pieces").value;
   const clinicalParams = buildClinicalParamsFromForm();
   const durationValue = document.getElementById("product-duration-value")?.value;
-  const openedExpiryRate = document.getElementById("product-duration-unit")?.value || null;
+  const openedExpiryRate = canonicalSelectValue("product-duration-unit", "durationUnit");
   return {
     categoryId: document.getElementById("product-category").value,
     brandId: document.getElementById("product-brand").value,
     name: document.getElementById("product-name").value,
     productType: type,
-    expiryType: document.getElementById("product-expiry").value,
+    expiryType: canonicalSelectValue("product-expiry", "expiryType"),
     sealedExpiryDuration: null,
     openedExpiryRate: type === "Solution" ? null : openedExpiryRate,
     openedExpiryDuration: type === "Solution" || !durationValue ? null : buildDuration(durationValue, openedExpiryRate),
     piecesPerPack: pieces ? Number(pieces) : null,
-    sellMode: document.getElementById("product-sell-mode").value,
+    sellMode: canonicalSelectValue("product-sell-mode", "sellMode"),
     clinicalParams,
     extendedAttributes: null
   };
@@ -3479,7 +3761,7 @@ function showFormError(id, message) {
   if (!element) {
     return;
   }
-  element.textContent = message;
+  element.textContent = uiText(message);
   element.hidden = false;
 }
 
@@ -3572,9 +3854,10 @@ function renderInventory() {
   document.getElementById("inventory-refresh").addEventListener("click", refreshInventoryWorkspace);
   document.getElementById("inventory-location").addEventListener("change", () => {
     selectedInventoryLocationId = document.getElementById("inventory-location").value;
+    inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
     refreshInventoryTables();
   });
-  document.getElementById("inventory-sku-search").addEventListener("input", () => {
+  document.getElementById("inventory-sku-search").addEventListener("input", debounce(() => {
     const search = document.getElementById("inventory-sku-search");
     const filter = document.getElementById("inventory-sku");
     const selected = inventorySkuOptions.find((sku) => sku.id === filter.value);
@@ -3586,16 +3869,16 @@ function renderInventory() {
       filter.value = "";
       refreshInventoryTables();
     }
-    renderInventorySkuSearchResults();
-  });
+    void renderInventorySkuSearchResults();
+  }, 250));
   document.getElementById("inventory-sku-search").addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       hideInventorySkuSearchResults();
       event.currentTarget.blur();
     }
   });
-  document.getElementById("inventory-include-zero-stock").addEventListener("change", loadInventoryBalances);
-  document.getElementById("inventory-include-empty").addEventListener("change", loadInventoryBatches);
+  document.getElementById("inventory-include-zero-stock").addEventListener("change", () => { inventoryPageState.balances = 1; void loadInventoryBalances(); });
+  document.getElementById("inventory-include-empty").addEventListener("change", () => { inventoryPageState.batches = 1; void loadInventoryBatches(); });
   document.getElementById("reserve-replenishment")?.addEventListener("click", reserveInventoryReplenishment);
   refreshInventoryWorkspace();
 }
@@ -3612,14 +3895,38 @@ async function refreshInventoryTables() {
   if (!document.getElementById("inventory-balances")) {
     return;
   }
-  await Promise.all([
-    loadInventoryProductTotals(),
-    loadInventoryBalances(),
-    loadInventoryReplenishment(),
-    loadTransferBlockedBatches(),
-    loadInventoryBatches(),
-    loadInventoryTransactions()
-  ]);
+  const generation = ++inventoryRefreshGeneration;
+  inventoryPanelObserver?.disconnect();
+  loadedInventoryPanels.clear();
+  await loadInventoryBalances(generation);
+  if (generation !== inventoryRefreshGeneration) return;
+
+  const panels = [
+    ["inventory-product-totals", "productTotals", loadInventoryProductTotals],
+    ["inventory-replenishment", "replenishment", loadInventoryReplenishment],
+    ["inventory-blocked-batches", "blocked", loadTransferBlockedBatches],
+    ["inventory-batches", "batches", loadInventoryBatches],
+    ["inventory-transactions", "transactions", loadInventoryTransactions]
+  ];
+  const loadPanel = (name, loader) => {
+    if (loadedInventoryPanels.has(name) || generation !== inventoryRefreshGeneration) return;
+    loadedInventoryPanels.add(name);
+    void loader(generation);
+  };
+  if (!("IntersectionObserver" in window)) {
+    panels.forEach(([, name, loader]) => loadPanel(name, loader));
+    return;
+  }
+  inventoryPanelObserver = new IntersectionObserver((entries) => {
+    entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
+      const panel = panels.find(([id]) => id === entry.target.id);
+      if (panel) loadPanel(panel[1], panel[2]);
+    });
+  }, { rootMargin: "300px 0px" });
+  panels.forEach(([id]) => {
+    const target = document.getElementById(id);
+    if (target) inventoryPanelObserver.observe(target);
+  });
 }
 
 async function loadInventoryLocations() {
@@ -3650,42 +3957,12 @@ async function loadInventorySkuOptions() {
   const filter = document.getElementById("inventory-sku");
   const search = document.getElementById("inventory-sku-search");
   try {
-    const products = [];
-    let page = 1;
-    let totalCount = 0;
-    do {
-      const result = await request(`/api/v1/catalog/products?includeInactive=false&page=${page}&pageSize=100`);
-      products.push(...(result.items || []));
-      totalCount = result.totalCount || products.length;
-      page += 1;
-    } while (products.length < totalCount);
-
-    const options = [];
-    for (const product of products) {
-      const detail = await request(`/api/v1/catalog/products/${product.id}`);
-      for (const sku of detail.skus || []) {
-        if (sku.isActive) {
-          options.push({
-            id: sku.id,
-            productName: detail.name,
-            brandName: detail.brandName,
-            categoryName: detail.categoryName,
-            skuCode: sku.skuCode,
-            powerSign: sku.powerSign,
-            powerValue: sku.powerValue,
-            colorName: sku.colorName,
-            size: sku.size,
-            label: `${sku.skuCode} - ${detail.name}`
-          });
-        }
-      }
+    const current = filter?.value;
+    if (current) {
+      const sku = await ensureSkuOption(current);
+      if (sku) inventorySkuOptions = [sku];
     }
-    inventorySkuOptions = options.sort((left, right) => left.label.localeCompare(right.label));
-    if (filter) {
-      const current = filter.value;
-      filter.value = inventorySkuOptions.some((sku) => sku.id === current) ? current : "";
-      updateInventorySkuSearchLabel();
-    }
+    updateInventorySkuSearchLabel();
   } catch (exception) {
     if (filter) {
       filter.value = "";
@@ -3821,11 +4098,12 @@ function clearInventorySkuFilter() {
   const search = document.getElementById("inventory-sku-search");
   if (filter) filter.value = "";
   if (search) search.value = "";
+  inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
   hideInventorySkuSearchResults();
   refreshInventoryTables();
 }
 
-function renderInventorySkuSearchResults() {
+async function renderInventorySkuSearchResults() {
   const filter = document.getElementById("inventory-sku");
   const search = document.getElementById("inventory-sku-search");
   const results = document.getElementById("inventory-sku-results");
@@ -3839,10 +4117,16 @@ function renderInventorySkuSearchResults() {
     return;
   }
 
-  const terms = query.split(/\s+/).filter(Boolean);
-  const matches = inventorySkuOptions
-    .filter((sku) => terms.every((term) => inventorySkuSearchHaystack(sku).includes(term)))
-    .slice(0, 8);
+  const requestId = (skuSearchRequests.get(search) || 0) + 1;
+  skuSearchRequests.set(search, requestId);
+  let matches;
+  try {
+    matches = await searchSkuOptions(query, 20);
+  } catch {
+    matches = [];
+  }
+  if (skuSearchRequests.get(search) !== requestId || search.value.trim().toLowerCase() !== query) return;
+  inventorySkuOptions = matches;
   setupAdaptiveSearchResultDismissal();
   collapseAdaptiveSearchResults(results);
   results.hidden = false;
@@ -3857,13 +4141,14 @@ function renderInventorySkuSearchResults() {
         </button>`).join("");
   results.querySelectorAll("[data-inventory-sku-id]").forEach((button) => button.addEventListener("click", () => {
     filter.value = button.dataset.inventorySkuId || "";
+    inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
     updateInventorySkuSearchLabel();
     hideInventorySkuSearchResults();
     refreshInventoryTables();
   }));
 }
 
-async function loadInventoryProductTotals() {
+async function loadInventoryProductTotals(generation = inventoryRefreshGeneration) {
   const tbody = document.getElementById("inventory-product-totals");
   const count = document.getElementById("inventory-product-total-count");
   if (!tbody || !count) {
@@ -3874,25 +4159,27 @@ async function loadInventoryProductTotals() {
   if (selectedInventoryLocationId) {
     params.set("locationId", selectedInventoryLocationId);
   }
+  params.set("includeProducts", "false");
 
   try {
     const rows = await request(`/api/v1/inventory/product-totals?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
     count.textContent = `${rows.length} categor${rows.length === 1 ? "y" : "ies"}`;
     tbody.innerHTML = rows.length === 0
       ? `<tr><td colspan="5">No available stock for this location.</td></tr>`
       : rows.map((row, index) => {
         const detailId = `inventory-product-category-${index}`;
-        const products = Array.isArray(row.products) ? row.products : [row];
+        const products = Array.isArray(row.products) ? row.products : [];
         return `
         <tr class="product-total-row">
           <td><strong>${escapeHtml(row.categoryName || row.productName || shortId(row.categoryId || row.productId, row.categoryId ? "CAT" : "PRD"))}</strong><span class="muted-cell">${escapeHtml(row.productCount ?? products.length)} product${(row.productCount ?? products.length) === 1 ? "" : "s"}</span></td>
           <td>${escapeHtml(row.skuCount)}</td>
           <td>${escapeHtml(row.totalPacks)}</td>
           <td>${row.totalPieces == null ? "-" : escapeHtml(row.totalPieces)}</td>
-          <td><button class="button secondary table-action" type="button" data-product-total-toggle="${escapeHtml(detailId)}" aria-expanded="false">Details</button></td>
+          <td><button class="button secondary table-action" type="button" data-product-total-toggle="${escapeHtml(detailId)}" data-category-id="${escapeHtml(row.categoryId)}" aria-expanded="false">Details</button></td>
         </tr>
         <tr class="product-rate-row" id="${escapeHtml(detailId)}" hidden>
-          <td colspan="5">${renderCategoryProductTotals(products)}</td>
+          <td colspan="5">${products.length ? renderCategoryProductTotals(products) : `<span class="muted-text">Load details when expanded.</span>`}</td>
         </tr>`;
       }).join("");
     tbody.querySelectorAll("[data-product-total-toggle]").forEach((button) => {
@@ -3929,7 +4216,7 @@ function renderCategoryProductTotals(products) {
     </div>`;
 }
 
-function toggleProductTotalDetails(button) {
+async function toggleProductTotalDetails(button) {
   const row = document.getElementById(button.dataset.productTotalToggle);
   if (!row) return;
   const expanded = button.getAttribute("aria-expanded") === "true";
@@ -3937,9 +4224,26 @@ function toggleProductTotalDetails(button) {
   button.closest(".product-total-row")?.setAttribute("aria-expanded", String(!expanded));
   button.textContent = expanded ? "Details" : "Hide";
   row.hidden = expanded;
+  if (!expanded && row.dataset.loaded !== "true") {
+    const params = new URLSearchParams({ categoryId: button.dataset.categoryId, includeProducts: "true" });
+    if (selectedInventoryLocationId) params.set("locationId", selectedInventoryLocationId);
+    const cell = row.querySelector("td");
+    const loading = document.createElement("span");
+    loading.className = "muted-text";
+    loading.textContent = uiText("Loading details...");
+    cell.replaceChildren(loading);
+    try {
+      const categories = await request(`/api/v1/inventory/product-totals?${params.toString()}`);
+      const parsed = new DOMParser().parseFromString(renderCategoryProductTotals(categories[0]?.products || []), "text/html");
+      cell.replaceChildren(...parsed.body.childNodes);
+      row.dataset.loaded = "true";
+    } catch (exception) {
+      cell.textContent = getFriendlyInventoryError(exception);
+    }
+  }
 }
 
-async function loadInventoryBalances() {
+async function loadInventoryBalances(generation = inventoryRefreshGeneration) {
   const auth = getAuth();
   const canWrite = isSystemAdminRole(auth?.user.role);
   const tbody = document.getElementById("inventory-balances");
@@ -3949,10 +4253,12 @@ async function loadInventoryBalances() {
     return;
   }
   const params = inventoryParams();
+  params.set("page", String(inventoryPageState.balances));
   params.set("pageSize", "50");
   params.set("includeZeroStock", String(includeZeroStock.checked));
   try {
     const result = await request(`/api/v1/inventory/stock-balances?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
     count.textContent = `${result.totalCount} balance${result.totalCount === 1 ? "" : "s"}`;
     tbody.innerHTML = result.items.length === 0
       ? `<tr><td colspan="${canWrite ? 9 : 8}">No stock balances yet.</td></tr>`
@@ -3969,13 +4275,14 @@ async function loadInventoryBalances() {
           ${canWrite ? `<td><button class="button secondary table-action" type="button" data-target-location="${escapeHtml(balance.locationId)}" data-target-sku="${escapeHtml(balance.skuId)}" data-target-current="${escapeHtml(balance.targetPacks ?? "")}">Set target</button></td>` : ""}
         </tr>`).join("");
     tbody.querySelectorAll("[data-target-location]").forEach((button) => button.addEventListener("click", () => setInventoryTarget(button)));
+    renderInventoryPager(tbody, "balances", result, loadInventoryBalances);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="${canWrite ? 9 : 8}">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
   }
 }
 
-async function loadInventoryReplenishment() {
+async function loadInventoryReplenishment(generation = inventoryRefreshGeneration) {
   const tbody = document.getElementById("inventory-replenishment");
   const count = document.getElementById("inventory-replenishment-count");
   if (!tbody || !count) {
@@ -3984,9 +4291,14 @@ async function loadInventoryReplenishment() {
 
   const params = inventoryParams();
   try {
-    const rows = await request(`/api/v1/operations/replenishment?${params.toString()}`);
+    params.set("paged", "true");
+    params.set("page", String(inventoryPageState.replenishment));
+    params.set("pageSize", "50");
+    const result = await request(`/api/v1/operations/replenishment?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
+    const rows = result.items || [];
     const shortages = rows.filter((row) => row.shortagePacks > 0);
-    count.textContent = `${shortages.length} shortage${shortages.length === 1 ? "" : "s"}`;
+    count.textContent = `${result.totalCount} target row${result.totalCount === 1 ? "" : "s"}`;
     tbody.innerHTML = rows.length === 0
       ? `<tr><td colspan="7">No target-stock rows yet.</td></tr>`
       : rows.map((row) => `
@@ -3999,20 +4311,23 @@ async function loadInventoryReplenishment() {
           <td>${row.shortagePacks > 0 ? `<span class="status-pill status-warn">${quantityText(row.shortagePacks, row.shortagePieces, row.destinationLocationType)}</span>` : `<span class="status-pill status-ok">Covered</span>`}</td>
           <td>${quantityStack(row.mainAvailablePacks, null, "MainWarehouse")}</td>
         </tr>`).join("");
+    renderInventoryPager(tbody, "replenishment", result, loadInventoryReplenishment);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="7">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
   }
 }
 
-async function loadInventoryBatches() {
+async function loadInventoryBatches(generation = inventoryRefreshGeneration) {
   const tbody = document.getElementById("inventory-batches");
   const count = document.getElementById("inventory-batch-count");
   const params = inventoryParams();
+  params.set("page", String(inventoryPageState.batches));
   params.set("pageSize", "50");
   params.set("includeEmpty", String(document.getElementById("inventory-include-empty").checked));
   try {
     const result = await request(`/api/v1/inventory/batches?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
     count.textContent = `${result.totalCount} batch${result.totalCount === 1 ? "" : "es"}`;
     tbody.innerHTML = result.items.length === 0
       ? `<tr><td colspan="6">No batches yet.</td></tr>`
@@ -4025,13 +4340,14 @@ async function loadInventoryBatches() {
           <td>${expiryBadge(batch.expiryDate)}</td>
           <td>${escapeHtml(batch.notes || "-")}</td>
         </tr>`).join("");
+    renderInventoryPager(tbody, "batches", result, loadInventoryBatches);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
   }
 }
 
-async function loadTransferBlockedBatches() {
+async function loadTransferBlockedBatches(generation = inventoryRefreshGeneration) {
   const tbody = document.getElementById("inventory-blocked-batches");
   const count = document.getElementById("inventory-blocked-count");
   if (!tbody || !count) {
@@ -4039,9 +4355,14 @@ async function loadTransferBlockedBatches() {
   }
 
   const params = inventoryParams();
+  params.set("page", String(inventoryPageState.blocked));
+  params.set("paged", "true");
+  params.set("pageSize", "50");
   try {
-    const rows = await request(`/api/v1/inventory/transfer-blocked-batches?${params.toString()}`);
-    count.textContent = `${rows.length} expired`;
+    const result = await request(`/api/v1/inventory/transfer-blocked-batches?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
+    const rows = result.items || [];
+    count.textContent = `${result.totalCount} expired`;
     tbody.innerHTML = rows.length === 0
       ? `<tr><td colspan="6">No expired batches.</td></tr>`
       : rows.map((batch) => `
@@ -4053,19 +4374,22 @@ async function loadTransferBlockedBatches() {
           <td>${expiryBadge(batch.expiryDate)}</td>
           <td><span class="status-pill status-warn">${escapeHtml(batch.reason || "Blocked")}</span></td>
         </tr>`).join("");
+    renderInventoryPager(tbody, "blocked", result, loadTransferBlockedBatches);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
   }
 }
 
-async function loadInventoryTransactions() {
+async function loadInventoryTransactions(generation = inventoryRefreshGeneration) {
   const tbody = document.getElementById("inventory-transactions");
   const count = document.getElementById("inventory-transaction-count");
   const params = inventoryParams();
+  params.set("page", String(inventoryPageState.transactions));
   params.set("pageSize", "50");
   try {
     const result = await request(`/api/v1/inventory/transactions?${params.toString()}`);
+    if (generation !== inventoryRefreshGeneration) return;
     count.textContent = `${result.totalCount} transaction${result.totalCount === 1 ? "" : "s"}`;
     tbody.innerHTML = result.items.length === 0
       ? `<tr><td colspan="5">No transactions yet.</td></tr>`
@@ -4077,6 +4401,7 @@ async function loadInventoryTransactions() {
           <td>${quantityStack(transaction.packChange, transaction.pieceChange, transaction.locationType)}</td>
           <td>${escapeHtml(formatDateTime(transaction.createdAt))}</td>
         </tr>`).join("");
+    renderInventoryPager(tbody, "transactions", result, loadInventoryTransactions);
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
@@ -4187,25 +4512,32 @@ async function setInventoryTarget(button) {
     return;
   }
 
+  button.disabled = true;
   try {
     await request(`/api/v1/inventory/stock-balances/${button.dataset.targetLocation}/${button.dataset.targetSku}/target`, {
       method: "PUT",
-      body: JSON.stringify({ targetPacks: value ? Number(value) : null })
+      body: JSON.stringify({ targetPacks: value ? Number(value) : null }),
+      notify: false
     });
     notice("Target packs updated.", "success");
     await loadInventoryBalances();
   } catch (exception) {
     notice(getFriendlyInventoryError(exception), "error");
+  } finally {
+    button.disabled = false;
   }
 }
 
 async function reserveInventoryReplenishment() {
+  const button = document.getElementById("reserve-replenishment");
+  if (button) button.disabled = true;
   try {
     const locationId = document.getElementById("inventory-location")?.value || null;
     const skuId = document.getElementById("inventory-sku")?.value || null;
     const result = await request("/api/v1/operations/replenishment/daily-reset", {
       method: "POST",
-      body: JSON.stringify({ locationId, skuId })
+      body: JSON.stringify({ locationId, skuId }),
+      notify: false
     });
     const alertText = result.alerts?.length
       ? ` Alert: ${result.alerts.map((alert) => `${alert.skuCode || alert.skuId} at ${alert.destinationLocationName}: ${alert.message}`).join(" | ")}`
@@ -4214,6 +4546,8 @@ async function reserveInventoryReplenishment() {
     await refreshInventoryTables();
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -4221,12 +4555,11 @@ async function renderCrm() {
   const auth = getAuth();
   const canWrite = isSystemAdminRole(auth?.user.role);
   selectedMerchantId = null;
-  selectedRepresentativeId = null;
   document.getElementById("view").innerHTML = `
     <section class="catalog-hero">
       <div>
         <p class="eyebrow">CRM</p>
-        <h2>Merchant and representative records</h2>
+        <h2>Merchant records</h2>
         <p>Maintain commercial relationships, operational notes, and merchant context used across sales, returns, payments, and reporting.</p>
       </div>
       <div class="scenario-grid">
@@ -4249,7 +4582,7 @@ async function renderCrm() {
           <div class="field"><label for="merchant-name">Business name</label><input id="merchant-name" class="input" required></div>
           <div class="field"><label for="merchant-contact">Contact person</label><input id="merchant-contact" class="input" required></div>
           <div class="field"><label for="merchant-phone">Phone</label><input id="merchant-phone" class="input"></div>
-          <div class="field"><label for="merchant-type">Business type</label><select id="merchant-type" class="select"><option>Merchant</option><option>Pharmacy</option><option>Oculist</option><option>BeautyCenter</option><option>Other</option></select></div>
+          <div class="field"><label for="merchant-type">Business type</label><select id="merchant-type" class="select"><option value="Merchant">Merchant</option><option value="Pharmacy">Pharmacy</option><option value="Oculist">Oculist</option><option value="BeautyCenter">BeautyCenter</option><option value="Other">Other</option></select></div>
           <div class="toolbar full-span">
             <button id="merchant-save-button" class="button primary" type="submit">Create merchant</button>
             <button id="merchant-reset-button" class="button secondary" type="button">Clear</button>
@@ -4259,32 +4592,13 @@ async function renderCrm() {
         <table><thead><tr><th>Business</th><th>Contact</th><th>Phone</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody id="merchant-rows"></tbody></table>
       </div>
       <div id="merchant-detail-panel" class="detail-panel" hidden></div>
-    </section>
-    <section class="band">
-      <div class="section-head"><h2>Representatives</h2><span id="rep-count" class="status-pill status-muted">Loading</span></div>
-      ${canWrite ? `
-        <form id="rep-form" class="form grid-form">
-          <input id="rep-id" type="hidden">
-          <div class="field"><label for="rep-name">Name</label><input id="rep-name" class="input" required></div>
-          <div class="field"><label for="rep-phone">Phone</label><input id="rep-phone" class="input"></div>
-          <div class="field"><label for="rep-type">Type</label><select id="rep-type" class="select"><option>External</option><option>Internal</option></select></div>
-          <div class="toolbar full-span">
-            <button id="rep-save-button" class="button primary" type="submit">Create representative</button>
-            <button id="rep-reset-button" class="button secondary" type="button">Clear</button>
-          </div>
-        </form>` : ""}
-      <div class="table-wrap">
-        <table><thead><tr><th>Name</th><th>Phone</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody id="rep-rows"></tbody></table>
-      </div>
     </section>`;
 
   if (canWrite) {
     document.getElementById("merchant-form").addEventListener("submit", saveMerchant);
     document.getElementById("merchant-reset-button").addEventListener("click", resetMerchantForm);
-    document.getElementById("rep-form").addEventListener("submit", saveRepresentative);
-    document.getElementById("rep-reset-button").addEventListener("click", resetRepresentativeForm);
   }
-  await Promise.all([loadMerchants(), loadRepresentatives()]);
+  await loadMerchants();
 }
 
 async function loadMerchants(search = "") {
@@ -4332,33 +4646,6 @@ async function loadMerchants(search = "") {
   }
 }
 
-async function loadRepresentatives() {
-  const auth = getAuth();
-  const canWrite = isSystemAdminRole(auth?.user.role);
-  const tbody = document.getElementById("rep-rows");
-  const count = document.getElementById("rep-count");
-  try {
-    const reps = await request("/api/v1/crm/representatives?includeInactive=true");
-    count.textContent = `${reps.length} reps`;
-    tbody.innerHTML = reps.length === 0 ? `<tr><td colspan="5">No representatives yet.</td></tr>` : reps.map((rep) => `
-      <tr>
-        <td>${escapeHtml(rep.name)}</td>
-        <td>${escapeHtml((rep.phoneNumbers || []).join(", ") || "-")}</td>
-        <td>${escapeHtml(rep.type)}</td>
-        <td><span class="status-pill ${rep.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(rep.status)}</span></td>
-        <td>
-          ${canWrite ? `<button class="button secondary table-action" type="button" data-edit-rep="${escapeHtml(rep.id)}">Edit</button>` : ""}
-          ${canWrite ? `<button class="button secondary table-action" type="button" data-status-rep="${escapeHtml(rep.id)}" data-next-status="${rep.status === "Active" ? "deactivate" : "reactivate"}">${rep.status === "Active" ? "Deactivate" : "Reactivate"}</button>` : ""}
-        </td>
-      </tr>`).join("");
-    tbody.querySelectorAll("[data-edit-rep]").forEach((button) => button.addEventListener("click", () => editRepresentative(button.dataset.editRep)));
-    tbody.querySelectorAll("[data-status-rep]").forEach((button) => button.addEventListener("click", () => changeRepresentativeStatus(button.dataset.statusRep, button.dataset.nextStatus)));
-  } catch (exception) {
-    count.textContent = "Failed";
-    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
-  }
-}
-
 async function saveMerchant(event) {
   event.preventDefault();
   const businessName = document.getElementById("merchant-name").value.trim();
@@ -4376,7 +4663,7 @@ async function saveMerchant(event) {
         businessName,
         contactPersonName,
         phoneNumbers: document.getElementById("merchant-phone").value.trim() ? [document.getElementById("merchant-phone").value.trim()] : [],
-        businessType: document.getElementById("merchant-type").value
+        businessType: canonicalSelectValue("merchant-type", "businessType")
       })
     });
     resetMerchantForm();
@@ -4407,32 +4694,6 @@ async function fetchMerchantList(search = "") {
   return { items, totalCount };
 }
 
-async function saveRepresentative(event) {
-  event.preventDefault();
-  const name = document.getElementById("rep-name").value.trim();
-  const repId = document.getElementById("rep-id").value;
-  if (!name) {
-    notice("Representative name is required.", "error");
-    return;
-  }
-
-  try {
-    await request(repId ? `/api/v1/crm/representatives/${repId}` : "/api/v1/crm/representatives", {
-      method: repId ? "PUT" : "POST",
-      body: JSON.stringify({
-        name,
-        phoneNumbers: document.getElementById("rep-phone").value.trim() ? [document.getElementById("rep-phone").value.trim()] : [],
-        type: document.getElementById("rep-type").value
-      })
-    });
-    resetRepresentativeForm();
-    notice(repId ? "Representative updated." : "Representative created.", "success");
-    await loadRepresentatives();
-  } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
-  }
-}
-
 function resetMerchantForm() {
   const form = document.getElementById("merchant-form");
   if (!form) {
@@ -4442,17 +4703,6 @@ function resetMerchantForm() {
   document.getElementById("merchant-id").value = "";
   document.getElementById("merchant-save-button").textContent = "Create merchant";
   selectedMerchantId = null;
-}
-
-function resetRepresentativeForm() {
-  const form = document.getElementById("rep-form");
-  if (!form) {
-    return;
-  }
-  form.reset();
-  document.getElementById("rep-id").value = "";
-  document.getElementById("rep-save-button").textContent = "Create representative";
-  selectedRepresentativeId = null;
 }
 
 async function editMerchant(merchantId) {
@@ -4477,35 +4727,11 @@ function fillMerchantForm(merchant) {
   selectedMerchantId = merchant.id;
 }
 
-async function editRepresentative(repId) {
-  const rep = operationRepresentativeOptions.find((value) => value.id === repId) || (await request("/api/v1/crm/representatives?includeInactive=true")).find((value) => value.id === repId);
-  if (!rep) {
-    notice("Representative not found.", "error");
-    return;
-  }
-  document.getElementById("rep-id").value = rep.id;
-  document.getElementById("rep-name").value = rep.name || "";
-  document.getElementById("rep-phone").value = (rep.phoneNumbers || [])[0] || "";
-  document.getElementById("rep-type").value = rep.type || "External";
-  document.getElementById("rep-save-button").textContent = "Update representative";
-  selectedRepresentativeId = rep.id;
-}
-
 async function changeMerchantStatus(merchantId, action) {
   try {
     await request(`/api/v1/crm/merchants/${merchantId}/${action}`, { method: "PATCH" });
     notice(action === "deactivate" ? "Merchant deactivated." : "Merchant reactivated.", "success");
     await loadMerchants();
-  } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
-  }
-}
-
-async function changeRepresentativeStatus(repId, action) {
-  try {
-    await request(`/api/v1/crm/representatives/${repId}/${action}`, { method: "PATCH" });
-    notice(action === "deactivate" ? "Representative deactivated." : "Representative reactivated.", "success");
-    await loadRepresentatives();
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
@@ -4544,7 +4770,7 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
             <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
             <td>${escapeHtml(operation.operationType)}</td>
             <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operation.status)}</span></td>
-            <td>${escapeHtml(operation.paymentMethod || "-")}</td>
+            <td>${escapeHtml(movementMethodLabel(operation.paymentMethod))}</td>
             <td>${escapeHtml(operation.quantity || 0)}</td>
             <td>${escapeHtml(operation.bonusQuantity || 0)}</td>
             <td>${escapeHtml(formatMoney(operation.total || 0))}</td>
@@ -4615,7 +4841,8 @@ async function addMerchantNote(merchantId) {
 async function renderOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
-  operationsUiState.operationType = operationsUiState.operationType || "WarehouseTransfer";
+  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "Change", "WriteOff"];
+  operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : "WarehouseTransfer";
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Operations",
@@ -4638,14 +4865,13 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
             </div>
-            <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+          <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
             <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
-            <div class="field op-rep-field"><label for="op-representative">Representative</label><select id="op-representative" class="select"></select></div>
             <div class="field op-buyer-field"><label for="op-buyer">Buyer name</label><input id="op-buyer" class="input" autocomplete="off"></div>
             <div class="field op-buyer-field"><label for="op-buyer-phone">Buyer phone</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
-            <div class="field op-payment-field"><label for="op-payment">Payment method</label><select id="op-payment" class="select"><option value="">-</option><option value="CashHandToHand">Cash hand to hand</option><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option></select></div>
+            <div class="field op-payment-field"><label for="op-payment">Payment method <span aria-hidden="true">*</span></label><select id="op-payment" class="select"><option value="">Choose method</option><option value="CashHandToHand">Cash hand to hand</option><option value="CashTransaction">Cash transaction</option><option value="MerchantAccount">Merchant account</option></select></div>
             <div class="field"><label for="op-supplier">Supplier</label><input id="op-supplier" class="input" autocomplete="off" placeholder="Receipt only"></div>
             <div class="field"><label for="op-invoice">Invoice</label><input id="op-invoice" class="input" autocomplete="off" placeholder="Used for receipt flows"></div>
             <div class="field"><label for="op-notes">Notes</label><input id="op-notes" class="input" autocomplete="off"></div>
@@ -4658,6 +4884,7 @@ async function renderOperations() {
           <section class="band operation-line-panel">
             <div class="section-head tight-head"><div><h2>Operation lines</h2><p>Search stock first or choose product attributes to resolve the SKU.</p></div><button id="op-add-line" class="button secondary" type="button">Add line</button></div>
             <div id="op-lines" class="line-editor"></div>
+            <div id="operation-line-pagination" class="pagination"></div>
           </section>
         </form>` : `<p class="muted-text">This role can inspect operations but cannot create or revise drafts.</p>`}
     </section>
@@ -4666,34 +4893,77 @@ async function renderOperations() {
         <div><h2>Queue</h2><p>Active operations stay compact here. Use Details to inspect versions, stock movement, and documents.</p></div>
       </div>
       <div class="toolbar">
+        <label class="field"><span>Search</span><input id="operations-search" class="input" type="search" placeholder="Operation, merchant, buyer, SKU, or payment reference"></label>
+        <label class="field"><span>Type</span><select id="operations-type" class="select"><option value="">All types</option><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail sale</option><option value="Return">Return</option><option value="Change">Exchange</option><option value="WriteOff">Write-off</option></select></label>
+        <label class="field"><span>Status</span><select id="operations-status" class="select"><option value="">All statuses</option><option value="Draft">Draft</option><option value="Confirmed">Confirmed</option><option value="Reserved">Reserved</option><option value="Shipped">Shipped</option><option value="Received">Received</option><option value="Completed">Completed</option><option value="Cancelled">Cancelled</option></select></label>
+        <label class="field"><span>From</span><input id="operations-from" class="input" type="date"></label>
+        <label class="field"><span>To</span><input id="operations-to" class="input" type="date"></label>
+        <label class="field"><span>Rows</span><select id="operations-page-size" class="select"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option></select></label>
         <label class="check-field"><input id="operations-show-completed" type="checkbox"><span>Show completed/received/cancelled history</span></label>
       </div>
       <div class="table-wrap">
         <table><thead><tr><th>No.</th><th>Type</th><th>Status</th><th>Route</th><th>Created</th><th>Action</th></tr></thead><tbody id="operation-rows"></tbody></table>
       </div>
+      <div id="operation-list-pagination" class="pagination"></div>
     </section>`;
 
   if (canWrite) {
-    await Promise.all([hydrateOperationLocations(), hydrateOperationSkus(), hydrateOperationCrmOptions()]);
+    // The queue is useful before an operator starts a new document.  Keep
+    // editor-only catalog and CRM data out of this first paint.
+    await hydrateOperationLocations();
     const typeControl = document.getElementById("op-type");
     if (!typeControl) {
       return;
     }
     typeControl.value = operationsUiState.operationType;
-    typeControl.addEventListener("change", syncOperationTypeControls);
+    typeControl.addEventListener("change", () => {
+      syncOperationTypeControls();
+      const type = typeControl.value;
+      if (["WholesaleSale", "RetailSale", "Return", "Change"].includes(type)) {
+        void hydrateOperationCrmOptions();
+      }
+    });
     document.getElementById("op-source").addEventListener("change", () => {
       lockOperationRouteIfSelected();
       void refreshOperationSkuAvailability();
+      primeAllOperationStockOptions();
     });
-    document.getElementById("op-destination").addEventListener("change", lockOperationRouteIfSelected);
-    document.getElementById("op-add-line").addEventListener("click", () => addOperationLine());
+    document.getElementById("op-destination").addEventListener("change", () => {
+      lockOperationRouteIfSelected();
+      primeAllOperationStockOptions();
+    });
+    document.getElementById("op-merchant").addEventListener("change", primeAllOperationStockOptions);
+    document.getElementById("op-add-line").addEventListener("click", async () => {
+      await hydrateOperationSkus();
+      addOperationLine();
+    });
     document.getElementById("operation-editor-reset").addEventListener("click", resetOperationEditorMode);
+    wireOperationLineEditor();
+    operationEditorLines = [];
+    operationEditorLineById.clear();
+    operationEditorPage = 1;
     addOperationLine();
     syncOperationTypeControls();
     applyOperationEditorMode();
     document.getElementById("operation-form").addEventListener("submit", submitOperationEditor);
   }
-  document.getElementById("operations-show-completed").addEventListener("change", loadOperations);
+  const operationQuery = currentRouteQuery();
+  for (const [id, key] of [["operations-search", "search"], ["operations-type", "operationType"], ["operations-status", "status"], ["operations-from", "createdFrom"], ["operations-to", "createdTo"], ["operations-page-size", "pageSize"]]) {
+    const value = operationQuery.get(key);
+    const control = document.getElementById(id);
+    if (control && value) control.value = value;
+  }
+  const completedQuery = operationQuery.get("includeCompleted");
+  if (completedQuery !== null) document.getElementById("operations-show-completed").checked = completedQuery === "true";
+  document.getElementById("operations-show-completed").addEventListener("change", () => { operationListPage = 1; void loadOperations(); });
+  ["operations-search", "operations-type", "operations-status", "operations-from", "operations-to", "operations-page-size"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", (event) => {
+      if (event.target.id !== "operations-search") { operationListPage = 1; void loadOperations(); return; }
+      clearTimeout(window.__operationQueueSearchTimer);
+      window.__operationQueueSearchTimer = setTimeout(() => { operationListPage = 1; void loadOperations(); }, 250);
+    });
+    document.getElementById(id)?.addEventListener("change", () => { operationListPage = 1; void loadOperations(); });
+  });
   await loadOperations();
 }
 
@@ -4729,42 +4999,16 @@ async function hydrateOperationSkusCore() {
     page += 1;
   } while (products.length < totalCount);
 
-  const skus = [];
-  const productOptions = [];
-  for (const product of products) {
-    const detail = await request(`/api/v1/catalog/products/${product.id}`);
-    productOptions.push({
-      id: detail.id,
-      name: detail.name,
-      brandName: detail.brandName,
-      categoryName: detail.categoryName,
-      productType: detail.productType,
-      expiryType: detail.expiryType,
-      piecesPerPack: detail.piecesPerPack,
-      sellMode: detail.sellMode,
-      label: `${detail.brandName} / ${detail.name}`
-    });
-    for (const sku of detail.skus.filter((value) => value.isActive)) {
-      skus.push({
-        id: sku.id,
-        productId: detail.id,
-        productName: detail.name,
-        brandName: detail.brandName,
-        categoryName: detail.categoryName,
-        productType: detail.productType,
-        piecesPerPack: detail.piecesPerPack,
-        sellMode: detail.sellMode,
-        skuCode: sku.skuCode,
-        powerSign: sku.powerSign,
-        powerValue: sku.powerValue,
-        colorName: sku.colorName,
-        size: sku.size,
-        label: `${detail.name} / ${sku.skuCode}`
-      });
-    }
-  }
-  operationSkuOptions = skus;
-  operationProductOptions = productOptions.sort((a, b) => a.label.localeCompare(b.label));
+  operationProductOptions = products.map((product) => ({
+    id: product.id,
+    name: product.name,
+    brandName: product.brandName,
+    categoryName: product.categoryName,
+    productType: product.productType,
+    piecesPerPack: product.piecesPerPack,
+    sellMode: product.sellMode,
+    label: `${product.brandName} / ${product.name}`
+  })).sort((a, b) => a.label.localeCompare(b.label));
   document.querySelectorAll(".line-editor-row").forEach((row) => {
     const skuId = row.querySelector(".op-line-sku")?.value;
     populateOperationProductOptions(row);
@@ -4780,34 +5024,51 @@ async function hydrateOperationSkusCore() {
 
 async function hydrateOperationCrmOptions() {
   try {
-    const [merchants, representatives] = await Promise.all([
-      fetchMerchantList(""),
-      request("/api/v1/crm/representatives?includeInactive=false")
-    ]);
+    const merchants = await fetchMerchantList("");
     operationMerchantOptions = (merchants.items || []).filter((merchant) => merchant.status === "Active");
-    operationRepresentativeOptions = representatives || [];
     const merchantSelect = document.getElementById("op-merchant");
-    const repSelect = document.getElementById("op-representative");
     if (merchantSelect) {
       merchantSelect.innerHTML = `<option value="">Select merchant</option>${operationMerchantOptions.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}`;
     }
-    if (repSelect) {
-      repSelect.innerHTML = `<option value="">Select representative</option>${operationRepresentativeOptions.map((rep) => `<option value="${escapeHtml(rep.id)}">${escapeHtml(rep.name)}</option>`).join("")}`;
-    }
   } catch {
     operationMerchantOptions = [];
-    operationRepresentativeOptions = [];
   }
 }
 
-function addOperationLine(line = {}) {
+function addOperationLine(line = {}, target = null) {
   const container = document.getElementById("op-lines");
   if (!container) {
     return;
   }
 
+  const model = {
+    _clientId: line._clientId || line.operationLineId || createUuid(),
+    operationLineId: line.operationLineId || null,
+    skuId: line.skuId || "",
+    entryMode: line.entryMode || "Packs",
+    section: line.section || "ChangeOut",
+    packQuantity: line.packQuantity ?? 1,
+    pieceQuantity: line.pieceQuantity ?? null,
+    unitPrice: line.unitPrice ?? 0,
+    isBonus: Boolean(line.isBonus),
+    lotNumber: line.lotNumber || null,
+    expiryDate: line.expiryDate || null,
+    notes: line.notes || null,
+    skuCode: line.skuCode || null,
+    productName: line.productName || null
+  };
+  if (!line._fromModel) {
+    syncCurrentOperationPage();
+    operationEditorLines.push(model);
+    operationEditorLineById.set(model._clientId, model);
+    operationEditorPage = Math.max(1, Math.ceil(operationEditorLines.length / operationEditorPageSize));
+    renderOperationEditorPage();
+    return;
+  }
+  line = model;
   const row = document.createElement("div");
   row.className = "line-editor-row";
+  row.dataset.operationLineKey = line._clientId;
   row.dataset.operationLineId = line.operationLineId || "";
   row.innerHTML = `
     <input class="op-line-sku" type="hidden" value="">
@@ -4829,39 +5090,20 @@ function addOperationLine(line = {}) {
   populateOperationProductOptions(row);
   row.querySelector(".op-line-section").value = line.section || "ChangeOut";
   row.querySelector(".op-line-entry-mode").value = line.entryMode || "Packs";
-  const syncLineOnly = () => syncOperationLineControls(document.getElementById("op-type").value);
-  row.querySelector(".op-line-bonus").addEventListener("change", syncLineOnly);
-  row.querySelector(".op-line-section").addEventListener("change", syncLineOnly);
-  row.querySelector(".op-line-search").addEventListener("input", () => renderOperationSkuSearchResults(row));
-  row.querySelector(".op-line-product").addEventListener("change", () => {
-    populateOperationAttributeOptions(row);
-    resolveOperationLineSku(row);
-  });
-  row.querySelector(".op-line-power").addEventListener("change", () => resolveOperationLineSku(row));
-  row.querySelector(".op-line-color").addEventListener("change", () => resolveOperationLineSku(row));
-  row.querySelector(".op-line-size").addEventListener("change", () => resolveOperationLineSku(row));
-  row.querySelector(".op-line-entry-mode").addEventListener("change", () => {
-    syncLineOnly();
-    refreshOperationStockOptions(row);
-  });
-  row.querySelector(".op-line-stock-option").addEventListener("change", () => applySelectedStockOption(row));
-  row.querySelector(".op-remove-line").addEventListener("click", () => {
-    if (container.querySelectorAll(".line-editor-row").length > 1) {
-      row.remove();
-    }
-  });
-  container.appendChild(row);
+  (target || container).appendChild(row);
   if (line.skuId) {
     seedOperationLineSkuSelection(row, line.skuId);
   } else {
     populateOperationAttributeOptions(row);
     resolveOperationLineSku(row);
   }
-  syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "WarehouseTransfer");
+  if (!operationEditorRendering) {
+    syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "WarehouseTransfer");
+  }
   if (line.lotNumber !== undefined || line.expiryDate !== undefined) {
     row.querySelector(".op-line-lot").value = line.lotNumber || "";
     row.querySelector(".op-line-expiry").value = line.expiryDate || "";
-    void refreshOperationStockOptions(row);
+    primeOperationStockOption(row);
   }
 }
 
@@ -4871,6 +5113,114 @@ function isOperationStockConsumingType(type) {
 
 function isOperationBatchSelectionType(type) {
   return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff"].includes(type);
+}
+
+function readOperationLineRow(row) {
+  const mode = row.querySelector(".op-line-entry-mode").value;
+  const skuId = row.querySelector(".op-line-sku").value;
+  const existing = operationEditorLineById.get(row.dataset.operationLineKey);
+  const selectedSku = operationSkuOptions.find((value) => value.id === skuId);
+  return {
+    operationLineId: row.dataset.operationLineId || null,
+    skuId,
+    packQuantity: mode === "Pieces" ? 0 : Number(row.querySelector(".op-line-qty").value),
+    pieceQuantity: mode === "Pieces" ? Number(row.querySelector(".op-line-qty").value) : null,
+    entryMode: mode,
+    section: row.querySelector(".op-line-section").value,
+    unitPrice: Number(row.querySelector(".op-line-price").value || 0),
+    isBonus: row.querySelector(".op-line-bonus").checked,
+    lotNumber: row.querySelector(".op-line-lot").value.trim() || null,
+    expiryDate: row.querySelector(".op-line-expiry").value || null,
+    notes: existing?.notes || null,
+    skuCode: selectedSku?.skuCode || (existing?.skuId === skuId ? existing?.skuCode : null),
+    productName: selectedSku?.productName || (existing?.skuId === skuId ? existing?.productName : null)
+  };
+}
+
+function syncCurrentOperationPage() {
+  document.querySelectorAll("#op-lines .line-editor-row").forEach((row) => {
+    const model = operationEditorLineById.get(row.dataset.operationLineKey);
+    if (model) Object.assign(model, readOperationLineRow(row));
+  });
+}
+
+function renderOperationEditorPage() {
+  const container = document.getElementById("op-lines");
+  if (!container) return;
+  const start = (operationEditorPage - 1) * operationEditorPageSize;
+  const fragment = document.createDocumentFragment();
+  operationEditorRendering = true;
+  try {
+    operationEditorLines.slice(start, start + operationEditorPageSize)
+      .forEach((line) => addOperationLine({ ...line, _fromModel: true }, fragment));
+  } finally {
+    operationEditorRendering = false;
+  }
+  container.replaceChildren(fragment);
+  const pager = document.getElementById("operation-line-pagination");
+  if (!pager) return;
+  const pages = Math.max(1, Math.ceil(operationEditorLines.length / operationEditorPageSize));
+  pager.hidden = pages <= 1;
+  setPagerContents(pager, uiText("Previous"), `${start + 1}-${Math.min(start + operationEditorPageSize, operationEditorLines.length)} / ${operationEditorLines.length}`, uiText("Next"), operationEditorPage <= 1, operationEditorPage >= pages, (delta) => {
+    syncCurrentOperationPage();
+    operationEditorPage += delta;
+    renderOperationEditorPage();
+  });
+  syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType);
+  applyShopifyCommercialLocks();
+}
+
+function renderInventoryPager(tbody, kind, result, loader) {
+  const tableWrap = tbody.closest(".table-wrap");
+  if (!tableWrap) return;
+  let pager = tableWrap.nextElementSibling;
+  if (!pager?.matches?.(`[data-inventory-pager="${kind}"]`)) {
+    pager = document.createElement("div");
+    pager.className = "pagination";
+    pager.dataset.inventoryPager = kind;
+    tableWrap.insertAdjacentElement("afterend", pager);
+  }
+  const totalPages = Math.max(1, result.totalPages || Math.ceil((result.totalCount || 0) / (result.pageSize || 50)));
+  const page = Math.min(result.page || inventoryPageState[kind] || 1, totalPages);
+  inventoryPageState[kind] = page;
+  pager.hidden = totalPages <= 1;
+  setPagerContents(pager, uiText("Previous"), `${page} / ${totalPages}`, uiText("Next"), page <= 1, page >= totalPages, (delta) => {
+    inventoryPageState[kind] = page + delta;
+    void loader();
+  });
+}
+
+function setPagerContents(pager, previousLabel, summary, nextLabel, previousDisabled, nextDisabled, onMove) {
+  const previous = document.createElement("button");
+  previous.className = "button secondary";
+  previous.type = "button";
+  previous.disabled = previousDisabled;
+  previous.textContent = previousLabel;
+  previous.addEventListener("click", () => onMove(-1));
+  const label = document.createElement("span");
+  label.textContent = summary;
+  const next = document.createElement("button");
+  next.className = "button secondary";
+  next.type = "button";
+  next.disabled = nextDisabled;
+  next.textContent = nextLabel;
+  next.addEventListener("click", () => onMove(1));
+  pager.replaceChildren(previous, label, next);
+}
+
+function isInboundOperationLine(type, row) {
+  return type === "InventoryReceipt" || type === "Return" ||
+    (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut");
+}
+
+function operationLineBatchSource(type, row) {
+  if (type === "InventoryReceipt") {
+    return "inventory-inbound";
+  }
+  if (type === "Return" || (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut")) {
+    return "merchant-inbound";
+  }
+  return "inventory-outbound";
 }
 
 function availableOperationSkusForType(type) {
@@ -4888,13 +5238,7 @@ function populateOperationProductOptions(row) {
   }
 
   const current = select.value;
-  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
-  const skuPool = availableOperationSkusForType(type);
-  const availableProductIds = new Set(skuPool.map((sku) => sku.productId));
-  const products = operationProductOptions.filter((product) =>
-    !isOperationStockConsumingType(type) ||
-    operationAvailableSkuIds === null ||
-    availableProductIds.has(product.id));
+  const products = operationProductOptions;
 
   select.innerHTML = `<option value="">Select product</option>${products.map((product) =>
     `<option value="${escapeHtml(product.id)}">${escapeHtml(product.label)}</option>`).join("")}`;
@@ -5012,8 +5356,15 @@ function resolveOperationLineSku(row, options = {}) {
 function seedOperationLineSkuSelection(row, skuId) {
   const sku = operationSkuOptions.find((value) => value.id === skuId);
   if (!sku) {
+    const model = operationEditorLineById.get(row.dataset.operationLineKey);
     row.querySelector(".op-line-sku").value = skuId || "";
-    row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-warn">Unknown SKU</span><span class="muted-cell">${escapeHtml(shortId(skuId, "SKU"))}</span>`;
+    row.querySelector(".op-line-resolved").innerHTML = model?.skuCode
+      ? `<span class="status-pill status-ok">Resolved SKU</span><strong>${escapeHtml(model.skuCode)}</strong><span class="muted-cell">${escapeHtml(model.productName || "")}</span>`
+      : `<span class="status-pill status-warn">Unknown SKU</span><span class="muted-cell">${escapeHtml(shortId(skuId, "SKU"))}</span>`;
+    if (model?.skuCode) return;
+    void ensureSkuOption(skuId).then((loaded) => {
+      if (loaded && row.isConnected) seedOperationLineSkuSelection(row, skuId);
+    });
     return;
   }
 
@@ -5027,7 +5378,7 @@ function seedOperationLineSkuSelection(row, skuId) {
   row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-ok">Resolved SKU</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`;
 }
 
-function renderOperationSkuSearchResults(row) {
+async function renderOperationSkuSearchResults(row) {
   const input = row.querySelector(".op-line-search");
   const results = row.querySelector(".op-line-search-results");
   const query = input.value.trim().toLowerCase();
@@ -5037,14 +5388,17 @@ function renderOperationSkuSearchResults(row) {
     return;
   }
 
+  const requestId = (skuSearchRequests.get(row) || 0) + 1;
+  skuSearchRequests.set(row, requestId);
+  let matches;
+  try {
+    matches = await searchSkuOptions(query, 20);
+  } catch {
+    matches = [];
+  }
+  if (skuSearchRequests.get(row) !== requestId || input.value.trim().toLowerCase() !== query) return;
   const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
-  const terms = query.split(/\s+/).filter(Boolean);
-  const matches = availableOperationSkusForType(type)
-    .filter((sku) => {
-      const haystack = `${sku.productName} ${sku.brandName} ${sku.categoryName} ${sku.skuCode} ${formatOperationPowerKey(operationPowerKey(sku))} ${sku.colorName || ""} ${sku.size || ""}`.toLowerCase();
-      return terms.every((term) => haystack.includes(term));
-    })
-    .slice(0, 8);
+  matches = matches.filter((sku) => !isOperationStockConsumingType(type) || operationAvailableSkuIds === null || operationAvailableSkuIds.has(sku.id)).slice(0, 8);
 
   setupAdaptiveSearchResultDismissal();
   collapseAdaptiveSearchResults(results);
@@ -5080,7 +5434,7 @@ function clearOperationLineStockFields(row) {
 }
 
 function syncOperationTypeControls() {
-  const type = canonicalSelectValue("op-type");
+  const type = canonicalSelectValue("op-type", "operationType");
   operationsUiState.operationType = type;
   const source = document.getElementById("op-source");
   const destination = document.getElementById("op-destination");
@@ -5121,7 +5475,7 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
-    void refreshAllOperationStockOptions();
+    primeAllOperationStockOptions();
     applyOperationEditorMode();
     return;
   }
@@ -5132,7 +5486,7 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: true, payment: true, receipt: false });
-    void refreshAllOperationStockOptions();
+    primeAllOperationStockOptions();
     applyOperationEditorMode();
     return;
   }
@@ -5202,6 +5556,7 @@ function setOperationFieldGroupVisibility({ merchant, rep, buyer, payment, recei
   setFieldGroupState(".op-rep-field", rep);
   setFieldGroupState(".op-buyer-field", buyer);
   setFieldGroupState(".op-payment-field", payment);
+  setRequiredWhenVisible(document.getElementById("op-payment"), payment);
   setSingleFieldState(document.getElementById("op-supplier"), receipt);
   setSingleFieldState(document.getElementById("op-invoice"), receipt);
 }
@@ -5227,9 +5582,23 @@ function setSingleFieldState(control, visible) {
   }
 }
 
+function setRequiredWhenVisible(control, required) {
+  if (!control) {
+    return;
+  }
+  control.required = Boolean(required);
+  if (!required) {
+    control.removeAttribute("required");
+    control.setAttribute("aria-required", "false");
+    control.value = "";
+    return;
+  }
+  control.setAttribute("required", "");
+  control.setAttribute("aria-required", "true");
+}
+
 function syncOperationLineControls(type) {
   const isSale = ["WholesaleSale", "RetailSale"].includes(type);
-  const isBatchSelectedFlow = isOperationBatchSelectionType(type);
   const isFinancialShell = ["Return", "Change"].includes(type);
   document.querySelectorAll(".line-editor-row").forEach((row) => {
     const entryMode = row.querySelector(".op-line-entry-mode");
@@ -5252,21 +5621,9 @@ function syncOperationLineControls(type) {
       section.value = "ChangeOut";
     }
 
-    row.querySelectorAll(".op-line-receipt-field").forEach((field) => {
-      const visible = type === "InventoryReceipt" || type === "Return" || (type === "Change" && section.value === "ChangeOut");
-      field.hidden = !visible;
-      field.querySelectorAll("input").forEach((input) => {
-        input.disabled = !visible && !isSale && !isBatchSelectedFlow;
-        if (!visible && !isSale && !isBatchSelectedFlow) {
-          input.value = "";
-        }
-      });
-    });
-    stockField.hidden = !isBatchSelectedFlow;
-    stockSelect.disabled = !isBatchSelectedFlow;
-    if (!isBatchSelectedFlow) {
-      stockSelect.innerHTML = `<option value="">Not required</option>`;
-    }
+    stockField.hidden = false;
+    stockSelect.disabled = false;
+    syncOperationBatchEntryFields(row);
 
     priceField.hidden = !isSale && !isFinancialShell;
     bonusField.hidden = !isSale;
@@ -5279,7 +5636,7 @@ function syncOperationLineControls(type) {
       price.value = 0;
     }
   });
-  if (isBatchSelectedFlow) {
+  if (isOperationBatchSelectionType(type)) {
     void refreshOperationSkuAvailability();
   } else {
     operationAvailableSkuIds = null;
@@ -5291,10 +5648,24 @@ function syncOperationLineControls(type) {
   }
 }
 
-function refreshAllOperationStockOptions() {
-  document.querySelectorAll(".line-editor-row").forEach((row) => {
-    void refreshOperationStockOptions(row);
-  });
+function primeOperationStockOption(row) {
+  const select = row.querySelector(".op-line-stock-option");
+  if (!select) return;
+  operationStockOptionRequests.get(select)?.abort();
+  operationStockOptionRequests.delete(select);
+  delete select.dataset.lookupKey;
+  const lotNumber = row.querySelector(".op-line-lot")?.value || "";
+  const expiryDate = row.querySelector(".op-line-expiry")?.value || "";
+  const current = encodeStockOption({ lotNumber, expiryDate });
+  select.replaceChildren();
+  const option = document.createElement("option");
+  option.value = current;
+  option.textContent = current ? `${expiryDate || "No expiry"} / ${lotNumber || "No lot"}` : "Open to load available batches";
+  select.appendChild(option);
+}
+
+function primeAllOperationStockOptions() {
+  document.querySelectorAll("#op-lines .line-editor-row").forEach(primeOperationStockOption);
 }
 
 async function refreshOperationSkuAvailability() {
@@ -5307,15 +5678,13 @@ async function refreshOperationSkuAvailability() {
       populateOperationAttributeOptions(row);
       resolveOperationLineSku(row);
     });
-    refreshAllOperationStockOptions();
+    primeAllOperationStockOptions();
     return;
   }
 
   try {
-    const result = await request(`/api/v1/inventory/stock-balances?locationId=${encodeURIComponent(sourceId)}&pageSize=1000`);
-    operationAvailableSkuIds = new Set((result.items || [])
-      .filter((balance) => (balance.availablePacks || 0) > 0 || (balance.availablePieces || 0) > 0)
-      .map((balance) => balance.skuId));
+    const ids = await request(`/api/v1/inventory/available-sku-ids?locationId=${encodeURIComponent(sourceId)}`);
+    operationAvailableSkuIds = new Set(ids || []);
   } catch {
     operationAvailableSkuIds = null;
   }
@@ -5330,7 +5699,7 @@ async function refreshOperationSkuAvailability() {
       resolveOperationLineSku(row);
     }
   });
-  refreshAllOperationStockOptions();
+  primeAllOperationStockOptions();
 }
 
 function applyOperationEditorMode() {
@@ -5392,7 +5761,7 @@ function applyOperationEditorMode() {
 function applyShopifyCommercialLocks() {
   const form = document.getElementById("operation-form");
   const locked = operationsUiState.mode === "edit" && form?.dataset.shopifyDraft === "true";
-  ["op-source", "op-destination", "op-merchant", "op-representative", "op-buyer", "op-buyer-phone", "op-payment", "op-supplier", "op-invoice", "op-notes", "op-add-line"].forEach((id) => {
+  ["op-source", "op-destination", "op-merchant", "op-buyer", "op-buyer-phone", "op-payment", "op-supplier", "op-invoice", "op-notes", "op-add-line"].forEach((id) => {
     const control = document.getElementById(id);
     if (control) control.disabled = locked;
   });
@@ -5417,6 +5786,9 @@ function resetOperationEditorMode() {
   const lines = document.getElementById("op-lines");
   if (lines) {
     lines.innerHTML = "";
+    operationEditorLines = [];
+    operationEditorLineById.clear();
+    operationEditorPage = 1;
     addOperationLine();
   }
   const typeControl = document.getElementById("op-type");
@@ -5437,7 +5809,7 @@ function seedOperationEditor(detail, mode) {
     sourceLocationId: detail.sourceLocationId,
     destinationLocationId: detail.destinationLocationId,
     merchantId: detail.clientId,
-    representativeId: detail.representativeId,
+    representativeId: null,
     buyerName: detail.clientId ? null : detail.clientName,
     buyerPhone: detail.buyerPhone,
     paymentMethod: detail.paymentMethod,
@@ -5457,16 +5829,12 @@ function seedOperationEditor(detail, mode) {
   document.getElementById("op-source").value = detail.sourceLocationId || "";
   document.getElementById("op-destination").value = detail.destinationLocationId || "";
   const merchant = document.getElementById("op-merchant");
-  const rep = document.getElementById("op-representative");
   const buyer = document.getElementById("op-buyer");
   const buyerPhone = document.getElementById("op-buyer-phone");
   const payment = document.getElementById("op-payment");
   const notes = document.getElementById("op-notes");
   if (merchant) {
     merchant.value = detail.clientId || "";
-  }
-  if (rep) {
-    rep.value = detail.representativeId || "";
   }
   if (buyer && detail.operationType === "RetailSale" && !detail.clientId) {
     buyer.value = detail.clientName || "";
@@ -5489,9 +5857,8 @@ function seedOperationEditor(detail, mode) {
     invoice.value = detail.receipt.invoiceNumber || "";
   }
 
-  const lines = document.getElementById("op-lines");
-  lines.innerHTML = "";
-  (detail.lines || []).forEach((line) => addOperationLine({
+  operationEditorLines = (detail.lines || []).map((line) => ({
+    _clientId: line.id || createUuid(),
     operationLineId: line.id,
     skuId: line.skuId,
     entryMode: line.entryMode,
@@ -5502,12 +5869,27 @@ function seedOperationEditor(detail, mode) {
     lotNumber: line.lotNumber,
     expiryDate: line.expiryDate,
     section: line.section,
-    notes: line.notes
+    notes: line.notes,
+    skuCode: line.skuCode,
+    productName: line.productName,
+    lineTotal: line.lineTotal,
+    merchantNameSnapshot: line.merchantNameSnapshot,
+    representativeNameSnapshot: line.representativeNameSnapshot,
+    shopifyLineItemId: line.shopifyLineItemId,
+    shopifyVariantId: line.shopifyVariantId,
+    shopifySku: line.shopifySku,
+    shopifyTitle: line.shopifyTitle,
+    shopifyVariantTitle: line.shopifyVariantTitle,
+    shopifyProperties: line.shopifyProperties
   }));
-  if ((detail.lines || []).length === 0) {
+  operationEditorLineById = new Map(operationEditorLines.map((line) => [line._clientId, line]));
+  operationEditorPage = 1;
+  if (operationEditorLines.length === 0) {
     addOperationLine();
+  } else {
+    renderOperationEditorPage();
   }
-  refreshAllOperationStockOptions();
+  primeAllOperationStockOptions();
   applyOperationEditorMode();
 }
 
@@ -5521,7 +5903,7 @@ function getOperationLinePrefillQuantity(line) {
 
 async function startOperationEditorMode(operationId, mode) {
   try {
-    const detail = await request(`/api/v1/operations/${operationId}`);
+    const detail = await request(`/api/v1/operations/${operationId}/editor`);
     seedOperationEditor(detail, mode);
     notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
   } catch (exception) {
@@ -5532,58 +5914,111 @@ async function startOperationEditorMode(operationId, mode) {
 async function refreshOperationStockOptions(row) {
   const type = document.getElementById("op-type")?.value;
   const select = row.querySelector(".op-line-stock-option");
-  if (!select || !isOperationBatchSelectionType(type)) {
+  if (!select || !type) {
     return;
   }
 
-  const sourceId = document.getElementById("op-source")?.value;
+  const batchSource = operationLineBatchSource(type, row);
+  const locationId = batchSource === "inventory-inbound"
+    ? document.getElementById("op-destination")?.value
+    : document.getElementById("op-source")?.value;
+  const merchantId = document.getElementById("op-merchant")?.value;
   const skuId = row.querySelector(".op-line-sku")?.value;
   const entryMode = type === "RetailSale" ? row.querySelector(".op-line-entry-mode").value : "Packs";
   const current = encodeStockOption({
     lotNumber: row.querySelector(".op-line-lot").value || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null
   });
+  const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}`;
+  if (select.dataset.lookupKey === lookupKey && select.options.length > 1) return;
 
-  if (!sourceId || !skuId) {
-    select.innerHTML = `<option value="">Select source and SKU</option>`;
+  if (!skuId || (batchSource === "merchant-inbound" ? !merchantId : !locationId)) {
+    select.innerHTML = `<option value="">${batchSource === "merchant-inbound" ? "Select merchant and SKU" : "Select location and SKU"}</option>`;
+    syncOperationBatchEntryFields(row);
     return;
   }
 
-  select.innerHTML = `<option value="">Loading stock...</option>`;
+  select.innerHTML = `<option value="">Loading batches...</option>`;
+  operationStockOptionRequests.get(select)?.abort();
+  const controller = new AbortController();
+  operationStockOptionRequests.set(select, controller);
+  const signal = typeof AbortSignal.any === "function" ? AbortSignal.any([controller.signal, activeRouteController.signal]) : controller.signal;
+  const loadCached = async (loader) => {
+    const cached = operationBatchOptionCache.get(lookupKey);
+    if (cached?.expiresAt > Date.now()) return cached.value;
+    const value = await loader();
+    operationBatchOptionCache.set(lookupKey, { value, expiresAt: Date.now() + 15000 });
+    return value;
+  };
   try {
-    const options = await request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(sourceId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}`);
-    if (!options.length) {
-      select.innerHTML = `<option value="">No non-expired stock</option>`;
-      row.querySelector(".op-line-lot").value = "";
-      row.querySelector(".op-line-expiry").value = "";
-      return;
+    let options;
+    if (batchSource === "merchant-inbound") {
+      const history = await loadCached(() => request(`/api/v1/operations/batch-options/merchant?merchantId=${encodeURIComponent(merchantId)}&skuId=${encodeURIComponent(skuId)}&locationId=${encodeURIComponent(locationId || "")}`, { signal }));
+      options = history
+        .map((option) => ({
+          lotNumber: option.lotNumber,
+          expiryDate: option.expiryDate,
+          label: `${option.expiryDate} / ${option.lotNumber} / recorded balance ${option.recordedBalanceQuantity || 0}`
+        }));
+    } else if (batchSource === "inventory-inbound") {
+      const result = await loadCached(() => request(`/api/v1/inventory/batches?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&includeEmpty=true&pageSize=100`, { signal }));
+      options = (result.items || [])
+        .filter((option) => option.lotNumber && option.expiryDate)
+        .map((option) => ({
+          lotNumber: option.lotNumber,
+          expiryDate: option.expiryDate,
+          label: `${option.expiryDate} / ${option.lotNumber} / ${option.packQuantity || 0} packs`
+        }));
+    } else {
+      options = await loadCached(() => request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}`, { signal }));
     }
 
-    select.innerHTML = `<option value="">Select batch / expiry</option>${options.map((option) => {
+    if (controller.signal.aborted || operationStockOptionRequests.get(select) !== controller) return;
+    select.dataset.lookupKey = lookupKey;
+
+    const uniqueOptions = Array.from(new Map(options.map((option) => [encodeStockOption(option), option])).values());
+    const createNewOption = isInboundOperationLine(type, row)
+      ? `<option value="__new_batch__">Create new batch</option>`
+      : "";
+    select.innerHTML = `<option value="">${uniqueOptions.length ? "Select batch / expiry" : "No matching batch"}</option>${uniqueOptions.map((option) => {
       const value = encodeStockOption(option);
-      const quantity = entryMode === "Pieces" && option.pieceQuantity != null
+      const quantity = batchSource === "inventory-outbound" && entryMode === "Pieces" && option.pieceQuantity != null
         ? `${option.pieceQuantity} pieces`
         : `${option.packQuantity} packs`;
-      const loose = entryMode === "Pieces" && option.loosePieceQuantity > 0 ? `, ${option.loosePieceQuantity} loose` : "";
-      return `<option value="${escapeHtml(value)}">${escapeHtml(`${option.expiryDate || "No expiry"} / ${option.lotNumber || "No lot"} / ${quantity}${loose}`)}</option>`;
-    }).join("")}`;
+      const loose = batchSource === "inventory-outbound" && entryMode === "Pieces" && option.loosePieceQuantity > 0 ? `, ${option.loosePieceQuantity} loose` : "";
+      const label = option.label || `${option.expiryDate} / ${option.lotNumber} / ${quantity}${loose}`;
+      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }).join("")}${createNewOption}`;
     if (current && Array.from(select.options).some((option) => option.value === current)) {
       select.value = current;
+    } else if (current && isInboundOperationLine(type, row)) {
+      select.value = "__new_batch__";
     } else {
       row.querySelector(".op-line-lot").value = "";
       row.querySelector(".op-line-expiry").value = "";
     }
+    syncOperationBatchEntryFields(row);
   } catch (exception) {
-    select.innerHTML = `<option value="">Failed to load stock</option>`;
+    if (exception?.name === "AbortError") return;
+    select.innerHTML = `<option value="">Failed to load batches</option>${isInboundOperationLine(type, row) ? `<option value="__new_batch__">Create new batch</option>` : ""}`;
+    syncOperationBatchEntryFields(row);
     notice(getFriendlyWorkspaceError(exception), "error");
   }
 }
 
 function applySelectedStockOption(row) {
   const select = row.querySelector(".op-line-stock-option");
+  if (select?.value === "__new_batch__") {
+    row.querySelector(".op-line-lot").value = "";
+    row.querySelector(".op-line-expiry").value = "";
+    syncOperationBatchEntryFields(row);
+    row.querySelector(".op-line-lot").focus();
+    return;
+  }
   if (!select?.value) {
     row.querySelector(".op-line-lot").value = "";
     row.querySelector(".op-line-expiry").value = "";
+    syncOperationBatchEntryFields(row);
     return;
   }
 
@@ -5595,6 +6030,7 @@ function applySelectedStockOption(row) {
     row.querySelector(".op-line-lot").value = "";
     row.querySelector(".op-line-expiry").value = "";
   }
+  syncOperationBatchEntryFields(row);
 }
 
 function encodeStockOption(option) {
@@ -5614,12 +6050,28 @@ async function loadOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
   try {
-    const result = await request("/api/v1/operations?pageSize=50");
     const showCompleted = document.getElementById("operations-show-completed")?.checked;
-    const items = showCompleted
-      ? result.items
-      : result.items.filter((operation) => !["Received", "Completed", "Confirmed", "Cancelled"].includes(operation.status));
-    count.textContent = showCompleted ? `${result.totalCount} operations` : `${items.length} active`;
+    const params = new URLSearchParams({
+      page: String(operationListPage),
+      pageSize: document.getElementById("operations-page-size")?.value || "50",
+      includeCompleted: showCompleted ? "true" : "false"
+    });
+    const search = document.getElementById("operations-search")?.value.trim();
+    const type = document.getElementById("operations-type")?.value;
+    const status = document.getElementById("operations-status")?.value;
+    const from = document.getElementById("operations-from")?.value;
+    const to = document.getElementById("operations-to")?.value;
+    if (search) params.set("search", search);
+    if (type) params.set("operationType", type);
+    if (status) params.set("status", status);
+    if (from) params.set("createdFrom", from);
+    if (to) params.set("createdTo", to);
+    if (currentPath() === "/operations") {
+      history.replaceState(null, "", `#/operations?${params.toString()}`);
+    }
+    const result = await request(`/api/v1/operations?${params.toString()}`);
+    const items = result.items;
+    count.textContent = showCompleted ? `${result.totalCount} operations` : `${result.totalCount} active`;
     tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">No active operations.</td></tr>` : items.map((operation) => `
       <tr data-operation-id="${escapeHtml(operation.id)}" data-operation-number="${escapeHtml(operation.operationNumber)}" data-operation-type="${escapeHtml(operation.operationType)}" data-operation-status="${escapeHtml(operation.status)}">
         <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">Allocation pending</span>` : ""}</td>
@@ -5635,6 +6087,13 @@ async function loadOperations() {
     tbody.querySelectorAll("[data-op-edit]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opEdit, "edit")));
     tbody.querySelectorAll("[data-op-revise]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opRevise, "revise")));
     bindPrintReportButtons(tbody);
+    const pager = document.getElementById("operation-list-pagination");
+    if (pager) {
+      const pages = Math.max(1, result.totalPages || 1);
+      operationListPage = Math.min(result.page || operationListPage, pages);
+      pager.hidden = pages <= 1;
+      setPagerContents(pager, uiText("Previous"), `${operationListPage} / ${pages}`, uiText("Next"), operationListPage <= 1, operationListPage >= pages, (delta) => { operationListPage += delta; void loadOperations(); });
+    }
     for (const operationId of operationsUiState.openDetailIds) {
       const toggle = tbody.querySelector(`[data-op-toggle][data-op-id="${operationId}"]`);
       if (toggle) {
@@ -5650,11 +6109,16 @@ async function loadOperations() {
 
 async function submitOperationEditor(event) {
   event.preventDefault();
-  const type = document.getElementById("op-type").value;
+  const type = canonicalSelectValue("op-type", "operationType");
+  if (type === "Reserve") {
+    notice("Reserve is temporarily unavailable.", "error");
+    return;
+  }
   const lines = readOperationLines(type);
   const isShopifyDraft = operationsUiState.mode === "edit" && document.getElementById("operation-form")?.dataset.shopifyDraft === "true";
   if (isShopifyDraft && operationsUiState.operationId) {
-    if (lines.some((line) => !line.operationLineId || !line.expiryDate || !line.stockOptionSelected)) {
+    if (lines.some((line) => !line.operationLineId || !line.lotNumber || !line.expiryDate || !line.stockOptionSelected)) {
+      navigateToInvalidOperationLine(lines.findIndex((line) => !line.operationLineId || !line.lotNumber || !line.expiryDate || !line.stockOptionSelected));
       notice("Select a batch and expiry for every Shopify line.", "error");
       return;
     }
@@ -5673,6 +6137,7 @@ async function submitOperationEditor(event) {
   }
   const validationMessage = validateOperationForm(type, lines);
   if (validationMessage) {
+    navigateToInvalidOperationLine(findInvalidOperationLineIndex(type, lines));
     notice(validationMessage, "error");
     return;
   }
@@ -5683,15 +6148,21 @@ async function submitOperationEditor(event) {
     sourceLocationId: document.getElementById("op-source").value || null,
     destinationLocationId: document.getElementById("op-destination").value || null,
     merchantId: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? document.getElementById("op-merchant").value || null : null,
-    representativeId: type === "Reserve" ? document.getElementById("op-representative").value || null : null,
+    representativeId: null,
     buyerName: type === "RetailSale" ? document.getElementById("op-buyer").value || null : null,
     buyerPhone: type === "RetailSale" ? document.getElementById("op-buyer-phone").value || null : null,
-    paymentMethod: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? canonicalSelectValue("op-payment") || null : null,
+    paymentMethod: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? canonicalSelectValue("op-payment", "paymentMethod", { allowEmpty: true }) || null : null,
     notes: document.getElementById("op-notes").value || null,
     receipt: type === "InventoryReceipt" ? { supplierName: document.getElementById("op-supplier").value || "Supplier", invoiceNumber: document.getElementById("op-invoice").value || null } : null,
     lines: payloadLines,
     expectedVersion: ["edit", "revise"].includes(operationsUiState.mode) ? operationsUiState.concurrencyVersion : null
   };
+
+  if (operationsUiState.mode === "revise" && operationsUiState.operationId && operationsUiState.revisionFingerprint === canonicalOperationPayload(body)) {
+    notice("No changes detected; operation was not revised.", "success");
+    resetOperationEditorMode();
+    return;
+  }
 
   try {
     if (operationsUiState.mode === "edit" && operationsUiState.operationId) {
@@ -5719,20 +6190,43 @@ async function submitOperationEditor(event) {
   }
 }
 
+function findInvalidOperationLineIndex(type, lines) {
+  const keys = new Map();
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const quantity = line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity;
+    if (!line.skuId || !line.stockOptionSelected || !line.lotNumber || !line.expiryDate || !Number.isInteger(quantity) || quantity < 1) return index;
+    if (["WholesaleSale", "RetailSale"].includes(type) && !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) return index;
+    const key = operationLineUniquenessKey(type, line);
+    if (keys.has(key)) return index;
+    keys.set(key, index);
+  }
+  return -1;
+}
+
+function navigateToInvalidOperationLine(index) {
+  if (index < 0) return;
+  operationEditorPage = Math.floor(index / operationEditorPageSize) + 1;
+  renderOperationEditorPage();
+  document.querySelectorAll("#op-lines .line-editor-row")[index % operationEditorPageSize]?.classList.add("supply-line-invalid");
+  document.getElementById("operation-line-pagination")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 function readOperationLines(type) {
-  return Array.from(document.querySelectorAll(".line-editor-row")).map((row) => ({
-    operationLineId: row.dataset.operationLineId || null,
-    skuId: row.querySelector(".op-line-sku").value,
-    packQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? 0 : Number(row.querySelector(".op-line-qty").value),
-    pieceQuantity: row.querySelector(".op-line-entry-mode").value === "Pieces" ? Number(row.querySelector(".op-line-qty").value) : null,
-    entryMode: type === "RetailSale" ? canonicalSystemValue(row.querySelector(".op-line-entry-mode").value) : "Packs",
-    section: type === "Change" ? canonicalSystemValue(row.querySelector(".op-line-section").value) : null,
-    unitPrice: row.querySelector(".op-line-bonus").checked ? 0 : Number(row.querySelector(".op-line-price").value || 0),
-    isBonus: ["WholesaleSale", "RetailSale"].includes(type) ? row.querySelector(".op-line-bonus").checked : false,
-    stockOptionSelected: isOperationBatchSelectionType(type) ? Boolean(row.querySelector(".op-line-stock-option").value) : false,
-    expiryDate: isOperationBatchSelectionType(type) || type === "InventoryReceipt" || type === "Return" || (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut") ? row.querySelector(".op-line-expiry").value || null : null,
-    lotNumber: isOperationBatchSelectionType(type) || type === "InventoryReceipt" || type === "Return" || (type === "Change" && row.querySelector(".op-line-section").value === "ChangeOut") ? row.querySelector(".op-line-lot").value || null : null,
-    notes: null
+  syncCurrentOperationPage();
+  return operationEditorLines.map((line) => ({
+    operationLineId: line.operationLineId || null,
+    skuId: line.skuId,
+    packQuantity: line.entryMode === "Pieces" ? 0 : Number(line.packQuantity),
+    pieceQuantity: line.entryMode === "Pieces" ? Number(line.pieceQuantity) : null,
+    entryMode: type === "RetailSale" ? canonicalSystemValue(line.entryMode, "entryMode") : "Packs",
+    section: type === "Change" ? canonicalSystemValue(line.section, "lineSection") : null,
+    unitPrice: line.isBonus ? 0 : Number(line.unitPrice || 0),
+    isBonus: ["WholesaleSale", "RetailSale"].includes(type) ? line.isBonus : false,
+    stockOptionSelected: Boolean(line.lotNumber || line.expiryDate),
+    expiryDate: line.expiryDate || null,
+    lotNumber: line.lotNumber || null,
+    notes: line.notes || null
   }));
 }
 
@@ -5746,6 +6240,9 @@ function validateOperationForm(type, lines) {
   }
   if (lines.some((line) => !line.skuId)) {
     return "Select a SKU for every line.";
+  }
+  if (lines.some((line) => !line.stockOptionSelected || !line.lotNumber || !line.expiryDate)) {
+    return "Select a batch / expiry for every operation line, or choose Create new batch and enter both values.";
   }
   if (new Set(lines.map((line) => operationLineUniquenessKey(type, line))).size !== lines.length) {
     return "Each SKU can appear once per side. Sales may use one paid line and one bonus line for the same SKU.";
@@ -5762,13 +6259,6 @@ function validateOperationForm(type, lines) {
   if (type === "InventoryReceipt" && destination !== main.id) {
     return "Inventory receipt destination must be MainWarehouse.";
   }
-  if (type === "InventoryReceipt" && lines.some((line) => {
-    const sku = operationSkuOptions.find((value) => value.id === line.skuId);
-    const product = operationProductOptions.find((value) => value.id === sku?.productId);
-    return product?.expiryType === "Batch" && !line.expiryDate;
-  })) {
-    return "Batch expiry is required for products with batch expiry tracking.";
-  }
   if (type === "WarehouseTransfer" && (source !== main.id || !destination || destination === main.id)) {
     return "Warehouse transfer must move packs from MainWarehouse to a non-main destination.";
   }
@@ -5781,20 +6271,11 @@ function validateOperationForm(type, lines) {
   if (["WholesaleSale", "RetailSale"].includes(type) && lines.some((line) => !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0))) {
     return "Sale line unit price must be greater than zero unless the line is marked as bonus.";
   }
-  if (isOperationBatchSelectionType(type) && lines.some((line) => !line.stockOptionSelected || !line.expiryDate)) {
-    return "Select a batch / expiry for every stock-consuming line.";
-  }
-  if (type === "RetailSale" && ["Installment"].includes(canonicalSelectValue("op-payment")) && !document.getElementById("op-merchant").value) {
-    return "Retail installment sales require a registered merchant.";
-  }
-  if (type === "Reserve" && !document.getElementById("op-representative").value) {
-    return "Reserve requires a representative.";
+  if (type === "RetailSale" && canonicalSelectValue("op-payment", "paymentMethod", { allowEmpty: true }) === "MerchantAccount" && !document.getElementById("op-merchant").value) {
+    return "Retail merchant-account sales require a registered merchant.";
   }
   if (type === "Return" && !document.getElementById("op-merchant").value) {
     return "Return requires a merchant.";
-  }
-  if (type === "Return" && lines.some((line) => !line.expiryDate)) {
-    return "Return lines must include batch expiry.";
   }
   if (type === "Change") {
     if (!document.getElementById("op-merchant").value) {
@@ -5802,9 +6283,6 @@ function validateOperationForm(type, lines) {
     }
     if (!lines.some((line) => line.section === "ChangeOut") || !lines.some((line) => line.section === "ChangeIn")) {
       return "Change needs at least one returned line and one replacement line.";
-    }
-    if (lines.some((line) => line.section === "ChangeOut" && !line.expiryDate)) {
-      return "Returned change lines must include batch expiry.";
     }
   }
 
@@ -5876,12 +6354,31 @@ async function toggleOperationDetails(operationId, button, forceOpen = false) {
 
   target.innerHTML = `<span class="muted-text">Loading operation details...</span>`;
   try {
-    const detail = await request(`/api/v1/operations/${operationId}`);
-    target.innerHTML = renderOperationDetail(detail);
+    await loadOperationDetailPage(operationId, target, 1);
     target.dataset.loaded = "true";
   } catch (exception) {
     target.innerHTML = `<span class="muted-text">${escapeHtml(getFriendlyWorkspaceError(exception))}</span>`;
   }
+}
+
+async function loadOperationDetailPage(operationId, target, page) {
+    const [detail, lineResult, allocationResult, versionResult] = await Promise.all([
+      request(`/api/v1/operations/${operationId}?includeCollections=false`),
+      request(`/api/v1/operations/${operationId}/lines?page=${page}&pageSize=50`),
+      request(`/api/v1/operations/${operationId}/allocations?page=1&pageSize=50`),
+      request(`/api/v1/operations/${operationId}/versions?page=1&pageSize=25`)
+    ]);
+    detail.lines = lineResult.items || [];
+    detail.allocations = allocationResult.items || [];
+    detail.versions = versionResult.items || [];
+    target.innerHTML = renderOperationDetail(detail);
+    const pages = Math.max(1, lineResult.totalPages || 1);
+    if (pages > 1) {
+      const pager = document.createElement("div");
+      pager.className = "pagination";
+      setPagerContents(pager, uiText("Previous"), `${lineResult.page} / ${pages}`, uiText("Next"), lineResult.page <= 1, lineResult.page >= pages, (delta) => void loadOperationDetailPage(operationId, target, lineResult.page + delta));
+      target.appendChild(pager);
+    }
 }
 
 function renderOperationDetail(detail) {
@@ -5900,8 +6397,7 @@ function renderOperationDetail(detail) {
       <div class="metric"><span>Last edited by</span><strong>${escapeHtml(detail.lastEditedByName || "-")}</strong></div>
       <div class="metric"><span>Route</span><strong>${escapeHtml(formatOperationRoute(detail))}</strong></div>
       <div class="metric"><span>Merchant / buyer</span><strong>${escapeHtml(detail.clientName || "-")}</strong></div>
-      <div class="metric"><span>Representative</span><strong>${escapeHtml(detail.representativeName || "-")}</strong></div>
-      <div class="metric"><span>Payment</span><strong>${escapeHtml(detail.paymentMethod || "-")}</strong></div>
+      <div class="metric"><span>Payment</span><strong>${escapeHtml(movementMethodLabel(detail.paymentMethod))}</strong></div>
       <div class="metric"><span>Channel</span><strong>${escapeHtml(detail.salesChannel || "Manual")}${detail.shopifyOrderNumber ? ` / ${escapeHtml(detail.shopifyOrderNumber)}` : ""}</strong></div>
       <div class="metric"><span>Buyer contact</span><strong>${escapeHtml([detail.buyerPhone, detail.buyerEmail].filter(Boolean).join(" / ") || "-")}</strong></div>
       ${detail.shippingAddress ? `<div class="metric"><span>Shipping address</span><strong>${escapeHtml(detail.shippingAddress)}</strong></div>` : ""}
@@ -6037,7 +6533,7 @@ async function runOperationAction(action, operationId, button, options = {}) {
 
 async function renderPayments() {
   const auth = getAuth();
-  const isAdmin = isSystemAdminRole(auth?.user.role);
+  const isAdmin = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
   const merchants = await loadPaymentMerchants();
   paymentMerchants = merchants;
@@ -6049,84 +6545,176 @@ async function renderPayments() {
       title: "Payments and remaining",
       body: "Handle open confirmations first, then use the ledger and tools for audit, entries, cash records, adjustments, and merchant remaining.",
       metrics: `
-        ${scenarioCard("Queue", "Loading", "status-muted", "payment-count")}
+        ${scenarioCard("Merchant account payments", "Loading", "status-muted", "merchant-payment-count")}
+        ${scenarioCard("Other payments", "Loading", "status-muted", "payment-count")}
         ${scenarioCard("Ledger", "Loading", "status-muted", "payment-history-count")}
         ${scenarioCard("Tools", canDraft || isAdmin ? "Available" : "Read only", canDraft || isAdmin ? "status-ok" : "status-muted")}
       `
     })}
     ${segmentedControl([
-      { target: "payment-queue-section", label: "Queue" },
-      { target: "payment-ledger-section", label: "Ledger" },
-      { target: "payment-tools-section", label: "Tools" }
+      { target: "merchant-payment-section", label: "Merchant account payments", view: "merchant" },
+      { target: "payment-queue-section", label: "Other payments", view: "other" },
+      { target: "payment-review-section", label: "Approval inbox", view: "review" },
+      { target: "payment-ledger-section", label: "Ledger", view: "ledger" },
+      { target: "payment-tools-section", label: "Tools", view: "tools" },
+      { target: "payment-audit-section", label: "Payments audit", view: "audit" }
     ])}
-    <section id="payment-queue-section" class="band payment-queue-band">
+    <section id="merchant-payment-section" data-payment-panel="merchant" class="band payment-queue-band payment-scope-band">
       <div class="section-head">
-        <div><h2>Confirmations queue</h2><p>Open installment and cash confirmations that still need assignment, accountant action, or admin approval.</p></div>
+        <div><h2>Merchant account payments</h2><p>Account collections and merchant operation balances.</p></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Payment</th><th>Merchant</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody id="merchant-payment-rows"><tr><td colspan="9">Loading payments</td></tr></tbody></table></div><div id="merchant-payment-pagination" class="pagination" hidden></div>
+    </section>
+    <section id="payment-queue-section" data-payment-panel="other" class="band payment-queue-band payment-scope-band">
+      <div class="section-head">
+        <div><h2>Other payments</h2><p>Direct retail collections without a registered merchant account.</p></div>
       </div>
       <div class="toolbar">
         <button id="payments-refresh" class="button secondary" type="button">Refresh</button>
+        ${canDraft ? `<button id="other-collection-toggle" class="button" type="button">Record collection</button>` : ""}
         ${isAdmin ? `<select id="payment-accountant" class="select"><option value="">Assign to accountant...</option>${accountantOptions}</select>` : ""}
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Payment</th><th>Buyer</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody id="payment-rows"><tr><td colspan="9">Loading payments</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Payment</th><th>Buyer</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody id="payment-rows"><tr><td colspan="9">Loading payments</td></tr></tbody></table></div><div id="payment-pagination" class="pagination" hidden></div>
     </section>
-    <section id="payment-ledger-section" class="band payment-ledger-band">
+    <section id="payment-review-section" data-payment-panel="review" class="band payment-queue-band payment-scope-band">
+      <div class="section-head"><div><h2>Approval inbox</h2><p>Assigned collection work from merchant accounts and direct operations.</p></div><button id="payment-review-refresh" class="button secondary" type="button">Refresh inbox</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Scope</th><th>Reference</th><th>Source</th><th>Assigned to</th><th>Amount</th><th>Method</th><th>Status</th><th>Action</th></tr></thead><tbody id="payment-review-rows"><tr><td colspan="8">Loading approval work</td></tr></tbody></table></div>
+    </section>
+    <section id="payment-ledger-section" data-payment-panel="other ledger" class="band payment-ledger-band payment-scope-band">
       <div class="section-head">
-        <div><h2>Payment ledger</h2><p>One row per payment with stages, sub-logs, cash records, refunds, and adjustments inside expanded detail.</p></div>
+        <div><h2>Other payment history</h2><p>Direct operation payments, receipts, and review stages.</p></div>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Updated</th><th>Payment</th><th>Buyer / merchant</th><th>Operation</th><th>Method</th><th>Total</th><th>Status</th><th>Actor</th><th>Stages</th></tr></thead><tbody id="payment-history-rows"><tr><td colspan="9">Loading history</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Updated</th><th>Payment</th><th>Buyer / merchant</th><th>Operation</th><th>Method</th><th>Total</th><th>Status</th><th>Actor</th><th>Stages</th></tr></thead><tbody id="payment-history-rows"><tr><td colspan="9">Loading history</td></tr></tbody></table></div><div id="payment-history-pagination" class="pagination" hidden></div>
     </section>
     <section id="payment-tools-section" class="payment-tools-grid">
     ${canDraft ? `
-      <section class="band compact-band payment-tool-card">
-        <h2>Draft payment entry</h2>
-        <form id="payment-sublog-form" class="form grid-form">
-          <div class="field"><label for="payment-log-id">Payment log reference</label><input id="payment-log-id" class="input" required></div>
-          <div class="field"><label for="payment-amount">Amount</label><input id="payment-amount" class="input" type="number" min="0.00" step="0.01" value="0"></div>
-          <div class="field"><label for="payment-method">Method</label><select id="payment-method" class="select"><option value="CashTransaction">Cash transaction</option><option value="Installment">Installment</option><option value="CashHandToHand">Cash hand to hand</option></select></div>
-          <div class="field"><label for="payment-date">Date received</label><input id="payment-date" class="input" type="date"></div>
-          <div class="field full-span"><label for="payment-notes">Notes</label><input id="payment-notes" class="input"></div>
-          <button class="button" type="submit">Draft sub-log</button>
+      <section id="unified-collection-card" data-payment-panel="tools" class="band compact-band payment-tool-card unified-collection-card" hidden>
+        <div class="section-head"><div><h2>Record collection</h2><p>Use the same form for merchant accounts, cash sales, electronic payments, and installments.</p></div><span class="status-pill status-warn">Admin approval required</span></div>
+        <form id="unified-collection-form" class="form grid-form">
+          <div class="form-error full-span" id="unified-collection-error" hidden></div>
+          <div class="field"><label for="collection-source-kind">Collect toward *</label><select id="collection-source-kind" class="select" required><option value="DirectOperation">Operation / payment</option><option value="MerchantAccount">Merchant account</option></select></div>
+          <div class="field" id="collection-source-reference-field"><label for="collection-source-reference">Operation or payment reference *</label><input id="collection-source-reference" class="input" placeholder="OP-… or payment reference"></div>
+          <input id="collection-source-operation-id" type="hidden">
+          <div class="field" id="collection-merchant-field" hidden><label for="collection-merchant">Merchant *</label><select id="collection-merchant" class="select"><option value="">Choose merchant...</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
+          <div class="field"><label for="collection-amount">Amount received *</label><input id="collection-amount" class="input" type="number" min="0.01" step="0.01" required></div>
+          <div class="field"><label for="collection-method">How was it received? *</label><select id="collection-method" class="select" required><option value="">Choose method...</option><option value="CashHandToHand">Cash in hand</option><option value="CashTransaction">Cash transaction</option><option value="BankTransfer">Bank transfer</option><option value="Wallet">Wallet</option></select></div>
+          <div class="field"><label for="collection-transaction-reference">Transaction reference</label><input id="collection-transaction-reference" class="input" placeholder="Required for electronic payments"></div>
+          <div class="field"><label for="collection-date">Date received</label><input id="collection-date" class="input" type="date"></div>
+          <div class="field full-span"><label for="collection-notes">Notes</label><input id="collection-notes" class="input"></div>
+          <p class="muted-text full-span" id="collection-workflow-help">The collection is submitted to the Admin review queue in one step. The balance changes only after approval.</p>
+          <div class="form-actions full-span"><button class="button" type="submit" name="collection-action" value="submit">Send collection for approval</button></div>
         </form>
       </section>` : ""}
-    ${isAdmin ? `
-      <section class="band compact-band payment-tool-card">
-        <h2>Cash receipt record</h2>
-        <form id="cash-record-form" class="form grid-form">
-          <div class="field"><label for="cash-operation-id">Operation reference</label><input id="cash-operation-id" class="input" required></div>
-          <div class="field"><label for="cash-type">Type</label><select id="cash-type" class="select"><option value="CashReceived">Cash received</option></select></div>
-          <div class="field"><label for="cash-amount">Amount</label><input id="cash-amount" class="input" type="number" min="0.01" step="0.01" required></div>
-          <div class="field full-span"><label for="cash-notes">Notes</label><input id="cash-notes" class="input"></div>
-          <button class="button" type="submit">Record cash</button>
-        </form>
-      </section>` : ""}
-      ${canDraft ? `<section class="band compact-band payment-tool-card">
+      ${canDraft ? `<section data-payment-panel="tools" class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
         <p class="muted-text">Every adjustment is linked to its source operation. Cash refunds are approved first, then recorded when cash is actually paid.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
           <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required disabled><option value="">Enter an operation first</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="AdditionalCharge">Additional charge</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
-          <div class="field"><label for="adjustment-operation-id">Operation ID</label><input id="adjustment-operation-id" class="input" placeholder="Required source" required></div>
+          <div class="field"><label for="adjustment-operation-id">Affected order</label><input id="adjustment-operation-id" class="input" placeholder="Order number or operation reference" required><p id="adjustment-order-preview" class="muted-text">Choose the merchant order affected by this adjustment.</p></div>
           <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field full-span"><label for="adjustment-notes">Notes</label><input id="adjustment-notes" class="input"></div>
           <button class="button" type="submit">Request adjustment</button>
         </form>
       </section>` : ""}
-    <section class="band compact-band payment-tool-card merchant-tool-card">
-      <div class="section-head"><h2>Merchant remaining</h2><span id="merchant-balance-status" class="muted-text">Select a merchant</span></div>
-      <div class="toolbar"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><button id="load-merchant-balance" class="button secondary" type="button">Load remaining</button></div>
-      <div id="merchant-balance-panel" class="detail-grid"></div>
+    <section data-payment-panel="merchant" class="band compact-band payment-tool-card merchant-tool-card">
+      <div class="section-head"><div><h2>Merchant account</h2><p>See what the merchant owes, what we owe back, and the latest account activity.</p></div><span id="merchant-balance-status" class="muted-text">Select a merchant</span></div>
+      <div class="toolbar merchant-account-picker"><input id="payment-merchant-search" class="input" type="search" placeholder="Search merchants" aria-label="Search merchants"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><label class="inline-field"><span>From</span><input id="merchant-statement-from" class="input" type="date"></label><label class="inline-field"><span>To</span><input id="merchant-statement-to" class="input" type="date"></label><button id="load-merchant-balance" class="button secondary" type="button">Show account</button></div>
+      <div id="merchant-balance-panel" class="merchant-account-summary"><p class="muted-text">Choose a merchant to see their account.</p></div>
+      <div class="merchant-account-actions">
+        ${canDraft ? `<button id="merchant-collection-toggle" class="button" type="button">Record collection</button>` : ""}
+        <button id="merchant-account-details-toggle" class="button secondary" type="button">Account details</button>
+      </div>
+      <section class="merchant-collection-review">
+        <div class="section-head tight-head"><div><h3>Collection work</h3><p>Saved drafts and amounts waiting for Admin approval.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Submitted</th><th>Reference</th><th>Assigned to</th><th>Amount</th><th>Method</th><th>Status / reason</th><th>Action</th></tr></thead><tbody id="merchant-collection-draft-rows"><tr><td colspan="7">Show an account to view collection work.</td></tr></tbody></table></div>
+      </section>
+      <section id="merchant-account-details" class="merchant-account-details" hidden>
+        <div id="merchant-account-detail-panel" class="detail-grid"></div>
+      </section>
+      <section class="merchant-order-ledger">
+        <div class="section-head tight-head"><div><h3>Orders and mini-invoices</h3><p>Each wholesale order, its collections, and its remaining amount.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Order</th><th>Date</th><th>Items</th><th>Sale total</th><th>Collected</th><th>Returns</th><th>Charges</th><th>Reductions</th><th>Refunds</th><th>Remaining</th><th>Status</th></tr></thead><tbody id="merchant-order-rows"><tr><td colspan="11">Show an account to view orders.</td></tr></tbody></table></div>
+      </section>
+      <div class="section-head merchant-activity-head"><div><h3>Recent activity</h3><p>Every confirmed amount added to or removed from this merchant account.</p></div></div>
+      <div class="table-wrap statement-table-wrap"><table><thead><tr><th>When</th><th>What happened</th><th>Related record</th><th>How</th><th>Added</th><th>Reduced</th><th>Balance</th></tr></thead><tbody id="merchant-statement-rows"><tr><td colspan="7">Show a merchant account to view activity.</td></tr></tbody></table></div>
+    </section>
+    <section id="payment-audit-section" data-payment-panel="audit" class="band payment-audit-band">
+      <div class="section-head"><div><h2>Payments audit</h2><p>Append-only financial workflow events, including assignment, submission, approval, rejection, refunds, and reconciliation.</p></div><button id="payment-audit-refresh" class="button secondary" type="button">Refresh audit</button></div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Status</th><th>Amount</th><th>Method</th><th>Reason</th><th>Details</th></tr></thead><tbody id="payment-audit-rows"><tr><td colspan="7">Load the audit history.</td></tr></tbody></table></div><div id="payment-audit-pagination" class="pagination" hidden></div>
     </section>
     </section>`;
 
-  document.getElementById("payments-refresh").addEventListener("click", () => Promise.all([loadPayments(), loadPaymentHistory()]));
-  document.getElementById("payment-sublog-form")?.addEventListener("submit", draftPaymentSubLog);
-  document.getElementById("cash-record-form")?.addEventListener("submit", createCashRecord);
+  applyPaymentsView("merchant");
+
+  const statementFrom = document.getElementById("merchant-statement-from");
+  const statementTo = document.getElementById("merchant-statement-to");
+  if (statementFrom && statementTo) {
+    const today = new Date();
+    const iso = (value) => value.toISOString().slice(0, 10);
+    statementTo.value = iso(today);
+    statementFrom.value = iso(new Date(today.getFullYear(), today.getMonth(), 1));
+  }
+
+  document.getElementById("payment-merchant-search")?.addEventListener("input", (event) => {
+    const query = String(event.target.value || "").trim().toLocaleLowerCase();
+    const select = document.getElementById("payment-merchant");
+    if (!select) return;
+    const selectedValue = select.value;
+    select.replaceChildren(...paymentMerchants
+      .filter((merchant) => !query || String(merchant.businessName || "").toLocaleLowerCase().includes(query))
+      .map((merchant) => {
+        const option = document.createElement("option");
+        option.value = merchant.id;
+        option.textContent = merchant.businessName;
+        return option;
+      }));
+    if ([...select.options].some((option) => option.value === selectedValue)) select.value = selectedValue;
+  });
+
+  document.getElementById("payments-refresh").addEventListener("click", () => loadPayments("other"));
+  bindTransactionReferenceField("collection-method", "collection-transaction-reference");
+  document.getElementById("collection-source-kind")?.addEventListener("change", syncUnifiedCollectionSource);
+  document.getElementById("merchant-collection-toggle")?.addEventListener("click", () => {
+    openUnifiedCollectionForm("MerchantAccount", document.getElementById("payment-merchant")?.value || "");
+  });
+  document.getElementById("other-collection-toggle")?.addEventListener("click", () => openUnifiedCollectionForm("DirectOperation"));
+  document.getElementById("merchant-account-details-toggle")?.addEventListener("click", () => {
+    const details = document.getElementById("merchant-account-details");
+    if (details) details.hidden = !details.hidden;
+  });
+  document.getElementById("unified-collection-form")?.addEventListener("submit", recordUnifiedCollection);
   document.getElementById("financial-adjustment-form")?.addEventListener("submit", createFinancialAdjustment);
   document.getElementById("adjustment-operation-id")?.addEventListener("change", resolveAdjustmentOperation);
   document.getElementById("adjustment-operation-id")?.addEventListener("blur", resolveAdjustmentOperation);
   document.getElementById("load-merchant-balance").addEventListener("click", loadMerchantBalance);
-  await Promise.all([loadPayments(), loadPaymentHistory()]);
+  document.getElementById("payment-audit-refresh")?.addEventListener("click", loadPaymentAudit);
+  document.getElementById("payment-review-refresh")?.addEventListener("click", loadCollectionWorkInbox);
+  loadedPaymentPanels.clear();
+  await loadPaymentViewPanel("merchant");
+}
+
+async function loadPaymentViewPanel(view) {
+  if (!document.getElementById("merchant-payment-rows") || loadedPaymentPanels.has(view)) return;
+  loadedPaymentPanels.add(view);
+  try {
+    if (view === "merchant") await loadPayments("merchant");
+    else if (view === "other") await loadPayments("other");
+    else if (view === "ledger") await loadPaymentHistory();
+    else if (view === "review") await loadCollectionWorkInbox();
+    else if (view === "audit") await loadPaymentAudit();
+  } catch {
+    loadedPaymentPanels.delete(view);
+  }
+}
+
+function renderPaymentPager(elementId, result, onPage) {
+  const pager = document.getElementById(elementId);
+  if (!pager) return;
+  const totalPages = Math.max(1, result.totalPages || 1);
+  pager.hidden = totalPages <= 1;
+  setPagerContents(pager, uiText("Previous"), `${result.page} / ${totalPages}`, uiText("Next"), result.page <= 1, result.page >= totalPages, (delta) => onPage(result.page + delta));
 }
 
 async function loadPaymentMerchants() {
@@ -6147,57 +6735,55 @@ async function loadPaymentAccountants() {
   }
 }
 
-async function loadPayments() {
-  const tbody = document.getElementById("payment-rows");
-  const count = document.getElementById("payment-count");
-  if (!tbody || !count) {
-    return;
-  }
+async function loadPayments(scope = null) {
   const auth = getAuth();
-  const isAdmin = isSystemAdminRole(auth?.user.role);
-  const isAccountant = auth?.user.role === "Accountant";
+  const isAdmin = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
-  try {
-    let result;
+  const queues = [
+    { key: "merchant", endpoint: "/api/v1/payments/merchant-account-payments", tbodyId: "merchant-payment-rows", countId: "merchant-payment-count", pagerId: "merchant-payment-pagination", empty: "No merchant account payments are waiting." },
+    { key: "other", endpoint: "/api/v1/payments/other-payments", tbodyId: "payment-rows", countId: "payment-count", pagerId: "payment-pagination", empty: "No other payment confirmations are waiting." }
+  ].filter((queue) => !scope || queue.key === scope);
+  await Promise.all(queues.map(async (queue) => {
+    const tbody = document.getElementById(queue.tbodyId);
+    const count = document.getElementById(queue.countId);
+    if (!tbody || !count) return;
     try {
-      result = await request("/api/v1/payments?pageSize=50");
-    } catch (firstError) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      result = await request("/api/v1/payments?pageSize=50");
-    }
-    const queueItems = (result.items || []).filter((log) =>
-      ["Installment", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
-      ["PendingAdmin", "PendingAccountant", "PendingAdminReview"].includes(log.status));
-    count.textContent = `${queueItems.length} open confirmation${queueItems.length === 1 ? "" : "s"}`;
-    tbody.innerHTML = queueItems.length === 0
-      ? `<tr><td colspan="9">No payment confirmations are waiting.</td></tr>`
-      : queueItems.map((log) => `
+      const result = await request(`${queue.endpoint}?openOnly=true&page=${paymentPageState[queue.key]}&pageSize=50`);
+      const queueItems = result.items || [];
+      count.textContent = `${result.totalCount} open confirmation${result.totalCount === 1 ? "" : "s"}`;
+      tbody.innerHTML = queueItems.length === 0
+        ? `<tr><td colspan="9">${escapeHtml(queue.empty)}</td></tr>`
+        : queueItems.map((log) => `
         <tr data-payment-id="${escapeHtml(log.id)}" data-payment-operation-id="${escapeHtml(log.operationId)}" data-payment-operation-number="${escapeHtml(log.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(log.merchantId || "")}" data-payment-method="${escapeHtml(log.paymentMethod)}" data-payment-status="${escapeHtml(log.status)}">
-          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}">Use</button>` : ""}<strong>${escapeHtml(shortId(log.id, "PAY"))}</strong></td>
-          <td><strong>${escapeHtml(log.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(log.merchantId, "MER"))}</div></td>
-          <td><strong>${escapeHtml(log.operationNumber || shortId(log.operationId, "OP"))}</strong><div class="muted-cell">${escapeHtml(log.operationType || "-")}</div></td>
-          <td>${escapeHtml(log.paymentMethod)}</td>
+          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}" data-payment-use-scope="${log.merchantId ? "MerchantAccount" : "DirectOperation"}" data-payment-use-merchant="${escapeHtml(log.merchantId || "")}">Use</button>` : ""}<strong>${escapeHtml(paymentReference(log))}</strong></td>
+          <td><strong dir="auto">${escapeHtml(log.buyerName || "Unknown buyer")}</strong></td>
+          <td><strong>${escapeHtml(operationReference(log))}</strong><div class="muted-cell">${escapeHtml(operationTypeLabel(log.operationType))}</div></td>
+          <td>${escapeHtml(movementMethodLabel(log.paymentMethod))}</td>
           <td>${escapeHtml(formatMoney(log.totalAmount))}</td>
           <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
           <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
-          <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(log.status)}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
-          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(shortId(log.id, "PAY"))}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAdmin && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
+          <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(paymentWorkflowStatusLabel(log.status))}</span><div class="muted-cell">By ${escapeHtml(log.initializedByName || log.lastModifiedByName || "-")}</div></td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(paymentReference(log))}">Print</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">Assign</button>` : ""}${isAdmin && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">Approve cash</button>` : ""}</td>
         </tr>
         <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
-    tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
-      const logInput = document.getElementById("payment-log-id");
-      if (logInput) {
-        logInput.value = button.dataset.paymentUse;
-      }
-    }));
-    tbody.querySelectorAll("[data-payment-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentDetails(button.dataset.paymentDetail, button)));
-    tbody.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", () => assignPaymentLog(button.dataset.paymentAssign)));
-    tbody.querySelectorAll("[data-cash-approve]").forEach((button) => button.addEventListener("click", () => approveCashReceipt(button.dataset.cashApprove)));
-    bindPrintReportButtons(tbody);
-  } catch (exception) {
-    count.textContent = "Failed";
-    tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
-  }
+      tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
+      const scope = button.dataset.paymentUseScope || "DirectOperation";
+      const operationId = scope === "MerchantAccount" ? (button.closest("tr")?.dataset.paymentOperationId || "") : "";
+      openUnifiedCollectionForm(scope, button.dataset.paymentUseMerchant || "", operationId, button.dataset.paymentUse || "");
+      }));
+      tbody.querySelectorAll("[data-payment-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentDetails(button.dataset.paymentDetail, button)));
+      tbody.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", () => assignPaymentLog(button.dataset.paymentAssign)));
+      tbody.querySelectorAll("[data-cash-approve]").forEach((button) => button.addEventListener("click", () => approveCashReceipt(button.dataset.cashApprove)));
+      bindPrintReportButtons(tbody);
+      renderPaymentPager(queue.pagerId, result, (page) => {
+        paymentPageState[queue.key] = page;
+        void loadPayments(queue.key);
+      });
+    } catch (exception) {
+      count.textContent = "Failed";
+      tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+    }
+  }));
 }
 
 async function loadPaymentHistory() {
@@ -6208,26 +6794,30 @@ async function loadPaymentHistory() {
   }
 
   try {
-    const result = await request("/api/v1/payments?pageSize=200");
+    const result = await request(`/api/v1/payments/other-payments/history?page=${paymentPageState.history}&pageSize=50`);
     paymentHistoryRows = result.items || [];
-    count.textContent = `${paymentHistoryRows.length} record${paymentHistoryRows.length === 1 ? "" : "s"}`;
+    count.textContent = `${result.totalCount} record${result.totalCount === 1 ? "" : "s"}`;
     tbody.innerHTML = paymentHistoryRows.length === 0
       ? `<tr><td colspan="9">No payment history yet.</td></tr>`
       : paymentHistoryRows.map((row) => `
         <tr data-payment-id="${escapeHtml(row.id)}" data-payment-operation-id="${escapeHtml(row.operationId)}" data-payment-operation-number="${escapeHtml(row.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(row.merchantId || "")}" data-payment-method="${escapeHtml(row.paymentMethod || "")}" data-payment-status="${escapeHtml(row.status || "")}">
           <td>${escapeHtml(formatDateTime(row.lastModifiedAt))}</td>
-          <td><strong>${escapeHtml(shortId(row.id, "PAY"))}</strong><div class="muted-cell">${escapeHtml(row.status || "-")}</div></td>
-          <td><strong>${escapeHtml(row.buyerName || "Unknown buyer")}</strong><div class="muted-cell">${escapeHtml(shortId(row.merchantId, "MER"))}</div></td>
-          <td><strong>${escapeHtml(row.operationNumber || shortId(row.operationId, "OP"))}</strong><div class="muted-cell">${escapeHtml(row.operationType || "-")}</div></td>
-          <td>${escapeHtml(row.paymentMethod || "-")}</td>
+          <td><strong>${escapeHtml(paymentReference(row))}</strong><div class="muted-cell">${escapeHtml(paymentWorkflowStatusLabel(row.status))}</div></td>
+          <td><strong dir="auto">${escapeHtml(row.merchantName || row.buyerName || "Unknown buyer")}</strong></td>
+          <td><strong>${escapeHtml(operationReference(row))}</strong><div class="muted-cell">${escapeHtml(operationTypeLabel(row.operationType))}</div></td>
+          <td>${escapeHtml(movementMethodLabel(row.paymentMethod))}</td>
           <td>${escapeHtml(formatMoney(row.totalAmount))}</td>
-          <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(row.status || "-")}</span></td>
+          <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(paymentWorkflowStatusLabel(row.status))}</span></td>
           <td>${escapeHtml(row.lastModifiedByName || row.initializedByName || "-")}</td>
-          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(shortId(row.id, "PAY"))}">Print</button></td>
+          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(paymentReference(row))}">Print</button></td>
         </tr>
         <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.id)}" hidden><td colspan="9"><div class="operation-detail">Loading</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-history-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentHistoryDetails(button.dataset.paymentHistoryDetail, button)));
     bindPrintReportButtons(tbody);
+    renderPaymentPager("payment-history-pagination", result, (page) => {
+      paymentPageState.history = page;
+      void loadPaymentHistory();
+    });
   } catch (exception) {
     count.textContent = "Failed";
     tbody.innerHTML = `<tr><td colspan="9">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
@@ -6242,6 +6832,35 @@ function paymentHistoryStatusClass(status) {
     return "status-muted";
   }
   return "status-warn";
+}
+
+function movementMethodLabel(method) {
+  const labels = {
+    CashHandToHand: "Cash hand to hand",
+    CashTransaction: "Cash transaction",
+    BankTransfer: "Bank transfer",
+    Wallet: "Wallet",
+    MerchantAccount: "Merchant account",
+    Installment: "Merchant account",
+    Installlaugment: "Merchant account"
+  };
+  const label = labels[method] || method || "-";
+  return currentLanguage === "ar" ? translateEnglishText(label) : label;
+}
+
+function operationTypeLabel(type) {
+  const labels = {
+    WholesaleSale: "Wholesale sale",
+    RetailSale: "Retail sale",
+    Return: "Return",
+    Change: "Exchange",
+    InventoryReceipt: "Inventory receipt",
+    WarehouseTransfer: "Warehouse transfer",
+    Reserve: "Reserve",
+    WriteOff: "Write-off"
+  };
+  const label = labels[type] || type || "-";
+  return currentLanguage === "ar" ? translateEnglishText(label) : label;
 }
 
 async function togglePaymentDetails(id, button) {
@@ -6261,8 +6880,11 @@ async function togglePaymentDetails(id, button) {
   try {
     const detail = await request(`/api/v1/payments/${id}`);
     target.innerHTML = renderPaymentDetail(detail);
+    target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
     target.querySelectorAll("[data-adjustment-payout]").forEach((payout) => payout.addEventListener("click", () => payoutCashRefund(payout.dataset.adjustmentPayout, id)));
@@ -6288,8 +6910,11 @@ async function togglePaymentHistoryDetails(id, button) {
   try {
     const detail = await request(`/api/v1/payments/${id}`);
     target.innerHTML = renderPaymentDetail(detail);
+    target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
   } catch (exception) {
@@ -6298,7 +6923,9 @@ async function togglePaymentHistoryDetails(id, button) {
 }
 
 function renderPaymentDetail(detail) {
-  const isAdmin = isSystemAdminRole(getAuth()?.user.role);
+  const role = getAuth()?.user.role;
+  const isAdmin = ["Admin", "ERPAdmin"].includes(role);
+  const canPrepareCollection = ["Accountant", "Admin", "ERPAdmin"].includes(role);
   const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user.role);
   const subLogs = detail.subLogs || [];
   const cashRecords = detail.cashRecords || [];
@@ -6322,31 +6949,38 @@ function renderPaymentDetail(detail) {
         <td>${escapeHtml(paymentStageLabel(stage.stageType))}</td>
         <td>${escapeHtml(formatDateTime(stage.happenedAt))}</td>
         <td>${escapeHtml(stage.actorName || "-")}</td>
-        <td>${escapeHtml(stage.paymentMethod || "-")}</td>
+        <td>${escapeHtml(movementMethodLabel(stage.paymentMethod))}</td>
         <td>${escapeHtml(formatMoney(stage.amount))}</td>
-        <td><span class="status-pill ${paymentHistoryStatusClass(stage.status)}">${escapeHtml(stage.status || "-")}</span></td>
+        <td><span class="status-pill ${paymentHistoryStatusClass(stage.status)}">${escapeHtml(paymentWorkflowStatusLabel(stage.status))}</span></td>
         <td>${escapeHtml(stage.notes || "-")}</td>
       </tr>`).join("")}</tbody></table></div>
     <div class="table-wrap compact-table"><table><thead><tr><th>Amount</th><th>Method</th><th>Date</th><th>Status</th><th>Drafted</th><th>Decision</th><th>Actions</th></tr></thead><tbody>${subLogs.length === 0
     ? `<tr><td colspan="7">No sub-logs yet.</td></tr>`
     : subLogs.map((sub) => `<tr>
         <td>${escapeHtml(formatMoney(sub.amount))}</td>
-        <td>${escapeHtml(sub.paymentMethod || "-")}</td>
+        <td>${escapeHtml(movementMethodLabel(sub.paymentMethod))}</td>
         <td>${escapeHtml(sub.dateReceived || "-")}</td>
-        <td><span class="status-pill ${sub.status === "Confirmed" ? "status-ok" : sub.status === "Rejected" ? "status-muted" : "status-warn"}">${escapeHtml(sub.status)}</span></td>
+        <td><span class="status-pill ${sub.status === "Confirmed" ? "status-ok" : sub.status === "Rejected" ? "status-muted" : "status-warn"}">${escapeHtml(paymentWorkflowStatusLabel(sub.status))}</span></td>
         <td>${escapeHtml(formatDateTime(sub.draftedAt))}<div class="muted-cell">${escapeHtml(sub.draftedByName || "-")}</div></td>
         <td>${escapeHtml(sub.rejectionReason || formatDateTime(sub.confirmedAt) || "-")}<div class="muted-cell">${escapeHtml(sub.confirmedByName || "-")}</div></td>
-        <td>${isAdmin && sub.status === "Draft" ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-approve="${escapeHtml(sub.id)}">Approve</button><button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-reject="${escapeHtml(sub.id)}">Reject</button>` : "-"}</td>
+        <td>${sub.status === "Draft" && canPrepareCollection
+          ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-submit="${escapeHtml(sub.id)}">Send for approval</button>`
+          : isAdmin && sub.status === "PendingAdminReview"
+            ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-approve="${escapeHtml(sub.id)}">Approve</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-reject="${escapeHtml(sub.id)}">Reject</button>`
+            : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
-    <div class="table-wrap compact-table"><table><thead><tr><th>Cash record</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th></tr></thead><tbody>${cashRecords.length === 0
-    ? `<tr><td colspan="6">No cash records.</td></tr>`
+    <div class="table-wrap compact-table"><table><thead><tr><th>Cash record</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${cashRecords.length === 0
+    ? `<tr><td colspan="7">No cash records.</td></tr>`
     : cashRecords.map((record) => `<tr>
         <td>${escapeHtml(record.paymentType || "-")}<div class="muted-cell">${escapeHtml(record.subType || "-")}</div></td>
         <td>${escapeHtml(formatMoney(record.amount))}</td>
         <td>${escapeHtml(formatDateTime(record.paymentDate))}</td>
-        <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(record.status || "-")}</span></td>
+        <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(paymentWorkflowStatusLabel(record.status))}</span></td>
         <td>${escapeHtml(record.createdByName || "-")}</td>
         <td>${escapeHtml(record.notes || "-")}</td>
+        <td>${isAdmin && ["PendingAccountant", "PendingAdminReview"].includes(record.status)
+          ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-approve="${escapeHtml(record.id)}">Approve</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">Reject</button>`
+          : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
     <div class="table-wrap compact-table"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Date</th><th>Status</th><th>Created by</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${adjustments.length === 0
     ? `<tr><td colspan="7">No financial adjustments.</td></tr>`
@@ -6366,9 +7000,9 @@ function paymentStageLabel(stageType) {
   const labels = {
     PaymentLogOpened: "Payment log opened",
     PaymentAssigned: "Assigned to accountant",
-    InstallmentDrafted: "Installment drafted",
-    InstallmentApproved: "Installment approved",
-    InstallmentRejected: "Installment rejected",
+    InstallmentDrafted: "Collection drafted",
+    InstallmentApproved: "Collection approved",
+    InstallmentRejected: "Collection rejected",
     CashReceiptRecorded: "Cash receipt recorded",
     CashReceiptApproved: "Cash receipt approved",
     CashRefundRecorded: "Cash refund recorded",
@@ -6380,34 +7014,148 @@ function paymentStageLabel(stageType) {
   return labels[stageType] || stageType || "-";
 }
 
-async function draftPaymentSubLog(event) {
+function openUnifiedCollectionForm(scope = "DirectOperation", merchantId = "", operationId = "", reference = "") {
+  const card = document.getElementById("unified-collection-card");
+  const tools = document.getElementById("payment-tools-section");
+  const source = document.getElementById("collection-source-kind");
+  const merchant = document.getElementById("collection-merchant");
+  const operation = document.getElementById("collection-source-operation-id");
+  const sourceReference = document.getElementById("collection-source-reference");
+  if (card) card.hidden = false;
+  if (tools) tools.hidden = false;
+  if (source) source.value = scope;
+  if (merchant && scope === "MerchantAccount") merchant.value = merchantId;
+  if (operation) operation.value = operationId;
+  if (sourceReference && scope === "DirectOperation") sourceReference.value = reference;
+  syncUnifiedCollectionSource();
+  document.getElementById("unified-collection-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function syncUnifiedCollectionSource() {
+  const isMerchantAccount = document.getElementById("collection-source-kind")?.value === "MerchantAccount";
+  const referenceField = document.getElementById("collection-source-reference-field");
+  const merchantField = document.getElementById("collection-merchant-field");
+  const reference = document.getElementById("collection-source-reference");
+  const merchant = document.getElementById("collection-merchant");
+  if (referenceField) referenceField.hidden = isMerchantAccount;
+  if (merchantField) merchantField.hidden = !isMerchantAccount;
+  if (reference) reference.required = !isMerchantAccount;
+  if (merchant) merchant.required = isMerchantAccount;
+  const help = document.getElementById("collection-workflow-help");
+  if (help) help.textContent = isMerchantAccount
+    ? "This merchant collection is submitted for approval in one step. Open mini-invoices are allocated oldest-first; the balance changes only after approval."
+    : "This payment is submitted for approval in one step. The operation balance changes only after approval.";
+}
+
+function resolveCollectionPaymentLog(reference) {
+  const normalized = String(reference || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return paymentHistoryRows.find((row) =>
+    String(row.id || "").toLowerCase() === normalized ||
+    String(row.operationId || "").toLowerCase() === normalized ||
+    String(row.operationNumber || "").toLowerCase() === normalized ||
+    paymentReference(row).toLowerCase() === normalized) || null;
+}
+
+async function recordUnifiedCollection(event) {
   event.preventDefault();
-  const id = document.getElementById("payment-log-id").value.trim();
-  const amountValue = document.getElementById("payment-amount").value;
-  const notes = document.getElementById("payment-notes").value.trim();
+  clearFormError("unified-collection-error");
+    // Collection form always creates and submits its draft in one action.
+    const submitForReview = true;
+  const sourceKind = document.getElementById("collection-source-kind")?.value;
+  const method = canonicalSelectValue("collection-method", "movementMethod", { allowEmpty: true });
+  const transactionReference = document.getElementById("collection-transaction-reference")?.value.trim() || null;
+  const amount = Number(document.getElementById("collection-amount")?.value);
+  const notes = document.getElementById("collection-notes")?.value.trim() || null;
+  if (!method || !Number.isFinite(amount) || amount <= 0) {
+    showFormError("unified-collection-error", "Enter a positive amount and choose how the money was received.");
+    return;
+  }
+  if (["CashTransaction", "BankTransfer", "Wallet"].includes(method) && !transactionReference) {
+    showFormError("unified-collection-error", "Electronic collections require a transaction reference.");
+    return;
+  }
+
+  const idempotencyKey = createUuid();
+  const mutationOptions = { headers: { "Idempotency-Key": idempotencyKey }, notify: false };
+  const submit = async (path, body) => {
+    const options = { ...mutationOptions, method: "POST", body: JSON.stringify(body) };
+    try {
+      return await request(path, options);
+    } catch (firstError) {
+      // A response can be lost after the server commits. Replaying the same
+      // key is safe and returns the original result instead of duplicating it.
+      if (sourceKind !== "MerchantAccount") throw firstError;
+      try {
+        return await request(path, options);
+      } catch (secondError) {
+        // If both responses were lost, ask the server whether the original
+        // mutation committed before surfacing an error to the accountant.
+        const resolved = await request(`/api/v1/payments/collections/resolve?key=${encodeURIComponent(idempotencyKey)}`);
+        if (resolved && (resolved.status === "Completed" || resolved.reference || resolved.id)) return resolved;
+        throw secondError;
+      }
+    }
+  };
   try {
-    await request(`/api/v1/payments/${id}/sub-logs`, {
-      method: "POST",
-      body: JSON.stringify({
-        amount: amountValue === "" ? 0 : Number(amountValue),
-        paymentMethod: canonicalSelectValue("payment-method"),
-        dateReceived: document.getElementById("payment-date").value || null,
-        notes: notes || "0"
-      })
-    });
-    notice("Payment sub-log drafted.", "success");
-    event.target.reset();
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    if (sourceKind === "MerchantAccount") {
+      const merchantId = document.getElementById("collection-merchant")?.value;
+      if (!merchantId) throw new Error("Choose the merchant account for this collection.");
+      await submit(`/api/v1/payments/merchant-accounts/${encodeURIComponent(merchantId)}/collections`, { sourceOperationId: document.getElementById("collection-source-operation-id")?.value || null, amount, paymentMethod: method, transactionReference, notes, submitForReview });
+    } else {
+      const reference = document.getElementById("collection-source-reference")?.value.trim();
+      const payment = resolveCollectionPaymentLog(reference);
+      if (!payment) throw new Error("No payment log matches that operation or payment reference. Refresh the queue and choose Use.");
+      await submit("/api/v1/payments/collections", {
+          scope: "DirectOperation",
+          operationId: payment.operationId,
+          amount,
+          paymentMethod: method,
+          transactionReference,
+          dateReceived: document.getElementById("collection-date")?.value || null,
+          notes,
+          submitForReview
+      });
+    }
   } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
+    showFormError("unified-collection-error", getFriendlyWorkspaceError(exception));
+    return;
+  }
+
+  notice("Collection sent for Admin approval. The balance has not changed yet.", "success");
+  try {
+    event.currentTarget.reset();
+    syncUnifiedCollectionSource();
+  } catch (exception) {
+    console.warn("Collection form cleanup failed after successful submit.", exception);
+  }
+
+  // Refresh is secondary. A committed collection must never be shown as a
+  // failed submission because one read request was cancelled or unavailable.
+  try {
+    await Promise.allSettled([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+    if (document.getElementById("payment-merchant")?.value) await loadMerchantBalance();
+  } catch {
+    notice("Collection submitted. Some payment totals will refresh on the next reload.", "info");
   }
 }
 
 async function approveSubLog(id, paymentLogId = null) {
   try {
-    await request(`/api/v1/payments/sub-logs/${id}/approve`, { method: "POST" });
+    await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/approve`, { method: "POST" });
     notice("Payment approved.", "success");
     await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+async function submitSubLog(id, paymentLogId = null) {
+  try {
+    await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/submit`, { method: "POST" });
+    notice("Collection sent for Admin approval.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
     await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
@@ -6424,6 +7172,27 @@ async function approveCashReceipt(id) {
   }
 }
 
+async function rejectCashReceipt(id) {
+  const reason = await promptDialog({
+    title: "Reject cash receipt",
+    label: "Record the reason. The rejected receipt remains in the payment history.",
+    multiline: true,
+    required: true
+  });
+  if (!reason) return;
+  try {
+    await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    });
+    notice("Cash receipt rejected.", "success");
+    await Promise.all([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+    await reopenPaymentDetail(id);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
 async function rejectSubLog(id, paymentLogId = null) {
   const reason = await promptDialog({
     title: "Reject Payment Entry",
@@ -6435,7 +7204,7 @@ async function rejectSubLog(id, paymentLogId = null) {
     return;
   }
   try {
-    await request(`/api/v1/payments/sub-logs/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+    await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
     notice("Payment rejected.", "success");
     await Promise.all([loadPayments(), loadPaymentHistory()]);
     await reopenPaymentDetail(paymentLogId);
@@ -6453,6 +7222,90 @@ async function approveAdjustment(id, paymentLogId = null) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+}
+
+function syncOperationBatchEntryFields(row) {
+  const creatingNew = row.querySelector(".op-line-stock-option")?.value === "__new_batch__";
+  row.querySelectorAll(".op-line-receipt-field").forEach((field) => {
+    field.hidden = !creatingNew;
+    field.querySelectorAll("input").forEach((input) => {
+      input.disabled = !creatingNew;
+    });
+  });
+}
+
+function mapSkuOption(sku) {
+  return {
+    id: sku.id,
+    productId: sku.productId,
+    productName: sku.productName,
+    brandName: sku.brandName,
+    categoryName: sku.categoryName,
+    productType: sku.productType,
+    expiryType: sku.expiryType,
+    piecesPerPack: sku.piecesPerPack,
+    sellMode: sku.sellMode,
+    skuCode: sku.skuCode,
+    powerSign: sku.powerSign,
+    powerValue: sku.powerValue,
+    colorName: sku.colorName,
+    size: sku.size,
+    label: `${sku.productName} / ${sku.skuCode}`
+  };
+}
+
+function mergeOperationSkuOptions(rows) {
+  const byId = new Map(operationSkuOptions.map((sku) => [sku.id, sku]));
+  rows.forEach((row) => byId.set(row.id, mapSkuOption(row)));
+  operationSkuOptions = [...byId.values()];
+  supplySkuSearchIndex = [];
+  return rows.map((row) => byId.get(row.id));
+}
+
+async function searchSkuOptions(search, pageSize = 25) {
+  const params = new URLSearchParams({ search, page: "1", pageSize: String(pageSize), includeInactive: "false" });
+  const result = await request(`/api/v1/catalog/skus?${params}`);
+  return mergeOperationSkuOptions(result.items || []);
+}
+
+async function ensureSkuOption(skuId) {
+  let sku = operationSkuOptions.find((value) => value.id === skuId);
+  if (sku || !skuId) return sku;
+  try {
+    sku = mergeOperationSkuOptions([await request(`/api/v1/catalog/skus/${encodeURIComponent(skuId)}`)])[0];
+    return sku;
+  } catch {
+    return null;
+  }
+}
+
+async function loadProductSkuOptions(productId) {
+  if (!productId || loadedOperationProductIds.has(productId)) return;
+  const rows = [];
+  let page = 1;
+  let totalCount = 0;
+  do {
+    const params = new URLSearchParams({ productId, page: String(page), pageSize: "100", includeInactive: "false" });
+    const result = await request(`/api/v1/catalog/skus?${params}`);
+    rows.push(...(result.items || []));
+    totalCount = result.totalCount || rows.length;
+    page += 1;
+  } while (rows.length < totalCount);
+  mergeOperationSkuOptions(rows);
+  loadedOperationProductIds.add(productId);
+}
+
+async function loadAllSkuOptions() {
+  const rows = [];
+  let page = 1;
+  let totalCount = 0;
+  do {
+    const result = await request(`/api/v1/catalog/skus?page=${page}&pageSize=100&includeInactive=false`);
+    rows.push(...(result.items || []));
+    totalCount = result.totalCount || rows.length;
+    page += 1;
+  } while (rows.length < totalCount);
+  return mergeOperationSkuOptions(rows);
 }
 
 async function payoutCashRefund(id, paymentLogId = null) {
@@ -6527,7 +7380,7 @@ async function assignPaymentLog(id) {
 async function createFinancialAdjustment(event) {
   event.preventDefault();
   clearFormError("financial-adjustment-error");
-  const adjustmentType = canonicalSelectValue("adjustment-type");
+  const adjustmentType = canonicalSelectValue("adjustment-type", "adjustmentType");
   const operationId = document.getElementById("adjustment-operation-id").value.trim();
   const amount = Number(document.getElementById("adjustment-amount").value);
   if (!operationId) {
@@ -6570,12 +7423,14 @@ async function resolveAdjustmentOperation() {
   const errorId = "financial-adjustment-error";
   const operationInput = document.getElementById("adjustment-operation-id");
   const merchantSelect = document.getElementById("adjustment-merchant");
+  const preview = document.getElementById("adjustment-order-preview");
   const reference = operationInput?.value.trim();
   if (!operationInput || !merchantSelect || !reference) {
     if (merchantSelect) {
       merchantSelect.value = "";
       merchantSelect.disabled = true;
     }
+    if (preview) preview.textContent = "Choose the merchant order affected by this adjustment.";
     return false;
   }
 
@@ -6590,6 +7445,7 @@ async function resolveAdjustmentOperation() {
 
     merchantSelect.value = operation.merchantId;
     merchantSelect.disabled = true;
+    if (preview) preview.textContent = `Affected order: ${operation.operationNumber || reference}. The account impact will be calculated after approval.`;
     clearFormError(errorId);
     return true;
   } catch (exception) {
@@ -6597,26 +7453,6 @@ async function resolveAdjustmentOperation() {
     merchantSelect.disabled = true;
     showFormError(errorId, getFriendlyWorkspaceError(exception));
     return false;
-  }
-}
-
-async function createCashRecord(event) {
-  event.preventDefault();
-  try {
-    await request("/api/v1/payments/cash-records", {
-      method: "POST",
-      body: JSON.stringify({
-        operationId: document.getElementById("cash-operation-id").value.trim(),
-        paymentType: canonicalSelectValue("cash-type"),
-        amount: Number(document.getElementById("cash-amount").value),
-        notes: document.getElementById("cash-notes").value || null
-      })
-    });
-    notice("Cash record saved.", "success");
-    event.target.reset();
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
-  } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
   }
 }
 
@@ -6629,51 +7465,400 @@ async function loadMerchantBalance() {
     return;
   }
   try {
-    const balance = await request(`/api/v1/payments/merchants/${merchantId}/balance`);
-    const paymentsReceived = Number(balance.paymentsReceived || 0);
-    const cashRefunded = Number(balance.cashRefunded || 0);
-    const netCollected = paymentsReceived - cashRefunded;
-    const corrections = Number(balance.returnTotal || 0) +
-      Number(balance.additionalCharges || balance.merchantCredits || 0) +
-      Number(balance.balanceReductions || 0) -
-      Number(balance.changeNet || 0);
+    const from = document.getElementById("merchant-statement-from")?.value;
+    const to = document.getElementById("merchant-statement-to")?.value;
+    const statementQuery = new URLSearchParams({ take: "200" });
+    if (from) statementQuery.set("from", from);
+    if (to) statementQuery.set("to", to);
+    const [account, statement, collections, orders] = await Promise.all([
+      request(`/api/v1/payments/merchant-accounts/${merchantId}`),
+      request(`/api/v1/payments/merchant-accounts/${merchantId}/statement?${statementQuery.toString()}&includeSummary=true`),
+      request(`/api/v1/payments/collection-work?scope=MerchantAccount&merchantId=${encodeURIComponent(merchantId)}`),
+      request(`/api/v1/payments/merchant-accounts/${merchantId}/orders`)
+    ]);
+    if (document.getElementById("payment-merchant")?.value !== merchantId) return;
+    const balance = account.balance || {};
+    const statementRows = Array.isArray(statement) ? statement : (statement.items || []);
+    const breakdown = account.breakdown || {};
+    const classification = account.classification || {};
     status.textContent = "Loaded";
+    const amountDue = Number(balance.amountDue || 0);
+    const moneyReceived = Number(breakdown.paymentsReceived || 0);
+    const moneyRefunded = Number(breakdown.cashRefunded || 0);
+    const netCollected = Number(account.netCollected ?? (moneyReceived - moneyRefunded));
+    const totalSales = Number(breakdown.saleTotal || 0);
+    const acceptedReturns = Number(breakdown.returnTotal || 0);
+    const additionalCharges = Number(breakdown.additionalCharges || 0);
+    const amountReductions = Number(breakdown.balanceReductions || 0);
+    const refundDue = Number(balance.reservedRefunds || 0);
     panel.innerHTML = `
-      <div><span>Remaining</span><strong>${escapeHtml(formatMoney(balance.balance))}</strong></div>
-      <div><span>Sales</span><strong>${escapeHtml(formatMoney(balance.saleTotal))}</strong></div>
-      <div><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong></div>
-      <div><span>Returns / adjustments</span><strong>${escapeHtml(formatMoney(corrections))}</strong></div>`;
+      <article class="merchant-account-answer"><span>Total sales</span><strong>${escapeHtml(formatMoney(totalSales))}</strong><p>Completed merchant sales.</p></article>
+      <article class="merchant-account-answer is-net"><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong><p>Confirmed collections minus completed cash refunds.</p></article>
+      <article class="merchant-account-answer is-due"><span>Remaining owed</span><strong>${escapeHtml(formatMoney(amountDue))}</strong><p>The confirmed amount still to collect.</p></article>
+      <article class="merchant-account-answer"><span>Refunds</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong><p>Paid refunds; approved/due amounts are in account details.</p></article>
+      <article class="merchant-account-answer"><span>Accepted return value</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong><p>Accepted returns credited to the account.</p></article>
+      <article class="merchant-account-answer"><span>Additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong><p>Approved charges.</p></article>
+      <article class="merchant-account-answer"><span>Amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong><p>Approved reductions.</p></article>`;
+    const detailPanel = document.getElementById("merchant-account-detail-panel");
+    if (detailPanel) {
+      const profile = account.profile || {};
+      const profilePhone = Array.isArray(profile.phoneNumbers) ? profile.phoneNumbers.join(" / ") : (profile.phoneNumbers || "-");
+      detailPanel.innerHTML = `
+        <div><span>Business type</span><strong>${escapeHtml(profile.businessType || "-")}</strong></div>
+        <div><span>Contact person</span><strong>${escapeHtml(profile.contactPersonName || "-")}</strong></div>
+        <div><span>Phone</span><strong>${escapeHtml(profilePhone)}</strong></div>
+        <div><span>Email</span><strong>${escapeHtml(profile.email || "-")}</strong></div>
+        <div class="full-span"><span>Address</span><strong>${escapeHtml(profile.address || "-")}</strong></div>
+        <div><span>Total sales</span><strong>${escapeHtml(formatMoney(totalSales))}</strong></div>
+        <div><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong></div>
+        <div><span>Remaining owed</span><strong>${escapeHtml(formatMoney(amountDue))}</strong></div>
+        <div><span>Refunds paid</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong></div>
+        <div><span>Refunds approved / due</span><strong>${escapeHtml(formatMoney(refundDue))}</strong></div>
+        <div><span>Refunds applied as reductions</span><strong>${escapeHtml(formatMoney(breakdown.refundsApplied || 0))}</strong></div>
+        <div><span>Accepted return value</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong></div>
+        <div><span>Accepted return value applied</span><strong>${escapeHtml(formatMoney(breakdown.returnValueApplied || 0))}</strong></div>
+        <div><span>Approved additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong></div>
+        <div><span>Approved amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong></div>
+        <div><span>Money waiting for approval</span><strong>${escapeHtml(formatMoney(balance.pendingCollections || 0))}</strong></div>
+        <div><span>Account health</span><strong>${escapeHtml(merchantAccountGrade(classification))}</strong></div>
+        <div class="full-span"><span>Account notes</span><strong>${escapeHtml(merchantAccountFlags(classification.flags || []))}</strong></div>`;
+    }
+    const rows = document.getElementById("merchant-statement-rows");
+    if (rows) {
+      rows.innerHTML = statementRows.length ? statementRows.map((row) => `<tr><td>${escapeHtml(formatDateTime(row.postedAt) || "-")}</td><td><strong>${escapeHtml(merchantStatementEvent(row))}</strong>${row.notes ? `<small>${escapeHtml(row.notes)}</small>` : ""}</td><td>${escapeHtml(row.sourceReference || "Related account activity")}</td><td>${escapeHtml(row.methodLabel || "-")}${row.transactionReference ? `<small>${escapeHtml(row.transactionReference)}</small>` : ""}</td><td>${escapeHtml(formatMoney(row.debitAmount || 0))}</td><td>${escapeHtml(formatMoney(row.creditAmount || 0))}</td><td><strong>${escapeHtml(formatMoney(row.runningBalance || 0))}</strong></td></tr>`).join("") : `<tr><td colspan="7">No confirmed account activity yet.</td></tr>`;
+    }
+    const collectionRows = document.getElementById("merchant-collection-draft-rows");
+    if (collectionRows) {
+      const canReview = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+      collectionRows.replaceChildren(...(collections.length ? collections.map((item) => paymentCollectionDraftRow(item, canReview)) : [paymentEmptyTableRow(7, "No account collections awaiting review.")]));
+    }
+    const orderRows = document.getElementById("merchant-order-rows");
+    if (orderRows) {
+      orderRows.replaceChildren(...(orders.length ? orders.map((order) => {
+        const row = document.createElement("tr");
+        const items = (order.lines || []).map((line) => `${line.productName || line.skuCode || "Item"} × ${line.quantity}`).join(", ");
+        [order.operationNumber || shortId(order.operationId, "OP"), formatDateTime(order.date), items || "-", formatMoney(order.saleTotal), formatMoney(order.collectionsAllocated), formatMoney(order.acceptedReturns), formatMoney(order.additionalCharges), formatMoney(order.amountReductions), formatMoney(order.refunds), formatMoney(order.remaining), paymentWorkflowStatusLabel(order.status)].forEach((value) => { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); });
+        return row;
+      }) : [paymentEmptyTableRow(11, "No completed merchant orders yet.")]));
+    }
   } catch (exception) {
     status.textContent = getFriendlyWorkspaceError(exception);
   }
 }
 
+function merchantStatementEvent(row) {
+  const labels = {
+    SaleCharge: "Sale added",
+    ReturnCredit: "Return accepted",
+    ExchangeSurcharge: "Exchange amount added",
+    ExchangeCredit: "Exchange credit added",
+    Collection: "Money received",
+    RefundPayout: "Money refunded",
+    AdditionalCharge: "Additional charge added",
+    BalanceReduction: "Amount reduced"
+  };
+  return row?.eventLabel || labels[row?.entryType] || "Account activity";
+}
+
+function merchantAccountFlags(flags) {
+  if (!flags.length) return "No account warnings.";
+  const labels = {
+    CreditAvailable: "The merchant has credit available.",
+    ReservedRefund: "A refund is waiting to be paid.",
+    LowCollectionCoverage: "Only a small part of recent sales has been collected.",
+    WeakPaymentDiscipline: "Recent sales are taking longer to collect.",
+    Provisional: "There is not enough history for a final account grade.",
+    HighExposure: "The unpaid amount is above the exposure limit."
+  };
+  return flags.map((flag) => labels[flag] || flag).join(" ");
+}
+
+function merchantAccountGrade(classification) {
+  const gradeLabels = { A: "Excellent", B: "Good", C: "Fair", D: "Weak", E: "Critical" };
+  const label = classification.gradeLabel || gradeLabels[classification.grade] || classification.grade || "Not rated";
+  const score = Number(classification.score ?? 0).toFixed(2);
+  const provisional = (classification.flags || []).includes("Provisional");
+  const gradeLabel = currentLanguage === "ar" ? translateEnglishText(label) : label;
+  const provisionalLabel = currentLanguage === "ar" ? translateEnglishText("Provisional grade") : "Provisional grade";
+  return `${gradeLabel} · ${score}${provisional ? ` · ${provisionalLabel}` : ""}`;
+}
+
 function shortId(value, prefix = "REF") {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(raw)) {
-    return raw;
-  }
+  return contextualReference({ businessReference: raw, prefix, language: currentLanguage });
+}
 
-  const safePrefix = /^[A-Z]{2,4}$/.test(String(prefix || "").toUpperCase()) ? String(prefix).toUpperCase() : "REF";
-  const cacheKey = `${safePrefix}:${raw.toLowerCase()}`;
-  const cached = displayReferenceCache.get(cacheKey);
-  if (cached) return cached;
-
-  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-  let remaining = BigInt(`0x${raw.replaceAll("-", "").slice(-20)}`);
-  let encoded = "";
-  for (let index = 0; index < 16; index += 1) {
-    encoded = `${alphabet[Number(remaining & 31n)]}${encoded}`;
-    remaining >>= 5n;
+async function reviewMerchantAccountCollection(id, approved) {
+  const reason = approved ? null : await promptDialog({
+    title: "Reject collection",
+    label: "Record the reason. Rejected collections remain visible in the account work history.",
+    multiline: true,
+    required: true
+  });
+  if (!approved && !reason) return;
+  try {
+    await request(`/api/v1/payments/collections/${id}/${approved ? "approve" : "reject"}`, {
+      method: "POST",
+      body: approved ? undefined : JSON.stringify({ reason })
+    });
+    notice(approved ? "Collection approved and posted." : "Collection rejected.", "success");
+    await Promise.all([loadMerchantBalance(), loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
   }
-  const reference = `${safePrefix}-${encoded.slice(0, 4)}-${encoded.slice(4, 8)}-${encoded.slice(8, 12)}-${encoded.slice(12)}`;
-  displayReferenceCache.set(cacheKey, reference);
-  return reference;
+}
+
+async function loadPaymentAudit() {
+  const rows = document.getElementById("payment-audit-rows");
+  if (!rows) return;
+  try {
+    const result = await request(`/api/v1/payments/audit?page=${paymentPageState.audit}&pageSize=50`);
+    const items = result.items || [];
+    if (!items.length) {
+      rows.replaceChildren(paymentEmptyTableRow(7, "No Payments audit events yet."));
+    } else {
+      rows.replaceChildren(...items.map((item) => {
+        const row = paymentAuditRow(item);
+        row.querySelector("[data-payment-audit-details]")?.addEventListener("click", () => togglePaymentAuditDetails(row, item));
+        return row;
+      }));
+    }
+    renderPaymentPager("payment-audit-pagination", result, (page) => {
+      paymentPageState.audit = page;
+      void loadPaymentAudit();
+    });
+  } catch (exception) {
+    rows.replaceChildren(paymentEmptyTableRow(7, getFriendlyWorkspaceError(exception)));
+  }
+}
+
+async function loadCollectionWorkInbox() {
+  const rows = document.getElementById("payment-review-rows");
+  if (!rows) return;
+  try {
+    const result = await request("/api/v1/payments/collection-work?pageSize=200");
+    const items = Array.isArray(result) ? result : (result.items || []);
+    const canReview = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+    const rendered = items.map((item) => {
+      const row = paymentTableRow([
+        item.scope === "MerchantAccount" ? "Merchant account" : "Other payment",
+        item.reference || shortId(item.id, "COL"),
+        item.operationNumber || item.source || "-",
+        item.assignedToName || "Shared Admin queue",
+        formatMoney(item.amount || 0),
+        movementMethodLabel(item.movementMethod || item.paymentMethod),
+        item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status)
+      ]);
+      const action = document.createElement("td");
+      if (canReview && item.status === "PendingAdminReview") {
+        const approve = document.createElement("button");
+        approve.className = "button secondary table-action";
+        approve.type = "button";
+        approve.textContent = "Approve";
+        approve.addEventListener("click", () => reviewMerchantAccountCollection(item.id, true));
+        const reject = document.createElement("button");
+        reject.className = "button danger table-action";
+        reject.type = "button";
+        reject.textContent = "Reject";
+        reject.addEventListener("click", () => reviewMerchantAccountCollection(item.id, false));
+        action.append(approve, document.createTextNode(" "), reject);
+      } else {
+        action.textContent = "-";
+      }
+      row.append(action);
+      return row;
+    });
+    rows.replaceChildren(...(rendered.length ? rendered : [paymentEmptyTableRow(8, "No collection work is waiting.")]));
+  } catch (exception) {
+    rows.replaceChildren(paymentEmptyTableRow(8, getFriendlyWorkspaceError(exception)));
+  }
+}
+
+function paymentEmptyTableRow(columnCount, message) {
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = columnCount;
+  cell.textContent = message;
+  row.append(cell);
+  return row;
+}
+
+function paymentAuditRow(item) {
+  const row = paymentTableRow([
+    formatDateTime(item.occurredAt) || "-",
+    paymentAuditActionLabel(item.action),
+    `${paymentWorkflowStatusLabel(item.previousStatus)} → ${paymentWorkflowStatusLabel(item.newStatus)}`,
+    item.amount == null ? "-" : formatMoney(item.amount),
+    movementMethodLabel(item.paymentMethod),
+    item.reason || "-",
+    "Details"
+  ]);
+  const details = row.lastElementChild;
+  if (details) {
+    details.textContent = "";
+    const button = document.createElement("button");
+    button.className = "button secondary table-action";
+    button.type = "button";
+    button.textContent = "Details";
+    button.dataset.paymentAuditDetails = item.id;
+    details.append(button);
+  }
+  return row;
+}
+
+function togglePaymentAuditDetails(row, item) {
+  const existing = row.nextElementSibling;
+  if (existing?.dataset.paymentAuditDetail === item.id) {
+    existing.remove();
+    return;
+  }
+  const detail = document.createElement("tr");
+  detail.dataset.paymentAuditDetail = item.id;
+  const cell = document.createElement("td");
+  cell.colSpan = 7;
+  const fields = [
+    ["Actor", `${item.actorName || (item.actorId ? shortId(item.actorId, "USR") : "Historical actor unavailable")}${item.actorRole ? ` · ${translateEnglishText(item.actorRole)}` : ""}`],
+    ["Merchant", item.merchantName || (item.merchantId ? shortId(item.merchantId, "MER") : "Outside merchant account")],
+    ["Buyer", item.buyerName || "-"],
+    ["Operation", item.operationNumber || (item.operationId ? shortId(item.operationId, "OP") : "-")],
+    ["Payment", item.paymentLogId ? shortId(item.paymentLogId, "PAY") : "-"],
+    ["Collection", item.collectionDraftId ? shortId(item.collectionDraftId, "COL") : "-"],
+    ["Correlation", item.correlationId || "-"],
+    ["Idempotency", item.idempotencyKey || "-"],
+    ["Recorded details", item.dataJson ? displaySafeText(item.dataJson, "AUD") : "-" ]
+  ];
+  cell.innerHTML = `<div class="detail-grid audit-payment-detail">${fields.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
+  detail.append(cell);
+  row.after(detail);
+}
+
+function paymentAuditActionLabel(action) {
+  const labels = {
+    PaymentLogOpened: "Payment log opened",
+    PaymentLogInitialized: "Payment log initialized",
+    PaymentAssigned: "Payment assigned",
+    PaymentReassigned: "Payment reassigned",
+    CollectionReassigned: "Collection reassigned",
+    InstallmentDrafted: "Collection drafted",
+    InstallmentApproved: "Collection approved",
+    InstallmentRejected: "Collection rejected",
+    PaymentSubLogSubmittedForApproval: "Payment sub-log submitted",
+    PaymentSubLogApproved: "Payment sub-log approved",
+    PaymentSubLogRejected: "Payment sub-log rejected",
+    CashReceiptRecorded: "Cash receipt recorded",
+    CashReceiptSubmittedForApproval: "Cash receipt submitted",
+    CashReceiptApproved: "Cash receipt approved",
+    CashReceiptRejected: "Cash receipt rejected",
+    MerchantAccountCollectionDrafted: "Merchant collection drafted",
+    MerchantAccountCollectionSubmitted: "Merchant collection submitted",
+    MerchantAccountCollectionApproved: "Merchant collection approved",
+    MerchantAccountCollectionRejected: "Merchant collection rejected",
+    FinancialAdjustmentRequested: "Financial adjustment requested",
+    FinancialAdjustmentApproved: "Financial adjustment approved",
+    FinancialAdjustmentRejected: "Financial adjustment rejected",
+    CashRefundPaidOut: "Refund paid",
+    ReconciliationCompleted: "Reconciliation completed"
+  };
+  const label = labels[action] || action || "-";
+  return currentLanguage === "ar" ? translateEnglishText(label) : label;
+}
+
+function paymentWorkflowStatusLabel(status) {
+  const labels = {
+    PendingAccountant: "Waiting for accountant review",
+    PendingAdminReview: "Waiting for Admin approval",
+    PendingAdmin: "Waiting for admin review",
+    Completed: "Completed",
+    Confirmed: "Confirmed",
+    Rejected: "Rejected",
+    Draft: "Draft",
+    Cancelled: "Cancelled"
+  };
+  const label = labels[status] || status || "-";
+  return currentLanguage === "ar" ? translateEnglishText(label) : label;
+}
+
+function paymentCollectionDraftRow(item, canReview) {
+  const status = item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status);
+  const row = paymentTableRow([
+    formatDateTime(item.draftedAt) || "-",
+    item.reference || shortId(item.id, "COL"),
+    item.assignedToName || "Shared Admin queue",
+    formatMoney(item.amount || 0),
+    movementMethodLabel(item.paymentMethod),
+    status
+  ]);
+  const action = document.createElement("td");
+  if (canReview && item.status === "PendingAdminReview") {
+    const approve = document.createElement("button");
+    approve.className = "button secondary table-action";
+    approve.type = "button";
+    approve.textContent = "Approve";
+    approve.addEventListener("click", () => reviewMerchantAccountCollection(item.id, true));
+    const reject = document.createElement("button");
+    reject.className = "button danger table-action";
+    reject.type = "button";
+    reject.textContent = "Reject";
+    reject.addEventListener("click", () => reviewMerchantAccountCollection(item.id, false));
+    action.append(approve, document.createTextNode(" "), reject);
+  } else if (item.status === "Draft") {
+    const submit = document.createElement("button");
+    submit.className = "button secondary table-action";
+    submit.type = "button";
+    submit.textContent = "Send for approval";
+    submit.addEventListener("click", () => submitMerchantAccountCollection(item.id));
+    action.append(submit);
+  } else {
+    action.textContent = "-";
+  }
+  row.append(action);
+  return row;
+}
+
+async function submitMerchantAccountCollection(id) {
+  try {
+    await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/submit`, { method: "POST" });
+    notice("Collection sent for Admin approval.", "success");
+    await Promise.all([loadMerchantBalance(), loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function paymentTableRow(values) {
+  const row = document.createElement("tr");
+  values.forEach((value) => {
+    const cell = document.createElement("td");
+    cell.textContent = value;
+    row.append(cell);
+  });
+  return row;
+}
+
+function operationReference(record) {
+  return contextualReference({
+    businessReference: record?.operationNumber,
+    context: record?.shopifyOrderNumber ? `Shopify ${record.shopifyOrderNumber}` : "",
+    prefix: "OP",
+    language: currentLanguage
+  });
+}
+
+function paymentReference(record) {
+  const operation = operationReference(record);
+  return `${uiText("Payment")} — ${operation}`;
+}
+
+function stocktakeReference(session, location = null) {
+  const locationName = location?.name || inventoryLocations.find((item) => item.id === session?.locationId)?.name;
+  const happenedAt = session?.sessionDate || session?.createdAt;
+  const context = [locationName, happenedAt ? formatDateTime(happenedAt) : ""].filter(Boolean).join(" / ");
+  return contextualReference({ context, prefix: "STK", language: currentLanguage });
 }
 
 function displaySafeText(value, prefix = "REF") {
-  return String(value ?? "").replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, (id) => shortId(id, prefix));
+  return sanitizeVisibleText(value, { prefix, language: currentLanguage });
 }
 
 function sanitizeVisibleIdentifiers(root) {
@@ -6687,44 +7872,76 @@ function sanitizeVisibleIdentifiers(root) {
   });
 }
 
-function startVisibleIdentifierMasking() {
-  if (visibleIdentifierObserver) return;
-  const root = document.getElementById("view");
-  if (!root || !window.MutationObserver) return;
-  visibleIdentifierObserver = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => mutation.addedNodes.forEach((node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const safeText = displaySafeText(node.nodeValue);
-        if (safeText !== node.nodeValue) node.nodeValue = safeText;
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        sanitizeVisibleIdentifiers(node);
-      }
-    }));
-  });
-  visibleIdentifierObserver.observe(root, { childList: true, subtree: true });
+window.__lenseeFindVisibleUuidLeaks = () => findVisibleUuidLeaks(document.getElementById("view")).map((node) => node.nodeValue);
+window.__lenseeSanitizeVisibleIdentifiers = () => sanitizeVisibleIdentifiers(document.getElementById("view"));
+
+function reportCatalogEntry(key) {
+  return reportCatalogEntries.find((entry) => entry.key === key);
+}
+
+function renderReportFormatButtons(key) {
+  const formats = reportCatalogEntry(key)?.formats || ["csv"];
+  return formats.map((format) => `<button class="button secondary table-action" type="button" data-download-report="${escapeHtml(key)}" data-export-format="${escapeHtml(format)}">${escapeHtml(format.toUpperCase())}</button>`).join("");
+}
+
+function renderAnalyticalReportRow(key, title, description, targetId) {
+  return `<article class="report-ledger-row" data-report-key="${escapeHtml(key)}">
+    <div class="report-ledger-row-head"><div><h4>${escapeHtml(title)}</h4><p>${escapeHtml(description)}</p></div><div class="report-format-actions" aria-label="${escapeHtml(title)} export formats">${renderReportFormatButtons(key)}</div></div>
+    <div id="${escapeHtml(targetId)}" class="table-wrap compact-table">Loading</div>
+  </article>`;
+}
+
+function updateExportDocket({ title, format, fileName, status }) {
+  const language = getReportExportLanguage();
+  const languageLabels = { ar: uiText("Arabic"), en: uiText("English"), bi: "العربية + الإنجليزية" };
+  const setText = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = uiText(value); };
+  if (title) setText("export-docket-title", title);
+  if (format) setText("export-docket-format", format.toUpperCase());
+  setText("export-docket-language", languageLabels[language] || language);
+  if (fileName) setText("export-docket-filename", fileName);
+  if (status) setText("report-export-status", status);
 }
 
 async function renderReports() {
   const role = getAuth()?.user.role;
   const canSeeStock = role !== "Accountant";
+  try {
+    reportCatalogEntries = await request("/api/v1/reports/catalog");
+  } catch {
+    reportCatalogEntries = [];
+  }
   document.getElementById("view").innerHTML = `
-    <section class="band">
-      <div class="section-head"><div><h2>Reports and exports</h2><p class="muted-text">Download operational, inventory, payment, and statement outputs in CSV and PDF formats.</p></div><button id="reports-refresh" class="button secondary" type="button">Refresh</button></div>
-      <div class="report-grid">
-        <section class="report-panel">
-          <div class="section-head tight-head"><h3>Export language</h3><span class="muted-text">CSV / PDF</span></div>
+    <section class="band reporting-ledger">
+      <header class="report-register-header">
+        <div><p class="ledger-kicker">OFFICIAL REPORT REGISTER</p><h2>Reports and exports</h2><p class="muted-text">One controlled workspace for analytical reports and official business documents.</p></div>
+        <button id="reports-refresh" class="button secondary" type="button">Refresh register</button>
+      </header>
+      <div class="report-workspace">
+        <main class="report-register">
+        <section class="report-panel report-controls">
+          <div class="section-head tight-head"><h3>Document language</h3><span class="muted-text">PDF · XLSX · CSV</span></div>
           <div class="segmented-control" role="radiogroup" aria-label="Export language">
             <label><input type="radio" name="report-export-language" value="ar" ${currentLanguage === "ar" ? "checked" : ""}>Arabic</label>
             <label><input type="radio" name="report-export-language" value="en" ${currentLanguage === "en" ? "checked" : ""}>English</label>
+            <label><input type="radio" name="report-export-language" value="bi">Bilingual</label>
+          </div>
+          <div class="report-filter-register" aria-label="Report filters">
+            ${canSeeStock ? `<label class="field"><span>Stock location</span><select id="report-filter-location" class="input"><option value="">All authorized locations</option></select></label>` : ""}
+            <label class="field"><span>From date</span><input id="report-filter-from" class="input" type="date"></label>
+            <label class="field"><span>To date</span><input id="report-filter-to" class="input" type="date"></label>
+            <label class="field"><span>Operation type</span><select id="report-filter-operation-type" class="input"><option value="">All types</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail sale</option><option value="Return">Return</option></select></label>
+            <label class="field"><span>Supply status</span><select id="report-filter-supply-status" class="input"><option value="">All statuses</option><option value="Draft">Draft</option><option value="Received">Received</option><option value="Cancelled">Cancelled</option></select></label>
           </div>
         </section>
-        ${canSeeStock ? `<section class="report-panel"><div class="section-head tight-head"><h3>Stock</h3><button class="button secondary table-action" type="button" data-download-report="stock.csv">CSV</button></div><div id="report-stock" class="table-wrap compact-table">Loading</div></section>` : ""}
-        <section class="report-panel"><div class="section-head tight-head"><h3>Operations</h3><button class="button secondary table-action" type="button" data-download-report="operations.csv">CSV</button></div><div id="report-operations" class="table-wrap compact-table">Loading</div></section>
-        <section class="report-panel"><div class="section-head tight-head"><h3>Payments</h3><button class="button secondary table-action" type="button" data-download-report="payments.csv">CSV</button></div><div id="report-payments" class="table-wrap compact-table">Loading</div></section>
-        <section class="report-panel"><div class="section-head tight-head"><h3>Supply landed cost</h3><button class="button secondary table-action" type="button" data-download-report="supply.csv">CSV</button></div><div id="report-supply" class="table-wrap compact-table">Loading</div></section>
-        <section class="report-panel"><div class="section-head tight-head"><h3>Merchant remaining</h3><button class="button secondary table-action" type="button" data-download-report="merchant-balances.csv">CSV</button></div><div id="report-balances" class="table-wrap compact-table">Loading</div></section>
+        <section class="report-ledger-section"><div class="ledger-section-title"><span>01</span><div><h3>Analytical reports</h3><p>Live previews with catalog-approved exports.</p></div></div>
+        ${canSeeStock ? renderAnalyticalReportRow("stock", "Stock", "Inventory by location and SKU", "report-stock") : ""}
+        ${renderAnalyticalReportRow("operations", "Operations", "Operational volume and value", "report-operations")}
+        ${renderAnalyticalReportRow("payments", "Payments", "Collections and remaining balances", "report-payments")}
+        ${renderAnalyticalReportRow("supply", "Supply landed cost", "Shipment cost and receipt status", "report-supply")}
+        ${renderAnalyticalReportRow("merchant-balances", "Merchant remaining", "Account reconciliation by merchant", "report-balances")}
+        </section>
         <section class="report-panel report-download-panel">
-          <div class="section-head tight-head"><h3>Document downloads</h3><span class="muted-text">PDF</span></div>
+          <div class="ledger-section-title"><span>02</span><div><h3>Official documents</h3><p>Search a business record, then export its controlled document.</p></div></div>
           <div class="download-grid">
             ${renderReportSearchPicker("operation-bill", "Operation bill", "Search operation code, client, type", "Download bill")}
             ${renderReportSearchPicker("payment-receipt", "Payment receipt", "Search payment code, operation, merchant", "Download receipt")}
@@ -6735,12 +7952,20 @@ async function renderReports() {
           </div>
         </section>
         <section class="report-panel"><div class="section-head tight-head"><h3>Export log</h3><span id="report-export-count" class="muted-text">Loading</span></div><div id="report-exports" class="table-wrap compact-table">Loading</div></section>
+        </main>
+        <aside class="export-docket" aria-label="Export docket">
+          <p class="ledger-kicker">EXPORT DOCKET</p>
+          <h3 id="export-docket-title">No export selected</h3>
+          <dl><div><dt>Language</dt><dd id="export-docket-language">${currentLanguage === "ar" ? "Arabic" : "English"}</dd></div><div><dt>Format</dt><dd id="export-docket-format">—</dd></div><div><dt>Scope</dt><dd id="export-docket-scope">Current authorized scope</dd></div><div><dt>Filename</dt><dd id="export-docket-filename">Assigned by server</dd></div></dl>
+          <p id="report-export-status" class="docket-status" role="status" aria-live="polite">Ready for export.</p>
+        </aside>
       </div>
     </section>`;
 
   document.getElementById("reports-refresh").addEventListener("click", loadReports);
-  document.querySelectorAll("[data-download-report]").forEach((button) => button.addEventListener("click", () => downloadReport(button.dataset.downloadReport)));
-  document.querySelectorAll("[data-pdf-report]").forEach((button) => button.addEventListener("click", () => downloadReportPdf(button.dataset.pdfReport)));
+  document.querySelectorAll("[data-download-report]").forEach((button) => button.addEventListener("click", () => downloadReport(button.dataset.downloadReport, button.dataset.exportFormat, button)));
+  document.querySelectorAll("[data-pdf-report]").forEach((button) => button.addEventListener("click", () => downloadReportPdf(button.dataset.pdfReport, button.dataset.exportFormat, button)));
+  document.querySelectorAll('input[name="report-export-language"]').forEach((control) => control.addEventListener("change", () => updateExportDocket({ status: "Language updated. Ready for export." })));
   await loadReports();
 }
 
@@ -6748,6 +7973,7 @@ async function loadReports() {
   const role = getAuth()?.user.role;
   const canSeeStock = role !== "Accountant";
   await Promise.all([
+    canSeeStock ? loadReportLocations() : Promise.resolve(),
     canSeeStock ? loadStockReport() : Promise.resolve(),
     loadOperationsReport(),
     loadPaymentsReport(),
@@ -6789,7 +8015,7 @@ async function loadOperationsReport() {
     reportOperationRows = rows;
     target.innerHTML = `<table><thead><tr><th>Operation</th><th>Type</th><th>Status</th><th>Qty</th><th>Total</th><th>Created</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="6">No operations.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.operationNumber)}</td><td>${escapeHtml(row.operationType)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.total))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.operationNumber)}</td><td>${escapeHtml(operationTypeLabel(row.operationType))}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.total))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     target.textContent = getFriendlyWorkspaceError(exception);
   }
@@ -6802,7 +8028,7 @@ async function loadPaymentsReport() {
     reportPaymentRows = rows;
     target.innerHTML = `<table><thead><tr><th>Payment</th><th>Operation</th><th>Method</th><th>Total</th><th>Paid</th><th>Remaining</th><th>Status</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="7">No payment logs.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(shortId(row.id, "PAY"))}</td><td>${escapeHtml(row.operationNumber || shortId(row.operationId, "OP"))}</td><td>${escapeHtml(row.paymentMethod)}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table>`;
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(paymentReference(row))}</td><td>${escapeHtml(operationReference(row))}</td><td>${escapeHtml(movementMethodLabel(row.paymentMethod))}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(row.status))}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     target.textContent = getFriendlyWorkspaceError(exception);
   }
@@ -6822,7 +8048,7 @@ async function loadSupplyReport() {
     reportSupplyRows = rows;
     target.innerHTML = `<table><thead><tr><th>Shipment</th><th>Supplier</th><th>Status</th><th>Qty</th><th>Landed</th><th>Receipt</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="6">No supply shipments.</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td>${escapeHtml(row.supplierName)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId, "OP") : "-")}</td></tr>`).join("")}</tbody></table>`;
+      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td dir="auto">${escapeHtml(row.supplierName)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationNumber || (row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId, "OP") : "-"))}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     reportSupplyRows = [];
     target.textContent = getFriendlyWorkspaceError(exception);
@@ -6834,7 +8060,7 @@ async function loadMerchantBalancesReport() {
   try {
     const rows = await request("/api/v1/reports/merchant-balances");
     reportMerchantRows = rows;
-    target.innerHTML = `<table><thead><tr><th>Merchant</th><th>Remaining</th><th>Sales</th><th>Net collected</th><th>Returns / adjustments</th></tr></thead><tbody>${rows.length === 0
+    target.innerHTML = `<table><thead><tr><th>Merchant</th><th>Remaining</th><th>Sales</th><th>Net collected</th><th>Account adjustments</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="5">No merchant remaining.</td></tr>`
       : rows.slice(0, 12).map((row) => {
         const paymentsReceived = Number(row.paymentsReceived || 0);
@@ -6860,12 +8086,12 @@ async function loadStocktakeReportOptions() {
 }
 
 function renderReportDownloadSelectors() {
-  setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${row.operationType} / ${row.status} / ${row.clientName || "-"}`);
-  setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${shortId(row.id, "PAY")} / ${row.operationNumber || shortId(row.operationId, "OP")} / ${row.paymentMethod} / ${formatMoney(row.remainingAmount)} remaining`);
-  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${shortId(row.id, "PAY")} / ${row.operationNumber || shortId(row.operationId, "OP")} / ${row.status} / ${formatMoney(row.totalAmount)}`);
+  setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${operationTypeLabel(row.operationType)} / ${row.status} / ${row.clientName || "-"}`);
+  setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${paymentReference(row)} / ${movementMethodLabel(row.paymentMethod)} / ${formatMoney(row.remainingAmount)} remaining`);
+  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${paymentReference(row)} / ${row.status} / ${formatMoney(row.totalAmount)}`);
   setupReportSearchPicker("supply-landed-cost", reportSupplyRows, (row) => row.id, (row) => `${row.shipmentNumber} / ${row.supplierName} / ${row.invoiceNumber || "-"} / ${formatMoney(row.landedTotal)}`);
   setupReportSearchPicker("merchant-statement", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
-  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${shortId(row.id, "STK")} / ${row.status} / ${formatDateTime(row.createdAt)}`);
+  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${stocktakeReference(row)} / ${row.status}`);
 }
 
 function setReportSelect(id, rows, valueSelector, labelSelector) {
@@ -6880,13 +8106,58 @@ function setReportSelect(id, rows, valueSelector, labelSelector) {
 
 function renderReportSearchPicker(reportType, label, placeholder, buttonLabel) {
   const id = `report-picker-${reportType}`;
+  const formats = reportCatalogEntry(reportType)?.formats || ["pdf"];
+  const actions = formats.map((format) => `<button class="button secondary" type="button" data-pdf-report="${escapeHtml(reportType)}" data-export-format="${escapeHtml(format)}">${escapeHtml(format.toUpperCase())}</button>`).join("");
   return `<div class="field report-search-field">
     <label for="${id}-search">${escapeHtml(label)}</label>
     <input id="${id}-value" type="hidden">
     <input id="${id}-search" class="input report-picker-search" data-report-picker="${escapeHtml(reportType)}" type="search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-results" placeholder="${escapeHtml(placeholder)}">
     <div id="${id}-results" class="op-line-search-results report-picker-results" role="listbox" hidden></div>
-    <button class="button secondary" type="button" data-pdf-report="${escapeHtml(reportType)}">${escapeHtml(buttonLabel)}</button>
+    <div class="report-format-actions" aria-label="${escapeHtml(buttonLabel)}">${actions}</div>
   </div>`;
+}
+
+async function loadReportLocations() {
+  const select = document.getElementById("report-filter-location");
+  if (!select) return;
+  try {
+    const result = await request("/api/v1/inventory/locations?pageSize=200");
+    const rows = Array.isArray(result) ? result : (result.items || []);
+    select.insertAdjacentHTML("beforeend", rows.map((row) => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name)}</option>`).join(""));
+  } catch {
+    select.disabled = true;
+  }
+}
+
+function bindTransactionReferenceField(methodId, referenceId) {
+  const method = document.getElementById(methodId);
+  const reference = document.getElementById(referenceId);
+  if (!method || !reference) return;
+  const sync = () => {
+    const required = ["CashTransaction", "BankTransfer", "Wallet"].includes(canonicalSelectValue(methodId, "movementMethod", { allowEmpty: true }));
+    reference.required = required;
+    reference.closest(".field")?.toggleAttribute("hidden", !required);
+    if (!required) reference.value = "";
+  };
+  method.addEventListener("change", sync);
+  sync();
+}
+
+function reportExportFilterParams(reportName) {
+  const params = new URLSearchParams();
+  const value = (id) => document.getElementById(id)?.value?.trim() || "";
+  if (reportName === "stock" && value("report-filter-location")) params.set("locationId", value("report-filter-location"));
+  if (reportName === "operations") {
+    if (value("report-filter-from")) params.set("from", value("report-filter-from"));
+    if (value("report-filter-to")) params.set("to", value("report-filter-to"));
+    if (value("report-filter-operation-type")) params.set("operationType", value("report-filter-operation-type"));
+  }
+  if (reportName === "supply") {
+    if (value("report-filter-from")) params.set("from", value("report-filter-from"));
+    if (value("report-filter-to")) params.set("to", value("report-filter-to"));
+    if (value("report-filter-supply-status")) params.set("status", value("report-filter-supply-status"));
+  }
+  return params;
 }
 
 function setupReportSearchPicker(reportType, rows, valueSelector, labelSelector) {
@@ -7000,18 +8271,27 @@ async function logReportExport(reportType) {
   }
 }
 
-async function downloadReport(reportName) {
+async function downloadReport(reportName, format = "csv", trigger = null) {
   try {
     const language = getReportExportLanguage();
-    await downloadFile(`/api/v1/reports/${reportName}?language=${encodeURIComponent(language)}`, `lensee-${language}-${reportName}`);
+    updateExportDocket({ title: reportName, format, status: "Preparing the authorized export…" });
+    if (trigger) trigger.disabled = true;
+    const params = reportExportFilterParams(reportName);
+    params.set("format", format);
+    params.set("language", language);
+    const fileName = await downloadFile(`/api/v1/reports/${encodeURIComponent(reportName)}/export?${params}`, `lensee-${language}-${reportName}.${format}`);
+    updateExportDocket({ title: reportName, format, fileName, status: "Export completed and downloaded." });
     notice("Report downloaded.", "success");
     await loadExportLogs();
   } catch (exception) {
+    updateExportDocket({ title: reportName, format, status: getFriendlyWorkspaceError(exception) });
     notice(getFriendlyWorkspaceError(exception), "error");
+  } finally {
+    if (trigger) trigger.disabled = false;
   }
 }
 
-async function downloadReportPdf(reportType) {
+async function downloadReportPdf(reportType, format = "pdf", trigger = null) {
   const selectors = {
     "operation-bill": "report-picker-operation-bill-value",
     "payment-receipt": "report-picker-payment-receipt-value",
@@ -7026,26 +8306,25 @@ async function downloadReportPdf(reportType) {
     return;
   }
 
-  const paths = {
-    "operation-bill": `/api/v1/reports/operations/${encodeURIComponent(id.trim())}/bill.pdf`,
-    "payment-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/receipt.pdf`,
-    "cash-receipt": `/api/v1/reports/payments/${encodeURIComponent(id.trim())}/cash-receipt.pdf`,
-    "supply-landed-cost": `/api/v1/reports/supply/${encodeURIComponent(id.trim())}/landed-cost.pdf`,
-    "merchant-statement": `/api/v1/reports/merchants/${encodeURIComponent(id.trim())}/statement.pdf`,
-    "stocktake-summary": `/api/v1/reports/stocktakes/${encodeURIComponent(id.trim())}/summary.pdf`
-  };
-
   try {
-    await printReportPdf(reportType, id.trim());
-    notice("PDF downloaded.", "success");
+    if (trigger) trigger.disabled = true;
+    const language = getReportExportLanguage();
+    updateExportDocket({ title: reportType, format, status: "Rendering the official document…" });
+    const fileName = await downloadFile(`/api/v1/documents/${encodeURIComponent(reportType)}/${encodeURIComponent(id.trim())}?format=${encodeURIComponent(format)}&language=${encodeURIComponent(language)}`, `lensee-${language}-${reportType}.${format}`);
+    updateExportDocket({ title: reportType, format, fileName, status: "Official document downloaded." });
+    notice(`${format.toUpperCase()} downloaded.`, "success");
     await loadExportLogs();
   } catch (exception) {
+    updateExportDocket({ title: reportType, format, status: getFriendlyWorkspaceError(exception) });
     notice(getFriendlyWorkspaceError(exception), "error");
+  } finally {
+    if (trigger) trigger.disabled = false;
   }
 }
 
 function getReportExportLanguage() {
-  return document.querySelector('input[name="report-export-language"]:checked')?.value === "en" ? "en" : "ar";
+  const value = document.querySelector('input[name="report-export-language"]:checked')?.value;
+  return ["ar", "en", "bi"].includes(value) ? value : "ar";
 }
 
 async function printReportPdf(reportType, id, codeOverride = null) {
@@ -7059,7 +8338,14 @@ async function printReportPdf(reportType, id, codeOverride = null) {
   };
   const language = getReportExportLanguage();
   const code = sanitizeFileCode(codeOverride || getReportFileCode(reportType, id));
-  await downloadFile(`${paths[reportType]}?language=${encodeURIComponent(language)}`, `lensee-${language}-${reportType}-${code}.pdf`);
+  const query = new URLSearchParams({ language });
+  if (reportType === "merchant-statement") {
+    const from = document.getElementById("merchant-statement-from")?.value;
+    const to = document.getElementById("merchant-statement-to")?.value;
+    if (from) query.set("from", from);
+    if (to) query.set("to", to);
+  }
+  await downloadFile(`${paths[reportType]}?${query.toString()}`, `lensee-${language}-${reportType}-${code}.pdf`);
 }
 
 function getReportFileCode(reportType, id) {
@@ -7068,7 +8354,7 @@ function getReportFileCode(reportType, id) {
     return sanitizeFileCode(reportOperationRows.find((row) => row.id === cleanId)?.operationNumber || cleanId);
   }
   if (reportType === "payment-receipt" || reportType === "cash-receipt") {
-    return sanitizeFileCode(shortId(reportPaymentRows.find((row) => row.id === cleanId)?.id || cleanId, "PAY"));
+    return sanitizeFileCode(paymentReference(reportPaymentRows.find((row) => row.id === cleanId)));
   }
   if (reportType === "merchant-statement") {
     return sanitizeFileCode(reportMerchantRows.find((row) => row.merchantId === cleanId)?.businessName || cleanId);
@@ -7077,7 +8363,7 @@ function getReportFileCode(reportType, id) {
     return sanitizeFileCode(reportSupplyRows.find((row) => row.id === cleanId)?.shipmentNumber || cleanId);
   }
   if (reportType === "stocktake-summary") {
-    return sanitizeFileCode(shortId(cleanId, "STK"));
+    return sanitizeFileCode(stocktakeReference(reportStocktakeRows.find((row) => row.id === cleanId)));
   }
   return sanitizeFileCode(cleanId);
 }
@@ -7186,6 +8472,7 @@ async function renderSupply() {
           <div class="table-wrap compact-table">
             <table><thead><tr><th>${supplyText("Shipment", "الشحنة")}</th><th>${supplyText("Supplier", "المورد")}</th><th>${supplyText("Status", "الحالة")}</th><th>${supplyText("Total", "الإجمالي")}</th><th></th></tr></thead><tbody id="supply-rows"></tbody></table>
           </div>
+          <div id="supply-list-pagination" class="pagination" hidden></div>
         </section>
         </section>
         <section class="band supply-detail-pane" id="supply-detail">
@@ -7196,8 +8483,8 @@ async function renderSupply() {
     </section>`;
 
   document.getElementById("supply-refresh").addEventListener("click", loadSupplyShipments);
-  document.getElementById("supply-search").addEventListener("input", debounce(loadSupplyShipments, 250));
-  document.getElementById("supply-status").addEventListener("change", loadSupplyShipments);
+  document.getElementById("supply-search").addEventListener("input", debounce(() => { supplyListPage = 1; void loadSupplyShipments(); }, 250));
+  document.getElementById("supply-status").addEventListener("change", () => { supplyListPage = 1; void loadSupplyShipments(); });
   if (canWrite) {
     wireSupplyForm();
   }
@@ -7233,6 +8520,7 @@ function renderSupplyForm() {
         <section class="operation-line-panel supply-document-block full-span">
           <div class="section-head tight-head"><div><h2>${supplyText("SKU lines", "بنود SKU")}</h2><p class="muted-text">${supplyText("Prices can stay blank while drafting and must be completed before confirmation.", "يمكن ترك السعر فارغا في المسودة، ويجب إكماله قبل التأكيد.")}</p></div><button id="supply-add-line" class="button secondary" type="button">${supplyText("Add line", "إضافة بند")}</button></div>
           <div id="supply-lines" class="line-editor"></div>
+          <div id="supply-line-pagination" class="pagination" hidden></div>
         </section>
         <section class="operation-line-panel supply-document-block full-span">
           <div class="section-head tight-head"><div><h2>${supplyText("Import cost breakdown", "تفصيل تكاليف الاستيراد")}</h2></div><button id="supply-add-cost" class="button secondary" type="button">${supplyText("Add cost", "إضافة تكلفة")}</button></div>
@@ -7256,8 +8544,8 @@ function wireSupplyForm() {
   document.getElementById("supply-reset").addEventListener("click", resetSupplyForm);
   document.getElementById("supply-add-line").addEventListener("click", () => addSupplyLine());
   document.getElementById("supply-add-cost").addEventListener("click", () => addSupplyCost());
-  document.getElementById("supply-form").addEventListener("input", updateSupplyFormSummary);
-  document.getElementById("supply-form").addEventListener("change", updateSupplyFormSummary);
+  document.getElementById("supply-form").addEventListener("input", handleSupplyFormChange);
+  document.getElementById("supply-form").addEventListener("change", handleSupplyFormChange);
   resetSupplyForm();
 }
 
@@ -7269,6 +8557,9 @@ function resetSupplyForm() {
   form.reset();
   document.getElementById("supply-id").value = "";
   document.getElementById("supply-lines").innerHTML = "";
+  supplyEditorLines = [];
+  supplyEditorLineById.clear();
+  supplyEditorPage = 1;
   document.getElementById("supply-costs").innerHTML = "";
   document.getElementById("supply-validation-list").hidden = true;
   document.getElementById("supply-form-error").hidden = true;
@@ -7277,41 +8568,151 @@ function resetSupplyForm() {
   updateSupplyFormSummary();
 }
 
-function addSupplyLine(line = {}) {
+function addSupplyLine(line = {}, target = null) {
   const container = document.getElementById("supply-lines");
   if (!container) {
     return;
   }
-  const unitPriceValue = line.unitPrice ?? "";
+  const model = {
+    _clientId: line._clientId || createUuid(),
+    skuId: line.skuId || "",
+    quantity: line.quantity || 1,
+    unitPrice: line.unitPrice ?? null,
+    lotNumber: line.lotNumber || null,
+    expiryDate: line.expiryDate || null,
+    notes: line.notes || null,
+    skuCode: line.skuCode || null,
+    productName: line.productName || null
+  };
+  if (!line._fromModel) {
+    syncCurrentSupplyPage();
+    supplyEditorLines.push(model);
+    supplyEditorLineById.set(model._clientId, model);
+    supplyEditorStatsDirty = true;
+    supplyEditorPage = Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize));
+    renderSupplyEditorPage();
+    return;
+  }
+  const unitPriceValue = model.unitPrice ?? "";
   const row = document.createElement("div");
   row.className = "line-editor-row supply-line-row";
+  row.dataset.supplyLineKey = model._clientId;
   row.innerHTML = `
-    <input class="supply-line-sku" type="hidden" value="${escapeHtml(line.skuId || "")}">
+    <input class="supply-line-sku" type="hidden" value="${escapeHtml(model.skuId)}">
     <div class="field op-line-finder"><label>${supplyText("Find SKU", "بحث SKU")}</label><input class="input supply-line-search" autocomplete="off" placeholder="${supplyText("Product, color, power, SKU code", "المنتج، اللون، القوة، كود SKU")}"><div class="op-line-search-results" hidden></div></div>
     <div class="op-line-resolved full-span"><span class="muted-text">${supplyText("Search and select a SKU.", "ابحث واختر SKU.")}</span></div>
-    <div class="field"><label>${supplyText("Quantity", "الكمية")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.quantity || 1)}" required></div>
+    <div class="field"><label>${supplyText("Quantity", "الكمية")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(model.quantity)}" required></div>
     <div class="field"><label>${supplyText("Unit price", "سعر الوحدة")}</label><input class="input supply-line-price" type="number" min="0.01" step="0.01" value="${escapeHtml(unitPriceValue)}" placeholder="${supplyText("Draft blank", "فارغ في المسودة")}"><span class="field-hint supply-price-hint" hidden>${supplyText("Required before confirmation.", "مطلوب قبل التأكيد.")}</span></div>
-    <div class="field"><label>${supplyText("Lot", "التشغيلة")}</label><input class="input supply-line-lot" maxlength="100" value="${escapeHtml(line.lotNumber || "")}"></div>
-    <div class="field"><label>${supplyText("Expiry", "الصلاحية")}</label><input class="input supply-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
-    <div class="field full-span"><label>${supplyText("Line notes", "ملاحظات البند")}</label><input class="input supply-line-notes" maxlength="1000" value="${escapeHtml(line.notes || "")}"></div>
+    <div class="field"><label>${supplyText("Lot", "التشغيلة")}</label><input class="input supply-line-lot" maxlength="100" value="${escapeHtml(model.lotNumber || "")}"></div>
+    <div class="field"><label>${supplyText("Expiry", "الصلاحية")}</label><input class="input supply-line-expiry" type="date" value="${escapeHtml(model.expiryDate || "")}"></div>
+    <div class="field full-span"><label>${supplyText("Line notes", "ملاحظات البند")}</label><input class="input supply-line-notes" maxlength="1000" value="${escapeHtml(model.notes || "")}"></div>
     <button class="icon-button supply-remove-line" type="button" title="${supplyText("Remove line", "حذف البند")}">x</button>`;
-  row.querySelector(".supply-line-search").addEventListener("input", () => renderSupplySkuSearchResults(row));
-  row.querySelector(".supply-line-price").addEventListener("input", () => updateSupplyLinePriceState(row));
+  row.querySelector(".supply-line-search").addEventListener("input", debounce(() => { void renderSupplySkuSearchResults(row); }, 250));
+  row.querySelector(".supply-line-price").addEventListener("input", () => updateSupplyLinePriceState(row, false));
   row.querySelector(".supply-remove-line").addEventListener("click", () => {
-    if (container.querySelectorAll(".supply-line-row").length > 1) {
-      row.remove();
-      updateSupplyFormSummary();
+    syncCurrentSupplyPage();
+    if (supplyEditorLines.length > 1) {
+      supplyEditorLines = supplyEditorLines.filter((item) => item._clientId !== model._clientId);
+      supplyEditorLineById.delete(model._clientId);
+      supplyEditorStatsDirty = true;
+      supplyEditorPage = Math.min(supplyEditorPage, Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize)));
+      renderSupplyEditorPage();
     }
   });
-  container.appendChild(row);
-  if (line.skuId) {
-    seedSupplyLineSkuSelection(row, line.skuId);
+  (target || container).appendChild(row);
+  if (model.skuId) {
+    seedSupplyLineSkuSelection(row, model.skuId);
   }
-  updateSupplyLinePriceState(row);
+  updateSupplyLinePriceState(row, false);
+}
+
+function readSupplyLineRow(row) {
+  const priceValue = row.querySelector(".supply-line-price").value.trim();
+  const existing = supplyEditorLineById.get(row.dataset.supplyLineKey);
+  return {
+    _clientId: row.dataset.supplyLineKey,
+    skuId: row.querySelector(".supply-line-sku").value,
+    quantity: Number(row.querySelector(".supply-line-qty").value || 0),
+    unitPrice: priceValue === "" ? null : Number(priceValue),
+    lotNumber: row.querySelector(".supply-line-lot").value.trim() || null,
+    expiryDate: row.querySelector(".supply-line-expiry").value || null,
+    notes: row.querySelector(".supply-line-notes").value.trim() || null,
+    skuCode: existing?.skuCode || null,
+    productName: existing?.productName || null
+  };
+}
+
+function syncCurrentSupplyPage() {
+  document.querySelectorAll(".supply-line-row").forEach((row) => {
+    syncSupplyLineRow(row);
+  });
+}
+
+function syncSupplyLineRow(row) {
+  const existing = supplyEditorLineById.get(row.dataset.supplyLineKey);
+  if (!existing) return;
+  Object.assign(existing, readSupplyLineRow(row));
+}
+
+function supplyLineMetrics(line) {
+  const quantity = Number(line?.quantity);
+  const unitPrice = line?.unitPrice;
+  return {
+    productTotal: Number.isFinite(quantity) && Number.isFinite(unitPrice) ? quantity * unitPrice : 0,
+    incompletePrices: unitPrice === null ? 1 : 0,
+    invalidPrices: unitPrice !== null && (!Number.isFinite(unitPrice) || unitPrice <= 0) ? 1 : 0
+  };
+}
+
+function rebuildSupplyEditorStats() {
+  supplyEditorStats = supplyEditorLines.reduce((total, line) => {
+    const metrics = supplyLineMetrics(line);
+    total.productTotal += metrics.productTotal;
+    total.incompletePrices += metrics.incompletePrices;
+    total.invalidPrices += metrics.invalidPrices;
+    return total;
+  }, { productTotal: 0, incompletePrices: 0, invalidPrices: 0 });
+  supplyEditorStatsDirty = false;
+}
+
+function handleSupplyFormChange(event) {
+  const row = event.target.closest?.(".supply-line-row");
+  if (row) {
+    const existing = supplyEditorLineById.get(row.dataset.supplyLineKey);
+    const before = supplyLineMetrics(existing);
+    syncSupplyLineRow(row);
+    const after = supplyLineMetrics(existing);
+    supplyEditorStats.productTotal += after.productTotal - before.productTotal;
+    supplyEditorStats.incompletePrices += after.incompletePrices - before.incompletePrices;
+    supplyEditorStats.invalidPrices += after.invalidPrices - before.invalidPrices;
+  }
   updateSupplyFormSummary();
 }
 
-function updateSupplyLinePriceState(row) {
+function renderSupplyEditorPage() {
+  const container = document.getElementById("supply-lines");
+  if (!container) return;
+  if (supplyEditorStatsDirty) rebuildSupplyEditorStats();
+  container.replaceChildren();
+  const start = (supplyEditorPage - 1) * supplyEditorPageSize;
+  const fragment = document.createDocumentFragment();
+  supplyEditorLines.slice(start, start + supplyEditorPageSize)
+    .forEach((line) => addSupplyLine({ ...line, _fromModel: true }, fragment));
+  container.replaceChildren(fragment);
+  updateSupplyFormSummary();
+  const pager = document.getElementById("supply-line-pagination");
+  if (!pager) return;
+  const pages = Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize));
+  pager.hidden = pages <= 1;
+  const summary = supplyText(`Lines ${start + 1}-${Math.min(start + supplyEditorPageSize, supplyEditorLines.length)} of ${supplyEditorLines.length}`, `البنود ${start + 1}-${Math.min(start + supplyEditorPageSize, supplyEditorLines.length)} من ${supplyEditorLines.length}`);
+  setPagerContents(pager, supplyText("Previous", "السابق"), summary, supplyText("Next", "التالي"), supplyEditorPage <= 1, supplyEditorPage >= pages, (delta) => {
+    syncCurrentSupplyPage();
+    supplyEditorPage += delta;
+    renderSupplyEditorPage();
+  });
+}
+
+function updateSupplyLinePriceState(row, refreshSummary = true) {
   const priceInput = row.querySelector(".supply-line-price");
   const hint = row.querySelector(".supply-price-hint");
   const isBlank = priceInput.value.trim() === "";
@@ -7323,10 +8724,10 @@ function updateSupplyLinePriceState(row) {
     hint.hidden = !isBlank && !isInvalid;
     hint.textContent = isInvalid ? supplyText("Price must be greater than zero.", "السعر يجب أن يكون أكبر من صفر.") : supplyText("Required before confirmation.", "مطلوب قبل التأكيد.");
   }
-  updateSupplyFormSummary();
+  if (refreshSummary) updateSupplyFormSummary();
 }
 
-function renderSupplySkuSearchResults(row) {
+async function renderSupplySkuSearchResults(row) {
   const input = row.querySelector(".supply-line-search");
   const results = row.querySelector(".op-line-search-results");
   const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -7336,13 +8737,16 @@ function renderSupplySkuSearchResults(row) {
     return;
   }
 
-  if (supplySkuSearchIndex.length !== operationSkuOptions.length) {
-    buildSupplySkuSearchIndex();
+  const query = terms.join(" ");
+  const requestId = (skuSearchRequests.get(row) || 0) + 1;
+  skuSearchRequests.set(row, requestId);
+  let matches;
+  try {
+    matches = (await searchSkuOptions(query, 20)).slice(0, 8);
+  } catch {
+    matches = [];
   }
-  const matches = supplySkuSearchIndex
-    .filter((entry) => terms.every((term) => entry.searchText.includes(term)))
-    .map((entry) => entry.sku)
-    .slice(0, 8);
+  if (skuSearchRequests.get(row) !== requestId || input.value.trim().toLowerCase() !== query) return;
 
   setupAdaptiveSearchResultDismissal();
   collapseAdaptiveSearchResults(results);
@@ -7367,11 +8771,18 @@ function renderSupplySkuSearchResults(row) {
 }
 
 function seedSupplyLineSkuSelection(row, skuId) {
-  const sku = operationSkuOptions.find((value) => value.id === skuId);
+  const model = supplyEditorLineById.get(row.dataset.supplyLineKey);
+  const sku = operationSkuOptions.find((value) => value.id === skuId) ||
+    (model?.skuCode ? { id: skuId, skuCode: model.skuCode, productName: model.productName || "" } : null);
   row.querySelector(".supply-line-sku").value = skuId || "";
   row.querySelector(".op-line-resolved").innerHTML = sku
     ? `<span class="status-pill status-ok">${supplyText("Selected SKU", "SKU محدد")}</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`
     : `<span class="status-pill status-warn">${supplyText("Unknown SKU", "SKU غير معروف")}</span><span class="muted-cell">${escapeHtml(shortId(skuId, "SKU"))}</span>`;
+  if (!sku && skuId) {
+    void ensureSkuOption(skuId).then((loaded) => {
+      if (loaded && row.isConnected) seedSupplyLineSkuSelection(row, skuId);
+    });
+  }
 }
 
 function addSupplyCost(cost = {}) {
@@ -7405,16 +8816,20 @@ async function loadSupplyShipments() {
   }
   tbody.innerHTML = `<tr><td colspan="5">${supplyText("Loading shipments...", "جار تحميل الشحنات...")}</td></tr>`;
   const params = new URLSearchParams();
+  params.set("paged", "true");
+  params.set("page", String(supplyListPage));
+  params.set("pageSize", "25");
   const search = document.getElementById("supply-search")?.value.trim();
   const status = document.getElementById("supply-status")?.value;
   if (search) params.set("search", search);
   if (status) params.set("status", status);
   try {
-    const rows = await request(`/api/v1/supply/shipments${params.toString() ? `?${params}` : ""}`);
+    const result = await request(`/api/v1/supply/shipments?${params}`);
+    const rows = result.items || [];
     supplyShipments = rows;
     updateSupplyPageMetrics(rows);
     if (count) {
-      count.textContent = currentLanguage === "ar" ? `${rows.length} شحنة` : `${rows.length} shipment${rows.length === 1 ? "" : "s"}`;
+      count.textContent = currentLanguage === "ar" ? `${result.totalCount} شحنة` : `${result.totalCount} shipment${result.totalCount === 1 ? "" : "s"}`;
     }
     tbody.innerHTML = rows.length === 0 ? `<tr><td colspan="5">${supplyText("No supply shipments match the current filters.", "لا توجد شحنات مطابقة للفلاتر الحالية.")}</td></tr>` : rows.map((row) => `
       <tr class="click-row ${row.id === selectedSupplyShipmentId ? "selected-row" : ""}" data-supply-id="${escapeHtml(row.id)}">
@@ -7427,6 +8842,16 @@ async function loadSupplyShipments() {
     tbody.querySelectorAll("[data-supply-detail], [data-supply-id]").forEach((element) => {
       element.addEventListener("click", () => showSupplyDetail(element.dataset.supplyDetail || element.dataset.supplyId));
     });
+    const pager = document.getElementById("supply-list-pagination");
+    if (pager) {
+      const pages = Math.max(1, result.totalPages || Math.ceil(result.totalCount / result.pageSize));
+      supplyListPage = Math.min(result.page, pages);
+      pager.hidden = pages <= 1;
+      setPagerContents(pager, supplyText("Previous", "السابق"), `${supplyListPage} / ${pages}`, supplyText("Next", "التالي"), supplyListPage <= 1, supplyListPage >= pages, (delta) => {
+        supplyListPage += delta;
+        void loadSupplyShipments();
+      });
+    }
   } catch (exception) {
     if (count) count.textContent = supplyText("Failed", "فشل التحميل");
     updateSupplyPageMetrics([]);
@@ -7434,13 +8859,22 @@ async function loadSupplyShipments() {
   }
 }
 
-async function showSupplyDetail(id) {
+async function showSupplyDetail(id, linePage = 1) {
   selectedSupplyShipmentId = id;
+  supplyDetailLinePage = linePage;
   const target = document.getElementById("supply-detail");
   const canWrite = getAuth()?.user.role === "Admin";
   target.innerHTML = `<h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2><p>${supplyText("Loading shipment...", "جار تحميل الشحنة...")}</p>`;
   try {
-    const shipment = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}`);
+    const shipment = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}?includeCollections=false`);
+    const [lineResult, costs, history] = await Promise.all([
+      request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/lines?page=${supplyDetailLinePage}&pageSize=50`),
+      request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/costs`),
+      request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/history`)
+    ]);
+    shipment.lines = lineResult.items || [];
+    shipment.costs = costs || [];
+    shipment.history = history || [];
     supplyCurrentDetail = shipment;
     const readiness = getSupplyShipmentReadiness(shipment);
     target.innerHTML = `
@@ -7461,20 +8895,27 @@ async function showSupplyDetail(id) {
         <div><span>${supplyText("Landed total", "الإجمالي بعد التكلفة")}</span><strong>${escapeHtml(formatMoney(shipment.landedTotal))}</strong></div>
         <div><span>${supplyText("Readiness", "جاهزية التأكيد")}</span><strong class="${readiness.canConfirm ? "status-ok" : "status-warn"}">${escapeHtml(readiness.label)}</strong></div>
       </div>
-      ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${supplyText("Inventory receipt operation", "عملية إيصال المخزون")}: <strong>${escapeHtml(shortId(shipment.inventoryReceiptOperationId, "OP"))}</strong></p>` : ""}
-      <h3>${supplyText("Lines", "البنود")}</h3>
+      ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${supplyText("Inventory receipt operation", "عملية إيصال المخزون")}: <strong>${escapeHtml(shipment.inventoryReceiptOperationNumber || shortId(shipment.inventoryReceiptOperationId, "OP"))}</strong></p>` : ""}
+      <h3>${supplyText("Lines", "البنود")} <span class="muted-text">${escapeHtml(lineResult.totalCount)}</span></h3>
       <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>${supplyText("Qty", "الكمية")}</th><th>${supplyText("Unit price", "سعر الوحدة")}</th><th>${supplyText("Line", "البند")}</th><th>${supplyText("Allocated", "الموزع")}</th><th>${supplyText("Landed unit", "تكلفة الوحدة النهائية")}</th><th>${supplyText("Batch", "التشغيلة")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
         <tr class="${line.unitPrice == null || line.unitPrice <= 0 ? "supply-line-incomplete-row" : ""}"><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span></td><td>${escapeHtml(line.quantity)}</td><td>${line.unitPrice == null ? `<span class="status-pill status-warn">${supplyText("Blank", "فارغ")}</span>` : escapeHtml(formatMoney(line.unitPrice))}</td><td>${escapeHtml(formatMoney(line.lineSubtotal))}</td><td>${escapeHtml(formatMoney(line.allocatedCost))}</td><td>${escapeHtml(formatMoney(line.landedUnitCost))}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
       <h3>${supplyText("Cost breakdown", "تفصيل التكاليف")}</h3>
       <div class="table-wrap compact-table"><table><thead><tr><th>${supplyText("Type", "النوع")}</th><th>${supplyText("Description", "الوصف")}</th><th>${supplyText("Amount", "المبلغ")}</th></tr></thead><tbody>${shipment.costs.length === 0 ? `<tr><td colspan="3">${supplyText("No costs.", "لا توجد تكاليف.")}</td></tr>` : shipment.costs.map((cost) => `<tr><td>${escapeHtml(supplyCostTypeLabel(cost.costType))}</td><td>${escapeHtml(cost.description || "-")}</td><td>${escapeHtml(formatMoney(cost.amount))}</td></tr>`).join("")}</tbody></table></div>
       <h3>${supplyText("History", "السجل")}</h3>
-      <div class="table-wrap compact-table"><table><thead><tr><th>${supplyText("Action", "الإجراء")}</th><th>${supplyText("Time", "الوقت")}</th><th>${supplyText("Summary", "الملخص")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${supplyText("No history.", "لا يوجد سجل حتى الآن.")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(item.summary || "-")}</td></tr>`).join("")}</tbody></table></div>`;
+      <div class="table-wrap compact-table"><table><thead><tr><th>${supplyText("Action", "الإجراء")}</th><th>${supplyText("Time", "الوقت")}</th><th>${supplyText("Summary", "الملخص")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${supplyText("No history.", "لا يوجد سجل حتى الآن.")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(item.summary || "-")}</td></tr>`).join("")}</tbody></table></div>
+      <div class="pagination" id="supply-detail-line-pagination"></div>`;
 
-    document.getElementById("supply-edit")?.addEventListener("click", () => fillSupplyForm(shipment));
+    const detailPager = document.getElementById("supply-detail-line-pagination");
+    const detailPages = Math.max(1, lineResult.totalPages || 1);
+    detailPager.hidden = detailPages <= 1;
+    setPagerContents(detailPager, supplyText("Previous", "السابق"), `${lineResult.page} / ${detailPages}`, supplyText("Next", "التالي"), lineResult.page <= 1, lineResult.page >= detailPages, (delta) => void showSupplyDetail(id, lineResult.page + delta));
+    document.getElementById("supply-edit")?.addEventListener("click", async () => {
+      const editor = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/editor`);
+      fillSupplyForm(editor);
+    });
     document.getElementById("supply-confirm")?.addEventListener("click", () => confirmSupplyShipment(shipment.id));
     document.getElementById("supply-cancel")?.addEventListener("click", () => cancelSupplyShipment(shipment.id));
     bindPrintReportButtons(target);
-    await loadSupplyShipments();
   } catch (exception) {
     target.innerHTML = `<h2>${supplyText("Shipment detail", "تفاصيل الشحنة")}</h2><p>${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
   }
@@ -7487,8 +8928,21 @@ function fillSupplyForm(shipment) {
   document.getElementById("supply-date").value = shipment.shipmentDate ? shipment.shipmentDate.slice(0, 16) : "";
   document.getElementById("supply-location").value = shipment.destinationLocationId;
   document.getElementById("supply-notes").value = shipment.notes || "";
-  document.getElementById("supply-lines").innerHTML = "";
-  shipment.lines.forEach((line) => addSupplyLine(line));
+  supplyEditorLines = shipment.lines.map((line) => ({
+    _clientId: line.id || createUuid(),
+    skuId: line.skuId,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    lotNumber: line.lotNumber,
+    expiryDate: line.expiryDate,
+    notes: line.notes,
+    skuCode: line.skuCode,
+    productName: line.productName
+  }));
+  supplyEditorLineById = new Map(supplyEditorLines.map((line) => [line._clientId, line]));
+  supplyEditorStatsDirty = true;
+  supplyEditorPage = 1;
+  renderSupplyEditorPage();
   document.getElementById("supply-costs").innerHTML = "";
   shipment.costs.forEach((cost) => addSupplyCost(cost));
   clearSupplyValidation();
@@ -7508,6 +8962,14 @@ async function saveSupplyShipment(event) {
   }
   const validation = validateSupplyFormPayload(payload);
   if (validation.length > 0) {
+    const firstInvalidLine = payload.lines.findIndex((line) =>
+      !line.skuId || !Number.isFinite(line.quantity) || line.quantity <= 0 ||
+      (line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)));
+    if (firstInvalidLine >= 0) {
+      supplyEditorPage = Math.floor(firstInvalidLine / supplyEditorPageSize) + 1;
+      renderSupplyEditorPage();
+      document.querySelectorAll(".supply-line-row")[firstInvalidLine % supplyEditorPageSize]?.classList.add("supply-line-invalid");
+    }
     showSupplyValidation(validation);
     error.textContent = supplyText("Fix the highlighted shipment values before saving.", "راجع القيم المحددة قبل حفظ الشحنة.");
     error.hidden = false;
@@ -7557,26 +9019,17 @@ async function loadSupplyLocations() {
 }
 
 function collectSupplyFormPayload() {
+  syncCurrentSupplyPage();
+  const visibleRows = new Map([...document.querySelectorAll(".supply-line-row")].map((row) => [row.dataset.supplyLineKey, row]));
   return {
     supplierName: document.getElementById("supply-supplier").value.trim(),
     invoiceNumber: document.getElementById("supply-invoice").value.trim() || null,
     shipmentDate: document.getElementById("supply-date").value || null,
     destinationLocationId: document.getElementById("supply-location").value,
     notes: document.getElementById("supply-notes").value.trim() || null,
-    lines: [...document.querySelectorAll(".supply-line-row")].map((row) => {
-      const priceValue = row.querySelector(".supply-line-price").value.trim();
-      return {
-        skuId: row.querySelector(".supply-line-sku").value,
-        quantity: Number(row.querySelector(".supply-line-qty").value || 0),
-        unitPrice: priceValue === "" ? null : Number(priceValue),
-        lotNumber: row.querySelector(".supply-line-lot").value.trim() || null,
-        expiryDate: row.querySelector(".supply-line-expiry").value || null,
-        notes: row.querySelector(".supply-line-notes").value.trim() || null,
-        _row: row
-      };
-    }),
+    lines: supplyEditorLines.map((line) => ({ ...line, _row: visibleRows.get(line._clientId) })),
     costs: [...document.querySelectorAll(".supply-cost-row")].map((row) => ({
-      costType: row.querySelector(".supply-cost-type").value,
+      costType: canonicalSystemValue(row.querySelector(".supply-cost-type").value, "supplyCostType"),
       description: row.querySelector(".supply-cost-description").value.trim() || null,
       amount: Number(row.querySelector(".supply-cost-amount").value || 0),
       _row: row
@@ -7598,22 +9051,22 @@ function validateSupplyFormPayload(payload) {
 
   const duplicateKeys = new Set();
   payload.lines.forEach((line, index) => {
-    line._row.classList.remove("supply-line-invalid");
+    line._row?.classList.remove("supply-line-invalid");
     if (!line.skuId) {
-      line._row.classList.add("supply-line-invalid");
+      line._row?.classList.add("supply-line-invalid");
       messages.push(supplyText(`Line ${index + 1}: select a SKU.`, `البند ${index + 1}: اختر SKU.`));
     }
     if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
-      line._row.classList.add("supply-line-invalid");
+      line._row?.classList.add("supply-line-invalid");
       messages.push(supplyText(`Line ${index + 1}: quantity must be greater than zero.`, `البند ${index + 1}: الكمية يجب أن تكون أكبر من صفر.`));
     }
     if (line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) {
-      line._row.classList.add("supply-line-invalid");
+      line._row?.classList.add("supply-line-invalid");
       messages.push(supplyText(`Line ${index + 1}: unit price must be greater than zero when entered.`, `البند ${index + 1}: سعر الوحدة يجب أن يكون أكبر من صفر عند إدخاله.`));
     }
     const duplicateKey = `${line.skuId}|${(line.lotNumber || "").toUpperCase()}|${line.expiryDate || ""}`;
     if (line.skuId && duplicateKeys.has(duplicateKey)) {
-      line._row.classList.add("supply-line-invalid");
+      line._row?.classList.add("supply-line-invalid");
       messages.push(supplyText(`Line ${index + 1}: duplicate SKU, lot, and expiry must be combined.`, `البند ${index + 1}: يجب دمج نفس SKU مع نفس التشغيلة والصلاحية في بند واحد.`));
     }
     duplicateKeys.add(duplicateKey);
@@ -7637,7 +9090,7 @@ function validateSupplyFormPayload(payload) {
 function stripSupplyPayloadInternals(payload) {
   return {
     ...payload,
-    lines: payload.lines.map(({ _row, ...line }) => line),
+    lines: payload.lines.map(({ _row, _clientId, skuCode, productName, ...line }) => line),
     costs: payload.costs.map(({ _row, ...cost }) => cost)
   };
 }
@@ -7647,12 +9100,11 @@ function updateSupplyFormSummary() {
   if (!form) {
     return;
   }
-  const payload = collectSupplyFormPayload();
-  const lines = payload.lines;
-  const productTotal = lines.reduce((total, line) => total + (Number.isFinite(line.quantity) && Number.isFinite(line.unitPrice) ? line.quantity * line.unitPrice : 0), 0);
-  const costTotal = payload.costs.reduce((total, cost) => total + (Number.isFinite(cost.amount) ? Math.max(0, cost.amount) : 0), 0);
-  const incompletePrices = lines.filter((line) => line.unitPrice === null).length;
-  const invalidPrices = lines.filter((line) => line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)).length;
+  const lines = supplyEditorLines;
+  const productTotal = supplyEditorStats.productTotal;
+  const costTotal = [...document.querySelectorAll(".supply-cost-amount")].reduce((total, input) => total + Math.max(0, Number(input.value || 0) || 0), 0);
+  const incompletePrices = supplyEditorStats.incompletePrices;
+  const invalidPrices = supplyEditorStats.invalidPrices;
   document.getElementById("supply-form-product-total").textContent = formatMoney(productTotal);
   document.getElementById("supply-form-cost-total").textContent = formatMoney(costTotal);
   document.getElementById("supply-form-landed-total").textContent = formatMoney(productTotal + costTotal);
@@ -7685,12 +9137,13 @@ function updateSupplyPageMetrics(rows = supplyShipments) {
 }
 
 function getSupplyShipmentReadiness(shipment) {
-  const incomplete = shipment.lines.filter((line) => line.unitPrice == null).length;
-  const invalid = shipment.lines.filter((line) => line.unitPrice != null && line.unitPrice <= 0).length;
+  const lineCount = shipment.lineCount ?? shipment.lines?.length ?? 0;
+  const incomplete = shipment.incompletePriceCount ?? shipment.lines?.filter((line) => line.unitPrice == null).length ?? 0;
+  const invalid = shipment.invalidPriceCount ?? shipment.lines?.filter((line) => line.unitPrice != null && line.unitPrice <= 0).length ?? 0;
   if (shipment.status !== "Draft") {
     return { canConfirm: false, label: supplyStatusLabel(shipment.status), message: supplyText("Only draft shipments can be confirmed.", "يمكن تأكيد الشحنات المسودة فقط.") };
   }
-  if (shipment.lines.length === 0) {
+  if (lineCount === 0) {
     return { canConfirm: false, label: supplyText("No lines", "لا توجد بنود"), message: supplyText("At least one SKU line is required.", "يجب إضافة بند SKU واحد على الأقل.") };
   }
   if (invalid > 0) {
@@ -7786,13 +9239,13 @@ async function loadStocktakes() {
     tbody.innerHTML = result.items.length === 0 ? `<tr><td colspan="7">No stocktake sessions yet.</td></tr>` : result.items.map((session) => {
       const location = inventoryLocations.find((value) => value.id === session.locationId);
       return `<tr>
-        <td>${escapeHtml(shortId(session.id, "STK"))}</td>
+        <td>${escapeHtml(stocktakeReference(session, location))}</td>
         <td>${escapeHtml(location?.name || shortId(session.locationId, "LOC"))}</td>
         <td>${escapeHtml(session.status)}</td>
         <td>${escapeHtml(session.productsCounted)}</td>
         <td>${escapeHtml(session.totalDiscrepancyUnits)}</td>
         <td>${escapeHtml(formatDateTime(session.createdAt))}</td>
-        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(shortId(session.id, "STK"))}">Print</button></td>
+        <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">Details</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(stocktakeReference(session, location))}">Print</button></td>
       </tr>`;
     }).join("");
     tbody.querySelectorAll("[data-stocktake-detail]").forEach((button) => button.addEventListener("click", () => showStocktakeDetail(button.dataset.stocktakeDetail)));
@@ -7831,10 +9284,9 @@ async function showStocktakeDetail(sessionId) {
   const target = document.getElementById("stocktake-detail");
   const session = await request(`/api/v1/stocktakes/${sessionId}`);
   const location = inventoryLocations.find((value) => value.id === session.locationId);
-  const skuOptions = inventorySkuOptions.map((sku) => `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label)}</option>`).join("");
   target.innerHTML = `
     <div class="section-head">
-      <div><h2>Session ${escapeHtml(shortId(session.id, "STK"))}</h2><p class="muted-text">${escapeHtml(location?.name || shortId(session.locationId, "LOC"))} / ${escapeHtml(session.status)}</p></div>
+      <div><h2>${escapeHtml(stocktakeReference(session, location))}</h2><p class="muted-text">${escapeHtml(session.status)}</p></div>
       ${isAdmin && session.status === "Draft" ? `<button id="stocktake-confirm" class="button primary" type="button">Confirm adjustments</button>` : ""}
     </div>
     <div class="table-wrap compact-table"><table><thead><tr><th>SKU</th><th>Lot</th><th>Expiry</th><th>System</th><th>Physical</th><th>Delta</th><th>Note</th></tr></thead><tbody>${session.lines.length === 0
@@ -7854,14 +9306,16 @@ async function showStocktakeDetail(sessionId) {
       const row = document.createElement("div");
       row.className = "stocktake-line-row";
       row.innerHTML = `
-        <div class="field"><label>SKU</label><select class="select stocktake-line-sku">${skuOptions}</select></div>
+        <input class="stocktake-line-sku" type="hidden" value="${escapeHtml(line.skuId || "")}">
+        <div class="field op-line-finder"><label>Find SKU</label><input class="input stocktake-line-search" type="search" autocomplete="off" placeholder="Product, color, power, or SKU code"><div class="op-line-search-results" hidden></div><div class="stocktake-line-resolved muted-text">Search and select a SKU.</div></div>
         <div class="field"><label>Lot number</label><input class="input stocktake-line-lot" value="${escapeHtml(line.lotNumber || "")}" placeholder="Blank if none"></div>
         <div class="field"><label>Expiry date</label><input class="input stocktake-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
         <div class="field"><label>Physical count</label><input class="input stocktake-line-count" type="number" min="0" step="1" value="${escapeHtml(line.physicalCount ?? 0)}"></div>
         <div class="field"><label>Note</label><input class="input stocktake-line-note" value="${escapeHtml(line.lineNote || "")}"></div>
         <button class="button secondary" type="button" data-remove-line>Remove</button>`;
       editor.appendChild(row);
-      row.querySelector(".stocktake-line-sku").value = line.skuId || inventorySkuOptions[0]?.id || "";
+      row.querySelector(".stocktake-line-search").addEventListener("input", debounce(() => { void renderStocktakeSkuSearchResults(row); }, 250));
+      if (line.skuId) seedStocktakeLineSkuSelection(row, line.skuId);
       row.querySelector("[data-remove-line]").addEventListener("click", () => row.remove());
     };
     session.lines.forEach(addLine);
@@ -8141,7 +9595,7 @@ async function loadNotifications(page = notificationPageState.page || 1) {
 
 function renderNotificationCard(item) {
   const tone = item.isRead ? "status-muted" : "status-warning";
-  const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? `User ${shortId(item.targetUserId, "USR")}` : "Broadcast");
+  const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? uiText("Specific employee") : "Broadcast");
   const actionLabel = item.actionLabel || notificationActionLabel(item);
   const actionButton = item.referenceId
     ? `<button class="button secondary table-action" type="button" data-resolve-notification="${escapeHtml(item.id)}">${escapeHtml(actionLabel)}</button>`
@@ -8462,7 +9916,7 @@ async function createAdminUser(event) {
   const fullName = String(values.get("fullName") || "").trim();
   const password = String(values.get("password") || "");
   const confirmPassword = String(values.get("confirmPassword") || "");
-  const role = String(values.get("role") || "");
+  const role = canonicalSystemValue(values.get("role"), "role");
   const locationId = String(values.get("locationId") || "");
 
   if (!fullName || !username) {
@@ -8514,7 +9968,7 @@ async function createAdminLocation(event) {
   const form = event.currentTarget;
   const values = new FormData(form);
   const name = String(values.get("name") || "").trim();
-  const locationType = String(values.get("locationType") || "");
+  const locationType = canonicalSystemValue(values.get("locationType"), "locationType");
   if (!name) {
     notice("Warehouse name is required.", "error");
     document.getElementById("admin-location-name")?.focus();
@@ -8611,27 +10065,64 @@ function referencePrefix(type) {
   const prefixes = {
     paymentlog: "PAY", paymentsublog: "PAY", cashrecord: "PAY", financialadjustment: "PAY",
     stocktake: "STK", operation: "OP", supplyshipment: "SUP", sku: "SKU", inventorybatch: "BAT",
-    stockbalance: "STK", location: "LOC", user: "USR", merchant: "MER", representative: "REP",
+    stockbalance: "STK", location: "LOC", user: "USR", merchant: "MER",
     notification: "NTF", audit: "AUD", category: "CAT", product: "PRD", brand: "BRD"
   };
 
-  if (operationsUiState.mode === "revise" && operationsUiState.operationId && operationsUiState.revisionFingerprint === canonicalOperationPayload(body)) {
-    notice("No changes detected; operation was not revised.", "success");
-    resetOperationEditorMode();
-    return;
-  }
   return prefixes[String(type || "").replace(/[^a-z]/gi, "").toLowerCase()] || "REF";
 }
 
+async function renderStocktakeSkuSearchResults(row) {
+  const input = row.querySelector(".stocktake-line-search");
+  const results = row.querySelector(".op-line-search-results");
+  const query = input.value.trim().toLowerCase();
+  if (!query) { results.hidden = true; results.replaceChildren(); return; }
+  const requestId = (skuSearchRequests.get(row) || 0) + 1;
+  skuSearchRequests.set(row, requestId);
+  let matches = [];
+  try { matches = (await searchSkuOptions(query, 20)).slice(0, 8); } catch { matches = []; }
+  if (skuSearchRequests.get(row) !== requestId || input.value.trim().toLowerCase() !== query) return;
+  results.hidden = false;
+  const buttons = (matches.length === 0 ? [null] : matches).map((sku) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "op-line-search-result";
+    if (!sku) { button.disabled = true; button.textContent = "No results"; return button; }
+    button.dataset.stocktakeSkuId = sku.id;
+    const name = document.createElement("strong");
+    name.textContent = sku.productName;
+    const attributes = document.createElement("span");
+    attributes.textContent = `${formatOperationPowerKey(operationPowerKey(sku))} / ${sku.colorName || "-"}`;
+    const code = document.createElement("small");
+    code.textContent = sku.skuCode;
+    button.append(name, attributes, code);
+    return button;
+  });
+  results.replaceChildren(...buttons);
+  results.querySelectorAll("[data-stocktake-sku-id]").forEach((button) => button.addEventListener("click", () => {
+    seedStocktakeLineSkuSelection(row, button.dataset.stocktakeSkuId);
+    input.value = "";
+    results.hidden = true;
+  }));
+}
+
+function seedStocktakeLineSkuSelection(row, skuId) {
+  const sku = operationSkuOptions.find((value) => value.id === skuId);
+  row.querySelector(".stocktake-line-sku").value = skuId || "";
+  const resolved = row.querySelector(".stocktake-line-resolved");
+  resolved.textContent = sku ? `${sku.skuCode} - ${sku.productName}` : shortId(skuId, "SKU");
+  if (!sku && skuId) void ensureSkuOption(skuId).then((loaded) => { if (loaded && row.isConnected) seedStocktakeLineSkuSelection(row, skuId); });
+}
+
 function canonicalOperationPayload(body) {
-  const type = canonicalSystemValue(body.operationType);
+  const type = canonicalSystemValue(body.operationType, "operationType");
   const lines = (body.lines || []).map((line) => {
-    const entryMode = canonicalSystemValue(line.entryMode || "Packs");
+    const entryMode = canonicalSystemValue(line.entryMode || "Packs", "entryMode");
     const quantity = entryMode === "Pieces" ? Number(line.pieceQuantity ?? line.packQuantity ?? 0) : Number(line.packQuantity ?? 0);
     const bonus = ["WholesaleSale", "RetailSale"].includes(type) && line.isBonus === true;
-    return { skuId: line.skuId, section: type === "Change" ? canonicalSystemValue(line.section || "ChangeOut") : "Standard", entryMode, quantity, bonusQuantity: bonus ? quantity : 0, unitPrice: bonus ? 0 : Number(line.unitPrice || 0), lotNumber: String(line.lotNumber || "").trim() || null, expiryDate: line.expiryDate || null, notes: String(line.notes || "").trim() || null };
+    return { skuId: line.skuId, section: type === "Change" ? canonicalSystemValue(line.section || "ChangeOut", "lineSection") : "Standard", entryMode, quantity, bonusQuantity: bonus ? quantity : 0, unitPrice: bonus ? 0 : Number(line.unitPrice || 0), lotNumber: String(line.lotNumber || "").trim() || null, expiryDate: line.expiryDate || null, notes: String(line.notes || "").trim() || null };
   }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify({ operationType: type, sourceLocationId: body.sourceLocationId || null, destinationLocationId: body.destinationLocationId || null, merchantId: body.merchantId || null, buyerName: body.merchantId ? null : String(body.buyerName || "").trim() || null, representativeId: body.representativeId || null, paymentMethod: canonicalSystemValue(body.paymentMethod || "") || null, buyerPhone: String(body.buyerPhone || "").trim() || null, notes: String(body.notes || "").trim() || null, receipt: body.receipt ? { supplierName: String(body.receipt.supplierName || "Supplier").trim() || "Supplier", invoiceNumber: String(body.receipt.invoiceNumber || "").trim() || null } : null, lines });
+  return JSON.stringify({ operationType: type, sourceLocationId: body.sourceLocationId || null, destinationLocationId: body.destinationLocationId || null, merchantId: body.merchantId || null, buyerName: body.merchantId ? null : String(body.buyerName || "").trim() || null, representativeId: null, paymentMethod: canonicalSystemValue(body.paymentMethod || "", "paymentMethod", { allowEmpty: true }) || null, buyerPhone: String(body.buyerPhone || "").trim() || null, notes: String(body.notes || "").trim() || null, receipt: body.receipt ? { supplierName: String(body.receipt.supplierName || "Supplier").trim() || "Supplier", invoiceNumber: String(body.receipt.invoiceNumber || "").trim() || null } : null, lines });
 }
 
 async function deleteAdminUser(userId) {
@@ -8640,7 +10131,13 @@ async function deleteAdminUser(userId) {
   const username = row?.querySelector("strong")?.textContent || "this user";
   const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
   const accountLabel = fullName ? `${username} (${fullName})` : username;
-  if (!window.confirm(uiText(`Delete account ${accountLabel}? This cannot be undone.`))) return;
+  if (!await confirmDialog({
+    title: "Delete account",
+    message: `Delete account ${accountLabel}? This cannot be undone.`,
+    confirmLabel: "Delete",
+    cancelLabel: "Cancel",
+    tone: "warning"
+  })) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
@@ -8656,7 +10153,13 @@ async function setAdminUserActiveStatus(userId, isActive) {
     .find((item) => item.dataset.adminUserRow === userId);
   const username = row?.querySelector("strong")?.textContent || "this user";
   const action = isActive ? "reactivate" : "deactivate";
-  if (!window.confirm(uiText(`${action[0].toUpperCase()}${action.slice(1)} account ${username}?`))) return;
+  if (!await confirmDialog({
+    title: "Confirm account status",
+    message: `${action[0].toUpperCase()}${action.slice(1)} account ${username}?`,
+    confirmLabel: "Confirm",
+    cancelLabel: "Cancel",
+    tone: isActive ? "default" : "warning"
+  })) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}/${isActive ? "activate" : "deactivate"}`, { method: "PATCH", body: JSON.stringify({}) });
@@ -8673,7 +10176,13 @@ async function transferPrimaryAdmin(userId) {
   const username = row?.querySelector("strong")?.textContent || "this Administrator";
   const fullName = row?.querySelector(".muted-text")?.textContent?.trim();
   const accountLabel = fullName ? `${fullName} (${username})` : username;
-  if (!window.confirm(uiText(`Make ${accountLabel} the primary Administrator? You will no longer be able to delete Administrator accounts.`))) return;
+  if (!await confirmDialog({
+    title: "Transfer primary Administrator",
+    message: `Make ${accountLabel} the primary Administrator? You will no longer be able to delete Administrator accounts.`,
+    confirmLabel: "Confirm",
+    cancelLabel: "Cancel",
+    tone: "warning"
+  })) return;
 
   try {
     await request(`/api/v1/users/${encodeURIComponent(userId)}/transfer-primary`, { method: "POST", body: JSON.stringify({}) });
@@ -8758,7 +10267,7 @@ async function showAuditDetail(id) {
     const event = await request(`/api/v1/audit/${encodeURIComponent(id)}`);
     const changes = Array.isArray(event.changes) ? event.changes : [];
     const savedValues = changes.length ? `<div class="audit-change-list">${changes.map((change) => `<article class="audit-change"><strong>${escapeHtml(change.field)}</strong>${change.before ? `<span>Was: ${escapeHtml(displaySafeText(change.before, "AUD"))}</span>` : ""}<span>${change.before ? "Now" : "Saved"}: ${escapeHtml(displaySafeText(change.after || "Cleared", "AUD"))}</span></article>`).join("")}</div>` : `<p class="muted-text audit-empty-values">No individual field values were saved for this event.</p>`;
-    detail.innerHTML = `<div class="section-head"><div><p class="eyebrow">Recorded activity</p><h2>${escapeHtml(event.summary || auditSummaryFallback(event))}</h2><p class="muted-text">${escapeHtml(formatDateTime(event.happenedAt))} by ${escapeHtml(event.actorName)}</p></div><button class="button secondary" type="button" id="audit-open-detail-source">Open related record</button></div><div class="detail-grid"><div><span>Record</span><strong>${escapeHtml(event.recordName || "Related record")}</strong></div><div><span>Performed by</span><strong>${escapeHtml(event.actorName || "Historical actor unavailable")} · ${escapeHtml(auditActorRole(event.actorType))}</strong></div><div><span>Area</span><strong>${escapeHtml(auditSectionLabel(event.section))}</strong></div><div><span>Time</span><strong>${escapeHtml(formatDateTime(event.happenedAt))}</strong></div></div><section class="audit-saved-values"><h3>Saved values</h3><p class="muted-text">These are the values recorded when the activity was completed.</p>${savedValues}</section>`;
+    detail.innerHTML = `<div class="section-head"><div><p class="eyebrow">Recorded activity</p><h2>${escapeHtml(event.summary || auditSummaryFallback(event))}</h2><p class="muted-text">${escapeHtml(formatDateTime(event.happenedAt))} by ${escapeHtml(event.actorName)}</p></div><button class="button secondary" type="button" id="audit-open-detail-source">Open related record</button></div><div class="detail-grid"><div><span>Record</span><strong>${escapeHtml(event.recordName || "Related record")}</strong></div><div><span>Performed by</span><strong>${escapeHtml(event.actorName || "Historical actor unavailable")} · ${escapeHtml(auditActorRole(event.actorType))}</strong></div><div><span>Area</span><strong>${escapeHtml(auditSectionLabel(event.section))}</strong></div><div><span>Scope</span><strong>${escapeHtml(event.entityType || "System activity")}</strong></div><div><span>Time</span><strong>${escapeHtml(formatDateTime(event.happenedAt))}</strong></div>${event.stockDeltaApplied == null ? "" : `<div><span>Stock change</span><strong>${escapeHtml(String(event.stockDeltaApplied))}</strong></div>`}</div><section class="audit-saved-values"><h3>Saved values</h3><p class="muted-text">These are the values recorded when the activity was completed.</p>${savedValues}</section>`;
     document.getElementById("audit-open-detail-source")?.addEventListener("click", () => openAuditSource(event.id));
   } catch (exception) {
     detail.innerHTML = `<h2>Event detail</h2><p class="form-error">${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
@@ -8884,7 +10393,7 @@ function renderShopifyEvent(event) {
     ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>Retry</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">Resolve</button>`
     : "";
   const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
-  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(displaySafeText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">Operation ${escapeHtml(shortId(event.operationId, "OP"))}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Trust</dt><dd>${escapeHtml(trust)}</dd></div><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(displaySafeText(event.resolutionNote))}</dd></div>` : ""}</dl></article>`;
+  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(event.status)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(displaySafeText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">${escapeHtml(uiText("Open operation"))}${event.shopifyOrderId ? ` · Shopify ${escapeHtml(event.shopifyOrderId)}` : ""}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>Trust</dt><dd>${escapeHtml(trust)}</dd></div><div><dt>Order</dt><dd>${escapeHtml(event.shopifyOrderId || "Not parsed")}</dd></div><div><dt>Store</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>Attempts</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>Payload</dt><dd>${event.payloadAvailable ? "Retained securely" : "Retention expired"}</dd></div>${event.resolutionNote ? `<div><dt>Resolution</dt><dd>${escapeHtml(displaySafeText(event.resolutionNote))}</dd></div>` : ""}</dl></article>`;
 }
 
 async function retryShopifyEvent(id) {
@@ -8898,7 +10407,12 @@ async function retryShopifyEvent(id) {
 }
 
 async function resolveShopifyEvent(id) {
-  const note = window.prompt(uiText("Resolution note"));
+  const note = await promptDialog({
+    title: "Resolve Shopify event",
+    label: "Resolution note",
+    multiline: true,
+    required: true
+  });
   if (!note?.trim()) return;
   try {
     await request(`/api/v1/integrations/shopify/events/${id}/resolve`, { method: "POST", body: JSON.stringify({ note: note.trim() }) });
@@ -9115,3 +10629,70 @@ function debounce(callback, delay) {
   };
 }
 
+function wireOperationLineEditor() {
+  const container = document.getElementById("op-lines");
+  if (!container || container.dataset.delegated === "true") return;
+  container.dataset.delegated = "true";
+
+  container.addEventListener("input", (event) => {
+    const input = event.target.closest?.(".op-line-search");
+    if (!input) return;
+    const row = input.closest(".line-editor-row");
+    if (!row) return;
+    clearTimeout(operationSearchTimers.get(input));
+    operationSearchTimers.set(input, setTimeout(() => { void renderOperationSkuSearchResults(row); }, 250));
+  });
+
+  container.addEventListener("change", async (event) => {
+    const control = event.target;
+    const row = control.closest?.(".line-editor-row");
+    if (!row) return;
+    if (control.matches(".op-line-bonus, .op-line-section, .op-line-entry-mode")) {
+      syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType);
+      await refreshOperationStockOptions(row);
+      return;
+    }
+    if (control.matches(".op-line-product")) {
+      await loadProductSkuOptions(control.value);
+      populateOperationAttributeOptions(row);
+      resolveOperationLineSku(row);
+      return;
+    }
+    if (control.matches(".op-line-power, .op-line-color, .op-line-size")) {
+      resolveOperationLineSku(row);
+      return;
+    }
+    if (control.matches(".op-line-stock-option")) applySelectedStockOption(row);
+  });
+
+  container.addEventListener("focusin", async (event) => {
+    const product = event.target.closest?.(".op-line-product");
+    if (product && operationProductOptions.length === 0) {
+      product.disabled = true;
+      product.innerHTML = `<option value="">${supplyText("Loading products...", "جار تحميل المنتجات...")}</option>`;
+      try {
+        await hydrateOperationSkus();
+        const row = product.closest(".line-editor-row");
+        if (row?.isConnected) populateOperationProductOptions(row);
+      } finally {
+        if (product.isConnected) product.disabled = false;
+      }
+      return;
+    }
+    const stockOption = event.target.closest?.(".op-line-stock-option");
+    const row = stockOption?.closest(".line-editor-row");
+    if (row) void refreshOperationStockOptions(row);
+  });
+
+  container.addEventListener("click", (event) => {
+    const remove = event.target.closest?.(".op-remove-line");
+    if (!remove) return;
+    const row = remove.closest(".line-editor-row");
+    if (!row || operationEditorLines.length <= 1) return;
+    syncCurrentOperationPage();
+    operationEditorLines = operationEditorLines.filter((item) => item._clientId !== row.dataset.operationLineKey);
+    operationEditorLineById.delete(row.dataset.operationLineKey);
+    operationEditorPage = Math.min(operationEditorPage, Math.max(1, Math.ceil(operationEditorLines.length / operationEditorPageSize)));
+    renderOperationEditorPage();
+  });
+}

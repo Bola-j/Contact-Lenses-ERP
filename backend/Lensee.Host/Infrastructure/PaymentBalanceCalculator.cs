@@ -13,6 +13,7 @@ public static class PaymentBalanceCalculator
     public const string Confirmed = "Confirmed";
     public const string Draft = "Draft";
     public const string PendingAccountant = "PendingAccountant";
+    public const string PendingAdminReview = "PendingAdminReview";
     public const string CashReceived = "CashReceived";
     public const string CashRefund = "CashRefund";
     public const string AdditionalCharge = "AdditionalCharge";
@@ -42,13 +43,13 @@ public static class PaymentBalanceCalculator
             .Where(value => value.SubLogStatus == Confirmed)
             .Sum(value => value.Amount);
         var pendingInstallments = log.InstallmentSubLogs
-            .Where(value => value.SubLogStatus == Draft)
+            .Where(value => value.SubLogStatus is Draft or PendingAdminReview)
             .Sum(value => value.Amount);
         var confirmedCash = operationCash
             .Where(value => value.Status == Completed && value.PaymentType == CashReceived)
             .Sum(value => value.Amount);
         var pendingCash = operationCash
-            .Where(value => value.Status == PendingAccountant && value.PaymentType == CashReceived)
+            .Where(value => (value.Status is PendingAccountant or PendingAdminReview) && value.PaymentType == CashReceived)
             .Sum(value => value.Amount);
         var completedRefunds = operationCash
             .Where(value => value.Status == Completed && value.PaymentType == CashRefund)

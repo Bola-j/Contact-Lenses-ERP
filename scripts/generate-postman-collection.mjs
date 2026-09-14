@@ -333,6 +333,10 @@ const items = [
         ]
       }),
       requestItem({ name: "Confirm Receipt", method: "POST", path: "/api/v1/operations/{{receiptOperationId}}/confirm", tests: [testStatus(204)] }),
+      requestItem({ name: "Operation Summary Without Collections", path: "/api/v1/operations/{{receiptOperationId}}?includeCollections=false", tests: [testStatus(200), "pm.test('summary omits collections', () => pm.expect(pm.response.json().lines).to.eql([]));"] }),
+      requestItem({ name: "Operation Lines Paged", path: "/api/v1/operations/{{receiptOperationId}}/lines?page=1&pageSize=50", tests: [testStatus(200), "pm.test('lines are paged', () => pm.expect(pm.response.json().pageSize).to.eql(50));"] }),
+      requestItem({ name: "Operation Editor Snapshot", path: "/api/v1/operations/{{receiptOperationId}}/editor", tests: [testStatus(200)] }),
+      requestItem({ name: "Replenishment Paged", path: "/api/v1/operations/replenishment?paged=true&page=1&pageSize=50", tests: [testStatus(200), "pm.test('replenishment is paged', () => pm.expect(pm.response.json().pageSize).to.eql(50));"] }),
       requestItem({ name: "Set Main Target", method: "PUT", path: "/api/v1/inventory/stock-balances/{{mainLocationId}}/{{skuId}}/target", body: { targetPacks: 8 }, tests: [testStatus(204)] }),
       requestItem({
         name: "Create Warehouse Transfer",
@@ -432,7 +436,7 @@ const items = [
           operationType: "WholesaleSale",
           sourceLocationId: "{{mainLocationId}}",
           merchantId: "{{merchantId}}",
-          paymentMethod: "Installment",
+          paymentMethod: "MerchantAccount",
           lines: [{ skuId: "{{skuId}}", packQuantity: 2, entryMode: "Packs", unitPrice: 100, lotNumber: "PM-LOT-{{runId}}", expiryDate: "2028-06-01" }]
         },
         tests: [
@@ -454,25 +458,31 @@ const items = [
         ]
       }),
       requestItem({
-        name: "Assign Payment To Accountant",
+        name: "Record Merchant Account Collection",
         method: "POST",
-        path: "/api/v1/payments/{{paymentLogId}}/assign",
-        body: { accountantUserId: "{{accountantUserId}}" },
-        tests: [testStatus(200)]
-      }),
-      requestItem({
-        name: "Accountant Drafts Sub Log",
-        method: "POST",
-        path: "/api/v1/payments/{{paymentLogId}}/sub-logs",
+        path: "/api/v1/payments/collections",
         token: "accountantToken",
-        body: { amount: 120, paymentMethod: "CashTransaction", dateReceived: "2026-07-05", notes: "Postman draft payment" },
+        body: { scope: "MerchantAccount", merchantId: "{{merchantId}}", amount: 120, paymentMethod: "CashTransaction", transactionReference: "PM-TXN-{{runId}}", notes: "Postman merchant account collection" },
         tests: [
           testStatus(201),
           "const json = pm.response.json();",
-          "pm.environment.set('subLogId', json.subLogs[0].id);"
+          "pm.environment.set('collectionId', json.id);"
         ]
       }),
-      requestItem({ name: "Admin Approves Sub Log", method: "POST", path: "/api/v1/payments/sub-logs/{{subLogId}}/approve", tests: [testStatus(200)] }),
+      requestItem({
+        name: "Search SKUs (Paged)",
+        path: "/api/v1/catalog/skus?search={{runId}}&page=1&pageSize=25",
+        tests: [
+          testStatus(200),
+          "const json = pm.response.json(); pm.test('paged SKU result', () => { pm.expect(json.pageSize).to.eql(25); pm.expect(json.items.some(x => x.id === pm.environment.get('skuId'))).to.eql(true); });"
+        ]
+      }),
+      requestItem({
+        name: "Get Selected SKU",
+        path: "/api/v1/catalog/skus/{{skuId}}",
+        tests: [testStatus(200), "pm.test('selected SKU retained', () => pm.expect(pm.response.json().id).to.eql(pm.environment.get('skuId')));"]
+      }),
+      requestItem({ name: "Admin Approves Merchant Collection", method: "POST", path: "/api/v1/payments/collections/{{collectionId}}/approve", tests: [testStatus(200)] }),
       requestItem({
         name: "Merchant Balance",
         path: "/api/v1/payments/merchants/{{merchantId}}/balance",
@@ -483,10 +493,10 @@ const items = [
         ]
       }),
       requestItem({
-        name: "Create Merchant Credit Adjustment",
+        name: "Create Additional Charge Adjustment",
         method: "POST",
         path: "/api/v1/payments/adjustments",
-        body: { merchantId: "{{merchantId}}", operationId: "{{installmentOperationId}}", adjustmentType: "MerchantCredit", amount: 10, notes: "Postman credit test" },
+        body: { merchantId: "{{merchantId}}", operationId: "{{installmentOperationId}}", adjustmentType: "AdditionalCharge", amount: 10, notes: "Postman additional charge test" },
         tests: [testStatus(201)]
       })
     ]
@@ -581,6 +591,9 @@ const items = [
   {
     name: "06 - Reports Notifications Authorization",
     item: [
+      requestItem({ name: "Report Catalog", path: "/api/v1/reports/catalog", tests: [testStatus(200)] }),
+      requestItem({ name: "Operations XLSX Bilingual", path: "/api/v1/reports/operations/export?format=xlsx&language=bi", tests: [testStatus(200), "pm.test('xlsx response', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'));" ] }),
+      requestItem({ name: "Operation Bill Standard PDF", path: "/api/v1/documents/operation-bill/{{wholesaleOperationId}}?format=pdf&language=ar", tests: [testStatus(200), "pm.test('pdf response', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf'));" ] }),
       requestItem({ name: "Stock Report", path: "/api/v1/reports/stock", tests: [testStatus(200)] }),
       requestItem({ name: "Stock CSV", path: "/api/v1/reports/stock.csv", tests: [testStatus(200), "pm.test('csv response', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/csv'));" ] }),
       requestItem({ name: "Operations Report", path: "/api/v1/reports/operations", tests: [testStatus(200)] }),

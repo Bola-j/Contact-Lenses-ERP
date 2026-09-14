@@ -527,7 +527,6 @@ public sealed record StockBalanceContract(Guid LocationId, string LocationType, 
 public sealed record InventoryReceiptContract(Guid BatchId, Guid LocationId, Guid SkuId, int BatchPackQuantity);
 
 public sealed record ProductCategoryTotalContract(Guid CategoryId, string CategoryName, int ProductCount, int SkuCount, int TotalPacks, int? TotalPieces, IReadOnlyList<ProductTotalContract> Products);
-
 public sealed record ProductTotalContract(Guid ProductId, string ProductName, int SkuCount, int TotalPacks, int? TotalPieces, IReadOnlyList<ProductRateTotalContract> RateTotals);
 
 public sealed record ProductRateTotalContract(string? OpenedExpiryDuration, string? SealedExpiryDuration, string? OpenedExpiryRate, int SkuCount, int TotalPacks, int? TotalPieces);

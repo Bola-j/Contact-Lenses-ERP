@@ -96,3 +96,55 @@ test("Arabic covers audit and Shopify workspaces and restores their English copy
   await expect(page.locator("#shopify-event-list")).toContainText("RequiresAttention");
   await expect(page.locator("#shopify-event-list")).toContainText("Delivery accepted for processing.");
 });
+
+test("Arabic forms preserve user input and submit canonical English system values", async ({ page }) => {
+  const currentUserId = "11111111-1111-1111-1111-111111111111";
+  const locationId = "44444444-4444-4444-4444-444444444444";
+  let submittedUser = null;
+
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (url.pathname === "/health") return json({ status: "Healthy" });
+    if (url.pathname === "/api/v1/auth/refresh") {
+      return json({ accessToken: "canonical-test-token", user: { userId: currentUserId, username: "admin", fullName: "Primary Admin", role: "Admin" } });
+    }
+    if (url.pathname === "/api/v1/notifications/unread-count") return json({ count: 0 });
+    if (url.pathname === "/api/v1/users" && method === "GET") {
+      return json([{ id: currentUserId, username: "admin", fullName: "Primary Admin", role: "Admin", locationId: null, isActive: true, isPrimaryAdmin: true, canDelete: false }]);
+    }
+    if (url.pathname === "/api/v1/inventory/locations" && method === "GET") {
+      return json([{ id: locationId, name: "مخزن روكسي", locationType: "Retail", isActive: true }]);
+    }
+    if (url.pathname === "/api/v1/users" && method === "POST") {
+      submittedUser = route.request().postDataJSON();
+      return json({ id: "55555555-5555-5555-5555-555555555555", ...submittedUser }, 201);
+    }
+    if (url.pathname.startsWith("/api/")) return json({});
+    return route.continue();
+  });
+
+  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
+  await page.goto("/#/admin", { waitUntil: "domcontentloaded" });
+  await page.locator("#admin-user-full-name").fill("أحمد حسن");
+  await page.locator("#admin-user-username").fill("ahmed.hassan");
+  await page.locator("#admin-user-role").selectOption("WarehouseClerk");
+  await page.locator("#admin-user-location").selectOption(locationId);
+  await page.locator("#admin-user-password").fill("Temporary123!");
+  await page.locator("#admin-user-confirm-password").fill("Temporary123!");
+
+  await page.locator("#language-toggle").click();
+  await expect(page.locator("#admin-user-full-name")).toHaveValue("أحمد حسن");
+  await page.locator("#language-toggle").click();
+  await expect(page.locator("#admin-user-role")).toHaveValue("WarehouseClerk");
+
+  await page.locator("#admin-create-user-form button[type='submit']").click();
+  await expect.poll(() => submittedUser).not.toBeNull();
+  expect(submittedUser).toMatchObject({
+    fullName: "أحمد حسن",
+    username: "ahmed.hassan",
+    role: "WarehouseClerk",
+    locationId
+  });
+});

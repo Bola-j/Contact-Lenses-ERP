@@ -6,6 +6,7 @@ using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
 using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Abstractions;
+using Lensee.SharedKernel.Primitives;
 using Microsoft.EntityFrameworkCore;
 
 namespace Lensee.Host.Endpoints;
@@ -27,6 +28,9 @@ public static class SupplyEndpoints
 
         group.MapGet("/", ListShipmentsAsync).RequireAuthorization("supply.read").WithName("ListSupplyShipments");
         group.MapGet("/{id:guid}", GetShipmentAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipment");
+        group.MapGet("/{id:guid}/lines", GetLinesAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentLines");
+        group.MapGet("/{id:guid}/costs", GetCostsAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentCosts");
+        group.MapGet("/{id:guid}/editor", GetEditorAsync).RequireAuthorization("supply.write").WithName("GetSupplyShipmentEditor");
         group.MapGet("/{id:guid}/history", GetHistoryAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentHistory");
         group.MapPost("/", CreateShipmentAsync).RequireAuthorization("supply.write").WithName("CreateSupplyShipment");
         group.MapPut("/{id:guid}", UpdateShipmentAsync).RequireAuthorization("supply.write").WithName("UpdateSupplyShipment");
@@ -41,13 +45,12 @@ public static class SupplyEndpoints
         InventoryDbContext inventoryDbContext,
         string? search,
         string? status,
+        bool? paged,
+        int? page,
+        int? pageSize,
         CancellationToken cancellationToken)
     {
-        var query = operationsDbContext.SupplyShipments
-            .Include(value => value.Lines)
-            .Include(value => value.Costs)
-            .AsNoTracking()
-            .AsQueryable();
+        var query = operationsDbContext.SupplyShipments.AsNoTracking().AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -63,26 +66,101 @@ public static class SupplyEndpoints
             query = query.Where(value => value.Status == NormalizeStatus(status));
         }
 
-        var shipments = await query
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var total = paged == true ? await query.CountAsync(cancellationToken) : 0;
+        var orderedQuery = query
             .OrderByDescending(value => value.CreatedAt)
-            .Take(100)
+            .ThenByDescending(value => value.Id);
+        var boundedQuery = paged == true
+            ? orderedQuery.Skip(request.Skip).Take(request.PageSize)
+            : orderedQuery.Take(100);
+        var shipments = await boundedQuery
+            .Select(value => new SupplyShipmentListResponse(
+                value.Id,
+                value.ShipmentNumber,
+                value.SupplierName,
+                value.InvoiceNumber,
+                value.ShipmentDate,
+                value.Status,
+                value.ConcurrencyVersion,
+                value.DestinationLocationId,
+                null,
+                value.Lines.Sum(line => line.Quantity),
+                value.ProductSubtotal,
+                value.CostSubtotal,
+                value.LandedTotal,
+                value.InventoryReceiptOperationId,
+                value.InventoryReceiptOperation != null ? value.InventoryReceiptOperation.OperationNumber : null,
+                value.CreatedAt))
             .ToListAsync(cancellationToken);
 
         var locationLookup = await LoadLocationLookupAsync(inventoryDbContext, shipments.Select(value => value.DestinationLocationId), cancellationToken);
 
-        return Results.Ok(shipments.Select(value => ToListResponse(value, locationLookup)).ToList());
+        var rows = shipments.Select(value => value with
+        {
+            DestinationLocationName = locationLookup.GetValueOrDefault(value.DestinationLocationId)?.Name
+        }).ToList();
+
+        return paged == true
+            ? Results.Ok(new PagedResult<SupplyShipmentListResponse>(rows, request.Page, request.PageSize, total))
+            : Results.Ok(rows);
     }
 
-    private static async Task<IResult> GetShipmentAsync(Guid id, OperationsDbContext operationsDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> GetShipmentAsync(Guid id, bool? includeCollections, OperationsDbContext operationsDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
-        var shipment = await LoadShipmentAsync(operationsDbContext, id, cancellationToken);
+        var shipment = includeCollections == false
+            ? await LoadShipmentSummaryAsync(operationsDbContext, id, cancellationToken)
+            : await LoadShipmentAsync(operationsDbContext, id, cancellationToken);
         if (shipment is null)
         {
             return Results.NotFound();
         }
 
         var locationLookup = await LoadLocationLookupAsync(inventoryDbContext, [shipment.DestinationLocationId], cancellationToken);
-        return Results.Ok(ToDetailResponse(shipment, locationLookup));
+        var response = ToDetailResponse(shipment, locationLookup, includeCollections != false);
+        if (includeCollections == false)
+        {
+            response = response with
+            {
+                LineCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id, cancellationToken),
+                IncompletePriceCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id && value.UnitPrice == null, cancellationToken),
+                InvalidPriceCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id && value.UnitPrice <= 0, cancellationToken)
+            };
+        }
+        return Results.Ok(response);
+    }
+
+    private static async Task<IResult> GetLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, CancellationToken cancellationToken)
+    {
+        if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
+        var request = new PageRequest(page ?? 1, pageSize ?? 50);
+        var query = dbContext.SupplyShipmentLines.AsNoTracking().Where(value => value.ShipmentId == id);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderBy(value => value.Id).Skip(request.Skip).Take(request.PageSize)
+            .Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost, line.LotNumber, line.ExpiryDate, line.Notes))
+            .ToListAsync(cancellationToken);
+        return Results.Ok(new PagedResult<SupplyLineResponse>(rows, request.Page, request.PageSize, total));
+    }
+
+    private static async Task<IResult> GetCostsAsync(Guid id, OperationsDbContext dbContext, CancellationToken cancellationToken)
+    {
+        if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
+        var rows = await dbContext.SupplyShipmentCosts.AsNoTracking().Where(value => value.ShipmentId == id).OrderBy(value => value.Id)
+            .Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToListAsync(cancellationToken);
+        return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> GetEditorAsync(Guid id, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    {
+        var shipment = await dbContext.SupplyShipments.AsNoTracking()
+            .Include(value => value.Lines).Include(value => value.Costs).Include(value => value.InventoryReceiptOperation)
+            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (shipment is null) return Results.NotFound();
+        return Results.Ok(new SupplyShipmentEditorResponse(
+            shipment.Id, shipment.SupplierName, shipment.InvoiceNumber, shipment.ShipmentDate, shipment.Status,
+            shipment.ConcurrencyVersion, shipment.DestinationLocationId, shipment.Notes,
+            shipment.Lines.OrderBy(value => value.Id).Select(line => new SupplyEditorLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LotNumber, line.ExpiryDate, line.Notes)).ToList(),
+            shipment.Costs.OrderBy(value => value.Id).Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToList()));
     }
 
     private static async Task<IResult> GetHistoryAsync(Guid id, OperationsDbContext operationsDbContext, CancellationToken cancellationToken)
@@ -313,17 +391,14 @@ public static class SupplyEndpoints
                     LineNotes = line.Notes
                 });
 
-                await ledgerService.ReceiveSupplyAsync(
-                    shipment.DestinationLocationId,
-                    line.SkuId,
-                    line.Quantity,
-                    userId,
-                    line.LotNumber,
-                    line.ExpiryDate,
-                    line.Notes,
-                    operation.Id,
-                    cancellationToken);
             }
+
+            await ledgerService.ReceiveSupplyBatchAsync(
+                shipment.DestinationLocationId,
+                shipment.Lines.Select(line => new SupplyReceiptLine(line.SkuId, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToArray(),
+                userId,
+                operation.Id,
+                cancellationToken);
 
             operation.InventoryReceiptHeader = new InventoryReceiptHeader
             {
@@ -616,9 +691,16 @@ public static class SupplyEndpoints
 
     private static async Task<SupplyShipment?> LoadShipmentAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
         await dbContext.SupplyShipments
+            .AsSplitQuery()
             .Include(value => value.Lines)
             .Include(value => value.Costs)
             .Include(value => value.HistoryLogs)
+            .Include(value => value.InventoryReceiptOperation)
+            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+
+    private static async Task<SupplyShipment?> LoadShipmentSummaryAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
+        await dbContext.SupplyShipments.AsNoTracking()
+            .Include(value => value.InventoryReceiptOperation)
             .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
 
     private static async Task<IReadOnlyDictionary<Guid, Location>> LoadLocationLookupAsync(InventoryDbContext dbContext, IEnumerable<Guid> locationIds, CancellationToken cancellationToken)
@@ -662,9 +744,10 @@ public static class SupplyEndpoints
             shipment.CostSubtotal,
             shipment.LandedTotal,
             shipment.InventoryReceiptOperationId,
+            shipment.InventoryReceiptOperation?.OperationNumber,
             shipment.CreatedAt);
 
-    private static SupplyShipmentDetailResponse ToDetailResponse(SupplyShipment shipment, IReadOnlyDictionary<Guid, Location> locationLookup) =>
+    private static SupplyShipmentDetailResponse ToDetailResponse(SupplyShipment shipment, IReadOnlyDictionary<Guid, Location> locationLookup, bool includeCollections = true) =>
         new(
             shipment.Id,
             shipment.ShipmentNumber,
@@ -680,15 +763,19 @@ public static class SupplyEndpoints
             shipment.CostSubtotal,
             shipment.LandedTotal,
             shipment.InventoryReceiptOperationId,
+            shipment.InventoryReceiptOperation?.OperationNumber,
             shipment.CreatedBy,
             shipment.CreatedAt,
             shipment.ConfirmedBy,
             shipment.ConfirmedAt,
             shipment.CancelledBy,
             shipment.CancelledAt,
-            shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost, line.LotNumber, line.ExpiryDate, line.Notes)).ToList(),
-            shipment.Costs.Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToList(),
-            shipment.HistoryLogs.OrderByDescending(value => value.CreatedAt).Select(value => new SupplyHistoryResponse(value.Id, value.Action, value.ActorUserId, value.CreatedAt, value.Summary)).ToList());
+            shipment.Lines.Count,
+            shipment.Lines.Count(line => line.UnitPrice == null),
+            shipment.Lines.Count(line => line.UnitPrice <= 0),
+            includeCollections ? shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost, line.LotNumber, line.ExpiryDate, line.Notes)).ToList() : [],
+            includeCollections ? shipment.Costs.Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToList() : [],
+            includeCollections ? shipment.HistoryLogs.OrderByDescending(value => value.CreatedAt).Select(value => new SupplyHistoryResponse(value.Id, value.Action, value.ActorUserId, value.CreatedAt, value.Summary)).ToList() : []);
 
     private static object ToSnapshot(SupplyShipment shipment) => new
     {
@@ -761,6 +848,7 @@ public sealed record SupplyShipmentListResponse(
     decimal CostSubtotal,
     decimal LandedTotal,
     Guid? InventoryReceiptOperationId,
+    string? InventoryReceiptOperationNumber,
     DateTime CreatedAt);
 
 public sealed record SupplyShipmentDetailResponse(
@@ -778,17 +866,25 @@ public sealed record SupplyShipmentDetailResponse(
     decimal CostSubtotal,
     decimal LandedTotal,
     Guid? InventoryReceiptOperationId,
+    string? InventoryReceiptOperationNumber,
     Guid CreatedBy,
     DateTime CreatedAt,
     Guid? ConfirmedBy,
     DateTime? ConfirmedAt,
     Guid? CancelledBy,
     DateTime? CancelledAt,
+    int LineCount,
+    int IncompletePriceCount,
+    int InvalidPriceCount,
     IReadOnlyList<SupplyLineResponse> Lines,
     IReadOnlyList<SupplyCostResponse> Costs,
     IReadOnlyList<SupplyHistoryResponse> History);
 
 public sealed record SupplyLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, decimal? UnitPrice, decimal LineSubtotal, decimal AllocatedCost, decimal LandedUnitCost, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+
+public sealed record SupplyShipmentEditorResponse(Guid Id, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, uint ConcurrencyVersion, Guid DestinationLocationId, string? Notes, IReadOnlyList<SupplyEditorLineResponse> Lines, IReadOnlyList<SupplyCostResponse> Costs);
+
+public sealed record SupplyEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, decimal? UnitPrice, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyCostResponse(Guid Id, string CostType, string? Description, decimal Amount);
 

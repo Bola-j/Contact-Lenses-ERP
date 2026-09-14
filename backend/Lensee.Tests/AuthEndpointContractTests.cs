@@ -67,12 +67,13 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
         var body = await response.Content.ReadFromJsonAsync<AuthBodyContract>();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.False(string.IsNullOrWhiteSpace(body!.AccessToken));
         Assert.NotNull(body.User);
+        Assert.DoesNotContain("accessToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("refreshToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
-        var setCookie = Assert.Single(response.Headers.GetValues("Set-Cookie"));
-        Assert.Contains("lensee.refresh=", setCookie);
-        Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
+        var setCookies = response.Headers.GetValues("Set-Cookie").ToArray();
+        Assert.Contains(setCookies, value => value.Contains("lensee.refresh=", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(setCookies, value => value.Contains("lensee.access=", StringComparison.OrdinalIgnoreCase));
+        Assert.All(setCookies, value => Assert.Contains("httponly", value, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -86,18 +87,19 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             username = "admin",
             password = "Password123!"
         });
-        var cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        var cookie = login.Headers.GetValues("Set-Cookie").Single(value => value.StartsWith("lensee.refresh=")).Split(';')[0];
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
         {
             Content = JsonContent.Create(new { })
         };
         request.Headers.Add("Cookie", cookie);
+        request.Headers.Add("X-Lensee-Request", "fetch");
 
         var response = await client.SendAsync(request);
         var body = await response.Content.ReadFromJsonAsync<AuthBodyContract>();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.False(string.IsNullOrWhiteSpace(body!.AccessToken));
+        Assert.NotNull(body!.User);
         Assert.Contains(response.Headers.GetValues("Set-Cookie"), value => value.Contains("lensee.refresh=", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -112,15 +114,16 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             username = "admin",
             password = "Password123!"
         });
-        var originalCookie = login.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        var originalCookie = login.Headers.GetValues("Set-Cookie").Single(value => value.StartsWith("lensee.refresh=")).Split(';')[0];
 
         var firstRefresh = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
         {
             Content = JsonContent.Create(new { })
         };
         firstRefresh.Headers.Add("Cookie", originalCookie);
+        firstRefresh.Headers.Add("X-Lensee-Request", "fetch");
         var rotated = await client.SendAsync(firstRefresh);
-        var replacementCookie = rotated.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        var replacementCookie = rotated.Headers.GetValues("Set-Cookie").Single(value => value.StartsWith("lensee.refresh=")).Split(';')[0];
         Assert.Equal(HttpStatusCode.OK, rotated.StatusCode);
 
         var replay = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
@@ -128,6 +131,7 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             Content = JsonContent.Create(new { })
         };
         replay.Headers.Add("Cookie", originalCookie);
+        replay.Headers.Add("X-Lensee-Request", "fetch");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(replay)).StatusCode);
 
         var replacementRefresh = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/refresh")
@@ -135,6 +139,7 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             Content = JsonContent.Create(new { })
         };
         replacementRefresh.Headers.Add("Cookie", replacementCookie);
+        replacementRefresh.Headers.Add("X-Lensee-Request", "fetch");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(replacementRefresh)).StatusCode);
     }
 
@@ -149,14 +154,13 @@ public sealed class AuthEndpointContractTests : IClassFixture<AuthEndpointFactor
             username = "admin",
             password = "Password123!"
         });
-        var loginBody = await login.Content.ReadFromJsonAsync<AuthBodyContract>();
-        var cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
+        var cookie = string.Join("; ", login.Headers.GetValues("Set-Cookie").Select(value => value.Split(';')[0]));
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/logout")
         {
             Content = JsonContent.Create(new { })
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", loginBody!.AccessToken);
         request.Headers.Add("Cookie", cookie);
+        request.Headers.Add("X-Lensee-Request", "fetch");
 
         var response = await client.SendAsync(request);
 
@@ -223,6 +227,6 @@ public sealed class AuthEndpointFactory : WebApplicationFactory<Program>
     }
 }
 
-public sealed record AuthBodyContract(string AccessToken, SessionResponseContract User);
+public sealed record AuthBodyContract(SessionResponseContract User);
 
 public sealed record SessionResponseContract(Guid UserId, string Role, Guid? LocationId);

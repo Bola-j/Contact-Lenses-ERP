@@ -199,7 +199,7 @@ public partial class OperationsDbContext : DbContext
                     "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
                 table.HasCheckConstraint(
                     "chk_op_payment_method",
-                    "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','Installment')");
+                    "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
                 table.HasCheckConstraint(
                     "chk_operation_record_kind",
                     "record_kind in ('Standard','Reversal','Replacement')");

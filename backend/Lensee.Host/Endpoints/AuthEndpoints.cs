@@ -10,6 +10,7 @@ namespace Lensee.Host.Endpoints;
 
 public static class AuthEndpoints
 {
+    private const string AccessCookieName = "lensee.access";
     private const string RefreshCookieName = "lensee.refresh";
 
     public static RouteGroupBuilder MapAuthEndpoints(this IEndpointRouteBuilder routes)
@@ -44,6 +45,7 @@ public static class AuthEndpoints
         RefreshTokenSessionService refreshTokenSessionService,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
+        IConfiguration configuration,
         CancellationToken cancellationToken)
     {
         var errors = ValidateLogin(request);
@@ -68,7 +70,9 @@ public static class AuthEndpoints
 
         SetRefreshCookie(httpContextAccessor.HttpContext!, issuedToken.RawToken, issuedToken.ExpiresAt, environment);
 
-        return TypedResults.Ok(await CreateAuthResponseAsync(user, tokenService.CreateAccessToken(user), inventoryDbContext, cancellationToken));
+        var accessToken = tokenService.CreateAccessToken(user);
+        SetAccessCookie(httpContextAccessor.HttpContext!, accessToken, environment, configuration);
+        return TypedResults.Ok(await CreateAuthResponseAsync(user, inventoryDbContext, cancellationToken));
     }
 
     private static async Task<Results<Ok<AuthResponse>, NoContent, UnauthorizedHttpResult>> RefreshAsync(
@@ -78,6 +82,7 @@ public static class AuthEndpoints
         RefreshTokenSessionService refreshTokenSessionService,
         IHttpContextAccessor httpContextAccessor,
         IWebHostEnvironment environment,
+        IConfiguration configuration,
         CancellationToken cancellationToken)
     {
         var incomingRefreshToken = ReadRefreshToken(request.RefreshToken, httpContextAccessor.HttpContext);
@@ -103,11 +108,9 @@ public static class AuthEndpoints
         }
 
         SetRefreshCookie(httpContextAccessor.HttpContext!, rotation.RawToken, rotation.ExpiresAt.Value, environment);
-        return TypedResults.Ok(await CreateAuthResponseAsync(
-            rotation.User,
-            tokenService.CreateAccessToken(rotation.User),
-            inventoryDbContext,
-            cancellationToken));
+        var accessToken = tokenService.CreateAccessToken(rotation.User);
+        SetAccessCookie(httpContextAccessor.HttpContext!, accessToken, environment, configuration);
+        return TypedResults.Ok(await CreateAuthResponseAsync(rotation.User, inventoryDbContext, cancellationToken));
     }
 
     private static async Task<NoContent> LogoutAsync(
@@ -140,6 +143,7 @@ public static class AuthEndpoints
         }
 
         ClearRefreshCookie(httpContextAccessor.HttpContext!, environment);
+        ClearAccessCookie(httpContextAccessor.HttpContext!, environment);
 
         return TypedResults.NoContent();
     }
@@ -196,6 +200,17 @@ public static class AuthEndpoints
         httpContext.Response.Cookies.Append(RefreshCookieName, refreshToken, CreateRefreshCookieOptions(expiresAt, environment));
     }
 
+    private static void SetAccessCookie(HttpContext httpContext, string accessToken, IWebHostEnvironment environment, IConfiguration configuration)
+    {
+        var expiryMinutes = configuration.GetValue("Jwt:AccessTokenMinutes", 15);
+        httpContext.Response.Cookies.Append(AccessCookieName, accessToken, CreateAccessCookieOptions(DateTime.UtcNow.AddMinutes(expiryMinutes), environment));
+    }
+
+    private static void ClearAccessCookie(HttpContext httpContext, IWebHostEnvironment environment)
+    {
+        httpContext.Response.Cookies.Delete(AccessCookieName, CreateAccessCookieOptions(DateTime.UnixEpoch, environment));
+    }
+
     private static void ClearRefreshCookie(HttpContext httpContext, IWebHostEnvironment environment)
     {
         httpContext.Response.Cookies.Delete(RefreshCookieName, CreateRefreshCookieOptions(DateTime.UnixEpoch, environment));
@@ -211,12 +226,22 @@ public static class AuthEndpoints
             Expires = new DateTimeOffset(expiresAt)
         };
 
-    private static async Task<AuthResponse> CreateAuthResponseAsync(User user, string accessToken, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    private static CookieOptions CreateAccessCookieOptions(DateTime expiresAt, IWebHostEnvironment environment) =>
+        new()
+        {
+            HttpOnly = true,
+            Secure = !environment.IsDevelopment() && !environment.IsEnvironment("Testing"),
+            SameSite = SameSiteMode.Lax,
+            Path = "/",
+            Expires = new DateTimeOffset(expiresAt)
+        };
+
+    private static async Task<AuthResponse> CreateAuthResponseAsync(User user, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
         var locationType = user.LocationId is { } locationId
             ? await inventoryDbContext.Locations.Where(location => location.Id == locationId && location.IsActive).Select(location => location.LocationType).SingleOrDefaultAsync(cancellationToken)
             : null;
-        return new AuthResponse(accessToken, new SessionResponse(user.Id, user.Role, user.LocationId, locationType));
+        return new AuthResponse(new SessionResponse(user.Id, user.Role, user.LocationId, locationType));
     }
 }
 
@@ -226,6 +251,6 @@ public sealed record RefreshRequest(string? RefreshToken);
 
 public sealed record LogoutRequest(string? RefreshToken);
 
-public sealed record AuthResponse(string AccessToken, SessionResponse User);
+public sealed record AuthResponse(SessionResponse User);
 
 public sealed record SessionResponse(Guid UserId, string Role, Guid? LocationId, string? LocationType = null);

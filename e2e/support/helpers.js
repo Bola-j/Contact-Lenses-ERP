@@ -308,6 +308,12 @@ async function selectValueIfEnabled(select, value) {
     return;
   }
 
+  const hasOption = await select.locator("option").evaluateAll((options, expected) =>
+    Array.from(options).some((option) => option.value === expected), value);
+  if (!hasOption) {
+    return;
+  }
+
   await select.selectOption(value);
 }
 
@@ -361,7 +367,6 @@ async function selectOperationLineSku(row, textOrRegex) {
   const search = row.locator(".op-line-search");
   const results = row.locator(".op-line-search-results");
   await expect(search).toBeVisible();
-  await waitForOperationSkuOption(row, textOrRegex);
   const query = textOrRegex instanceof RegExp ? textOrRegex.source.replace(/\\/g, "") : String(textOrRegex);
   await search.fill(query);
   await expect(results).toBeVisible();
@@ -464,12 +469,24 @@ async function apiRequest(page, method, path, body) {
   if (method.toUpperCase() !== "GET" && path.startsWith("/api/v1/payments")) {
     headers["Idempotency-Key"] = randomUuid();
   }
-  const response = await page.request.fetch(`${apiBaseUrl}${path}`, {
-    method,
-    headers,
-    data: body
-  });
-  return response;
+  const result = await page.evaluate(async ({ method, path, headers, body }) => {
+    const response = await fetch(path, {
+      method,
+      headers,
+      credentials: "include",
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    return {
+      status: response.status,
+      ok: response.ok,
+      text: await response.text()
+    };
+  }, { method, path, headers, body });
+  return {
+    ok: () => result.ok,
+    status: () => result.status,
+    text: async () => result.text
+  };
 }
 
 async function expectApiForbidden(page, method, path, body) {

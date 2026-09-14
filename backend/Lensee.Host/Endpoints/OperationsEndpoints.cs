@@ -42,11 +42,23 @@ public static class OperationsEndpoints
     private const string Retail = "Retail";
     private const string Online = "Online";
 
+    private static readonly HashSet<string> OperationTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        InventoryReceipt,
+        WarehouseTransfer,
+        WholesaleSale,
+        RetailSale,
+        Reserve,
+        Return,
+        Change,
+        WriteOff
+    };
+
     private static readonly HashSet<string> PaymentMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "CashHandToHand",
         "CashTransaction",
-        "Installment"
+        "MerchantAccount"
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -60,6 +72,11 @@ public static class OperationsEndpoints
         group.MapPost("/replenishment/daily-reset", ReserveReplenishmentAsync).RequireAuthorization("operations.write");
         group.MapGet("/", ListOperationsAsync).RequireAuthorization("operations.read");
         group.MapGet("/{id:guid}", GetOperationAsync).RequireAuthorization("operations.read");
+        group.MapGet("/{id:guid}/lines", GetOperationLinesAsync).RequireAuthorization("operations.read");
+        group.MapGet("/{id:guid}/allocations", GetOperationAllocationsAsync).RequireAuthorization("operations.read");
+        group.MapGet("/{id:guid}/versions", GetOperationVersionsAsync).RequireAuthorization("operations.read");
+        group.MapGet("/{id:guid}/editor", GetOperationEditorAsync).RequireAuthorization("operations.write");
+        group.MapGet("/batch-options/merchant", ListMerchantBatchOptionsAsync).RequireAuthorization("operations.write");
         group.MapPost("/", CreateOperationAsync).RequireAuthorization("operations.write");
         group.MapPut("/{id:guid}", UpdateOperationAsync).RequireAuthorization("operations.write");
         group.MapPut("/{id:guid}/shopify-allocation", UpdateShopifyAllocationAsync).RequireAuthorization("operations.write");
@@ -191,6 +208,9 @@ public static class OperationsEndpoints
         CatalogDbContext catalogDbContext,
         OperationsDbContext operationsDbContext,
         ICurrentUser currentUser,
+        bool? paged,
+        int? page,
+        int? pageSize,
         CancellationToken cancellationToken)
     {
         if (IsWarehouseClerk(currentUser) && currentUser.LocationId is null)
@@ -198,8 +218,10 @@ public static class OperationsEndpoints
             return Results.Forbid();
         }
 
-        var rows = await BuildReplenishmentRowsAsync(inventoryDbContext, catalogDbContext, operationsDbContext, currentUser, null, null, cancellationToken);
-        return Results.Ok(rows);
+        var request = new PageRequest(page ?? 1, pageSize ?? 50);
+        var result = await BuildReplenishmentRowsAsync(inventoryDbContext, catalogDbContext, operationsDbContext, currentUser, null, null, paged == true ? request : null, cancellationToken);
+        if (paged != true) return Results.Ok(result.Rows);
+        return Results.Ok(new PagedResult<ReplenishmentRowResponse>(result.Rows, request.Page, request.PageSize, result.Total));
     }
 
     private static async Task<IResult> ReserveReplenishmentAsync(
@@ -235,7 +257,7 @@ public static class OperationsEndpoints
 
         Guid? locationFilter = request.LocationId is { } locationId && locationId != Guid.Empty ? locationId : null;
         Guid? skuFilter = request.SkuId is { } skuId && skuId != Guid.Empty ? skuId : null;
-        var rows = await BuildReplenishmentRowsAsync(inventoryDbContext, catalogDbContext, operationsDbContext, currentUser, locationFilter, skuFilter, cancellationToken);
+        var rows = (await BuildReplenishmentRowsAsync(inventoryDbContext, catalogDbContext, operationsDbContext, currentUser, locationFilter, skuFilter, null, cancellationToken)).Rows;
         var shortages = rows
             .Where(row => row.ShortagePacks > 0)
             .GroupBy(row => row.DestinationLocationId)
@@ -344,18 +366,74 @@ public static class OperationsEndpoints
     private static async Task<IResult> ListOperationsAsync(
         int? page,
         int? pageSize,
+        bool? includeCompleted,
+        string? search,
+        string? operationType,
+        string? status,
+        Guid? sourceLocationId,
+        Guid? destinationLocationId,
+        DateTime? createdFrom,
+        DateTime? createdTo,
         OperationsDbContext operationsDbContext,
         InventoryDbContext inventoryDbContext,
+        PaymentsDbContext paymentsDbContext,
+        CrmDbContext crmDbContext,
         IdentityDbContext identityDbContext,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
-        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var safePage = Math.Max(page ?? 1, 1);
+        var safePageSize = pageSize is 25 or 50 or 100 or 250 ? pageSize.Value : 25;
         var query = operationsDbContext.OperationLogs
-            .Include(operation => operation.OperationLines)
+            .AsNoTracking()
             .Include(operation => operation.ShopifyOrderLink)
             .Where(operation => !operation.IsDeleted)
             .AsQueryable();
+
+        if (includeCompleted == false)
+        {
+            query = query.Where(operation => operation.Status != Received && operation.Status != Completed && operation.Status != Confirmed && operation.Status != Cancelled);
+        }
+
+        if (!string.IsNullOrWhiteSpace(operationType)) query = query.Where(operation => operation.OperationType == operationType.Trim());
+        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(operation => operation.Status == status.Trim());
+        if (sourceLocationId.HasValue) query = query.Where(operation => operation.SourceLocationId == sourceLocationId.Value);
+        if (destinationLocationId.HasValue) query = query.Where(operation => operation.DestinationLocationId == destinationLocationId.Value);
+        if (createdFrom.HasValue) query = query.Where(operation => operation.CreatedAt >= createdFrom.Value);
+        if (createdTo.HasValue) query = query.Where(operation => operation.CreatedAt < createdTo.Value.Date.AddDays(1));
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var pattern = $"%{term}%";
+            var paymentOperationIds = await paymentsDbContext.MainPaymentLogs.AsNoTracking()
+                .Where(payment => !payment.IsDeleted && (EF.Functions.ILike(payment.Notes ?? "", pattern) || EF.Functions.ILike(payment.PaymentMethod, pattern)))
+                .Select(payment => payment.OperationId)
+                .ToListAsync(cancellationToken);
+            paymentOperationIds.AddRange(await paymentsDbContext.InstallmentSubLogs.AsNoTracking()
+                .Where(sub => EF.Functions.ILike(sub.TransactionReference ?? "", pattern))
+                .Select(sub => sub.MainLog.OperationId)
+                .ToListAsync(cancellationToken));
+            paymentOperationIds.AddRange(await paymentsDbContext.CashRecords.AsNoTracking()
+                .Where(record => EF.Functions.ILike(record.TransactionReference ?? "", pattern))
+                .Select(record => record.OperationId)
+                .ToListAsync(cancellationToken));
+            paymentOperationIds.AddRange(await paymentsDbContext.MerchantAccountEntries.AsNoTracking()
+                .Where(entry => EF.Functions.ILike(entry.TransactionReference ?? "", pattern))
+                .Where(entry => entry.OperationId.HasValue)
+                .Select(entry => entry.OperationId!.Value)
+                .ToListAsync(cancellationToken));
+            var merchantIds = await crmDbContext.Merchants.AsNoTracking()
+                .Where(merchant => !merchant.IsDeleted && EF.Functions.ILike(merchant.BusinessName, pattern))
+                .Select(merchant => merchant.Id)
+                .ToListAsync(cancellationToken);
+            query = query.Where(operation =>
+                EF.Functions.ILike(operation.OperationNumber, pattern) ||
+                EF.Functions.ILike(operation.ClientName ?? "", pattern) ||
+                EF.Functions.ILike(operation.Notes ?? "", pattern) ||
+                operation.OperationLines.Any(line => EF.Functions.ILike(line.SkuCodeSnapshot ?? "", pattern) || EF.Functions.ILike(line.ProductNameSnapshot ?? "", pattern)) ||
+                (operation.ClientId.HasValue && merchantIds.Contains(operation.ClientId.Value)) ||
+                paymentOperationIds.Contains(operation.Id));
+        }
 
         if (IsWarehouseClerk(currentUser))
         {
@@ -370,21 +448,28 @@ public static class OperationsEndpoints
         var total = await query.CountAsync(cancellationToken);
         var operations = await query
             .OrderByDescending(operation => operation.CreatedAt)
-            .Skip(request.Skip)
-            .Take(request.PageSize)
+            .ThenByDescending(operation => operation.Id)
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
             .ToListAsync(cancellationToken);
+        var pageIds = operations.Select(value => value.Id).ToArray();
+        var allocationPendingIds = await operationsDbContext.OperationLines.AsNoTracking()
+            .Where(line => pageIds.Contains(line.OperationId) && line.ExpiryDate == null)
+            .Select(line => line.OperationId).Distinct().ToListAsync(cancellationToken);
+        var allocationPending = allocationPendingIds.ToHashSet();
         var locationLookup = await LoadLocationLookupAsync(inventoryDbContext, operations, cancellationToken);
         var userLookup = await LoadUserLookupAsync(identityDbContext, operations, cancellationToken);
 
         return Results.Ok(new PagedResult<OperationListResponse>(
-            operations.Select(operation => ToListResponse(operation, locationLookup, userLookup)).ToList(),
-            request.Page,
-            request.PageSize,
+            operations.Select(operation => ToListResponse(operation, locationLookup, userLookup, allocationPending.Contains(operation.Id))).ToList(),
+            safePage,
+            safePageSize,
             total));
     }
 
     private static async Task<IResult> GetOperationAsync(
         Guid id,
+        bool? includeCollections,
         OperationsDbContext operationsDbContext,
         CatalogDbContext catalogDbContext,
         InventoryDbContext inventoryDbContext,
@@ -392,7 +477,9 @@ public static class OperationsEndpoints
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
-        var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
+        var operation = includeCollections == false
+            ? await LoadOperationSummaryAsync(operationsDbContext, id, cancellationToken)
+            : await LoadOperationAsync(operationsDbContext, id, cancellationToken);
         if (operation is null)
         {
             return Results.NotFound();
@@ -405,8 +492,146 @@ public static class OperationsEndpoints
 
         var locationLookup = await LoadLocationLookupAsync(inventoryDbContext, [operation], cancellationToken);
         var userLookup = await LoadUserLookupAsync(identityDbContext, [operation], cancellationToken);
-        var wearCycles = await LoadWearCyclesBySkuAsync(catalogDbContext, operation.OperationLines, cancellationToken);
-        return Results.Ok(ToDetailResponse(operation, locationLookup, userLookup, wearCycles));
+        var wearCycles = includeCollections == false
+            ? new Dictionary<Guid, WearCycleInfo>()
+            : await LoadWearCyclesBySkuAsync(catalogDbContext, operation.OperationLines, cancellationToken);
+        var allocationPending = includeCollections == false
+            ? await operationsDbContext.OperationLines.AsNoTracking().AnyAsync(line => line.OperationId == id && line.ExpiryDate == null, cancellationToken)
+            : IsAllocationPending(operation);
+        return Results.Ok(ToDetailResponse(operation, locationLookup, userLookup, wearCycles, includeCollections != false, allocationPending));
+    }
+
+    private static async Task<IResult> GetOperationLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext operationsDbContext, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var operation = await LoadOperationSummaryAsync(operationsDbContext, id, cancellationToken);
+        if (operation is null) return Results.NotFound();
+        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        var request = new PageRequest(page ?? 1, pageSize ?? 50);
+        var query = operationsDbContext.OperationLines.AsNoTracking().Where(line => line.OperationId == id);
+        var total = await query.CountAsync(cancellationToken);
+        var entities = await query.OrderBy(line => line.Id).Skip(request.Skip).Take(request.PageSize).ToListAsync(cancellationToken);
+        var wearCycles = await LoadWearCyclesBySkuAsync(catalogDbContext, entities, cancellationToken);
+        var rows = entities.Select(line =>
+        {
+            wearCycles.TryGetValue(line.SkuId, out var wearCycle);
+            return new OperationLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Section, line.Quantity, line.EntryMode, line.BonusQuantity, line.UnitPrice, line.LineTotal, line.LotNumber, line.ExpiryDate, line.MerchantNameSnapshot, line.RepresentativeNameSnapshot, line.LineNotes, wearCycle?.Cycle, wearCycle?.Duration, line.ShopifyLineItemId, line.ShopifyVariantId, line.ShopifySkuSnapshot, line.ShopifyTitleSnapshot, line.ShopifyVariantTitleSnapshot, line.ShopifyPropertiesSnapshot);
+        }).ToList();
+        return Results.Ok(new PagedResult<OperationLineResponse>(rows, request.Page, request.PageSize, total));
+    }
+
+    private static async Task<IResult> GetOperationVersionsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, IdentityDbContext identityDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var operation = await LoadOperationSummaryAsync(dbContext, id, cancellationToken);
+        if (operation is null) return Results.NotFound();
+        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var query = dbContext.OperationVersions.AsNoTracking().Where(value => value.OperationId == id);
+        var total = await query.CountAsync(cancellationToken);
+        var versions = await query.OrderByDescending(value => value.VersionNumber).ThenByDescending(value => value.Id).Skip(request.Skip).Take(request.PageSize)
+            .Select(value => new { value.Id, value.VersionNumber, value.Reason, value.EditedAt, value.EditedBy, value.EditedActorName })
+            .ToListAsync(cancellationToken);
+        var editedByIds = versions.Select(version => version.EditedBy).Distinct().ToArray();
+        var users = await identityDbContext.Users.AsNoTracking().Where(value => editedByIds.Contains(value.Id)).ToDictionaryAsync(value => value.Id, cancellationToken);
+        var rows = versions.Select(version => new OperationVersionResponse(version.Id, version.VersionNumber, version.Reason, version.EditedAt, GetActorDisplayName(version.EditedActorName, version.EditedBy, users), operation.CurrentVersionId == version.Id, false, false, false, false)).ToList();
+        return Results.Ok(new PagedResult<OperationVersionResponse>(rows, request.Page, request.PageSize, total));
+    }
+
+    private static async Task<IResult> GetOperationAllocationsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var operation = await LoadOperationSummaryAsync(dbContext, id, cancellationToken);
+        if (operation is null) return Results.NotFound();
+        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        var currentVersion = operation.CurrentVersionId.HasValue
+            ? await dbContext.OperationVersions.AsNoTracking().FirstOrDefaultAsync(value => value.Id == operation.CurrentVersionId.Value, cancellationToken)
+            : await dbContext.OperationVersions.AsNoTracking().Where(value => value.OperationId == id).OrderByDescending(value => value.VersionNumber).FirstOrDefaultAsync(cancellationToken);
+        if (currentVersion is not null) operation.OperationVersions.Add(currentVersion);
+        var rows = ReadTransferAllocations(operation).SelectMany(allocation => allocation.Allocations.Select(batch => new OperationAllocationResponse(allocation.SkuId, null, null, batch.BatchId, batch.Quantity, batch.LotNumber, batch.ExpiryDate))).OrderBy(value => value.SkuId).ThenBy(value => value.BatchId).ToList();
+        var request = new PageRequest(page ?? 1, pageSize ?? 50);
+        return Results.Ok(new PagedResult<OperationAllocationResponse>(rows.Skip(request.Skip).Take(request.PageSize).ToList(), request.Page, request.PageSize, rows.Count));
+    }
+
+    private static async Task<IResult> GetOperationEditorAsync(Guid id, OperationsDbContext dbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var operation = await dbContext.OperationLogs.AsNoTracking().Include(value => value.OperationLines).Include(value => value.InventoryReceiptHeader).Include(value => value.ShopifyOrderLink).FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
+        if (operation is null) return Results.NotFound();
+        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        var lines = operation.OperationLines
+            .OrderBy(value => value.Id)
+            .Select(line => new OperationEditorLineResponse(
+                line.Id,
+                line.SkuId,
+                line.SkuCodeSnapshot,
+                line.ProductNameSnapshot,
+                line.EntryMode,
+                line.Section,
+                line.Quantity,
+                line.BonusQuantity,
+                line.UnitPrice,
+                line.LineTotal,
+                line.LotNumber,
+                line.ExpiryDate,
+                line.MerchantNameSnapshot,
+                line.RepresentativeNameSnapshot,
+                line.LineNotes,
+                line.ShopifyLineItemId,
+                line.ShopifyVariantId,
+                line.ShopifySkuSnapshot,
+                line.ShopifyTitleSnapshot,
+                line.ShopifyVariantTitleSnapshot,
+                line.ShopifyPropertiesSnapshot))
+            .ToList();
+
+        return Results.Ok(new OperationEditorResponse(
+            operation.Id, operation.OperationType, operation.ConcurrencyVersion, operation.SourceLocationId, operation.DestinationLocationId,
+            operation.ClientId, operation.ClientName, operation.RepresentativeId, operation.PaymentMethod, operation.Notes,
+            operation.InventoryReceiptHeader is null ? null : new ReceiptResponse(operation.InventoryReceiptHeader.SupplierName, operation.InventoryReceiptHeader.InvoiceNumber),
+            operation.SalesChannel, operation.BuyerPhone,
+            lines.Count,
+            lines));
+    }
+
+    private static async Task<IResult> ListMerchantBatchOptionsAsync(
+        Guid merchantId,
+        Guid skuId,
+        Guid? locationId,
+        OperationsDbContext operationsDbContext,
+        MerchantBatchHistoryService historyService,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (IsWarehouseClerk(currentUser))
+        {
+            if (currentUser.LocationId is not { } clerkLocationId || locationId != clerkLocationId)
+            {
+                return Results.Forbid();
+            }
+
+            var canAccessMerchant = await operationsDbContext.OperationLogs.AnyAsync(operation =>
+                !operation.IsDeleted &&
+                operation.ClientId == merchantId &&
+                (operation.SourceLocationId == clerkLocationId || operation.DestinationLocationId == clerkLocationId),
+                cancellationToken);
+            if (!canAccessMerchant)
+            {
+                return Results.NotFound();
+            }
+        }
+
+        var rows = (await historyService.LoadAsync(merchantId, cancellationToken: cancellationToken))
+            .Where(row => row.Key.SkuId == skuId &&
+                !string.IsNullOrWhiteSpace(row.Key.LotNumber) &&
+                row.Key.ExpiryDate.HasValue)
+            .Select(row => new MerchantBatchOptionResponse(
+                row.Key.LotNumber!,
+                row.Key.ExpiryDate!.Value,
+                row.SoldQuantity,
+                row.ReturnedQuantity,
+                row.RecordedBalanceQuantity))
+            .OrderBy(row => row.ExpiryDate)
+            .ThenBy(row => row.LotNumber)
+            .ToList();
+
+        return Results.Ok(rows);
     }
 
     private static async Task<IResult> CreateOperationAsync(
@@ -610,9 +835,9 @@ public static class OperationsEndpoints
         {
             errors[nameof(request.Lines)] = ["Allocation must include each Shopify operation line exactly once."];
         }
-        if (lines.Any(line => line.ExpiryDate is null))
+        if (lines.Any(line => string.IsNullOrWhiteSpace(line.LotNumber) || line.ExpiryDate is null))
         {
-            errors[nameof(request.Lines)] = ["Each Shopify line requires a batch expiry date."];
+            errors[nameof(request.Lines)] = ["Each Shopify line requires a batch code and expiry date."];
         }
 
         var lineById = operation.OperationLines.ToDictionary(line => line.Id);
@@ -730,6 +955,7 @@ public static class OperationsEndpoints
         InventoryDbContext inventoryDbContext,
         PaymentsDbContext paymentsDbContext,
         IdentityDbContext identityDbContext,
+        MerchantAccountService merchantAccountService,
         StockLedgerService ledgerService,
         ICurrentUser currentUser,
         IClock clock,
@@ -882,6 +1108,7 @@ public static class OperationsEndpoints
                     catalogDbContext,
                     crmDbContext,
                     paymentsDbContext,
+                    merchantAccountService,
                     ledgerService,
                     userId,
                     now,
@@ -929,6 +1156,7 @@ public static class OperationsEndpoints
         NotificationsDbContext notificationsDbContext,
         MerchantBatchHistoryService batchHistoryService,
         MerchantExpiryRecallService recallService,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -1052,42 +1280,30 @@ public static class OperationsEndpoints
         }
         else if (operation.OperationType == WarehouseTransfer)
         {
-            var allocations = new List<TransferAllocationSnapshot>();
-            foreach (var line in operation.OperationLines)
+            IReadOnlyList<TransferAllocationSnapshot> allocations;
+            try
             {
-                try
-                {
-                    await ledgerService.PlanReserveInWarehouseFefoAsync(
-                        operation.SourceLocationId!.Value,
-                        line.SkuId,
-                        line.Quantity,
-                        null,
-                        cancellationToken);
-                }
-                catch (InvalidOperationException exception)
-                {
-                    return Results.ValidationProblem(new Dictionary<string, string[]>
-                    {
-                        [line.SkuCodeSnapshot] = [exception.Message]
-                    });
-                }
+                allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = [exception.Message] });
             }
 
             await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
             {
                 if (!await LockDraftForConfirmationAsync()) return;
-                foreach (var line in operation.OperationLines)
+                foreach (var allocation in allocations)
                 {
-                    var lineAllocations = await ledgerService.ReserveInWarehouseFefoAsync(
+                    await ledgerService.ReserveSelectedBatchInWarehouseAsync(
                         operation.SourceLocationId!.Value,
-                        line.SkuId,
-                        line.Quantity,
+                        allocation.SkuId,
+                        allocation.Allocations.Sum(batch => batch.Quantity),
+                        allocation.Allocations[0].LotNumber,
+                        allocation.Allocations[0].ExpiryDate,
                         userId,
                         operation.Id,
-                        null,
                         cancellationToken);
-
-                    allocations.Add(new TransferAllocationSnapshot(line.SkuId, lineAllocations.ToList()));
                 }
 
                 operation.Status = Reserved;
@@ -1103,10 +1319,10 @@ public static class OperationsEndpoints
             IReadOnlyList<TransferAllocationSnapshot> allocations = [];
             try
             {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
-                    allocations = await BuildSelectedSalePackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
+                    allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
                     foreach (var allocation in allocations)
                     {
                         await ledgerService.ReserveSelectedBatchInWarehouseAsync(
@@ -1137,7 +1353,7 @@ public static class OperationsEndpoints
         {
             try
             {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
                     await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
@@ -1188,6 +1404,10 @@ public static class OperationsEndpoints
                         : "Confirmed return";
                     await AddVersionAsync(operationsDbContext, operation, versionReason, userId, CreateSnapshot(operation), now, cancellationToken);
                     await operationsDbContext.SaveChangesAsync(cancellationToken);
+                    if (operation.ClientId is { } merchantId)
+                    {
+                        await merchantAccountService.PostCreditForOperationAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), "ReturnCredit", userId, now, "Confirmed return.", cancellationToken);
+                    }
                     await WriteConfirmAuditAsync();
                 }, cancellationToken);
             }
@@ -1205,7 +1425,7 @@ public static class OperationsEndpoints
             var allocations = new List<TransferAllocationSnapshot>();
             try
             {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
                     await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
@@ -1231,16 +1451,8 @@ public static class OperationsEndpoints
 
                     foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeIn))
                     {
-                        var lineAllocations = await ledgerService.IssueFefoAsync(
-                            operation.SourceLocationId!.Value,
-                            line.SkuId,
-                            line.Quantity,
-                            InventoryTransactionTypes.ChangeIn,
-                            userId,
-                            operation.Id,
-                            null,
-                            cancellationToken);
-                        allocations.Add(new TransferAllocationSnapshot(line.SkuId, lineAllocations.ToList()));
+                        var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.ChangeIn, ledgerService, userId, operation.Id, cancellationToken);
+                        allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
                     }
 
                     operation.Status = Confirmed;
@@ -1251,6 +1463,19 @@ public static class OperationsEndpoints
                         : "Confirmed change";
                     await AddVersionAsync(operationsDbContext, operation, versionReason, userId, CreateSnapshot(operation, allocations), now, cancellationToken);
                     await operationsDbContext.SaveChangesAsync(cancellationToken);
+                    if (operation.ClientId is { } merchantId)
+                    {
+                        var outgoing = operation.OperationLines.Where(line => line.Section == ChangeOut).Sum(line => line.LineTotal);
+                        var incoming = operation.OperationLines.Where(line => line.Section == ChangeIn).Sum(line => line.LineTotal);
+                        if (incoming > outgoing)
+                        {
+                            await merchantAccountService.PostDebitForOperationAsync(merchantId, operation.Id, incoming - outgoing, "ExchangeSurcharge", userId, now, "Confirmed exchange surcharge.", cancellationToken);
+                        }
+                        else if (outgoing > incoming)
+                        {
+                            await merchantAccountService.PostCreditForOperationAsync(merchantId, operation.Id, outgoing - incoming, "ExchangeCredit", userId, now, "Confirmed exchange credit.", cancellationToken);
+                        }
+                    }
                     await WriteConfirmAuditAsync();
                 }, cancellationToken);
             }
@@ -1267,16 +1492,8 @@ public static class OperationsEndpoints
                 if (!await LockDraftForConfirmationAsync()) return;
                 foreach (var line in operation.OperationLines)
                 {
-                    var lineAllocations = await ledgerService.IssueFefoAsync(
-                        operation.SourceLocationId!.Value,
-                        line.SkuId,
-                        line.Quantity,
-                        InventoryTransactionTypes.WriteOff,
-                        userId,
-                        operation.Id,
-                        null,
-                        cancellationToken);
-                    allocations.Add(new TransferAllocationSnapshot(line.SkuId, lineAllocations.ToList()));
+                    var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.WriteOff, ledgerService, userId, operation.Id, cancellationToken);
+                    allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
                 }
 
                 operation.Status = Confirmed;
@@ -1293,18 +1510,10 @@ public static class OperationsEndpoints
             await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
             {
                 if (!await LockDraftForConfirmationAsync()) return;
-                foreach (var group in operation.OperationLines.GroupBy(line => line.SkuId))
+                foreach (var line in operation.OperationLines)
                 {
-                    var lineAllocations = await ledgerService.ReserveInWarehouseFefoAsync(
-                        operation.SourceLocationId!.Value,
-                        group.Key,
-                        group.Sum(line => line.Quantity),
-                        userId,
-                        operation.Id,
-                        null,
-                        cancellationToken);
-
-                    allocations.Add(new TransferAllocationSnapshot(group.Key, lineAllocations.ToList()));
+                    var lineAllocation = await ReserveSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, ledgerService, userId, operation.Id, cancellationToken);
+                    allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
                 }
 
                 operation.Status = Reserved;
@@ -1427,6 +1636,7 @@ public static class OperationsEndpoints
         StockLedgerService ledgerService,
         NotificationsDbContext notificationsDbContext,
         IAppEventPublisher eventPublisher,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -1544,7 +1754,6 @@ public static class OperationsEndpoints
                 operation.Status = operation.OperationType is WholesaleSale or RetailSale ? Completed : Confirmed;
                 operation.ConfirmedAt = clock.EgyptNow;
                 operation.ConfirmedBy = userId;
-                await EnsureAnonymousRetailCashMerchantAsync(operation, crmDbContext, clock.EgyptNow, cancellationToken);
                 await AddVersionAsync(operationsDbContext, operation, operation.OperationType == Reserve ? "Representative received stock" : "Customer completed sale", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
             }
 
@@ -1552,6 +1761,13 @@ public static class OperationsEndpoints
             await operationsDbContext.SaveChangesAsync(cancellationToken);
             if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Completed)
             {
+                await EnsureAnonymousRetailCashMerchantAsync(operation, crmDbContext, clock.EgyptNow, cancellationToken);
+                await crmDbContext.SaveChangesAsync(cancellationToken);
+                await operationsDbContext.SaveChangesAsync(cancellationToken);
+                if (operation.ClientId is { } merchantId)
+                {
+                    await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, clock.EgyptNow, "Completed sale.", cancellationToken);
+                }
                 await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, userId, clock.EgyptNow, cancellationToken);
             }
             await auditLogWriter.WriteAsync(
@@ -1565,7 +1781,7 @@ public static class OperationsEndpoints
         if (receiveConflict is not null) return receiveConflict;
 
         if (operation.OperationType is WholesaleSale or RetailSale &&
-            string.Equals(operation.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase))
+            operation.PaymentMethod is "CashHandToHand" or "CashTransaction")
         {
             var paymentLog = await paymentsDbContext.MainPaymentLogs
                 .FirstOrDefaultAsync(log => log.OperationId == operation.Id && !log.IsDeleted, cancellationToken);
@@ -1575,8 +1791,8 @@ public static class OperationsEndpoints
                     paymentLog.Id,
                     paymentLog.MerchantId,
                     operation.Id,
-                    "CashReviewRequired",
-                    $"Cash sale {operation.OperationNumber} is awaiting accountant review.",
+                    "CollectionRequired",
+                    $"Sale {operation.OperationNumber} is complete and its collection must be recorded and approved.",
                     null,
                     LenseeRoles.Accountant,
                     clock.EgyptNow), cancellationToken);
@@ -1699,13 +1915,14 @@ public static class OperationsEndpoints
         return Results.NoContent();
     }
 
-    private static async Task<IReadOnlyList<ReplenishmentRowResponse>> BuildReplenishmentRowsAsync(
+    private static async Task<(IReadOnlyList<ReplenishmentRowResponse> Rows, int Total)> BuildReplenishmentRowsAsync(
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         OperationsDbContext operationsDbContext,
         ICurrentUser currentUser,
         Guid? locationFilter,
         Guid? skuFilter,
+        PageRequest? paging,
         CancellationToken cancellationToken)
     {
         var locationsQuery = inventoryDbContext.Locations
@@ -1726,7 +1943,7 @@ public static class OperationsEndpoints
         var locationIds = locations.Select(location => location.Id).ToArray();
         if (locationIds.Length == 0)
         {
-            return [];
+            return ([], 0);
         }
 
         var balancesQuery = inventoryDbContext.StockBalances
@@ -1736,11 +1953,14 @@ public static class OperationsEndpoints
             balancesQuery = balancesQuery.Where(balance => balance.SkuId == skuFilter.Value);
         }
 
-        var balances = await balancesQuery.ToListAsync(cancellationToken);
+        var total = paging is null ? 0 : await balancesQuery.CountAsync(cancellationToken);
+        var orderedBalances = balancesQuery.OrderBy(balance => balance.LocationId).ThenBy(balance => balance.SkuId).ThenBy(balance => balance.Id);
+        var balances = await (paging is null ? orderedBalances : orderedBalances.Skip(paging.Skip).Take(paging.PageSize)).ToListAsync(cancellationToken);
+        if (paging is null) total = balances.Count;
         var skuIds = balances.Select(balance => balance.SkuId).Distinct().ToArray();
         if (skuIds.Length == 0)
         {
-            return [];
+            return ([], total);
         }
 
         var skus = await catalogDbContext.Skus
@@ -1763,6 +1983,9 @@ public static class OperationsEndpoints
             .SelectMany(
                 operation => operation.OperationLines,
                 (operation, line) => new { DestinationLocationId = operation.DestinationLocationId!.Value, line.SkuId, line.Quantity })
+            // Replenishment is rendered a page at a time.  Limiting this aggregate to
+            // the displayed SKUs avoids recalculating every catalog SKU for each page.
+            .Where(value => skuIds.Contains(value.SkuId))
             .GroupBy(value => new { value.DestinationLocationId, value.SkuId })
             .Select(group => new { group.Key.DestinationLocationId, group.Key.SkuId, Quantity = group.Sum(value => value.Quantity) })
             .ToDictionaryAsync(value => (value.DestinationLocationId, value.SkuId), value => value.Quantity, cancellationToken);
@@ -1777,7 +2000,7 @@ public static class OperationsEndpoints
                 .ToDictionaryAsync(balance => balance.SkuId, balance => balance.AvailableQty, cancellationToken)
             : [];
 
-        return balances
+        var rows = balances
             .Select(balance =>
             {
                 var location = locations.First(location => location.Id == balance.LocationId);
@@ -1808,6 +2031,7 @@ public static class OperationsEndpoints
             .ThenBy(row => row.DestinationLocationName)
             .ThenBy(row => row.SkuCode ?? row.SkuId.ToString())
             .ToList();
+        return (rows, total);
     }
 
     private static async Task<Dictionary<Guid, int>> LoadPiecesPerPackBySkuAsync(
@@ -1827,7 +2051,7 @@ public static class OperationsEndpoints
             .ToDictionaryAsync(sku => sku.Id, sku => sku.Product.PiecesPerPack!.Value, cancellationToken);
     }
 
-    private static async Task<IReadOnlyList<TransferAllocationSnapshot>> BuildSelectedSalePackAllocationsAsync(
+    private static async Task<IReadOnlyList<TransferAllocationSnapshot>> BuildSelectedPackAllocationsAsync(
         OperationLog operation,
         InventoryDbContext inventoryDbContext,
         OperationsDbContext operationsDbContext,
@@ -1924,6 +2148,12 @@ public static class OperationsEndpoints
             .Include(operation => operation.ShopifyOrderLink)
             .FirstOrDefaultAsync(operation => operation.Id == id && !operation.IsDeleted, cancellationToken);
 
+    private static async Task<OperationLog?> LoadOperationSummaryAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
+        await dbContext.OperationLogs.AsNoTracking()
+            .Include(operation => operation.InventoryReceiptHeader)
+            .Include(operation => operation.ShopifyOrderLink)
+            .FirstOrDefaultAsync(operation => operation.Id == id && !operation.IsDeleted, cancellationToken);
+
     private static async Task<OperationLog?> LoadOperationForDraftUpdateAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
         await dbContext.OperationLogs
             .Include(operation => operation.OperationLines)
@@ -1976,13 +2206,27 @@ public static class OperationsEndpoints
         {
             errors[nameof(request.Lines)] = ["Line quantity must be greater than zero."];
         }
+        if (request.Lines.Any(line => string.IsNullOrWhiteSpace(line.LotNumber) || line.ExpiryDate is null))
+        {
+            errors[nameof(request.Lines)] = ["Every operation line must include a batch code and expiry date selected through the batch / expiry control."];
+        }
         if (request.Lines.Select(line => GetLineUniquenessKey(operationType, line)).Distinct().Count() != request.Lines.Count)
         {
             errors[nameof(request.Lines)] = ["Duplicate SKU lines must differ by side, sale bonus flag, entry mode, lot, or batch expiry."];
         }
-        if (NormalizePaymentMethod(request.PaymentMethod) is null && !string.IsNullOrWhiteSpace(request.PaymentMethod))
+        var paymentMethod = NormalizePaymentMethod(request.PaymentMethod);
+        var isFinancialOperation = operationType is WholesaleSale or RetailSale or Return or Change;
+        if (paymentMethod is null && isFinancialOperation)
         {
-            errors[nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, or Installment."];
+            errors[nameof(request.PaymentMethod)] = ["Payment method is required for financial operations."];
+        }
+        else if (paymentMethod is null && !string.IsNullOrWhiteSpace(request.PaymentMethod))
+        {
+            errors[nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, or MerchantAccount."];
+        }
+        if (operationType is Return or Change && paymentMethod is not null && paymentMethod != "MerchantAccount")
+        {
+            errors[nameof(request.PaymentMethod)] = ["Returns and changes settle through the merchant account; a cash refund is recorded separately."];
         }
         if (operationType is WholesaleSale or RetailSale)
         {
@@ -1991,15 +2235,6 @@ public static class OperationsEndpoints
             {
                 errors[nameof(request.Lines)] = ["Sale line unit price must be greater than zero unless the line is marked as bonus."];
             }
-            if (request.Lines.Any(line => line.ExpiryDate is null))
-            {
-                errors[nameof(request.Lines)] = ["Sale lines must select an available batch expiry from the source warehouse."];
-            }
-        }
-        if ((operationType is WarehouseTransfer or WholesaleSale or RetailSale or Reserve or WriteOff) &&
-            request.Lines.Any(line => line.ExpiryDate is null))
-        {
-            errors[nameof(request.Lines)] = ["Stock-consuming lines must include the selected batch expiry."];
         }
         if (operationType is not (WholesaleSale or RetailSale) && request.Lines.Any(line => line.IsBonus == true))
         {
@@ -2054,13 +2289,13 @@ public static class OperationsEndpoints
             }
         }
         if (operationType == WholesaleSale &&
-            NormalizePaymentMethod(request.PaymentMethod) is "CashTransaction" or "Installment" &&
+            paymentMethod is "CashTransaction" or "MerchantAccount" &&
             !request.MerchantId.HasValue)
         {
             errors[nameof(request.MerchantId)] = ["Cash transaction and installment sales require a registered merchant."];
         }
         if (operationType == RetailSale &&
-            NormalizePaymentMethod(request.PaymentMethod) is "Installment" &&
+            paymentMethod is "MerchantAccount" &&
             !request.MerchantId.HasValue)
         {
             errors[nameof(request.MerchantId)] = ["Installment retail sales require a registered merchant."];
@@ -2090,10 +2325,6 @@ public static class OperationsEndpoints
             {
                 errors[nameof(request.Lines)] = ["Return is pack-based in this milestone."];
             }
-            if (request.Lines.Any(line => line.ExpiryDate is null))
-            {
-                errors[nameof(request.Lines)] = ["Return lines must include the batch expiry date received by the merchant."];
-            }
         }
         if (operationType == Change)
         {
@@ -2116,10 +2347,6 @@ public static class OperationsEndpoints
             if (request.Lines.Any(line => NormalizeEntryMode(line.EntryMode) != "Packs"))
             {
                 errors[nameof(request.Lines)] = ["Change is pack-based in this milestone."];
-            }
-            if (request.Lines.Any(line => NormalizeLineSection(operationType, line.Section) == ChangeOut && line.ExpiryDate is null))
-            {
-                errors[nameof(request.Lines)] = ["Returned change lines must include the batch expiry date received by the merchant."];
             }
         }
         if (operationType == WriteOff)
@@ -2166,12 +2393,6 @@ public static class OperationsEndpoints
         if (skus.Count != skuIds.Length)
         {
             errors[nameof(request.Lines)] = ["All operation SKUs must exist and be active."];
-        }
-        else if (operationType == InventoryReceipt && request.Lines.Any(line =>
-                     string.Equals(skus[line.SkuId].Product.ExpiryType, "Batch", StringComparison.OrdinalIgnoreCase) &&
-                     line.ExpiryDate is null))
-        {
-            errors[nameof(request.Lines)] = ["Batch expiry is required for products with batch expiry tracking."];
         }
 
         return new DraftValidationResult(errors, source, destination, skus, merchant, representative);
@@ -2790,7 +3011,7 @@ public static class OperationsEndpoints
     private static bool IsAllocationPending(OperationLog operation) =>
         operation.SalesChannel == "Shopify" && operation.OperationLines.Any(line => line.ExpiryDate is null);
 
-    private static OperationListResponse ToListResponse(OperationLog operation, IReadOnlyDictionary<Guid, Location> locationLookup, IReadOnlyDictionary<Guid, User> userLookup) =>
+    private static OperationListResponse ToListResponse(OperationLog operation, IReadOnlyDictionary<Guid, Location> locationLookup, IReadOnlyDictionary<Guid, User> userLookup, bool? allocationPendingOverride = null) =>
         new(
             operation.Id,
             operation.OperationNumber,
@@ -2818,22 +3039,24 @@ public static class OperationsEndpoints
             operation.ShippingAddress,
             operation.ShopifyOrderLink?.ShopifyOrderId,
             operation.ShopifyOrderLink?.ShopifyOrderNumber,
-            IsAllocationPending(operation));
+            allocationPendingOverride ?? IsAllocationPending(operation));
 
     private static OperationDetailResponse ToDetailResponse(
         OperationLog operation,
         IReadOnlyDictionary<Guid, Location> locationLookup,
         IReadOnlyDictionary<Guid, User> userLookup,
-        IReadOnlyDictionary<Guid, WearCycleInfo> wearCycles)
+        IReadOnlyDictionary<Guid, WearCycleInfo> wearCycles,
+        bool includeCollections = true,
+        bool? allocationPendingOverride = null)
     {
-        var lines = operation.OperationLines
+        var lines = includeCollections ? operation.OperationLines
             .Select(line =>
             {
                 wearCycles.TryGetValue(line.SkuId, out var wearCycle);
                 return new OperationLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Section, line.Quantity, line.EntryMode, line.BonusQuantity, line.UnitPrice, line.LineTotal, line.LotNumber, line.ExpiryDate, line.MerchantNameSnapshot, line.RepresentativeNameSnapshot, line.LineNotes, wearCycle?.Cycle, wearCycle?.Duration, line.ShopifyLineItemId, line.ShopifyVariantId, line.ShopifySkuSnapshot, line.ShopifyTitleSnapshot, line.ShopifyVariantTitleSnapshot, line.ShopifyPropertiesSnapshot);
             })
-            .ToList();
-        var allocations = ReadTransferAllocations(operation)
+            .ToList() : [];
+        var allocations = includeCollections ? ReadTransferAllocations(operation)
             .SelectMany(allocation => allocation.Allocations.Select(batch => new OperationAllocationResponse(
                 allocation.SkuId,
                 operation.OperationLines.FirstOrDefault(line => line.SkuId == allocation.SkuId)?.SkuCodeSnapshot,
@@ -2842,8 +3065,8 @@ public static class OperationsEndpoints
                 batch.Quantity,
                 batch.LotNumber,
                 batch.ExpiryDate)))
-            .ToList();
-        var versions = BuildVersionResponses(operation, userLookup);
+            .ToList() : [];
+        var versions = includeCollections ? BuildVersionResponses(operation, userLookup) : [];
 
         return new(
             operation.Id,
@@ -2880,7 +3103,7 @@ public static class OperationsEndpoints
             operation.ShippingAddress,
             operation.ShopifyOrderLink?.ShopifyOrderId,
             operation.ShopifyOrderLink?.ShopifyOrderNumber,
-            IsAllocationPending(operation));
+            allocationPendingOverride ?? IsAllocationPending(operation));
     }
 
     private static async Task<IReadOnlyDictionary<Guid, WearCycleInfo>> LoadWearCyclesBySkuAsync(
@@ -2999,24 +3222,12 @@ public static class OperationsEndpoints
     private static string? GetLocationName(Guid? locationId, IReadOnlyDictionary<Guid, Location> lookup) =>
         locationId.HasValue && lookup.TryGetValue(locationId.Value, out var location) ? location.Name : null;
 
-    private static string NormalizeOperationType(string value) =>
-        string.Equals(value, InventoryReceipt, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0627\u0633\u062a\u0644\u0627\u0645 \u0645\u062e\u0632\u0648\u0646", StringComparison.OrdinalIgnoreCase)
-            ? InventoryReceipt
-            : string.Equals(value, WarehouseTransfer, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "Supply", StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u062a\u062d\u0648\u064a\u0644 \u0645\u062e\u0632\u0648\u0646", StringComparison.OrdinalIgnoreCase)
-                ? WarehouseTransfer
-                : string.Equals(value, WholesaleSale, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0628\u064a\u0639 \u062c\u0645\u0644\u0629", StringComparison.OrdinalIgnoreCase)
-                    ? WholesaleSale
-                    : string.Equals(value, RetailSale, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0628\u064a\u0639 \u0642\u0637\u0627\u0639\u064a / \u0623\u0648\u0646\u0644\u0627\u064a\u0646", StringComparison.OrdinalIgnoreCase)
-                        ? RetailSale
-                        : string.Equals(value, Reserve, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u062d\u062c\u0632 \u0644\u0644\u0645\u0646\u062f\u0648\u0628", StringComparison.OrdinalIgnoreCase)
-                            ? Reserve
-                            : string.Equals(value, Return, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0645\u0631\u062a\u062c\u0639", StringComparison.OrdinalIgnoreCase)
-                                ? Return
-                                : string.Equals(value, Change, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0627\u0633\u062a\u0628\u062f\u0627\u0644", StringComparison.OrdinalIgnoreCase)
-                                    ? Change
-                                    : string.Equals(value, WriteOff, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "\u0625\u0639\u062f\u0627\u0645 / \u062a\u0633\u0648\u064a\u0629 \u0645\u062e\u0632\u0648\u0646", StringComparison.OrdinalIgnoreCase)
-                                        ? WriteOff
-                                        : value.Trim();
+    private static string NormalizeOperationType(string value)
+    {
+        var trimmed = value.Trim();
+        return OperationTypes.FirstOrDefault(type => string.Equals(type, trimmed, StringComparison.OrdinalIgnoreCase))
+            ?? trimmed;
+    }
 
     private static bool IsMainWarehouse(Location location) =>
         string.Equals(location.LocationType, MainWarehouse, StringComparison.OrdinalIgnoreCase);
@@ -3032,6 +3243,9 @@ public static class OperationsEndpoints
     private static bool IsWarehouseClerk(ICurrentUser currentUser) =>
         string.Equals(currentUser.Role, LenseeRoles.WarehouseClerk, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsTrustedFinancialActor(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Accountant or LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.CLevel;
+
     private static string? TrimToNull(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
@@ -3046,22 +3260,10 @@ public static class OperationsEndpoints
             return null;
         }
 
-        if (string.Equals(trimmed, "Cash", StringComparison.OrdinalIgnoreCase) || string.Equals(trimmed, "\u0646\u0642\u062f\u064a \u0645\u0628\u0627\u0634\u0631", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(trimmed, "Installment", StringComparison.OrdinalIgnoreCase) || string.Equals(trimmed, "Installlaugment", StringComparison.OrdinalIgnoreCase))
         {
-            return "CashHandToHand";
+            return "MerchantAccount";
         }
-        if (string.Equals(trimmed, "Card", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(trimmed, "Wallet", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(trimmed, "BankTransaction", StringComparison.OrdinalIgnoreCase) || string.Equals(trimmed, "\u062a\u062d\u0648\u064a\u0644 \u0623\u0648 \u0625\u064a\u062f\u0627\u0639 \u0646\u0642\u062f\u064a", StringComparison.OrdinalIgnoreCase))
-        {
-            return "CashTransaction";
-        }
-
-        if (string.Equals(trimmed, "\u062a\u0642\u0633\u064a\u0637", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Installment";
-        }
-
         return PaymentMethods.FirstOrDefault(method => string.Equals(method, trimmed, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -3369,6 +3571,7 @@ public static class OperationsEndpoints
         CatalogDbContext catalogDbContext,
         CrmDbContext crmDbContext,
         PaymentsDbContext paymentsDbContext,
+        MerchantAccountService merchantAccountService,
         StockLedgerService ledgerService,
         Guid userId,
         DateTime now,
@@ -3418,7 +3621,7 @@ public static class OperationsEndpoints
 
         if (operation.OperationType is WholesaleSale or RetailSale)
         {
-            allocations.AddRange(await BuildSelectedSalePackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, new ClockStub(now), cancellationToken));
+            allocations.AddRange(await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, new ClockStub(now), cancellationToken));
             foreach (var allocation in allocations)
             {
                 await ledgerService.ReserveSelectedBatchInWarehouseAsync(operation.SourceLocationId!.Value, allocation.SkuId, allocation.Allocations.Sum(batch => batch.Quantity), allocation.Allocations[0].LotNumber, allocation.Allocations[0].ExpiryDate, userId, operation.Id, cancellationToken);
@@ -3434,6 +3637,17 @@ public static class OperationsEndpoints
             if (originalStatus == Completed)
             {
                 operation.Status = Completed;
+                if (operation.ClientId is { } merchantId)
+                {
+                    await merchantAccountService.PostSaleAsync(
+                        merchantId,
+                        operation.Id,
+                        operation.OperationLines.Sum(line => line.LineTotal),
+                        userId,
+                        now,
+                        "Completed sale restored during revision.",
+                        cancellationToken);
+                }
                 await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, userId, now, cancellationToken);
             }
             return allocations;
@@ -3623,6 +3837,17 @@ public static class OperationsEndpoints
         InventoryDbContext inventoryDbContext,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
+        IdentityDbContext identityDbContext,
+        Func<Task> action,
+        CancellationToken cancellationToken)
+    {
+        await SharedDbTransaction.ExecuteAsync(inventoryDbContext, action, cancellationToken, operationsDbContext, paymentsDbContext, identityDbContext);
+    }
+
+    private static async Task ExecuteInventoryOperationTransactionAsync(
+        InventoryDbContext inventoryDbContext,
+        OperationsDbContext operationsDbContext,
+        PaymentsDbContext paymentsDbContext,
         CrmDbContext crmDbContext,
         IdentityDbContext identityDbContext,
         Func<Task> action,
@@ -3797,8 +4022,12 @@ public sealed record OperationDetailResponse(
     bool AllocationPending);
 
 public sealed record OperationLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, string Section, int Quantity, string EntryMode, int BonusQuantity, decimal UnitPrice, decimal LineTotal, string? LotNumber, DateOnly? ExpiryDate, string? MerchantNameSnapshot, string? RepresentativeNameSnapshot, string? Notes, string? WearCycle, string? WearDuration, string? ShopifyLineItemId, string? ShopifyVariantId, string? ShopifySku, string? ShopifyTitle, string? ShopifyVariantTitle, string? ShopifyProperties);
+public sealed record OperationEditorResponse(Guid Id, string OperationType, uint ConcurrencyVersion, Guid? SourceLocationId, Guid? DestinationLocationId, Guid? ClientId, string? ClientName, Guid? RepresentativeId, string? PaymentMethod, string? Notes, ReceiptResponse? Receipt, string SalesChannel, string? BuyerPhone, int TotalLineCount, IReadOnlyList<OperationEditorLineResponse> Lines);
+public sealed record OperationEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, string EntryMode, string Section, int Quantity, int BonusQuantity, decimal UnitPrice, decimal LineTotal, string? LotNumber, DateOnly? ExpiryDate, string? MerchantNameSnapshot, string? RepresentativeNameSnapshot, string? Notes, string? ShopifyLineItemId, string? ShopifyVariantId, string? ShopifySku, string? ShopifyTitle, string? ShopifyVariantTitle, string? ShopifyProperties);
 public sealed record ShopifyAllocationRequest(IReadOnlyList<ShopifyAllocationLineRequest>? Lines, uint? ExpectedVersion = null);
 public sealed record ShopifyAllocationLineRequest(Guid OperationLineId, string? LotNumber, DateOnly? ExpiryDate);
+
+public sealed record MerchantBatchOptionResponse(string LotNumber, DateOnly ExpiryDate, int SoldQuantity, int ReturnedQuantity, int RecordedBalanceQuantity);
 
 public sealed record OperationAllocationResponse(Guid SkuId, string? SkuCode, string? ProductName, Guid BatchId, int Quantity, string? LotNumber, DateOnly? ExpiryDate);
 

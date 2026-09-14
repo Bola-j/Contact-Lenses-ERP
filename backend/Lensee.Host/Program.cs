@@ -14,6 +14,7 @@ using Lensee.Modules.Notifications.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.Modules.Reporting.Data;
+using Lensee.Modules.Reporting.Infrastructure;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Security;
@@ -34,17 +35,15 @@ using Npgsql;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using QuestPDF.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
-
-QuestPDF.Settings.License = LicenseType.Community;
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? builder.Configuration.GetConnectionString("Default")
     ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured.");
 
 builder.Services.AddProblemDetails();
+builder.Services.AddReportingDocuments(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -136,6 +135,7 @@ builder.Services.AddCors(options =>
             })
             .AllowAnyHeader()
             .AllowAnyMethod()
+            .WithExposedHeaders("Content-Disposition")
             .AllowCredentials();
     });
 });
@@ -283,6 +283,8 @@ builder.Services.AddScoped<InventoryReceiptCommandService>();
 builder.Services.AddScoped<PaymentIdempotencyService>();
 builder.Services.AddScoped<StocktakeBalanceLockService>();
 builder.Services.AddScoped<MerchantBalanceService>();
+builder.Services.AddScoped<MerchantAccountService>();
+builder.Services.AddScoped<MerchantAccountReconciliationService>();
 builder.Services.AddScoped<MerchantBatchHistoryService>();
 builder.Services.AddScoped<MerchantExpiryRecallService>();
 builder.Services.AddScoped<TargetReplenishmentService>();
@@ -353,6 +355,16 @@ builder.Services
         };
         options.Events = new JwtBearerEvents
         {
+            OnMessageReceived = context =>
+            {
+                if (string.IsNullOrWhiteSpace(context.Token) &&
+                    context.Request.Cookies.TryGetValue("lensee.access", out var accessCookie))
+                {
+                    context.Token = accessCookie;
+                }
+
+                return Task.CompletedTask;
+            },
             OnTokenValidated = async context =>
             {
                 var userIdValue = context.Principal?.FindFirst(LenseeClaims.UserId)?.Value;
@@ -440,11 +452,12 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsRead));
 
     options.AddPolicy("payments.write", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.PaymentsWrite));
 
     options.AddPolicy("payments.draft", policy =>
-        policy.RequireClaim("permission", LenseePermissions.PaymentsDraft));
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.PaymentsDraft));
 
     options.AddPolicy("payments.approve", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
@@ -510,9 +523,22 @@ app.UseExceptionHandler(errorApp =>
             DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "The record was changed or removed before your update could be saved."),
             StockWriteConflictException => (StatusCodes.Status409Conflict, "Inventory changed while your stock write was being processed. Reload and retry."),
             DbUpdateException => (StatusCodes.Status400BadRequest, "The requested database change could not be saved."),
+            DocumentRenderCapacityException => (StatusCodes.Status429TooManyRequests, "Document rendering is busy. Retry shortly."),
+            DocumentRenderingException => (StatusCodes.Status500InternalServerError, "The requested document could not be generated."),
             InvalidOperationException => (StatusCodes.Status400BadRequest, "The request cannot be completed in the current state."),
             _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.")
         };
+        if (exception is DocumentRenderCapacityException)
+        {
+            context.Response.Headers.RetryAfter = "10";
+        }
+        if (exception is DocumentRenderingException && context.Request.Query["language"] is var language &&
+            (language == "ar" || language == "bi"))
+        {
+            title = language == "bi"
+                ? "تعذر إنشاء المستند المطلوب. / The requested document could not be generated."
+                : "تعذر إنشاء المستند المطلوب.";
+        }
 
         var detail = app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing")
             ? exception?.Message
@@ -567,6 +593,23 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors("Spa");
+app.Use(async (context, next) =>
+{
+    var isUnsafeMethod = !HttpMethods.IsGet(context.Request.Method) &&
+                         !HttpMethods.IsHead(context.Request.Method) &&
+                         !HttpMethods.IsOptions(context.Request.Method);
+    var hasCookieSession = context.Request.Cookies.ContainsKey("lensee.access") ||
+                           context.Request.Cookies.ContainsKey("lensee.refresh");
+    if (isUnsafeMethod && hasCookieSession &&
+        !string.Equals(context.Request.Headers["X-Lensee-Request"], "fetch", StringComparison.Ordinal))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { title = "A trusted browser request header is required." });
+        return;
+    }
+
+    await next();
+});
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();

@@ -7,7 +7,7 @@ USER root
 # publications. Upgrade the repository packages before adding runtime tools so
 # the build consumes Alpine's current security fixes.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache fontconfig font-noto tzdata \
+    && apk add --no-cache fontconfig tzdata \
     && mkdir -p /home/app/.aspnet/DataProtection-Keys \
     && chown -R $APP_UID:$APP_UID /home/app/.aspnet
 USER $APP_UID
@@ -33,12 +33,11 @@ COPY ["backend/Lensee.Modules.Reporting/Lensee.Modules.Reporting.csproj", "backe
 RUN dotnet restore "./backend/Lensee.Host/Lensee.Host.csproj"
 COPY . .
 WORKDIR "/src/backend/Lensee.Host"
-RUN dotnet build "./Lensee.Host.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 # This stage is used to publish the service project to be copied to the final stage
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./Lensee.Host.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./Lensee.Host.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false --no-restore
 
 # This stage is used in production or when running from VS in regular mode (Default when not using the Debug configuration)
 FROM base AS final

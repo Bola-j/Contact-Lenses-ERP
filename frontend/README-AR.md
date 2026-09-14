@@ -22,8 +22,4 @@
 npm run build
 ```
 
-في نشر Vercel يجب ضبط المتغير:
-
-```text
-LENSEE_API_BASE_URL=https://your-public-api.example.com
-```
+تستخدم الواجهة مسارات API نسبية من نفس الأصل. في النشر المنفصل يجب إعداد reverse proxy على أصل الواجهة لتمرير `/api` و`/health` و`/ready` إلى الخادم الداخلي، مع إبقاء أصل الـ API غير منشور للمتصفح.

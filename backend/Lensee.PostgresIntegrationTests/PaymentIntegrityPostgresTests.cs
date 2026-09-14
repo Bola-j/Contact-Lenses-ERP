@@ -1,9 +1,11 @@
+using System.Net.Http.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Data;
+using Lensee.SharedKernel.Security;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -45,11 +47,145 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await shared.Database.MigrateAsync();
         await catalog.Database.MigrateAsync();
         await identity.Database.MigrateAsync();
-        await payments.Database.MigrateAsync();
         await operations.Database.MigrateAsync();
+        await payments.Database.MigrateAsync();
     }
 
     public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
+
+    [PostgreSqlIntegrationFact]
+    public async Task MerchantCollectionReviewLock_UsesMigrationCreatedQuotedIdentifier()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var payments = CreatePaymentsContext(connection);
+        var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        var account = new MerchantReceivableAccount
+        {
+            Id = Guid.NewGuid(),
+            MerchantId = Guid.NewGuid(),
+            Status = "Open",
+            NextSequence = 1,
+            OpenedAt = now,
+            UpdatedAt = now,
+            OpenedBy = Guid.NewGuid()
+        };
+        var draft = new MerchantAccountCollectionDraft
+        {
+            Id = Guid.NewGuid(),
+            AccountId = account.Id,
+            Account = account,
+            Amount = 125m,
+            PaymentMethod = "CashHandToHand",
+            Status = "Draft",
+            DraftedBy = Guid.NewGuid(),
+            DraftedAt = now
+        };
+        payments.AddRange(account, draft);
+        await payments.SaveChangesAsync();
+
+        await using var transaction = await payments.Database.BeginTransactionAsync();
+        var affected = await payments.Database.ExecuteSqlInterpolatedAsync(
+            $"select 1 from payments.merchant_account_collection_drafts where \"Id\" = {draft.Id} for update");
+
+        Assert.Equal(-1, affected);
+        await transaction.RollbackAsync();
+    }
+
+    [PostgreSqlIntegrationFact]
+    public async Task CollectionScope_IsImmutableAfterInsert()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var payments = CreatePaymentsContext(connection);
+        var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        var account = new MerchantReceivableAccount
+        {
+            Id = Guid.NewGuid(),
+            MerchantId = Guid.NewGuid(),
+            Status = "Open",
+            NextSequence = 1,
+            OpenedAt = now,
+            UpdatedAt = now,
+            OpenedBy = Guid.NewGuid()
+        };
+        var draft = new MerchantAccountCollectionDraft
+        {
+            Id = Guid.NewGuid(),
+            AccountId = account.Id,
+            Account = account,
+            Amount = 50m,
+            PaymentMethod = "CashHandToHand",
+            Status = "Draft",
+            DraftedBy = Guid.NewGuid(),
+            DraftedAt = now
+        };
+        payments.AddRange(account, draft);
+        await payments.SaveChangesAsync();
+
+        await using var transaction = await payments.Database.BeginTransactionAsync();
+        await Assert.ThrowsAsync<PostgresException>(() => payments.Database.ExecuteSqlInterpolatedAsync(
+            $"update payments.merchant_account_collection_drafts set scope = 'DirectOperation' where \"Id\" = {draft.Id}"));
+        await transaction.RollbackAsync();
+    }
+
+    [PostgreSqlIntegrationFact]
+    public async Task MerchantCollectionApproveAndReject_RunAgainstMigratedPostgreSqlSchema()
+    {
+        var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        var account = new MerchantReceivableAccount
+        {
+            Id = Guid.NewGuid(),
+            MerchantId = Guid.NewGuid(),
+            Status = "Open",
+            NextSequence = 1,
+            OpenedAt = now,
+            UpdatedAt = now,
+            OpenedBy = Guid.NewGuid()
+        };
+        var reviewerId = Guid.NewGuid();
+        var approveDraft = NewCollectionDraft(account, now, "BankTransfer", "BANK-APPROVE-001");
+        var rejectDraft = NewCollectionDraft(account, now, "CashHandToHand", null);
+        await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var identity = CreateIdentityContext(connection);
+            await using var payments = CreatePaymentsContext(connection);
+            identity.Users.Add(new User
+            {
+                Id = reviewerId,
+                Username = $"reviewer-{reviewerId:N}",
+                PasswordHash = "test-only",
+                FullName = "Payment Reviewer",
+                Role = LenseeRoles.Admin,
+                IsActive = true,
+                CreatedAt = now
+            });
+            await identity.SaveChangesAsync();
+            payments.AddRange(account, approveDraft, rejectDraft);
+            await payments.SaveChangesAsync();
+        }
+
+        await using var factory = new PostgresApplicationFactory(_postgres.GetConnectionString());
+        using var client = factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, reviewerId, LenseePermissions.PaymentsApprove);
+        client.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        using var approved = await client.PostAsync($"/api/v1/payments/collections/{approveDraft.Id}/approve", null);
+        client.DefaultRequestHeaders.Remove("Idempotency-Key");
+        client.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        using var rejected = await client.PostAsJsonAsync(
+            $"/api/v1/payments/merchant-account-collections/{rejectDraft.Id}/reject",
+            new { reason = "Duplicate bank notice" });
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, approved.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.OK, rejected.StatusCode);
+        await using var verificationConnection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await verificationConnection.OpenAsync();
+        await using var verification = CreatePaymentsContext(verificationConnection);
+        Assert.Equal("Confirmed", await verification.MerchantAccountCollectionDrafts.Where(value => value.Id == approveDraft.Id).Select(value => value.Status).SingleAsync());
+        Assert.Equal("Rejected", await verification.MerchantAccountCollectionDrafts.Where(value => value.Id == rejectDraft.Id).Select(value => value.Status).SingleAsync());
+        Assert.Single(await verification.MerchantAccountEntries.Where(value => value.SourceId == approveDraft.Id && value.EntryType == "Collection").ToListAsync());
+    }
 
     [PostgreSqlIntegrationFact]
     public async Task PaymentAggregateTrigger_RollsBackMismatchedDraftTotals()
@@ -321,6 +457,24 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
 
     private static OperationsDbContext CreateOperationsContext(NpgsqlConnection connection) =>
         new(new DbContextOptionsBuilder<OperationsDbContext>().UseNpgsql(connection).Options);
+
+    private static MerchantAccountCollectionDraft NewCollectionDraft(
+        MerchantReceivableAccount account,
+        DateTime now,
+        string method,
+        string? transactionReference) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            AccountId = account.Id,
+            Account = account,
+            Amount = 125m,
+            PaymentMethod = method,
+            TransactionReference = transactionReference,
+            Status = "PendingAdminReview",
+            DraftedBy = Guid.NewGuid(),
+            DraftedAt = now
+        };
 
     private static async Task InsertOperationAsync(
         NpgsqlConnection connection,

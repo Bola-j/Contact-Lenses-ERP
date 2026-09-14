@@ -94,6 +94,86 @@ public sealed class StockLedgerService
             cancellationToken);
     }
 
+    public async Task ReceiveSupplyBatchAsync(
+        Guid locationId,
+        IReadOnlyCollection<SupplyReceiptLine> lines,
+        Guid userId,
+        Guid referenceOperationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (lines.Count == 0) return;
+        if (lines.Any(line => line.Quantity <= 0)) throw new ArgumentOutOfRangeException(nameof(lines), "Every quantity must be greater than zero.");
+
+        if (_dbContext.Database.IsRelational())
+        {
+            var lockKey = $"inventory-supply:{locationId:N}";
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"select pg_advisory_xact_lock(hashtextextended({lockKey}, 0))",
+                cancellationToken);
+        }
+
+        var now = _clock.EgyptNow;
+        var skuIds = lines.Select(line => line.SkuId).Distinct().OrderBy(id => id).ToArray();
+        var existingBatches = await _dbContext.InventoryBatches
+            .Where(batch => batch.LocationId == locationId && skuIds.Contains(batch.SkuId))
+            .ToListAsync(cancellationToken);
+        var batchesByKey = existingBatches
+            .GroupBy(batch => (batch.SkuId, LotNumber: NormalizeBlank(batch.LotNumber), batch.ExpiryDate))
+            .ToDictionary(group => group.Key, group => group.OrderBy(batch => batch.Id).First());
+        var balances = await _dbContext.StockBalances
+            .Where(balance => balance.LocationId == locationId && skuIds.Contains(balance.SkuId))
+            .ToDictionaryAsync(balance => balance.SkuId, cancellationToken);
+
+        foreach (var line in lines.OrderBy(line => line.SkuId).ThenBy(line => line.ExpiryDate).ThenBy(line => line.LotNumber))
+        {
+            var key = (line.SkuId, LotNumber: NormalizeBlank(line.LotNumber), line.ExpiryDate);
+            if (!batchesByKey.TryGetValue(key, out var batch))
+            {
+                batch = new InventoryBatch
+                {
+                    Id = Guid.NewGuid(),
+                    LocationId = locationId,
+                    SkuId = line.SkuId,
+                    LotNumber = key.LotNumber,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = 0,
+                    Notes = NormalizeBlank(line.Notes),
+                    CreatedFrom = referenceOperationId,
+                    CreatedBy = userId,
+                    CreatedAt = now
+                };
+                batchesByKey.Add(key, batch);
+                _dbContext.InventoryBatches.Add(batch);
+            }
+            else if (!string.IsNullOrWhiteSpace(line.Notes))
+            {
+                batch.Notes = line.Notes.Trim();
+            }
+            batch.Quantity += line.Quantity;
+
+            if (!balances.TryGetValue(line.SkuId, out var balance))
+            {
+                balance = new StockBalance
+                {
+                    Id = Guid.NewGuid(),
+                    LocationId = locationId,
+                    SkuId = line.SkuId,
+                    AvailableQty = 0,
+                    ReservedInWarehouseQty = 0,
+                    ReservedWithRepQty = 0,
+                    RowVersion = 0,
+                    LastUpdated = now
+                };
+                balances.Add(line.SkuId, balance);
+                _dbContext.StockBalances.Add(balance);
+            }
+            ApplyAvailableDelta(balance, line.Quantity, now);
+            AddTransaction(locationId, line.SkuId, InventoryTransactionTypes.SupplyIn, line.Quantity, userId, referenceOperationId, now);
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task<InventoryBatch> ReceiveReturnAsync(
         Guid locationId,
         Guid skuId,
@@ -1103,6 +1183,8 @@ public sealed class StockLedgerService
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
 }
+
+public sealed record SupplyReceiptLine(Guid SkuId, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record BatchAllocation(Guid BatchId, int Quantity, string? LotNumber = null, DateOnly? ExpiryDate = null);
 

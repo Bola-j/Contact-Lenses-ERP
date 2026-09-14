@@ -56,7 +56,9 @@ public sealed class AuthEndpointPostgresTests : IAsyncLifetime
             password = "Password123!"
         });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
-        var cookie = Assert.Single(login.Headers.GetValues("Set-Cookie")).Split(';')[0];
+        var cookie = login.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith("lensee.refresh=", StringComparison.OrdinalIgnoreCase))
+            .Split(';')[0];
 
         var userId = await _factory.GetUserIdAsync("refresh-http-user");
         await using var lockHandle = await AcquireUserLockAsync(userId);
@@ -102,6 +104,7 @@ public sealed class AuthEndpointPostgresTests : IAsyncLifetime
             Content = JsonContent.Create(new { })
         };
         request.Headers.Add("Cookie", cookie);
+        request.Headers.Add("X-Lensee-Request", "fetch");
         return client.SendAsync(request);
     }
 

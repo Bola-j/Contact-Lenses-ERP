@@ -143,7 +143,7 @@ public static class DatabaseCompatibility
 
                         alter table payments.main_payment_logs
                             add constraint chk_main_payment_method
-                            check (payment_method in ('CashHandToHand','CashTransaction','Installment'));
+                            check (payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment','Installlaugment'));
 
                         alter table payments.cash_records
                             drop constraint if exists chk_cash_status;
@@ -436,7 +436,7 @@ public static class DatabaseCompatibility
                     merchant_id uuid not null,
                     total_amount numeric(18,4) not null,
                     amount_paid numeric(18,4) not null default 0,
-                    payment_method varchar(50) not null default 'Installment',
+                    payment_method varchar(50) not null,
                     status varchar(50) not null default 'PendingAdmin',
                     initialized_by uuid not null,
                     initialized_at timestamp without time zone not null default current_timestamp,

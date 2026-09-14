@@ -925,6 +925,105 @@
           ]
         },
         {
+          "name": "Operation Summary Without Collections",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/operations/{{receiptOperationId}}?includeCollections=false"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('summary omits collections', () => pm.expect(pm.response.json().lines).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Operation Lines Paged",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/operations/{{receiptOperationId}}/lines?page=1&pageSize=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('lines are paged', () => pm.expect(pm.response.json().pageSize).to.eql(50));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Operation Editor Snapshot",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/operations/{{receiptOperationId}}/editor"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replenishment Paged",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/operations/replenishment?paged=true&page=1&pageSize=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('replenishment is paged', () => pm.expect(pm.response.json().pageSize).to.eql(50));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Set Main Target",
           "request": {
             "method": "PUT",
@@ -1391,7 +1490,7 @@
             "url": "{{baseUrl}}/api/v1/operations",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"operationType\": \"WholesaleSale\",\n  \"sourceLocationId\": \"{{mainLocationId}}\",\n  \"merchantId\": \"{{merchantId}}\",\n  \"paymentMethod\": \"Installment\",\n  \"lines\": [\n    {\n      \"skuId\": \"{{skuId}}\",\n      \"packQuantity\": 2,\n      \"entryMode\": \"Packs\",\n      \"unitPrice\": 100,\n      \"lotNumber\": \"PM-LOT-{{runId}}\",\n      \"expiryDate\": \"2028-06-01\"\n    }\n  ]\n}",
+              "raw": "{\n  \"operationType\": \"WholesaleSale\",\n  \"sourceLocationId\": \"{{mainLocationId}}\",\n  \"merchantId\": \"{{merchantId}}\",\n  \"paymentMethod\": \"MerchantAccount\",\n  \"lines\": [\n    {\n      \"skuId\": \"{{skuId}}\",\n      \"packQuantity\": 2,\n      \"entryMode\": \"Packs\",\n      \"unitPrice\": 100,\n      \"lotNumber\": \"PM-LOT-{{runId}}\",\n      \"expiryDate\": \"2028-06-01\"\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1512,44 +1611,7 @@
           ]
         },
         {
-          "name": "Assign Payment To Accountant",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{adminToken}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": "{{baseUrl}}/api/v1/payments/{{paymentLogId}}/assign",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"accountantUserId\": \"{{accountantUserId}}\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Accountant Drafts Sub Log",
+          "name": "Record Merchant Account Collection",
           "request": {
             "method": "POST",
             "header": [
@@ -1562,10 +1624,10 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/payments/{{paymentLogId}}/sub-logs",
+            "url": "{{baseUrl}}/api/v1/payments/collections",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"amount\": 120,\n  \"paymentMethod\": \"CashTransaction\",\n  \"dateReceived\": \"2026-07-05\",\n  \"notes\": \"Postman draft payment\"\n}",
+              "raw": "{\n  \"scope\": \"MerchantAccount\",\n  \"merchantId\": \"{{merchantId}}\",\n  \"amount\": 120,\n  \"paymentMethod\": \"CashTransaction\",\n  \"transactionReference\": \"PM-TXN-{{runId}}\",\n  \"notes\": \"Postman merchant account collection\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1581,14 +1643,64 @@
                 "exec": [
                   "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
                   "const json = pm.response.json();",
-                  "pm.environment.set('subLogId', json.subLogs[0].id);"
+                  "pm.environment.set('collectionId', json.id);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Admin Approves Sub Log",
+          "name": "Search SKUs (Paged)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/catalog/skus?search={{runId}}&page=1&pageSize=25"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json(); pm.test('paged SKU result', () => { pm.expect(json.pageSize).to.eql(25); pm.expect(json.items.some(x => x.id === pm.environment.get('skuId'))).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Selected SKU",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/catalog/skus/{{skuId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('selected SKU retained', () => pm.expect(pm.response.json().id).to.eql(pm.environment.get('skuId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Approves Merchant Collection",
           "request": {
             "method": "POST",
             "header": [
@@ -1597,7 +1709,7 @@
                 "value": "Bearer {{adminToken}}"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/payments/sub-logs/{{subLogId}}/approve"
+            "url": "{{baseUrl}}/api/v1/payments/collections/{{collectionId}}/approve"
           },
           "event": [
             {
@@ -1638,7 +1750,7 @@
           ]
         },
         {
-          "name": "Create Merchant Credit Adjustment",
+          "name": "Create Additional Charge Adjustment",
           "request": {
             "method": "POST",
             "header": [
@@ -1654,7 +1766,7 @@
             "url": "{{baseUrl}}/api/v1/payments/adjustments",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"operationId\": \"{{installmentOperationId}}\",\n  \"adjustmentType\": \"MerchantCredit\",\n  \"amount\": 10,\n  \"notes\": \"Postman credit test\"\n}",
+              "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"operationId\": \"{{installmentOperationId}}\",\n  \"adjustmentType\": \"AdditionalCharge\",\n  \"amount\": 10,\n  \"notes\": \"Postman additional charge test\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1995,6 +2107,80 @@
     {
       "name": "06 - Reports Notifications Authorization",
       "item": [
+        {
+          "name": "Report Catalog",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/catalog"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Operations XLSX Bilingual",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/operations/export?format=xlsx&language=bi"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('xlsx response', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Operation Bill Standard PDF",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/operation-bill/{{wholesaleOperationId}}?format=pdf&language=ar"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('pdf response', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf'));"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "Stock Report",
           "request": {

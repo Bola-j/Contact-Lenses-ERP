@@ -3,8 +3,8 @@ name: lensee-e2e
 services:
   db:
     container_name: lensee_e2e_db
-    cpus: "0.75"
-    mem_limit: 768m
+    cpus: "0.80"
+    mem_limit: 1536m
     environment:
       POSTGRES_DB: lensee_e2e
       POSTGRES_USER: lensee_e2e_user
@@ -19,10 +19,10 @@ services:
   lensee.host:
     container_name: lensee_e2e_api
     cpus: "1.00"
-    mem_limit: 1024m
+    mem_limit: 1536m
     environment:
       ASPNETCORE_ENVIRONMENT: E2E
-      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026}
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee_e2e;Username=lensee_e2e_user;Password=${LENSEE_E2E_DB_PASSWORD:-e2e-only-db-password-2026};Maximum Pool Size=20
       Jwt__Secret: ${LENSEE_E2E_JWT_SECRET:-e2e-only-jwt-secret-not-for-production-2026}
       Jwt__Issuer: Lensee.E2E
       Jwt__Audience: Lensee.E2E
@@ -59,7 +59,7 @@ services:
 
   frontend:
     container_name: lensee_e2e_web
-    cpus: "0.10"
+    cpus: "0.05"
     mem_limit: 128m
     environment:
       FRONTEND_API_BASE_URL: http://127.0.0.1:${LENSEE_E2E_API_PORT:-55000}

@@ -3,6 +3,20 @@ services:
     image: postgres:17-alpine
     container_name: lensee_db
     restart: unless-stopped
+    cpus: "0.80"
+    mem_limit: 1536m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=384MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+      - -c
+      - max_parallel_workers_per_gather=1
     environment:
       POSTGRES_DB: lensee
       POSTGRES_USER: lensee_user
@@ -24,10 +38,12 @@ services:
       dockerfile: backend/Lensee.Host/Dockerfile
     container_name: lensee_api
     restart: unless-stopped
+    cpus: "1.00"
+    mem_limit: 1536m
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ASPNETCORE_HTTP_PORTS: 8080
-      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:-SomeStrongPassword123!}
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=lensee;Username=lensee_user;Password=${DB_PASSWORD:-SomeStrongPassword123!};Maximum Pool Size=20
       Jwt__Secret: ${JWT_SECRET:-x7kP9mQw2nRjLvBsYdHcZeAuFgTiWoNp}
       Jwt__Issuer: Lensee
       Jwt__Audience: Lensee.App
@@ -50,6 +66,17 @@ services:
       RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
+      Reporting__MaxExportRows: ${REPORTING_MAX_EXPORT_ROWS:-10000}
+      Reporting__QuestPdfLicense: ${REPORTING_QUESTPDF_LICENSE:-Community}
+      Reporting__Branding__CompanyNameArabic: ${REPORTING_COMPANY_NAME_AR:-لينسي}
+      Reporting__Branding__CompanyNameEnglish: ${REPORTING_COMPANY_NAME_EN:-Lensee}
+      Reporting__Branding__LogoBase64: ${REPORTING_LOGO_BASE64:-}
+      Reporting__Branding__AddressArabic: ${REPORTING_ADDRESS_AR:-}
+      Reporting__Branding__AddressEnglish: ${REPORTING_ADDRESS_EN:-}
+      Reporting__Branding__Phone: ${REPORTING_PHONE:-}
+      Reporting__Branding__TaxNumber: ${REPORTING_TAX_NUMBER:-}
+      Reporting__Branding__CommercialRegistration: ${REPORTING_COMMERCIAL_REGISTRATION:-}
+      Reporting__Branding__CurrencyCode: ${REPORTING_CURRENCY_CODE:-EGP}
     depends_on:
       db:
         condition: service_healthy
@@ -90,12 +117,8 @@ services:
       dockerfile: Dockerfile
     container_name: lensee_web
     restart: unless-stopped
-    environment:
-      FRONTEND_API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://localhost:5000}
-    command: >
-      /bin/sh -c "printf 'window.LENSEE_CONFIG = { apiBaseUrl: \"%s\" };'
-      \"$${FRONTEND_API_BASE_URL}\" > /usr/share/nginx/html/config.js &&
-      nginx -g 'daemon off;'"
+    cpus: "0.05"
+    mem_limit: 128m
     depends_on:
       - lensee.host
     ports:

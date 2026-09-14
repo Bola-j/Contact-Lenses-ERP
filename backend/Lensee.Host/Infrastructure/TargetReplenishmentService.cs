@@ -61,27 +61,76 @@ public sealed class TargetReplenishmentService
             var destinationIds = destinations.Select(value => value.Id).ToArray();
             var balances = await _inventory.StockBalances.Where(value => destinationIds.Contains(value.LocationId) && value.TargetQty.HasValue && (!skuId.HasValue || value.SkuId == skuId.Value)).ToListAsync(cancellationToken);
             var incoming = await _operations.OperationLogs.Include(value => value.OperationLines).Where(value => !value.IsDeleted && value.AutomationType == "TargetReplenishment" && value.OperationType == "WarehouseTransfer" && (value.Status == "Draft" || value.Status == "Reserved" || value.Status == "Shipped") && value.DestinationLocationId.HasValue && destinationIds.Contains(value.DestinationLocationId.Value)).SelectMany(value => value.OperationLines, (operation, line) => new { Destination = operation.DestinationLocationId!.Value, line.SkuId, line.Quantity }).GroupBy(value => new { value.Destination, value.SkuId }).Select(group => new { group.Key.Destination, group.Key.SkuId, Quantity = group.Sum(value => value.Quantity) }).ToDictionaryAsync(value => (value.Destination, value.SkuId), value => value.Quantity, cancellationToken);
-            var mainBalances = await _inventory.StockBalances.Where(value => value.LocationId == main.Id).ToDictionaryAsync(value => value.SkuId, value => Math.Max(value.AvailableQty - (value.TargetQty ?? 0), 0), cancellationToken);
+            var eligibleBatchPools = (await _inventory.InventoryBatches
+                    .Where(value =>
+                        value.LocationId == main.Id &&
+                        value.Quantity > 0 &&
+                        value.ExpiryDate != null &&
+                        value.ExpiryDate >= cairoDate &&
+                        value.LotNumber != null &&
+                        value.LotNumber != "")
+                    .OrderBy(value => value.ExpiryDate)
+                    .ThenBy(value => value.LotNumber)
+                    .ToListAsync(cancellationToken))
+                .Where(value => !string.IsNullOrWhiteSpace(value.LotNumber))
+                .GroupBy(value => new { value.SkuId, LotNumber = value.LotNumber!.Trim(), ExpiryDate = value.ExpiryDate!.Value })
+                .Select(group => new ReplenishmentBatchPool(group.Key.SkuId, group.Key.LotNumber, group.Key.ExpiryDate, group.Sum(value => value.Quantity)))
+                .GroupBy(value => value.SkuId)
+                .ToDictionary(group => group.Key, group => group.ToList());
+            var mainBalances = await _inventory.StockBalances
+                .Where(value => value.LocationId == main.Id)
+                .ToDictionaryAsync(
+                    value => value.SkuId,
+                    value => Math.Max(value.AvailableQty - (value.TargetQty ?? 0), 0),
+                    cancellationToken);
+            foreach (var skuIdWithBalance in mainBalances.Keys.ToArray())
+            {
+                var eligibleQuantity = eligibleBatchPools.GetValueOrDefault(skuIdWithBalance)?.Sum(value => value.RemainingQuantity) ?? 0;
+                mainBalances[skuIdWithBalance] = Math.Min(mainBalances[skuIdWithBalance], eligibleQuantity);
+            }
             var created = 0; var uncovered = 0;
             var pendingCurrentVersions = new List<(OperationLog Operation, Guid VersionId)>();
             foreach (var group in balances.GroupBy(value => value.LocationId))
             {
                 var destination = destinations.First(value => value.Id == group.Key);
-                var lines = new List<(Guid SkuId, int Quantity)>();
+                var lines = new List<(Guid SkuId, int Quantity, string LotNumber, DateOnly ExpiryDate)>();
                 foreach (var balance in group)
                 {
                     var incomingQty = incoming.GetValueOrDefault((balance.LocationId, balance.SkuId));
                     var shortage = Math.Max((balance.TargetQty ?? 0) - balance.AvailableQty - incomingQty, 0);
-                    var quantity = Math.Min(shortage, mainBalances.GetValueOrDefault(balance.SkuId));
-                    uncovered += shortage - quantity;
-                    if (quantity > 0) { lines.Add((balance.SkuId, quantity)); mainBalances[balance.SkuId] -= quantity; }
+                    var quantityToAllocate = Math.Min(shortage, mainBalances.GetValueOrDefault(balance.SkuId));
+                    var allocatedQuantity = 0;
+                    foreach (var batch in eligibleBatchPools.GetValueOrDefault(balance.SkuId) ?? [])
+                    {
+                        if (allocatedQuantity == quantityToAllocate) break;
+                        var batchQuantity = Math.Min(batch.RemainingQuantity, quantityToAllocate - allocatedQuantity);
+                        if (batchQuantity <= 0) continue;
+                        lines.Add((balance.SkuId, batchQuantity, batch.LotNumber, batch.ExpiryDate));
+                        batch.RemainingQuantity -= batchQuantity;
+                        allocatedQuantity += batchQuantity;
+                    }
+                    uncovered += shortage - allocatedQuantity;
+                    if (allocatedQuantity > 0) mainBalances[balance.SkuId] -= allocatedQuantity;
                 }
                 if (lines.Count == 0) continue;
                 var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}", OperationType = "WarehouseTransfer", Status = "Draft", SourceLocationId = main.Id, DestinationLocationId = destination.Id, Notes = "Target-stock replenishment", CreatedBy = Guid.Empty, CreatedActorName = "System - Target replenishment", CreatedAt = now, AutomationType = "TargetReplenishment" };
                 foreach (var line in lines)
                 {
                     var sku = await _catalog.Skus.Include(value => value.Product).FirstAsync(value => value.Id == line.SkuId, cancellationToken);
-                    operation.OperationLines.Add(new OperationLine { Id = Guid.NewGuid(), OperationId = operation.Id, SkuId = line.SkuId, ProductNameSnapshot = sku.Product.Name, SkuCodeSnapshot = sku.SkuCode, Section = "Standard", Quantity = line.Quantity, EntryMode = "Packs", LineNotes = "Target-stock replenishment" });
+                    operation.OperationLines.Add(new OperationLine
+                    {
+                        Id = Guid.NewGuid(),
+                        OperationId = operation.Id,
+                        SkuId = line.SkuId,
+                        ProductNameSnapshot = sku.Product.Name,
+                        SkuCodeSnapshot = sku.SkuCode,
+                        Section = "Standard",
+                        Quantity = line.Quantity,
+                        EntryMode = "Packs",
+                        LotNumber = line.LotNumber,
+                        ExpiryDate = line.ExpiryDate,
+                        LineNotes = "Target-stock replenishment"
+                    });
                 }
                 _operations.OperationLogs.Add(operation);
                 var version = new OperationVersion { Id = Guid.NewGuid(), OperationId = operation.Id, VersionNumber = 1, SnapshotData = "{}", Reason = "Draft replenishment created", EditedBy = Guid.Empty, EditedActorName = "System - Target replenishment", EditedAt = now };
@@ -105,6 +154,14 @@ public sealed class TargetReplenishmentService
 
         return result ?? new TargetReplenishmentRunResult(0, 0, false);
     }
+}
+
+internal sealed class ReplenishmentBatchPool(Guid skuId, string lotNumber, DateOnly expiryDate, int remainingQuantity)
+{
+    public Guid SkuId { get; } = skuId;
+    public string LotNumber { get; } = lotNumber;
+    public DateOnly ExpiryDate { get; } = expiryDate;
+    public int RemainingQuantity { get; set; } = remainingQuantity;
 }
 
 public sealed record TargetReplenishmentRunResult(int CreatedOperations, int UncoveredQuantity, bool AlreadyCompleted);

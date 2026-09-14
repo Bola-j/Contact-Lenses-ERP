@@ -588,7 +588,7 @@ namespace Lensee.Modules.Operations.Migrations
 
                     b.ToTable("operation_logs", "operations", t =>
                         {
-                            t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','Installment')");
+                            t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
 
                             t.HasCheckConstraint("chk_op_status", "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
 

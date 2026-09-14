@@ -1,5 +1,3 @@
-using System.Text;
-using System.Numerics;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
@@ -8,30 +6,34 @@ using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.Modules.Reporting.Data;
+using Lensee.Modules.Reporting.Application;
+using Lensee.Modules.Reporting.Application.Abstractions;
+using Lensee.Modules.Reporting.Application.Models;
+using Lensee.Modules.Reporting.Infrastructure;
+using Lensee.Modules.Reporting.Configuration;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Primitives;
 using Lensee.SharedKernel.Security;
 using Microsoft.EntityFrameworkCore;
-using QuestPDF.Fluent;
-using QuestPDF.Helpers;
-using QuestPDF.Infrastructure;
+using Microsoft.Extensions.Options;
 
 namespace Lensee.Host.Endpoints;
 
-public static class ReportsEndpoints
+public static partial class ReportsEndpoints
 {
     private const string Completed = "Completed";
-    private const string Confirmed = "Confirmed";
-    private const string WholesaleSale = "WholesaleSale";
-    private const string RetailSale = "RetailSale";
-    private const string Return = "Return";
     private const string Change = "Change";
     private const string ChangeOut = "ChangeOut";
     private const string ChangeIn = "ChangeIn";
     private const string CashReceived = "CashReceived";
-    private const string CashRefund = "CashRefund";
-    private const string MerchantCredit = "MerchantCredit";
-    private const string BalanceReduction = "BalanceReduction";
+    private static readonly HashSet<string> OperationTypes = new(StringComparer.Ordinal)
+    {
+        "InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff", "StocktakeAdjustment", "Change", "Return"
+    };
+    private static readonly HashSet<string> SupplyStatuses = new(StringComparer.Ordinal)
+    {
+        "Draft", "Received", "Cancelled"
+    };
 
     private static readonly HashSet<string> ExportReportTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -60,6 +62,8 @@ public static class ReportsEndpoints
         var group = routes.MapGroup("/api/v1/reports").WithTags("Reports");
 
         group.MapGet("/financial-summary", GetFinancialSummaryAsync).RequireAuthorization("reports.read");
+        group.MapGet("/catalog", GetReportCatalog).RequireAuthorization("reports.read");
+        group.MapGet("/{key}/export", ExportReportAsync).RequireAuthorization("reports.read");
         group.MapGet("/stock", GetStockReportAsync).RequireAuthorization("reports.read");
         group.MapGet("/stock.csv", GetStockCsvAsync).RequireAuthorization("reports.read");
         group.MapGet("/operations", GetOperationsReportAsync).RequireAuthorization("reports.read");
@@ -79,7 +83,139 @@ public static class ReportsEndpoints
         group.MapGet("/exports", ListExportLogsAsync).RequireAuthorization("reports.read");
         group.MapPost("/exports", CreateExportLogAsync).RequireAuthorization("reports.read");
 
+        routes.MapGet("/api/v1/documents/{key}/{id:guid}", ExportDocumentAsync).RequireAuthorization("reports.read");
+
         return group;
+    }
+
+    private static IResult GetReportCatalog(IReportCatalog catalog) => Results.Ok(catalog.All.Select(descriptor => new
+    {
+        descriptor.Key,
+        template = descriptor.Template.ToString().ToLowerInvariant(),
+        formats = descriptor.Formats.Select(FormatValue).OrderBy(value => value).ToArray(),
+        languages = descriptor.Languages.Select(LanguageValue).OrderBy(value => value).ToArray(),
+        descriptor.Filters,
+        descriptor.AuthorizationPolicy,
+        descriptor.LocationScoped,
+        descriptor.IsDocument
+    }));
+
+    private static async Task<IResult> ExportReportAsync(
+        string key,
+        string? format,
+        string? language,
+        Guid? locationId,
+        DateTime? from,
+        DateTime? to,
+        string? operationType,
+        string? status,
+        OperationsDbContext operationsDbContext,
+        PaymentsDbContext paymentsDbContext,
+        InventoryDbContext inventoryDbContext,
+        CatalogDbContext catalogDbContext,
+        CrmDbContext crmDbContext,
+        ReportingDbContext reportingDbContext,
+        MerchantAccountService merchantAccountService,
+        IReportCatalog reportCatalog,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
+        ICurrentUser currentUser,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        if (!reportCatalog.TryGet(key, out var descriptor) || descriptor.IsDocument)
+        {
+            return Results.NotFound();
+        }
+        if (!ReportingServiceCollectionExtensions.TryParseFormat(format, out var exportFormat) || !descriptor.Formats.Contains(exportFormat))
+        {
+            return InvalidExportFormat();
+        }
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out var documentLanguage) || !descriptor.Languages.Contains(documentLanguage))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["language"] = ["Language must be ar, en, or bi."] });
+        }
+        if (from.HasValue && to.HasValue && from.Value > to.Value)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateRange"] = ["From must be earlier than or equal to To."] });
+        }
+
+        IResult queryResult = key.ToLowerInvariant() switch
+        {
+            "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, cancellationToken),
+            "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken),
+            "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken),
+            "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken),
+            "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken),
+            "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken),
+            _ => Results.NotFound()
+        };
+
+        if (queryResult is IStatusCodeHttpResult { StatusCode: >= 400 })
+        {
+            return queryResult;
+        }
+        if (queryResult is not IValueHttpResult valueResult || valueResult.Value is null)
+        {
+            return queryResult;
+        }
+
+        var document = BuildAnalyticalDocument(key, valueResult.Value, documentLanguage, currentUser.Role, clock.UtcNow);
+        if (document.Metadata.RowCount > reportingOptions.Value.MaxExportRows)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["rows"] = [$"This export contains more than {reportingOptions.Value.MaxExportRows} rows. Narrow the selected filters."]
+            });
+        }
+
+        var exported = await exportService.ExportAsync(document, exportFormat, cancellationToken);
+        var reportType = $"{key}.{FormatValue(exportFormat)}";
+        await LogExportAsync(reportingDbContext, currentUser, clock, reportType, $"download://reports/{key}/export", cancellationToken);
+        return Results.File(exported.Content, exported.ContentType, exported.FileName);
+    }
+
+    private static async Task<IResult> ExportDocumentAsync(
+        string key,
+        Guid id,
+        string? format,
+        string? language,
+        OperationsDbContext operationsDbContext,
+        PaymentsDbContext paymentsDbContext,
+        CrmDbContext crmDbContext,
+        InventoryDbContext inventoryDbContext,
+        CatalogDbContext catalogDbContext,
+        IdentityDbContext identityDbContext,
+        ReportingDbContext reportingDbContext,
+        MerchantAccountService merchantAccountService,
+        IReportCatalog reportCatalog,
+        IDocumentExportService exportService,
+        ICurrentUser currentUser,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        if (!reportCatalog.TryGet(key, out var descriptor) || !descriptor.IsDocument)
+        {
+            return Results.NotFound();
+        }
+        if (!ReportingServiceCollectionExtensions.TryParseFormat(format, out var requestedFormat) || !descriptor.Formats.Contains(requestedFormat))
+        {
+            return InvalidExportFormat();
+        }
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out var requestedLanguage) || !descriptor.Languages.Contains(requestedLanguage))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["language"] = ["Language must be ar, en, or bi."] });
+        }
+
+        return key.ToLowerInvariant() switch
+        {
+            "operation-bill" => await GetOperationBillPdfAsync(id, language, format, operationsDbContext, paymentsDbContext, crmDbContext, inventoryDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
+            "payment-receipt" or "cash-receipt" => await GetPaymentReceiptPdfAsync(id, language, format, paymentsDbContext, operationsDbContext, crmDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
+            "supply-landed-cost" => await GetSupplyLandedCostPdfAsync(id, language, format, operationsDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, cancellationToken),
+            "merchant-statement" => await GetMerchantStatementPdfAsync(id, language, format, null, null, crmDbContext, operationsDbContext, paymentsDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
+            "stocktake-summary" => await GetStocktakeSummaryPdfAsync(id, language, format, operationsDbContext, catalogDbContext, inventoryDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, cancellationToken),
+            _ => Results.NotFound()
+        };
     }
 
     private static async Task<IResult> GetFinancialSummaryAsync(
@@ -87,29 +223,54 @@ public static class ReportsEndpoints
         PaymentsDbContext paymentsDbContext,
         CancellationToken cancellationToken)
     {
-        var operations = await operationsDbContext.OperationLogs
-            .Include(operation => operation.OperationLines)
-            .Where(operation => !operation.IsDeleted)
+        var operationEffects = await operationsDbContext.OperationLogs.AsNoTracking()
+            .Where(operation => !operation.IsDeleted &&
+                ((operation.OperationType == "WholesaleSale" || operation.OperationType == "RetailSale") && operation.Status == Completed ||
+                 (operation.OperationType == "Return" || operation.OperationType == "Change") && operation.Status == "Confirmed"))
+            .Select(operation => new
+            {
+                operation.Id,
+                Effect = (operation.RecordKind == "Reversal" ? -1m : 1m) *
+                    (operation.OperationType == "Return"
+                        ? -(operation.OperationLines.Sum(line => (decimal?)line.LineTotal) ?? 0m)
+                        : operation.OperationType == "Change"
+                            ? (operation.OperationLines.Where(line => line.Section == "ChangeIn").Sum(line => (decimal?)line.LineTotal) ?? 0m)
+                                - (operation.OperationLines.Where(line => line.Section == "ChangeOut").Sum(line => (decimal?)line.LineTotal) ?? 0m)
+                            : operation.OperationLines.Sum(line => (decimal?)line.LineTotal) ?? 0m)
+            })
             .ToListAsync(cancellationToken);
+        var effectiveOperationIds = operationEffects.Where(value => value.Effect != 0m).Select(value => value.Id).ToArray();
+        var operationNet = operationEffects.Sum(value => value.Effect);
 
-        var installmentSubLogs = await paymentsDbContext.InstallmentSubLogs
-            .Include(sub => sub.MainLog)
-            .Where(sub => !sub.MainLog.IsDeleted)
-            .ToListAsync(cancellationToken);
-        var cashRecords = await paymentsDbContext.CashRecords
-            .Where(record => record.Status == Completed)
-            .ToListAsync(cancellationToken);
-        var adjustments = await paymentsDbContext.FinancialAdjustments
-            .ToListAsync(cancellationToken);
-        var projection = FinancialProjection.Calculate(operations, installmentSubLogs, cashRecords, adjustments);
+        var confirmedSubLogs = await paymentsDbContext.InstallmentSubLogs.AsNoTracking()
+            .Where(value => !value.MainLog.IsDeleted && value.SubLogStatus == "Confirmed" && effectiveOperationIds.Contains(value.MainLog.OperationId))
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var cashTotals = await paymentsDbContext.CashRecords.AsNoTracking()
+            .Where(value => value.Status == Completed && effectiveOperationIds.Contains(value.OperationId))
+            .GroupBy(value => value.PaymentType)
+            .Select(group => new { PaymentType = group.Key, Amount = group.Sum(value => value.Amount) })
+            .ToDictionaryAsync(value => value.PaymentType, value => value.Amount, cancellationToken);
+        var adjustmentTotals = await paymentsDbContext.FinancialAdjustments.AsNoTracking()
+            .Where(value => value.Status == Completed)
+            .GroupBy(value => value.AdjustmentType)
+            .Select(group => new { AdjustmentType = group.Key, Amount = group.Sum(value => value.Amount) })
+            .ToDictionaryAsync(value => value.AdjustmentType, value => value.Amount, cancellationToken);
 
-        return Results.Ok(new FinancialSummaryResponse(projection.OperationNet, projection.PaymentsReceived - projection.CashRefunded, projection.Balance));
+        var cashReceived = cashTotals.GetValueOrDefault("CashReceived");
+        var cashRefunded = cashTotals.GetValueOrDefault("CashRefund");
+        var additionalCharges = adjustmentTotals.GetValueOrDefault("AdditionalCharge") + adjustmentTotals.GetValueOrDefault("MerchantCredit");
+        var balanceReductions = adjustmentTotals.GetValueOrDefault("BalanceReduction");
+        var paymentsNet = confirmedSubLogs + cashReceived - cashRefunded;
+        var balance = operationNet + additionalCharges - confirmedSubLogs - cashReceived + cashRefunded - balanceReductions;
+
+        return Results.Ok(new FinancialSummaryResponse(operationNet, paymentsNet, balance));
     }
     private static async Task<IResult> GetStockReportAsync(
         Guid? locationId,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         ICurrentUser currentUser,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
         if (string.Equals(currentUser.Role, LenseeRoles.Accountant, StringComparison.OrdinalIgnoreCase))
@@ -117,18 +278,29 @@ public static class ReportsEndpoints
             return Results.Forbid();
         }
 
+        if (string.Equals(currentUser.Role, LenseeRoles.WarehouseClerk, StringComparison.OrdinalIgnoreCase) &&
+            (!currentUser.LocationId.HasValue || (locationId.HasValue && locationId != currentUser.LocationId)))
+        {
+            return Results.Forbid();
+        }
+
+        var effectiveLocationId = string.Equals(currentUser.Role, LenseeRoles.WarehouseClerk, StringComparison.OrdinalIgnoreCase)
+            ? currentUser.LocationId
+            : locationId;
         var query = inventoryDbContext.StockBalances
             .Include(balance => balance.Location)
+            .AsNoTracking()
             .AsQueryable();
 
-        if (locationId.HasValue)
+        if (effectiveLocationId.HasValue)
         {
-            query = query.Where(balance => balance.LocationId == locationId.Value);
+            query = query.Where(balance => balance.LocationId == effectiveLocationId.Value);
         }
 
         var balances = await query
             .OrderBy(balance => balance.Location.Name)
             .ThenBy(balance => balance.SkuId)
+            .Take(reportingOptions.Value.MaxExportRows + 1)
             .ToListAsync(cancellationToken);
 
         var skuIds = balances.Select(balance => balance.SkuId).Distinct().ToArray();
@@ -165,37 +337,36 @@ public static class ReportsEndpoints
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, cancellationToken);
+        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken);
         if (result is IValueHttpResult { Value: IEnumerable<StockReportRow> rows })
         {
-            await LogExportAsync(reportingDbContext, currentUser, clock, "stock.csv", "download://reports/stock.csv", cancellationToken);
-            return Csv("stock.csv", CsvHeaders(language, "Location", "Type", "SKU", "Product", "Available", "ReservedWarehouse", "ReservedRep", "Target", "Updated"), rows.Select(row => new[]
-            {
-                row.LocationName,
-                ReportText(row.LocationType, language),
-                row.SkuCode ?? row.SkuId.ToString(),
-                row.ProductName ?? "",
-                row.AvailableQty.ToString(),
-                row.ReservedInWarehouseQty.ToString(),
-                row.ReservedWithRepQty.ToString(),
-                row.TargetQty?.ToString() ?? "",
-                row.LastUpdated.ToString("s")
-            }));
+            return await ExportLegacyCsvAsync("stock", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
     }
-
     private static async Task<IResult> GetOperationsReportAsync(
         DateTime? from,
         DateTime? to,
         string? operationType,
         OperationsDbContext operationsDbContext,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
+        if (from.HasValue && to.HasValue && from.Value > to.Value)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateRange"] = ["From must be earlier than or equal to To."] });
+        }
+        if (!string.IsNullOrWhiteSpace(operationType) && !OperationTypes.Contains(operationType.Trim()))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["operationType"] = ["Operation type is not valid."] });
+        }
         var query = operationsDbContext.OperationLogs
+            .AsNoTracking()
             .Include(operation => operation.OperationLines)
             .Where(operation => !operation.IsDeleted)
             .AsQueryable();
@@ -215,7 +386,7 @@ public static class ReportsEndpoints
 
         var operations = await query
             .OrderByDescending(operation => operation.CreatedAt)
-            .Take(500)
+            .Take(reportingOptions.Value.MaxExportRows + 1)
             .ToListAsync(cancellationToken);
 
         var rows = operations.Select(operation => new OperationReportRow(
@@ -244,41 +415,34 @@ public static class ReportsEndpoints
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, cancellationToken);
+        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken);
         if (result is IValueHttpResult { Value: IEnumerable<OperationReportRow> rows })
         {
-            await LogExportAsync(reportingDbContext, currentUser, clock, "operations.csv", "download://reports/operations.csv", cancellationToken);
-            return Csv("operations.csv", CsvHeaders(language, "Operation", "Type", "Status", "Client", "Payment", "Qty", "Bonus", "Total", "Created"), rows.Select(row => new[]
-            {
-                row.OperationNumber,
-                ReportText(row.OperationType, language),
-                ReportText(row.Status, language),
-                row.ClientName ?? "",
-                ReportText(row.PaymentMethod ?? "", language),
-                row.Quantity.ToString(),
-                row.BonusQuantity.ToString(),
-                row.Total.ToString("0.####"),
-                row.CreatedAt.ToString("s")
-            }));
+            return await ExportLegacyCsvAsync("operations", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
     }
-
     private static async Task<IResult> GetPaymentsReportAsync(
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
         var logs = await paymentsDbContext.MainPaymentLogs
             .Include(log => log.InstallmentSubLogs)
             .Where(log => !log.IsDeleted)
             .OrderByDescending(log => log.LastModifiedAt)
-            .Take(500)
+            .Take(reportingOptions.Value.MaxExportRows + 1)
             .ToListAsync(cancellationToken);
         var operationIds = logs.Select(log => log.OperationId).Distinct().ToArray();
+        var operationContexts = await operationsDbContext.OperationLogs
+            .Where(operation => operationIds.Contains(operation.Id))
+            .ToDictionaryAsync(operation => operation.Id, operation => new { operation.OperationNumber, operation.ClientId }, cancellationToken);
         var logIds = logs.Select(log => log.Id).ToArray();
         var cashByOperation = (await paymentsDbContext.CashRecords
             .Where(record => operationIds.Contains(record.OperationId))
@@ -300,7 +464,7 @@ public static class ReportsEndpoints
                 log.Id,
                 log.OperationId,
                 null,
-                log.MerchantId,
+                log.MerchantId ?? operationContexts.GetValueOrDefault(log.OperationId)?.ClientId,
                 log.PaymentMethod,
                 log.TotalAmount,
                 balance.ConfirmedCollections,
@@ -311,13 +475,9 @@ public static class ReportsEndpoints
                 balance.RefundDue);
         }).ToList();
 
-        var operationNumbers = await operationsDbContext.OperationLogs
-            .Where(operation => operationIds.Contains(operation.Id))
-            .ToDictionaryAsync(operation => operation.Id, operation => operation.OperationNumber, cancellationToken);
-
         rows = rows.Select(row => row with
         {
-            OperationNumber = operationNumbers.TryGetValue(row.OperationId, out var number) ? number : null
+            OperationNumber = operationContexts.TryGetValue(row.OperationId, out var operation) ? operation.OperationNumber : null
         }).ToList();
 
         return Results.Ok(rows);
@@ -330,39 +490,38 @@ public static class ReportsEndpoints
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, cancellationToken);
+        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken);
         if (result is IValueHttpResult { Value: IEnumerable<PaymentReportRow> rows })
         {
-            await LogExportAsync(reportingDbContext, currentUser, clock, "payments.csv", "download://reports/payments.csv", cancellationToken);
-            return Csv("payments.csv", CsvHeaders(language, "Payment", "Operation", "Merchant", "Method", "Total", "Paid", "Remaining", "RefundDue", "Status"), rows.Select(row => new[]
-            {
-                row.Id.ToString(),
-                row.OperationNumber ?? row.OperationId.ToString(),
-                row.MerchantId?.ToString() ?? string.Empty,
-                ReportText(row.PaymentMethod, language),
-                row.TotalAmount.ToString("0.####"),
-                row.AmountPaid.ToString("0.####"),
-                row.RemainingAmount.ToString("0.####"),
-                row.RefundDue.ToString("0.####"),
-                ReportText(row.Status, language)
-            }));
+            return await ExportLegacyCsvAsync("payments", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
     }
-
     private static async Task<IResult> GetSupplyLandedCostReportAsync(
         DateTime? from,
         DateTime? to,
         string? status,
         OperationsDbContext operationsDbContext,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
+        if (from.HasValue && to.HasValue && from.Value > to.Value)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateRange"] = ["From must be earlier than or equal to To."] });
+        }
+        if (!string.IsNullOrWhiteSpace(status) && !SupplyStatuses.Contains(status.Trim()))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Supply status is not valid."] });
+        }
         var query = operationsDbContext.SupplyShipments
             .Include(shipment => shipment.Lines)
             .Include(shipment => shipment.Costs)
+            .Include(shipment => shipment.InventoryReceiptOperation)
             .AsNoTracking()
             .AsQueryable();
 
@@ -383,7 +542,7 @@ public static class ReportsEndpoints
 
         var rows = await query
             .OrderByDescending(shipment => shipment.ShipmentDate)
-            .Take(500)
+            .Take(reportingOptions.Value.MaxExportRows + 1)
             .Select(shipment => new SupplyLandedCostReportRow(
                 shipment.Id,
                 shipment.ShipmentNumber,
@@ -395,7 +554,8 @@ public static class ReportsEndpoints
                 shipment.ProductSubtotal,
                 shipment.CostSubtotal,
                 shipment.LandedTotal,
-                shipment.InventoryReceiptOperationId))
+                shipment.InventoryReceiptOperationId,
+                shipment.InventoryReceiptOperation == null ? null : shipment.InventoryReceiptOperation.OperationNumber))
             .ToListAsync(cancellationToken);
 
         return Results.Ok(rows);
@@ -410,40 +570,33 @@ public static class ReportsEndpoints
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, cancellationToken);
+        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken);
         if (result is IValueHttpResult { Value: IEnumerable<SupplyLandedCostReportRow> rows })
         {
-            await LogExportAsync(reportingDbContext, currentUser, clock, "supply-landed-cost.csv", "download://reports/supply.csv", cancellationToken);
-            return Csv("supply-landed-cost.csv", CsvHeaders(language, "Shipment", "Supplier", "Invoice", "Status", "Qty", "Products", "Import costs", "Landed total", "Receipt operation", "Created"), rows.Select(row => new[]
-            {
-                row.ShipmentNumber,
-                row.SupplierName,
-                row.InvoiceNumber ?? "",
-                ReportText(row.Status, language),
-                row.Quantity.ToString(),
-                row.ProductSubtotal.ToString("0.####"),
-                row.CostSubtotal.ToString("0.####"),
-                row.LandedTotal.ToString("0.####"),
-                row.InventoryReceiptOperationId?.ToString("N") ?? "",
-                row.ShipmentDate.ToString("s")
-            }));
+            return await ExportLegacyCsvAsync("supply", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
     }
-
     private static async Task<IResult> GetSupplyLandedCostPdfAsync(
         Guid id,
         string? language,
+        string? format,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out _)) return InvalidDocumentLanguage();
+
         var shipment = await operationsDbContext.SupplyShipments
             .Include(value => value.Lines)
             .Include(value => value.Costs)
@@ -539,94 +692,94 @@ public static class ReportsEndpoints
                 ])
         };
 
-        var pdf = BuildEnterprisePdf(
+        var document = BuildEnterpriseDocument(
             "Supply landed cost",
             "Imported shipment, cost allocation, and inventory receipt",
             shipment.ShipmentNumber,
             summary,
             sections,
             language,
-            GetUserDisplayName(currentUser.UserId, userLookup));
-        await LogExportAsync(reportingDbContext, currentUser, clock, "supply-landed-cost.pdf", $"download://reports/supply/{id}/landed-cost.pdf", cancellationToken);
-        return Results.File(pdf, "application/pdf", $"supply-{shipment.ShipmentNumber}-landed-cost.pdf");
+            GetUserDisplayName(currentUser.UserId, userLookup),
+            clock.UtcNow);
+        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
+        var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
+        await LogExportAsync(reportingDbContext, currentUser, clock, $"supply-landed-cost.{exportExtension}", $"download://reports/supply/{id}/landed-cost.{exportExtension}", cancellationToken);
+        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     private static async Task<IResult> GetMerchantBalancesReportAsync(
         CrmDbContext crmDbContext,
-        MerchantBalanceService merchantBalanceService,
+        MerchantAccountService merchantAccountService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
         var merchants = await crmDbContext.Merchants
+            .AsNoTracking()
             .Where(merchant => !merchant.IsDeleted)
             .OrderBy(merchant => merchant.BusinessName)
+            .Take(reportingOptions.Value.MaxExportRows + 1)
             .ToListAsync(cancellationToken);
-
-        var rows = new List<MerchantBalanceReportRow>();
+        var breakdowns = await merchantAccountService.GetFinancialBreakdownsAsync(merchants.Select(merchant => merchant.Id).ToArray(), cancellationToken);
+        var rows = new List<MerchantBalanceReportRow>(merchants.Count);
         foreach (var merchant in merchants)
         {
-            var balance = await merchantBalanceService.CalculateAsync(merchant.Id, cancellationToken);
+            breakdowns.TryGetValue(merchant.Id, out var accountBreakdown);
             rows.Add(new MerchantBalanceReportRow(
                 merchant.Id,
                 merchant.BusinessName,
                 merchant.Status,
-                balance.SaleTotal,
-                balance.ReturnTotal,
-                balance.ChangeNet,
-                balance.PaymentsReceived,
-                balance.CashRefunded,
-                balance.AdditionalCharges,
-                balance.BalanceReductions,
-                balance.Balance));
+                accountBreakdown?.SaleTotal ?? 0m,
+                accountBreakdown?.ReturnTotal ?? 0m,
+                accountBreakdown?.ChangeNet ?? 0m,
+                accountBreakdown?.PaymentsReceived ?? 0m,
+                accountBreakdown?.CashRefunded ?? 0m,
+                accountBreakdown?.AdditionalCharges ?? 0m,
+                accountBreakdown?.BalanceReductions ?? 0m,
+                accountBreakdown?.Balance ?? 0m));
         }
 
         return Results.Ok(rows);
     }
-
     private static async Task<IResult> GetMerchantBalancesCsvAsync(
         string? language,
         CrmDbContext crmDbContext,
-        MerchantBalanceService merchantBalanceService,
+        OperationsDbContext operationsDbContext,
+        PaymentsDbContext paymentsDbContext,
         ReportingDbContext reportingDbContext,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
+        IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantBalanceService, cancellationToken);
+        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken);
         if (result is IValueHttpResult { Value: IEnumerable<MerchantBalanceReportRow> rows })
         {
-            await LogExportAsync(reportingDbContext, currentUser, clock, "merchant-balances.csv", "download://reports/merchant-balances.csv", cancellationToken);
-            return Csv("merchant-balances.csv", CsvHeaders(language, "Merchant", "Status", "Sales", "Returns", "ChangeNet", "Payments", "Refunds", "AdditionalCharges", "RemainingReductions", "Remaining"), rows.Select(row => new[]
-            {
-                row.BusinessName,
-                ReportText(row.Status, language),
-                row.SaleTotal.ToString("0.####"),
-                row.ReturnTotal.ToString("0.####"),
-                row.ChangeNet.ToString("0.####"),
-                row.PaymentsReceived.ToString("0.####"),
-                row.CashRefunded.ToString("0.####"),
-                row.AdditionalCharges.ToString("0.####"),
-                row.BalanceReductions.ToString("0.####"),
-                row.Balance.ToString("0.####")
-            }));
+            return await ExportLegacyCsvAsync("merchant-balances", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
     }
-
     private static async Task<IResult> GetOperationBillPdfAsync(
         Guid id,
         string? language,
+        string? format,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
         CrmDbContext crmDbContext,
         InventoryDbContext inventoryDbContext,
         IdentityDbContext identityDbContext,
         ReportingDbContext reportingDbContext,
-        MerchantBalanceService merchantBalanceService,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveExportFormat(format, [ExportFormat.Pdf], out var exportFormat)) return InvalidExportFormat();
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out _)) return InvalidDocumentLanguage();
+
         var operation = await operationsDbContext.OperationLogs
             .Include(value => value.OperationLines)
             .Include(value => value.OperationVersions)
@@ -664,13 +817,12 @@ public static class ReportsEndpoints
             adjustments,
             cancellationToken);
         var balance = merchant is not null
-            ? await merchantBalanceService.CalculateAsync(merchant.Id, cancellationToken)
+            ? await merchantAccountService.GetSnapshotAsync(merchant.Id, cancellationToken)
             : null;
         var paymentBalance = paymentLog is null
             ? null
             : PaymentBalanceCalculator.Calculate(paymentLog, adjustments, cashRecords);
         var totalQty = operation.OperationLines.Sum(line => line.Quantity);
-        var totalBonus = operation.OperationLines.Sum(line => line.BonusQuantity);
         var totalValue = operation.OperationLines.Sum(line => line.LineTotal);
         var isChangeOperation = string.Equals(operation.OperationType, Change, StringComparison.OrdinalIgnoreCase);
         var lineHeaders = isChangeOperation
@@ -734,7 +886,7 @@ public static class ReportsEndpoints
                     new PdfFact("Paid to date", paymentBalance is null ? FormatMoney(cashRecords.Where(value => value.PaymentType == CashReceived).Sum(value => value.Amount)) : FormatMoney(paymentBalance.ConfirmedCollections)),
                     new PdfFact("Remaining", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RemainingAmount)),
                     new PdfFact("Refund due", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RefundDue)),
-                    new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.Balance))
+                new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.AmountDue))
                 ]),
             new(
                 "Lines",
@@ -758,31 +910,38 @@ public static class ReportsEndpoints
                 ])
         };
 
-        var pdf = BuildEnterprisePdf(
+        var document = BuildEnterpriseDocument(
             "Operation bill",
             "Official receipt-style operation document",
             operation.OperationNumber,
             summary,
             sections,
             language,
-            GetUserDisplayName(currentUser.UserId, userLookup));
+            GetUserDisplayName(currentUser.UserId, userLookup),
+            clock.UtcNow);
+        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         await LogExportAsync(reportingDbContext, currentUser, clock, "operation-bill.pdf", $"download://reports/operations/{id}/bill.pdf", cancellationToken);
-        return Results.File(pdf, "application/pdf", $"operation-{operation.OperationNumber}.pdf");
+        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     private static async Task<IResult> GetPaymentReceiptPdfAsync(
         Guid id,
         string? language,
+        string? format,
         PaymentsDbContext paymentsDbContext,
         OperationsDbContext operationsDbContext,
         CrmDbContext crmDbContext,
         IdentityDbContext identityDbContext,
         ReportingDbContext reportingDbContext,
-        MerchantBalanceService merchantBalanceService,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveExportFormat(format, [ExportFormat.Pdf], out var exportFormat)) return InvalidExportFormat();
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out _)) return InvalidDocumentLanguage();
+
         var log = await paymentsDbContext.MainPaymentLogs
             .Include(value => value.InstallmentSubLogs)
             .FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
@@ -813,7 +972,7 @@ public static class ReportsEndpoints
             adjustments,
             cancellationToken);
         var balance = log.MerchantId.HasValue
-            ? await merchantBalanceService.CalculateAsync(log.MerchantId.Value, cancellationToken)
+            ? await merchantAccountService.GetSnapshotAsync(log.MerchantId.Value, cancellationToken)
             : null;
         var paymentBalance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
 
@@ -873,7 +1032,7 @@ public static class ReportsEndpoints
                     new PdfFact("Paid amount", FormatMoney(paymentBalance.ConfirmedCollections)),
                     new PdfFact("Remaining amount", FormatMoney(paymentBalance.RemainingAmount)),
                     new PdfFact("Refund due", FormatMoney(paymentBalance.RefundDue)),
-                    new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.Balance))
+                    new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.AmountDue))
                 ]),
             new(
                 "Payment entries",
@@ -889,62 +1048,81 @@ public static class ReportsEndpoints
         };
 
         var isCashReceipt = string.Equals(log.PaymentMethod, "CashHandToHand", StringComparison.OrdinalIgnoreCase);
-        var pdf = BuildEnterprisePdf(
+        var document = BuildEnterpriseDocument(
             isCashReceipt ? "Cash collection receipt" : "Payment receipt",
             isCashReceipt ? "Cash collection and accountant approval detail" : "Financial collection and review detail",
             DocumentRecordCode(isCashReceipt ? "CASH" : "PAY", log.Id),
             summary,
             sections,
             language,
-            GetUserDisplayName(currentUser.UserId, userLookup));
+            GetUserDisplayName(currentUser.UserId, userLookup),
+            clock.UtcNow);
+        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         var documentName = isCashReceipt ? "cash-receipt.pdf" : "payment-receipt.pdf";
         var documentPath = isCashReceipt ? $"download://reports/payments/{id}/cash-receipt.pdf" : $"download://reports/payments/{id}/receipt.pdf";
         await LogExportAsync(reportingDbContext, currentUser, clock, documentName, documentPath, cancellationToken);
-        return Results.File(pdf, "application/pdf", $"{(isCashReceipt ? "cash-receipt" : "payment")}-{log.Id:N}.pdf");
+        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     private static async Task<IResult> GetMerchantStatementPdfAsync(
         Guid merchantId,
         string? language,
+        string? format,
+        DateTime? from,
+        DateTime? to,
         CrmDbContext crmDbContext,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
         IdentityDbContext identityDbContext,
         ReportingDbContext reportingDbContext,
-        MerchantBalanceService merchantBalanceService,
+        MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out _)) return InvalidDocumentLanguage();
+
         var merchant = await crmDbContext.Merchants.FirstOrDefaultAsync(value => value.Id == merchantId && !value.IsDeleted, cancellationToken);
         if (merchant is null)
         {
             return Results.NotFound();
         }
 
-        var balance = await merchantBalanceService.CalculateAsync(merchantId, cancellationToken);
+        if (!from.HasValue && !to.HasValue)
+        {
+            var today = clock.EgyptNow.Date;
+            from = new DateTime(today.Year, today.Month, 1);
+            to = from.Value.AddMonths(1).AddDays(-1);
+        }
+
+        var account = await merchantAccountService.GetSnapshotAsync(merchantId, cancellationToken);
+        var accountBreakdown = await merchantAccountService.GetFinancialBreakdownAsync(merchantId, cancellationToken);
+        var statement = await merchantAccountService.GetStatementAsync(merchantId, 500, cancellationToken, from, to);
+        var openingBalance = await merchantAccountService.GetOpeningBalanceAsync(merchantId, from, cancellationToken);
+        var closingBalance = await merchantAccountService.GetClosingBalanceAsync(merchantId, to, cancellationToken);
         var operations = await operationsDbContext.OperationLogs
             .Include(value => value.OperationLines)
             .Include(value => value.OperationVersions)
             .Where(value => value.ClientId == merchantId && !value.IsDeleted)
             .OrderByDescending(value => value.CreatedAt)
-            .Take(25)
             .ToListAsync(cancellationToken);
+        var merchantOperationIds = operations.Select(value => value.Id).ToArray();
         var notes = await crmDbContext.MerchantNotes
             .Where(value => value.MerchantId == merchantId)
             .OrderByDescending(value => value.CreatedAt)
-            .Take(10)
             .ToListAsync(cancellationToken);
         var paymentLogs = await paymentsDbContext.MainPaymentLogs
             .Include(value => value.InstallmentSubLogs)
-            .Where(value => value.MerchantId == merchantId && !value.IsDeleted)
+            .Where(value => !value.IsDeleted &&
+                (value.MerchantId == merchantId ||
+                 (value.MerchantId == null && merchantOperationIds.Contains(value.OperationId))))
             .OrderByDescending(value => value.LastModifiedAt)
-            .Take(20)
             .ToListAsync(cancellationToken);
         var adjustments = await paymentsDbContext.FinancialAdjustments
             .Where(value => value.MerchantId == merchantId)
             .OrderByDescending(value => value.CreatedAt)
-            .Take(20)
             .ToListAsync(cancellationToken);
         var operationIds = operations.Select(value => value.Id)
             .Concat(paymentLogs.Select(value => value.OperationId))
@@ -953,7 +1131,6 @@ public static class ReportsEndpoints
         var cashRecords = await paymentsDbContext.CashRecords
             .Where(value => operationIds.Contains(value.OperationId))
             .OrderByDescending(value => value.PaymentDate)
-            .Take(30)
             .ToListAsync(cancellationToken);
         var cashByOperation = cashRecords
             .GroupBy(value => value.OperationId)
@@ -966,6 +1143,14 @@ public static class ReportsEndpoints
             log => log.Id,
             log => PaymentBalanceCalculator.Calculate(log, adjustmentsByLog.GetValueOrDefault(log.Id, []), cashByOperation.GetValueOrDefault(log.OperationId, [])));
         var userLookup = await LoadUserLookupAsync(identityDbContext, operations, paymentLogs, cashRecords, adjustments, notes, cancellationToken);
+        var entryActorIds = statement.Select(value => value.PostedBy).Where(value => value != Guid.Empty && !userLookup.ContainsKey(value)).Distinct().ToArray();
+        if (entryActorIds.Length > 0)
+        {
+            foreach (var user in await identityDbContext.Users.Where(value => entryActorIds.Contains(value.Id)).ToListAsync(cancellationToken))
+            {
+                userLookup[user.Id] = user;
+            }
+        }
 
         var summary = new List<PdfFact>
         {
@@ -973,43 +1158,62 @@ public static class ReportsEndpoints
             new("Status", merchant.Status),
             new("Contact person", merchant.ContactPersonName),
             new("Phone", JoinValues(merchant.PhoneNumbers)),
-            new("Email", merchant.Email ?? "-"),
-            new("Address", merchant.Address ?? "-"),
-            new("Business type", merchant.BusinessType),
-            new("Sales total", FormatMoney(balance.SaleTotal)),
-            new("Returns total", FormatMoney(balance.ReturnTotal)),
-            new("Change net", FormatMoney(balance.ChangeNet)),
-            new("Payments received", FormatMoney(balance.PaymentsReceived)),
-            new("Cash refunded", FormatMoney(balance.CashRefunded)),
-            new("Additional charges", FormatMoney(balance.AdditionalCharges)),
-            new("Remaining reductions", FormatMoney(balance.BalanceReductions)),
-            new("Current remaining", FormatMoney(balance.Balance))
+            new("Statement period", from.HasValue || to.HasValue ? $"{from:yyyy-MM-dd} to {to:yyyy-MM-dd}" : "Current month"),
+            new("Opening balance", FormatMoney(openingBalance)),
+            new("Amount due", FormatMoney(account?.AmountDue ?? 0m)),
+            new("Credit available", FormatMoney(account?.CreditAvailable ?? 0m)),
+            new("Closing amount due", FormatMoney(Math.Max(closingBalance, 0m))),
+            new("Closing merchant credit", FormatMoney(Math.Max(-closingBalance, 0m))),
+            new("Net collected", FormatMoney((accountBreakdown?.PaymentsReceived ?? 0m) - (accountBreakdown?.CashRefunded ?? 0m))),
+            new("Pending collections", FormatMoney(account?.PendingCollections ?? 0m)),
+            new("Refund waiting to be paid", FormatMoney(account?.ReservedRefunds ?? 0m))
         };
 
         var sections = new List<PdfSection>
         {
             new(
-                "Merchant profile",
+                "Account summary",
                 [
-                    new PdfFact("Business name", merchant.BusinessName),
-                    new PdfFact("Contact person", merchant.ContactPersonName),
-                    new PdfFact("Phone", JoinValues(merchant.PhoneNumbers)),
-                    new PdfFact("Email", merchant.Email ?? "-"),
-                    new PdfFact("Address", merchant.Address ?? "-"),
-                    new PdfFact("Business type", merchant.BusinessType),
-                    new PdfFact("Status", merchant.Status)
+                    new PdfFact("Sales added", FormatMoney(accountBreakdown?.SaleTotal ?? 0m)),
+                    new PdfFact("Returns accepted", FormatMoney(accountBreakdown?.ReturnTotal ?? 0m)),
+                    new PdfFact("Exchange difference", FormatMoney(accountBreakdown?.ChangeNet ?? 0m)),
+                    new PdfFact("Money received", FormatMoney(accountBreakdown?.PaymentsReceived ?? 0m)),
+                    new PdfFact("Money refunded", FormatMoney(accountBreakdown?.CashRefunded ?? 0m)),
+                    new PdfFact("Net collected", FormatMoney((accountBreakdown?.PaymentsReceived ?? 0m) - (accountBreakdown?.CashRefunded ?? 0m))),
+                    new PdfFact("Additional charges", FormatMoney(accountBreakdown?.AdditionalCharges ?? 0m)),
+                    new PdfFact("Amount reduced", FormatMoney(accountBreakdown?.BalanceReductions ?? 0m)),
+                    new PdfFact("Amount due now", FormatMoney(account?.AmountDue ?? 0m))
                 ]),
             new(
-                "Balance summary",
+                "Account activity",
+                Tables:
                 [
-                    new PdfFact("Sales total", FormatMoney(balance.SaleTotal)),
-                    new PdfFact("Returns total", FormatMoney(balance.ReturnTotal)),
-                    new PdfFact("Change net", FormatMoney(balance.ChangeNet)),
-                    new PdfFact("Payments received", FormatMoney(balance.PaymentsReceived)),
-                    new PdfFact("Cash refunded", FormatMoney(balance.CashRefunded)),
-                    new PdfFact("Additional charges", FormatMoney(balance.AdditionalCharges)),
-                    new PdfFact("Remaining reductions", FormatMoney(balance.BalanceReductions)),
-                    new PdfFact("Remaining balance", FormatMoney(balance.Balance))
+                    new PdfTableSection(
+                        "Confirmed account activity",
+                        ["When", "What happened", "Related record", "How", "Added", "Reduced", "Balance", "Recorded by"],
+                        statement.Select(entry =>
+                        {
+                            var references = new List<string>(2);
+                            if (entry.OperationId is { } operationId)
+                            {
+                                var operationNumber = operations.FirstOrDefault(operation => operation.Id == operationId)?.OperationNumber;
+                                if (!string.IsNullOrWhiteSpace(operationNumber)) references.Add(operationNumber);
+                            }
+                            if (entry.PaymentId is { } paymentId) references.Add(DocumentRecordCode("PAY", paymentId));
+
+                            return (IReadOnlyList<string>)new[]
+                            {
+                                FormatDateTime(entry.PostedAt),
+                                DescribeMerchantAccountEntry(entry.EntryType),
+                                references.Count > 0 ? string.Join(" · ", references) : entry.EntryType == "Collection" ? "Account collection" : "Related account activity",
+                                DescribePaymentMethod(entry.PaymentMethod),
+                                FormatMoney(entry.DebitAmount),
+                                FormatMoney(entry.CreditAmount),
+                                FormatMoney(entry.RunningBalance),
+                                GetUserDisplayName(entry.PostedBy, userLookup)
+                            };
+                        }).ToList(),
+                        "No confirmed account activity was recorded.")
                 ]),
             new(
                 "Operations history",
@@ -1021,7 +1225,7 @@ public static class ReportsEndpoints
                         operations.Select(operation => (IReadOnlyList<string>)new[]
                         {
                             operation.OperationNumber,
-                            operation.OperationType,
+                            DescribeOperationType(operation.OperationType),
                             operation.Status,
                             DescribePaymentMethod(operation.PaymentMethod),
                             FormatMoney(operation.OperationLines.Sum(line => line.LineTotal)),
@@ -1040,7 +1244,7 @@ public static class ReportsEndpoints
                         ["Payment log", "Operation", "Method", "Status", "Total", "Paid", "Remaining", "Initialized by"],
                         paymentLogs.Select(log => (IReadOnlyList<string>)new[]
                         {
-                            log.Id.ToString("N")[..8],
+                            DocumentRecordCode("PAY", log.Id),
                             operations.FirstOrDefault(operation => operation.Id == log.OperationId)?.OperationNumber ?? log.OperationId.ToString("N")[..8],
                             DescribePaymentMethod(log.PaymentMethod),
                             log.Status,
@@ -1057,12 +1261,26 @@ public static class ReportsEndpoints
                         {
                             FormatDateTime(record.PaymentDate),
                             operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? record.OperationId.ToString("N")[..8],
-                            record.PaymentType,
+                            DescribeCashRecordType(record.PaymentType),
                             FormatMoney(record.Amount),
                             GetUserDisplayName(record.CreatedBy, userLookup),
                             record.Notes ?? "-"
                         }).ToList(),
                         "No cash records were recorded."),
+                    new PdfTableSection(
+                        "Refund payouts",
+                        ["Date", "Operation", "Method", "Amount", "Created by", "Notes"],
+                        cashRecords.Where(record => string.Equals(record.PaymentType, "CashRefund", StringComparison.OrdinalIgnoreCase))
+                            .Select(record => (IReadOnlyList<string>)new[]
+                            {
+                                FormatDateTime(record.PaymentDate),
+                                operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? "Related operation",
+                                DescribePaymentMethod(record.SubType),
+                                FormatMoney(record.Amount),
+                                GetUserDisplayName(record.CreatedBy, userLookup),
+                                record.Notes ?? "-"
+                            }).ToList(),
+                        "No refund payouts were recorded."),
                     new PdfTableSection(
                         "Adjustments",
                         ["Date", "Type", "Amount", "Status", "Created by", "Notes"],
@@ -1094,21 +1312,25 @@ public static class ReportsEndpoints
                 ])
         };
 
-        var pdf = BuildEnterprisePdf(
+        var document = BuildEnterpriseDocument(
             "Merchant statement",
             "Commercial relationship and financial position",
             DocumentRecordCode("MER", merchant.Id),
             summary,
             sections,
             language,
-            GetUserDisplayName(currentUser.UserId, userLookup));
-        await LogExportAsync(reportingDbContext, currentUser, clock, "merchant-statement.pdf", $"download://reports/merchants/{merchantId}/statement.pdf", cancellationToken);
-        return Results.File(pdf, "application/pdf", $"merchant-{merchantId:N}-statement.pdf");
+            GetUserDisplayName(currentUser.UserId, userLookup),
+            clock.UtcNow);
+        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
+        var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
+        await LogExportAsync(reportingDbContext, currentUser, clock, $"merchant-statement.{exportExtension}", $"download://reports/merchants/{merchantId}/statement.{exportExtension}", cancellationToken);
+        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     private static async Task<IResult> GetStocktakeSummaryPdfAsync(
         Guid id,
         string? language,
+        string? format,
         OperationsDbContext operationsDbContext,
         CatalogDbContext catalogDbContext,
         InventoryDbContext inventoryDbContext,
@@ -1116,8 +1338,12 @@ public static class ReportsEndpoints
         ReportingDbContext reportingDbContext,
         ICurrentUser currentUser,
         IClock clock,
+        IDocumentExportService exportService,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
+        if (!ReportingServiceCollectionExtensions.TryParseLanguage(language, out _)) return InvalidDocumentLanguage();
+
         var session = await operationsDbContext.StocktakeSessions
             .Include(value => value.StocktakeAdjustmentLines)
             .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
@@ -1194,16 +1420,19 @@ public static class ReportsEndpoints
                 ])
         };
 
-        var pdf = BuildEnterprisePdf(
+        var document = BuildEnterpriseDocument(
             "Stocktake summary",
             "Physical count and discrepancy review",
             DocumentRecordCode("STK", session.Id),
             summary,
             sections,
             language,
-            GetUserDisplayName(currentUser.UserId, userLookup));
-        await LogExportAsync(reportingDbContext, currentUser, clock, "stocktake-summary.pdf", $"download://reports/stocktakes/{id}/summary.pdf", cancellationToken);
-        return Results.File(pdf, "application/pdf", $"stocktake-{session.Id:N}.pdf");
+            GetUserDisplayName(currentUser.UserId, userLookup),
+            clock.UtcNow);
+        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
+        var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
+        await LogExportAsync(reportingDbContext, currentUser, clock, $"stocktake-summary.{exportExtension}", $"download://reports/stocktakes/{id}/summary.{exportExtension}", cancellationToken);
+        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     private static async Task<IResult> ListExportLogsAsync(
@@ -1278,891 +1507,6 @@ public static class ReportsEndpoints
         var trimmed = value.Trim();
         return ExportReportTypes.FirstOrDefault(type => string.Equals(type, trimmed, StringComparison.OrdinalIgnoreCase));
     }
-
-    private static IReadOnlyList<string> CsvHeaders(string? language, params string[] headers) =>
-        headers.Select(header => ReportText(header, language)).ToArray();
-
-    private static string ReportText(string value, string? language)
-    {
-        if (!string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        return ArabicReportText(value);
-    }
-
-    private static IResult Csv(string fileName, IReadOnlyList<string> headers, IEnumerable<IReadOnlyList<string>> rows)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine(string.Join(",", headers.Select(EscapeCsv)));
-        foreach (var row in rows)
-        {
-            builder.AppendLine(string.Join(",", row.Select(EscapeCsv)));
-        }
-
-        return Results.File(Encoding.UTF8.GetBytes(builder.ToString()), "text/csv; charset=utf-8", fileName);
-    }
-
-    private static string EscapeCsv(string value)
-    {
-        var safe = value ?? string.Empty;
-        return safe.Contains(',') || safe.Contains('"') || safe.Contains('\n') || safe.Contains('\r')
-            ? $"\"{safe.Replace("\"", "\"\"")}\""
-            : safe;
-    }
-
-    private static byte[] BuildEnterprisePdf(
-        string title,
-        string subtitle,
-        string documentReference,
-        IReadOnlyList<PdfFact> summaryFacts,
-        IReadOnlyList<PdfSection> sections,
-        string? language = null,
-        string? generatedBy = null)
-    {
-        return BuildTemplatePdf(title, subtitle, documentReference, summaryFacts, sections, language, generatedBy);
-
-    }
-
-    private static byte[] BuildTemplatePdf(
-        string title,
-        string subtitle,
-        string documentReference,
-        IReadOnlyList<PdfFact> summaryFacts,
-        IReadOnlyList<PdfSection> sections,
-        string? language,
-        string? generatedBy)
-    {
-        var arabic = string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase);
-        var kind = GetPdfDocumentKind(title);
-        var fontFamily = arabic
-            ? (OperatingSystem.IsWindows() ? "Tahoma" : "Noto Sans Arabic")
-            : (OperatingSystem.IsWindows() ? "Arial" : "Noto Sans");
-
-        sections = NormalizeTemplateSections(kind, sections);
-
-        if (arabic)
-        {
-            title = ArabicReportText(title);
-            subtitle = ArabicReportText(subtitle);
-            summaryFacts = summaryFacts.Select(fact => fact with { Label = ArabicReportText(fact.Label), Value = ArabicReportText(fact.Value) }).ToArray();
-            sections = sections.Select(section => section with
-            {
-                Title = ArabicReportText(section.Title),
-                Facts = section.Facts?.Select(fact => fact with { Label = ArabicReportText(fact.Label), Value = ArabicReportText(fact.Value) }).ToArray(),
-                Tables = section.Tables?.Select(table => table with
-                {
-                    Title = ArabicReportText(table.Title),
-                    Headers = table.Headers.Select(ArabicReportText).ToArray(),
-                    Rows = table.Rows.Select(row => row.Select(ArabicReportText).ToArray()).ToArray(),
-                    EmptyMessage = ArabicReportText(table.EmptyMessage)
-                }).ToArray(),
-                Note = section.Note is null ? null : ArabicReportText(section.Note)
-            }).ToArray();
-        }
-
-        var statusLabel = arabic ? ArabicReportText("Status") : "Status";
-        var status = summaryFacts.FirstOrDefault(fact => string.Equals(fact.Label, statusLabel, StringComparison.OrdinalIgnoreCase))?.Value;
-        var overviewCount = Math.Min(kind == PdfDocumentKind.MerchantStatement ? 6 : 5, summaryFacts.Count);
-        var overviewFacts = summaryFacts.Take(overviewCount).ToArray();
-        var metricFacts = summaryFacts.Skip(overviewCount).Take(4).ToArray();
-        var landscape = kind is PdfDocumentKind.SupplyLandedCost or PdfDocumentKind.StocktakeSummary;
-
-        return Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Size(landscape ? PageSizes.A4.Landscape() : PageSizes.A4);
-                page.Margin(18);
-                page.DefaultTextStyle(text => text.FontFamily(fontFamily).FontSize(8.5f).FontColor(Colors.Grey.Darken3));
-                page.Header().Element(item => RenderDocumentHeader(item, title, subtitle, documentReference, status, arabic));
-                page.Content().PaddingTop(8).Column(column =>
-                {
-                    if (kind == PdfDocumentKind.CashReceipt)
-                    {
-                        var paidFact = summaryFacts.FirstOrDefault(fact => fact.Label.Contains(arabic ? "\u0627\u0644\u0645\u062f\u0641\u0648\u0639" : "Paid", StringComparison.OrdinalIgnoreCase));
-                        var totalFact = summaryFacts.FirstOrDefault(fact => fact.Label.Contains(arabic ? "\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a" : "Total", StringComparison.OrdinalIgnoreCase));
-                        var amount = paidFact?.Value ?? totalFact?.Value;
-                        if (!string.IsNullOrWhiteSpace(amount))
-                        {
-                            column.Item().Element(item => RenderCashAmount(item, amount, arabic));
-                        }
-                    }
-
-                    if (overviewFacts.Length > 0)
-                    {
-                        column.Item().PaddingTop(4).Element(item => RenderSectionHeading(item, TemplateText("overview", arabic), arabic));
-                        column.Item().PaddingTop(5).Element(item => RenderOverviewPanel(item, overviewFacts, arabic));
-                    }
-
-                    if (metricFacts.Length > 0)
-                    {
-                        column.Item().PaddingTop(8).Element(item => RenderFactGrid(item, metricFacts, arabic, Math.Min(4, metricFacts.Length), false));
-                    }
-
-                    if (kind == PdfDocumentKind.SupplyLandedCost)
-                    {
-                        var shipmentData = sections.FirstOrDefault(section => section.Title == "Shipment data");
-                        var lines = sections.FirstOrDefault(section => section.Title == "Lines");
-                        var costBreakdown = sections.FirstOrDefault(section => section.Title == "Cost breakdown");
-                        var history = sections.FirstOrDefault(section => section.Title == "History");
-
-                        if (shipmentData is not null) RenderPdfSection(column, shipmentData, arabic);
-                        if (lines is not null) RenderPdfSection(column, lines, arabic);
-                        if (costBreakdown is not null || history is not null)
-                        {
-                            column.Item().PaddingTop(10).Row(row =>
-                            {
-                                if (arabic)
-                                {
-                                    if (history is not null) row.RelativeItem().Column(item => RenderPdfSection(item, history, arabic));
-                                    row.ConstantItem(12);
-                                    if (costBreakdown is not null) row.RelativeItem().Column(item => RenderPdfSection(item, costBreakdown, arabic));
-                                }
-                                else
-                                {
-                                    if (costBreakdown is not null) row.RelativeItem().Column(item => RenderPdfSection(item, costBreakdown, arabic));
-                                    row.ConstantItem(12);
-                                    if (history is not null) row.RelativeItem().Column(item => RenderPdfSection(item, history, arabic));
-                                }
-                            });
-                        }
-                    }
-                    else
-                    {
-                        foreach (var section in sections)
-                        {
-                            RenderPdfSection(column, section, arabic);
-                        }
-                    }
-
-                    column.Item().PaddingTop(12).Element(item => RenderSignatureBlocks(item, kind, arabic));
-                });
-                page.Footer().Element(item => RenderDocumentFooter(item, documentReference, kind, arabic, generatedBy));
-            });
-        }).GeneratePdf();
-    }
-
-    private static void RenderPdfSection(ColumnDescriptor column, PdfSection section, bool arabic)
-    {
-        column.Item().PaddingTop(10).Element(item => RenderSectionHeading(item, section.Title, arabic));
-        if (section.Facts is { Count: > 0 })
-        {
-            var compact = IsMetricSection(section.Title, arabic);
-            column.Item().PaddingTop(5).Element(item =>
-            {
-                if (compact)
-                {
-                    RenderFactGrid(item, section.Facts, arabic, Math.Min(4, section.Facts.Count), false);
-                }
-                else
-                {
-                    RenderOverviewPanel(item, section.Facts, arabic);
-                }
-            });
-        }
-
-        if (!string.IsNullOrWhiteSpace(section.Note))
-        {
-            column.Item().PaddingTop(5).Element(item => RenderNote(item, section.Note, arabic));
-        }
-
-        foreach (var tableSection in section.Tables ?? [])
-        {
-            column.Item().PaddingTop(6).Text(tableSection.Title).SemiBold().FontSize(8.5f).FontColor(Colors.Grey.Darken4);
-            column.Item().PaddingTop(3).Element(item => RenderPdfTable(item, tableSection, arabic));
-        }
-    }
-
-    private static PdfDocumentKind GetPdfDocumentKind(string title) => title switch
-    {
-        "Operation bill" => PdfDocumentKind.OperationBill,
-        "Payment receipt" => PdfDocumentKind.PaymentReceipt,
-        "Cash receive receipt" or "Cash collection receipt" => PdfDocumentKind.CashReceipt,
-        "Supply landed cost" => PdfDocumentKind.SupplyLandedCost,
-        "Merchant statement" => PdfDocumentKind.MerchantStatement,
-        "Stocktake summary" => PdfDocumentKind.StocktakeSummary,
-        _ => PdfDocumentKind.Generic
-    };
-
-    private static IReadOnlyList<PdfSection> NormalizeTemplateSections(PdfDocumentKind kind, IReadOnlyList<PdfSection> sections)
-    {
-        if (kind != PdfDocumentKind.CashReceipt)
-        {
-            return sections;
-        }
-
-        var merchant = sections.FirstOrDefault(section => section.Title == "Merchant");
-        var operation = sections.FirstOrDefault(section => section.Title == "Operation");
-        var payment = sections.FirstOrDefault(section => section.Title == "Payment");
-        var entries = sections.FirstOrDefault(section => section.Title == "Payment entries");
-        var custodyFacts = (merchant?.Facts ?? []).Concat(operation?.Facts ?? []).ToArray();
-        var normalized = new List<PdfSection>();
-
-        if (custodyFacts.Length > 0)
-        {
-            normalized.Add(new PdfSection("Cash custody details", custodyFacts));
-        }
-
-        if (payment is not null)
-        {
-            normalized.Add(payment with { Title = "Related account movement" });
-        }
-
-        if (entries is not null)
-        {
-            normalized.Add(entries with { Title = "Custody trail" });
-        }
-
-        return normalized;
-    }
-
-    // Stable display references keep printed records traceable without exposing a shortened GUID.
-    private static string DocumentRecordCode(string prefix, Guid id)
-    {
-        const string alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-        var value = new BigInteger(id.ToByteArray(), isUnsigned: true, isBigEndian: false);
-        var characters = new char[26];
-        for (var index = characters.Length - 1; index >= 0; index--)
-        {
-            characters[index] = alphabet[(int)(value & 31)];
-            value >>= 5;
-        }
-
-        return $"{prefix}-{new string(characters)}";
-    }
-
-    private static void RenderDocumentHeader(IContainer container, string title, string subtitle, string reference, string? status, bool arabic)
-    {
-        container.BorderTop(4).BorderColor(Colors.Grey.Darken4).PaddingTop(14).Column(column =>
-        {
-            column.Item().Row(row =>
-            {
-                if (arabic)
-                {
-                    row.RelativeItem(1.4f).Element(item => RenderDocumentIdentity(item, title, subtitle, reference, status, false));
-                    row.RelativeItem().AlignRight().Element(item => RenderBrand(item, true));
-                }
-                else
-                {
-                    row.RelativeItem().Element(item => RenderBrand(item, false));
-                    row.RelativeItem(1.4f).Element(item => RenderDocumentIdentity(item, title, subtitle, reference, status, true));
-                }
-            });
-            AlignByLanguage(column.Item().PaddingTop(9), arabic).Text(TemplateText("internal document", arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-            column.Item().PaddingTop(6).LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
-        });
-    }
-
-    private static void RenderBrand(IContainer container, bool arabic)
-    {
-        container.Column(column =>
-        {
-            AlignByLanguage(column.Item(), arabic).Text("LENSEE").SemiBold().FontSize(18).FontColor(Colors.Grey.Darken4);
-            AlignByLanguage(column.Item(), arabic).Text(arabic ? "نظام إدارة العمليات" : "OPTICAL OPERATIONS").SemiBold().FontSize(6).FontColor(Colors.Grey.Darken1);
-        });
-    }
-
-    private static void RenderDocumentIdentity(IContainer container, string title, string subtitle, string reference, string? status, bool alignRight)
-    {
-        container.Column(column =>
-        {
-            AlignByLanguage(column.Item(), alignRight).Text(title).SemiBold().FontSize(16).FontColor(Colors.Grey.Darken4);
-            AlignByLanguage(column.Item(), alignRight).Text(subtitle).FontSize(8).FontColor(Colors.Grey.Darken1);
-            column.Item().PaddingTop(8).Row(row =>
-            {
-                AlignByLanguage(row.ConstantItem(112).ScaleToFit(), alignRight).Text(reference).SemiBold().FontSize(reference.Length > 25 ? 7 : 9).FontColor(Colors.Grey.Darken4);
-                if (!string.IsNullOrWhiteSpace(status))
-                {
-                    row.ConstantItem(88).Border(1).BorderColor(Colors.Grey.Lighten1).PaddingVertical(5).AlignCenter().Text(status).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken4);
-                }
-            });
-        });
-    }
-
-    private static void RenderSectionHeading(IContainer container, string title, bool arabic)
-    {
-        container.Column(column =>
-        {
-            AlignByLanguage(column.Item(), arabic).Text(title).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
-            column.Item().PaddingTop(3).Row(row =>
-            {
-                if (arabic)
-                {
-                    row.RelativeItem();
-                    row.ConstantItem(30).LineHorizontal(2).LineColor(Colors.Grey.Darken4);
-                }
-                else
-                {
-                    row.ConstantItem(30).LineHorizontal(2).LineColor(Colors.Grey.Darken4);
-                    row.RelativeItem();
-                }
-            });
-        });
-    }
-
-    private static void RenderFactGrid(IContainer container, IReadOnlyList<PdfFact> facts, bool arabic, int columnsCount, bool accent)
-    {
-        var orderedFacts = arabic ? facts.Reverse().ToArray() : facts.ToArray();
-        container.Table(table =>
-        {
-            table.ColumnsDefinition(columns =>
-            {
-                for (var index = 0; index < columnsCount; index++)
-                {
-                    columns.RelativeColumn();
-                }
-            });
-
-            foreach (var fact in orderedFacts)
-            {
-                var cell = table.Cell().Padding(2).Border(1).BorderColor(Colors.Grey.Lighten2).Padding(7);
-                if (accent)
-                {
-                    cell = arabic
-                        ? cell.BorderRight(4).BorderColor(Colors.Grey.Darken3)
-                        : cell.BorderLeft(4).BorderColor(Colors.Grey.Darken3);
-                }
-
-                cell.Column(column =>
-                {
-                    AlignByLanguage(column.Item(), arabic).Text(fact.Label).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-                    AlignByLanguage(column.Item().PaddingTop(3), arabic).Text(fact.Value).SemiBold().FontSize(9.5f).FontColor(Colors.Grey.Darken4);
-                });
-            }
-
-            for (var index = orderedFacts.Length; index % columnsCount != 0; index++)
-            {
-                table.Cell().Padding(2);
-            }
-        });
-    }
-
-    private static void RenderOverviewPanel(IContainer container, IReadOnlyList<PdfFact> facts, bool arabic)
-    {
-        var orderedFacts = arabic ? facts.Reverse().ToArray() : facts.ToArray();
-        container.Border(1).BorderColor(Colors.Grey.Lighten2).Background(Colors.Grey.Lighten5).Row(row =>
-        {
-            if (arabic)
-            {
-                row.ConstantItem(4).Background(Colors.Grey.Darken3);
-                row.RelativeItem().Padding(8).Table(table => RenderOverviewFacts(table, orderedFacts, arabic));
-            }
-            else
-            {
-                row.ConstantItem(4).Background(Colors.Grey.Darken3);
-                row.RelativeItem().Padding(8).Table(table => RenderOverviewFacts(table, orderedFacts, arabic));
-            }
-        });
-    }
-
-    private static void RenderOverviewFacts(TableDescriptor table, IReadOnlyList<PdfFact> facts, bool arabic)
-    {
-        table.ColumnsDefinition(columns =>
-        {
-            columns.RelativeColumn();
-            columns.RelativeColumn();
-        });
-
-        foreach (var fact in facts)
-        {
-            table.Cell().PaddingVertical(3).Column(column =>
-            {
-                AlignByLanguage(column.Item(), arabic).Text(fact.Label).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-                AlignByLanguage(column.Item().PaddingTop(2), arabic).Text(fact.Value).SemiBold().FontSize(9).FontColor(Colors.Grey.Darken4);
-            });
-        }
-
-        for (var index = facts.Count; index % 2 != 0; index++)
-        {
-            table.Cell();
-        }
-    }
-
-    private static void RenderCashAmount(IContainer container, string amount, bool arabic)
-    {
-        container.Background(Colors.Grey.Lighten4).Padding(12).Row(row =>
-        {
-            if (arabic)
-            {
-                row.RelativeItem().Text(amount).SemiBold().FontSize(21).FontColor(Colors.Grey.Darken4);
-                row.RelativeItem().AlignRight().Column(column =>
-                {
-                    column.Item().Text(TemplateText("payment type", true)).SemiBold().FontSize(7).FontColor(Colors.Grey.Darken1);
-                    column.Item().Text(TemplateText("cash hand to hand", true)).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
-                });
-            }
-            else
-            {
-                row.RelativeItem().Column(column =>
-                {
-                    column.Item().Text(TemplateText("payment type", false)).SemiBold().FontSize(7).FontColor(Colors.Grey.Darken1);
-                    column.Item().Text(TemplateText("cash hand to hand", false)).SemiBold().FontSize(10).FontColor(Colors.Grey.Darken4);
-                });
-                row.RelativeItem().AlignRight().Text(amount).SemiBold().FontSize(21).FontColor(Colors.Grey.Darken4);
-            }
-        });
-    }
-
-    private static void RenderNote(IContainer container, string note, bool arabic)
-    {
-        container.Border(1).BorderColor(Colors.Grey.Lighten2).Background(Colors.Grey.Lighten5).Padding(8).Column(column =>
-        {
-            AlignByLanguage(column.Item(), arabic).Text(TemplateText("note", arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-            AlignByLanguage(column.Item().PaddingTop(4), arabic).Text(note).FontSize(8).FontColor(Colors.Grey.Darken4);
-        });
-    }
-
-    private static void RenderPdfTable(IContainer container, PdfTableSection tableSection, bool arabic)
-    {
-        var headers = arabic ? tableSection.Headers.Reverse().ToArray() : tableSection.Headers.ToArray();
-        var rows = arabic
-            ? tableSection.Rows.Select(row => (IReadOnlyList<string>)row.Reverse().ToArray()).ToArray()
-            : tableSection.Rows.ToArray();
-
-        container.Table(table =>
-        {
-            table.ColumnsDefinition(columns =>
-            {
-                foreach (var _ in headers)
-                {
-                    columns.RelativeColumn();
-                }
-            });
-            table.Header(header =>
-            {
-                foreach (var headerText in headers)
-                {
-                    AlignByLanguage(header.Cell().Background(Colors.Grey.Lighten3).Padding(5), arabic).Text(headerText).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken4);
-                }
-            });
-
-            if (rows.Length == 0)
-            {
-                AlignByLanguage(table.Cell().ColumnSpan((uint)headers.Length).BorderBottom(1).BorderColor(Colors.Grey.Lighten2).Padding(8), arabic).Text(tableSection.EmptyMessage).FontColor(Colors.Grey.Darken1);
-            }
-
-            for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
-            {
-                foreach (var value in rows[rowIndex])
-                {
-                    var cell = table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten2);
-                    if (rowIndex % 2 == 1)
-                    {
-                        cell = cell.Background(Colors.Grey.Lighten5);
-                    }
-
-                    AlignByLanguage(cell.Padding(5), arabic).Text(value ?? string.Empty).FontSize(7.2f);
-                }
-            }
-        });
-    }
-
-    private static void RenderSignatureBlocks(IContainer container, PdfDocumentKind kind, bool arabic)
-    {
-        var labels = kind switch
-        {
-            PdfDocumentKind.OperationBill => new[] { "prepared by", "warehouse representative", "merchant customer", "approved by" },
-            PdfDocumentKind.PaymentReceipt => new[] { "recorded by", "accountant approval", "merchant acknowledgment" },
-            PdfDocumentKind.CashReceipt => new[] { "cash handed over by", "cash received by", "accountant approval" },
-            PdfDocumentKind.SupplyLandedCost => Array.Empty<string>(),
-            PdfDocumentKind.MerchantStatement => new[] { "prepared by", "merchant acknowledgment" },
-            PdfDocumentKind.StocktakeSummary => new[] { "counted by", "reviewed by", "confirmed by" },
-            _ => Array.Empty<string>()
-        };
-
-        if (labels.Length == 0)
-        {
-            return;
-        }
-
-        container.ShowEntire().Table(table =>
-        {
-            table.ColumnsDefinition(columns =>
-            {
-                foreach (var _ in labels)
-                {
-                    columns.RelativeColumn();
-                }
-            });
-
-            foreach (var label in arabic ? labels.Reverse() : labels)
-            {
-                table.Cell().Padding(3).Border(1).BorderColor(Colors.Grey.Lighten1).Padding(9).Column(column =>
-                {
-                    AlignByLanguage(column.Item(), arabic).Text(TemplateText(label, arabic)).SemiBold().FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-                    column.Item().PaddingTop(34).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
-                    AlignByLanguage(column.Item().PaddingTop(3), arabic).Text(TemplateText("name signature date", arabic)).FontSize(6).FontColor(Colors.Grey.Darken1);
-                });
-            }
-        });
-    }
-
-    private static void RenderDocumentFooter(IContainer container, string reference, PdfDocumentKind kind, bool arabic, string? generatedBy)
-    {
-        container.BorderTop(1).BorderColor(Colors.Grey.Lighten2).PaddingTop(7).Row(row =>
-        {
-            if (arabic)
-            {
-                row.RelativeItem().Text(TemplateText("internal document", true)).FontSize(6.5f).FontColor(Colors.Grey.Darken1).AlignRight();
-                row.RelativeItem().AlignCenter().Text(reference).FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-            }
-            else
-            {
-                row.RelativeItem().Text("Lensee ERP | Internal business document").FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-                row.RelativeItem().AlignCenter().Text($"Reference: {reference}").FontSize(6.5f).FontColor(Colors.Grey.Darken1);
-            }
-
-            row.RelativeItem().AlignRight().Text(text =>
-            {
-                text.Span(arabic ? "صفحة " : "Page ").FontSize(6.5f);
-                text.CurrentPageNumber().FontSize(6.5f);
-                text.Span(arabic ? " من " : " of ").FontSize(6.5f);
-                text.TotalPages().FontSize(6.5f);
-            });
-        });
-    }
-
-    private static bool IsMetricSection(string title, bool arabic)
-    {
-        var normalized = title.ToLowerInvariant();
-        return normalized.Contains(arabic ? "ملخص" : "summary") ||
-            normalized.Contains(arabic ? "دفع" : "payment") ||
-            normalized.Contains(arabic ? "رصيد" : "balance");
-    }
-
-    private static IContainer AlignByLanguage(IContainer container, bool alignRight) =>
-        alignRight ? container.AlignRight() : container;
-
-    private static string TemplateText(string key, bool arabic)
-    {
-        if (!arabic)
-        {
-            return key switch
-            {
-                "overview" => "OVERVIEW",
-                "internal document" => "LENSEE ERP - INTERNAL BUSINESS DOCUMENT",
-                "payment type" => "PAYMENT TYPE",
-                "cash hand to hand" => "CASH HAND-TO-HAND",
-                "note" => "NOTE",
-                "prepared by" => "PREPARED BY",
-                "warehouse representative" => "WAREHOUSE REPRESENTATIVE",
-                "merchant customer" => "MERCHANT / CUSTOMER",
-                "approved by" => "APPROVED BY",
-                "recorded by" => "RECORDED BY",
-                "accountant approval" => "ACCOUNTANT APPROVAL",
-                "merchant acknowledgment" => "MERCHANT ACKNOWLEDGMENT",
-                "cash handed over by" => "CASH HANDED OVER BY",
-                "cash received by" => "CASH RECEIVED BY",
-                "procurement review" => "PROCUREMENT REVIEW",
-                "inventory posted by" => "INVENTORY POSTED BY",
-                "counted by" => "COUNTED BY",
-                "reviewed by" => "REVIEWED BY",
-                "confirmed by" => "CONFIRMED BY",
-                "name signature date" => "Name / signature / date",
-                _ => key
-            };
-        }
-
-        return key switch
-        {
-            "overview" => "بيانات المستند",
-            "internal document" => "نظام لينسي - مستند أعمال داخلي",
-            "payment type" => "نوع الدفع",
-            "cash hand to hand" => "تسليم نقدي باليد",
-            "note" => "ملاحظة",
-            "prepared by" => "أعده",
-            "warehouse representative" => "مسؤول المخزن",
-            "merchant customer" => "التاجر / العميل",
-            "approved by" => "اعتمده",
-            "recorded by" => "سجله",
-            "accountant approval" => "اعتماد المحاسب",
-            "merchant acknowledgment" => "إقرار التاجر",
-            "cash handed over by" => "مسلم النقدية",
-            "cash received by" => "مستلم النقدية",
-            "procurement review" => "مراجعة المشتريات",
-            "inventory posted by" => "ترحيل المخزون",
-            "counted by" => "قام بالجرد",
-            "reviewed by" => "راجعه",
-            "confirmed by" => "اعتمده",
-            "name signature date" => "الاسم / التوقيع / التاريخ",
-            _ => key
-        };
-    }
-
-    private enum PdfDocumentKind
-    {
-        Generic,
-        OperationBill,
-        PaymentReceipt,
-        CashReceipt,
-        SupplyLandedCost,
-        MerchantStatement,
-        StocktakeSummary
-    }
-
-    private static string ArabicReportText(string value)
-    {
-        var receiptText = value switch
-        {
-            "Operation bill" => "\u0641\u0627\u062a\u0648\u0631\u0629 \u0639\u0645\u0644\u064a\u0629",
-            "Official receipt-style operation document" => "\u0645\u0633\u062a\u0646\u062f \u0631\u0633\u0645\u064a \u0645\u062e\u062a\u0635\u0631 \u0644\u0644\u0639\u0645\u0644\u064a\u0629",
-            "Payment receipt" => "\u0625\u064a\u0635\u0627\u0644 \u0633\u062f\u0627\u062f",
-            "Cash receive receipt" => "\u0625\u064a\u0635\u0627\u0644 \u0627\u0633\u062a\u0644\u0627\u0645 \u0646\u0642\u062f\u064a\u0629",
-            "Cash collection receipt" => "\u0625\u064a\u0635\u0627\u0644 \u062a\u062d\u0635\u064a\u0644 \u0646\u0642\u062f\u064a",
-            "Cash custody details" => "\u0628\u064a\u0627\u0646\u0627\u062a \u062d\u064a\u0627\u0632\u0629 \u0627\u0644\u0646\u0642\u062f\u064a\u0629",
-            "Related account movement" => "\u062d\u0631\u0643\u0629 \u0627\u0644\u062d\u0633\u0627\u0628 \u0627\u0644\u0645\u0631\u062a\u0628\u0637\u0629",
-            "Custody trail" => "\u0645\u0633\u0627\u0631 \u062d\u064a\u0627\u0632\u0629 \u0627\u0644\u0646\u0642\u062f\u064a\u0629",
-            "Supply landed cost" => "\u062a\u0643\u0644\u0641\u0629 \u0627\u0644\u062a\u0648\u0631\u064a\u062f \u0627\u0644\u0646\u0647\u0627\u0626\u064a\u0629",
-            "Imported shipment, cost allocation, and inventory receipt" => "\u0634\u062d\u0646\u0629 \u0645\u0633\u062a\u0648\u0631\u062f\u0629 \u0648\u062a\u0648\u0632\u064a\u0639 \u062a\u0643\u0627\u0644\u064a\u0641 \u0648\u0625\u064a\u0635\u0627\u0644 \u0645\u062e\u0632\u0648\u0646",
-            "Summary" => "\u0645\u0644\u062e\u0635",
-            "Parties" => "\u0627\u0644\u0623\u0637\u0631\u0627\u0641",
-            "Lines" => "\u0627\u0644\u0628\u0646\u0648\u062f",
-            "Payment Summary" => "\u0645\u0644\u062e\u0635 \u0627\u0644\u0633\u062f\u0627\u062f",
-            "Timeline" => "\u0627\u0644\u0645\u0633\u0627\u0631",
-            "Merchant" => "\u0627\u0644\u062a\u0627\u062c\u0631",
-            "Operation" => "\u0627\u0644\u0639\u0645\u0644\u064a\u0629",
-            "Payment" => "\u0627\u0644\u0633\u062f\u0627\u062f",
-            "Payment entries" => "\u0628\u0646\u0648\u062f \u0627\u0644\u0633\u062f\u0627\u062f",
-            "Operation lines" => "\u0628\u0646\u0648\u062f \u0627\u0644\u0639\u0645\u0644\u064a\u0629",
-            "Shipment" => "\u0627\u0644\u0634\u062d\u0646\u0629",
-            "Shipment data" => "\u0628\u064a\u0627\u0646\u0627\u062a \u0627\u0644\u0634\u062d\u0646\u0629",
-            "Shipment date" => "\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0634\u062d\u0646\u0629",
-            "Supplier" => "\u0627\u0644\u0645\u0648\u0631\u062f",
-            "Invoice" => "\u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629",
-            "Products" => "\u0627\u0644\u0645\u0646\u062a\u062c\u0627\u062a",
-            "Import costs" => "\u062a\u0643\u0627\u0644\u064a\u0641 \u0627\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f",
-            "Landed total" => "\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0628\u0639\u062f \u0627\u0644\u062a\u0643\u0644\u0641\u0629",
-            "Receipt operation" => "\u0639\u0645\u0644\u064a\u0629 \u0625\u064a\u0635\u0627\u0644 \u0627\u0644\u0645\u062e\u0632\u0648\u0646",
-            "SKU landed costs" => "\u062a\u0643\u0627\u0644\u064a\u0641 SKU \u0627\u0644\u0646\u0647\u0627\u0626\u064a\u0629",
-            "Allocated" => "\u0627\u0644\u0645\u0648\u0632\u0639",
-            "Landed unit" => "\u062a\u0643\u0644\u0641\u0629 \u0627\u0644\u0648\u062d\u062f\u0629 \u0627\u0644\u0646\u0647\u0627\u0626\u064a\u0629",
-            "Cost breakdown" => "\u062a\u0641\u0635\u064a\u0644 \u0627\u0644\u062a\u0643\u0627\u0644\u064a\u0641",
-            "Supply history" => "\u0633\u062c\u0644 \u0627\u0644\u062a\u0648\u0631\u064a\u062f",
-            "Action" => "\u0627\u0644\u0625\u062c\u0631\u0627\u0621",
-            "Date" => "\u0627\u0644\u062a\u0627\u0631\u064a\u062e",
-            "Type" => "\u0627\u0644\u0646\u0648\u0639",
-            "Status" => "\u0627\u0644\u062d\u0627\u0644\u0629",
-            "Customer" => "\u0627\u0644\u0639\u0645\u064a\u0644",
-            "Representative" => "\u0627\u0644\u0645\u0646\u062f\u0648\u0628",
-            "Source" => "\u0627\u0644\u0645\u0635\u062f\u0631",
-            "Destination" => "\u0627\u0644\u0648\u062c\u0647\u0629",
-            "Payment method" => "\u0637\u0631\u064a\u0642\u0629 \u0627\u0644\u0633\u062f\u0627\u062f",
-            "Total quantity" => "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0643\u0645\u064a\u0629",
-            "Document total" => "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0633\u062a\u0646\u062f",
-            "Operation total" => "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0639\u0645\u0644\u064a\u0629",
-            "Paid to date" => "\u0627\u0644\u0645\u062f\u0641\u0648\u0639",
-            "Remaining" => "\u0627\u0644\u0645\u062a\u0628\u0642\u064a",
-            "Merchant balance" => "\u0631\u0635\u064a\u062f \u0627\u0644\u062a\u0627\u062c\u0631",
-            "SKU" => "\u0643\u0648\u062f \u0627\u0644\u0635\u0646\u0641",
-            "Product" => "\u0627\u0644\u0645\u0646\u062a\u062c",
-            "Side" => "\u0627\u0644\u062c\u0627\u0646\u0628",
-            "Returned" => "\u0627\u0644\u0645\u0631\u062a\u062c\u0639",
-            "Replacement" => "\u0627\u0644\u0628\u062f\u064a\u0644",
-            "Qty" => "\u0627\u0644\u0643\u0645\u064a\u0629",
-            "Bonus" => "\u0628\u0648\u0646\u0635",
-            "Unit price" => "\u0633\u0639\u0631 \u0627\u0644\u0648\u062d\u062f\u0629",
-            "Total" => "\u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a",
-            "Step" => "\u0627\u0644\u062e\u0637\u0648\u0629",
-            "Actor" => "\u0627\u0644\u0645\u0633\u0624\u0648\u0644",
-            "At" => "\u0627\u0644\u0648\u0642\u062a",
-            "Receipt no." => "\u0631\u0642\u0645 \u0627\u0644\u0625\u064a\u0635\u0627\u0644",
-            "Created" => "\u062a\u0645 \u0627\u0644\u0625\u0646\u0634\u0627\u0621",
-            "Confirmed / last action" => "\u0627\u0644\u062a\u0623\u0643\u064a\u062f / \u0622\u062e\u0631 \u0625\u062c\u0631\u0627\u0621",
-            "Method" => "\u0627\u0644\u0637\u0631\u064a\u0642\u0629",
-            "Paid" => "\u0627\u0644\u0645\u062f\u0641\u0648\u0639",
-            "Merchant / buyer" => "\u0627\u0644\u062a\u0627\u062c\u0631 / \u0627\u0644\u0645\u0634\u062a\u0631\u064a",
-            "Contact person" => "\u0645\u0633\u0624\u0648\u0644 \u0627\u0644\u062a\u0648\u0627\u0635\u0644",
-            "Phone" => "\u0627\u0644\u0647\u0627\u062a\u0641",
-            "Total amount" => "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0628\u0644\u063a",
-            "Paid amount" => "\u0627\u0644\u0645\u0628\u0644\u063a \u0627\u0644\u0645\u062f\u0641\u0648\u0639",
-            "Remaining amount" => "\u0627\u0644\u0645\u0628\u0644\u063a \u0627\u0644\u0645\u062a\u0628\u0642\u064a",
-            "Payments" => "\u0627\u0644\u0645\u062f\u0641\u0648\u0639\u0627\u062a",
-            "Operation no." => "\u0631\u0642\u0645 \u0627\u0644\u0639\u0645\u0644\u064a\u0629",
-            "Completed" => "\u0645\u0643\u062a\u0645\u0644",
-            "Confirmed" => "\u0645\u0624\u0643\u062f",
-            "PendingAdminReview" => "\u0628\u0627\u0646\u062a\u0638\u0627\u0631 \u0645\u0631\u0627\u062c\u0639\u0629 \u0627\u0644\u0645\u062f\u064a\u0631",
-            "WholesaleSale" => "\u0628\u064a\u0639 \u062c\u0645\u0644\u0629",
-            "RetailSale" => "\u0628\u064a\u0639 \u0642\u0637\u0627\u0639\u064a",
-            "CashHandToHand" or "Cash hand to hand" => "\u0646\u0642\u062f\u064a \u064a\u062f \u0628\u064a\u062f",
-            "CashTransaction" or "Cash transaction" => "\u062a\u062d\u0648\u064a\u0644 \u0646\u0642\u062f\u064a",
-            "Installment" => "\u062a\u0642\u0633\u064a\u0637",
-            _ => null
-        };
-        if (receiptText is not null)
-        {
-            return receiptText;
-        }
-
-        var translations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Operation document"] = "مستند العملية",
-            ["Payment receipt"] = "إيصال المدفوعة",
-            ["Cash receive receipt"] = "إيصال استلام نقدية",
-            ["Merchant statement"] = "كشف حساب التاجر",
-            ["Stocktake summary"] = "ملخص الجرد",
-            ["Commercial and stock execution detail"] = "تفاصيل التنفيذ التجاري والمخزني",
-            ["Financial collection and review detail"] = "تفاصيل التحصيل والمراجعة المالية",
-            ["Cash collection and accountant approval detail"] = "تفاصيل استلام النقدية واعتماد المحاسب",
-            ["Commercial relationship and financial position"] = "العلاقة التجارية والموقف المالي",
-            ["Physical count and discrepancy review"] = "الجرد الفعلي ومراجعة الفروقات",
-            ["Header"] = "الرأس",
-            ["Parties"] = "الأطراف",
-            ["Lines"] = "البنود",
-            ["Payment Summary"] = "ملخص السداد",
-            ["Payment Details"] = "تفاصيل السداد",
-            ["Timeline"] = "الخط الزمني",
-            ["Version History"] = "سجل الإصدارات",
-            ["Merchant profile"] = "ملف التاجر",
-            ["Balance summary"] = "ملخص الرصيد",
-            ["Operations history"] = "سجل العمليات",
-            ["Payment history"] = "سجل السداد",
-            ["Installments"] = "الأقساط",
-            ["Trail"] = "المسار",
-            ["Actors"] = "المسؤولون",
-            ["Adjustment Lines"] = "بنود التسوية",
-            ["Date"] = "التاريخ",
-            ["Type"] = "النوع",
-            ["Status"] = "الحالة",
-            ["Amount"] = "المبلغ",
-            ["Created by"] = "أنشأه",
-            ["Created"] = "تاريخ الإنشاء",
-            ["Created at"] = "تاريخ الإنشاء",
-            ["Confirmed at"] = "تاريخ التأكيد",
-            ["Confirmed by"] = "أكده",
-            ["Performed by"] = "قام به",
-            ["Session date"] = "تاريخ الجلسة",
-            ["Notes"] = "ملاحظات",
-            ["Customer"] = "العميل",
-            ["Registered merchant"] = "التاجر المسجل",
-            ["Contact person"] = "مسؤول التواصل",
-            ["Phone"] = "الهاتف",
-            ["Email"] = "البريد الإلكتروني",
-            ["Address"] = "العنوان",
-            ["Business name"] = "اسم النشاط",
-            ["Business type"] = "نوع النشاط",
-            ["Merchant status"] = "حالة التاجر",
-            ["Representative"] = "المندوب",
-            ["Source"] = "المصدر",
-            ["Destination"] = "الوجهة",
-            ["Payment method"] = "طريقة السداد",
-            ["Operation no."] = "رقم العملية",
-            ["Operation type"] = "نوع العملية",
-            ["Operation status"] = "حالة العملية",
-            ["Operation date"] = "تاريخ العملية",
-            ["Operation total"] = "إجمالي العملية",
-            ["Operation payment method"] = "طريقة سداد العملية",
-            ["Quantity"] = "الكمية",
-            ["Qty"] = "الكمية",
-            ["Bonus"] = "بونص",
-            ["Line quantity"] = "كمية البنود",
-            ["Bonus quantity"] = "كمية البونص",
-            ["Document total"] = "إجمالي المستند",
-            ["Total"] = "الإجمالي",
-            ["Total amount"] = "إجمالي المبلغ",
-            ["Paid amount"] = "المبلغ المدفوع",
-            ["Remaining amount"] = "المبلغ المتبقي",
-            ["Paid to date"] = "المدفوع حتى الآن",
-            ["Cash received"] = "النقدية المستلمة",
-            ["Cash refunded"] = "النقدية المرتدة",
-            ["Merchant credit"] = "رصيد دائن للتاجر",
-            ["Current remaining"] = "المتبقي الحالي",
-            ["Remaining balance"] = "الرصيد المتبقي",
-            ["Remaining reduction"] = "تخفيض المتبقي",
-            ["Merchant"] = "التاجر",
-            ["Payment"] = "السداد",
-            ["Client"] = "العميل",
-            ["Method"] = "طريقة السداد",
-            ["Paid"] = "المدفوع",
-            ["Remaining"] = "المتبقي",
-            ["Location"] = "الموقع",
-            ["SKU"] = "كود الصنف",
-            ["Product"] = "المنتج",
-            ["Available"] = "المتاح",
-            ["ReservedWarehouse"] = "محجوز بالمخزن",
-            ["ReservedRep"] = "محجوز مع المندوب",
-            ["Target"] = "المستهدف",
-            ["Updated"] = "آخر تحديث",
-            ["Expiry"] = "الصلاحية",
-            ["Batch expiry"] = "صلاحية التشغيلة",
-            ["Lot"] = "التشغيلة",
-            ["Side"] = "الجانب",
-            ["Mode"] = "الوضع",
-            ["Unit price"] = "سعر الوحدة",
-            ["Step"] = "الخطوة",
-            ["Actor"] = "المسؤول",
-            ["At"] = "في",
-            ["Version"] = "الإصدار",
-            ["Edited at"] = "تاريخ التعديل",
-            ["Edited by"] = "عدله",
-            ["Reason"] = "السبب",
-            ["Current"] = "الحالي",
-            ["Drafted by"] = "سجله",
-            ["Assigned to"] = "مسند إلى",
-            ["Last modified by"] = "آخر تعديل بواسطة",
-            ["Last modified at"] = "تاريخ آخر تعديل",
-            ["Initialized by"] = "بدأه",
-            ["Initialized at"] = "تاريخ البدء",
-            ["Merchant / buyer"] = "التاجر / المشتري",
-            ["Selling clerk"] = "موظف البيع",
-            ["Payment log"] = "سجل السداد",
-            ["Payment log status"] = "حالة سجل السداد",
-            ["Merchant remaining"] = "متبقي التاجر",
-            ["Sales"] = "المبيعات",
-            ["Sales total"] = "إجمالي المبيعات",
-            ["Returns"] = "المرتجعات",
-            ["Returns total"] = "إجمالي المرتجعات",
-            ["Change net"] = "صافي الاستبدال",
-            ["ChangeNet"] = "صافي الاستبدال",
-            ["Payments"] = "المدفوعات",
-            ["Payments received"] = "المدفوعات المستلمة",
-            ["Refunds"] = "المبالغ المرتدة",
-            ["Credits"] = "الأرصدة الدائنة",
-            ["Merchant credits"] = "الأرصدة الدائنة للتاجر",
-            ["Remaining reductions"] = "تخفيضات المتبقي",
-            ["RemainingReductions"] = "تخفيضات المتبقي",
-            ["Session"] = "الجلسة",
-            ["Counted lines"] = "البنود المحسوبة",
-            ["Total counted"] = "إجمالي المحسوب",
-            ["Total discrepancy"] = "إجمالي الفرق",
-            ["Discrepancies"] = "الفروقات",
-            ["Adjustment count"] = "عدد التسويات",
-            ["System"] = "النظام",
-            ["Physical"] = "الفعلي",
-            ["Delta"] = "الفرق",
-            ["Note"] = "ملاحظة",
-            ["No records were recorded."] = "لم يتم تسجيل أي سجلات.",
-            ["Active"] = "نشط",
-            ["Inactive"] = "غير نشط",
-            ["Suspended"] = "موقوف",
-            ["Completed"] = "مكتمل",
-            ["Confirmed"] = "مؤكد",
-            ["Draft"] = "مسودة",
-            ["Reserved"] = "محجوز",
-            ["Cancelled"] = "ملغي",
-            ["PendingAdmin"] = "بانتظار المدير",
-            ["PendingAccountant"] = "بانتظار المحاسب",
-            ["PendingAdminReview"] = "بانتظار مراجعة المدير",
-            ["Rejected"] = "مرفوض",
-            ["WholesaleSale"] = "بيع جملة",
-            ["RetailSale"] = "بيع قطاعي",
-            ["OnlineSale"] = "بيع أونلاين",
-            ["Change"] = "استبدال",
-            ["Reserve"] = "حجز",
-            ["Supply"] = "توريد",
-            ["InventoryReceipt"] = "استلام مخزون",
-            ["WriteOff"] = "إعدام",
-            ["StocktakeAdjustment"] = "تسوية جرد",
-            ["CashHandToHand"] = "نقدي يد بيد",
-            ["CashTransaction"] = "تحويل نقدي",
-            ["Installment"] = "تقسيط",
-            ["MainWarehouse"] = "مخزن رئيسي",
-            ["SubWarehouse"] = "مخزن فرعي",
-            ["Online"] = "أونلاين"
-        };
-        return translations.TryGetValue(value, out var translated) ? translated : value;
-    }
     private static IReadOnlyList<IReadOnlyList<string>> BuildOperationActorTimeline(
         OperationLog operation,
         IReadOnlyDictionary<Guid, User> userLookup)
@@ -2207,10 +1551,46 @@ public static class ReportsEndpoints
             null or "" => "-",
             "CashHandToHand" => "Cash hand to hand",
             "CashTransaction" => "Cash transaction",
-            "Installment" => "Installment",
+            "BankTransfer" => "Bank transfer",
+            "Wallet" => "Wallet",
+            "MerchantAccount" => "Merchant account",
+            "Installment" or "Installlaugment" => "Merchant account",
             _ => value
         };
     }
+
+    private static string DescribeOperationType(string? value) => value switch
+    {
+        "WholesaleSale" => "Wholesale sale",
+        "RetailSale" => "Retail sale",
+        "Return" => "Return",
+        "Change" => "Exchange",
+        "InventoryReceipt" => "Inventory receipt",
+        "WarehouseTransfer" => "Warehouse transfer",
+        "Reserve" => "Representative reserve",
+        "WriteOff" => "Write-off",
+        _ => string.IsNullOrWhiteSpace(value) ? "-" : value
+    };
+
+    private static string DescribeCashRecordType(string? value) => value switch
+    {
+        "CashReceived" => "Money received",
+        "CashRefund" => "Money refunded",
+        _ => string.IsNullOrWhiteSpace(value) ? "-" : value
+    };
+
+    private static string DescribeMerchantAccountEntry(string entryType) => entryType switch
+    {
+        "SaleCharge" => "Sale added",
+        "ReturnCredit" => "Return accepted",
+        "ExchangeSurcharge" => "Exchange amount added",
+        "ExchangeCredit" => "Exchange credit added",
+        "Collection" => "Money received",
+        "RefundPayout" => "Money refunded",
+        "AdditionalCharge" => "Additional charge added",
+        "BalanceReduction" => "Amount reduced",
+        _ => "Account activity"
+    };
 
     private static string FormatOperationLineSection(string? value)
     {
@@ -2411,7 +1791,7 @@ public sealed record OperationReportRow(Guid Id, string OperationNumber, string 
 
 public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? OperationNumber, Guid? MerchantId, string PaymentMethod, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string Status, Guid? AssignedTo, DateTime LastModifiedAt, decimal RefundDue);
 
-public sealed record SupplyLandedCostReportRow(Guid Id, string ShipmentNumber, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, int Quantity, decimal ProductSubtotal, decimal CostSubtotal, decimal LandedTotal, Guid? InventoryReceiptOperationId);
+public sealed record SupplyLandedCostReportRow(Guid Id, string ShipmentNumber, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, int Quantity, decimal ProductSubtotal, decimal CostSubtotal, decimal LandedTotal, Guid? InventoryReceiptOperationId, string? InventoryReceiptOperationNumber);
 
 public sealed record MerchantBalanceReportRow(Guid MerchantId, string BusinessName, string Status, decimal SaleTotal, decimal ReturnTotal, decimal ChangeNet, decimal PaymentsReceived, decimal CashRefunded, decimal AdditionalCharges, decimal BalanceReductions, decimal Balance);
 

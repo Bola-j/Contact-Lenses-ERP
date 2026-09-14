@@ -53,6 +53,7 @@ public static class PaymentsEndpoints
         group.MapGet("/operations/resolve", ResolvePaymentOperationAsync).RequireAuthorization("payments.read");
         group.MapGet("/{id:guid}", GetPaymentLogAsync).RequireAuthorization("payments.read");
         group.MapGet("/merchants/{merchantId:guid}/balance", GetMerchantBalanceAsync).RequireAuthorization("payments.read");
+        group.MapGet("/merchant-accounts/{merchantId:guid}/statement", GetMerchantAccountStatementAsync).RequireAuthorization("payments.read");
         group.MapPost("/initialize", InitializePaymentLogAsync).RequireAuthorization("payments.write");
         group.MapPost("/{id:guid}/assign", AssignPaymentLogAsync).RequireAuthorization("payments.write");
         group.MapPost("/{id:guid}/sub-logs", DraftSubLogAsync).RequireAuthorization("payments.draft");
@@ -67,6 +68,48 @@ public static class PaymentsEndpoints
         group.MapPost("/adjustments/{id:guid}/reject", RejectFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
 
         return group;
+    }
+
+    private static async Task<IResult> GetMerchantAccountStatementAsync(
+        Guid merchantId,
+        DateTime? from,
+        DateTime? to,
+        MerchantAccountService merchantAccountService,
+        OperationsDbContext operationsDbContext,
+        CancellationToken cancellationToken)
+    {
+        var rows = await merchantAccountService.GetStatementAsync(merchantId, 500, cancellationToken, from, to);
+        var operationIds = rows.Where(row => row.OperationId.HasValue).Select(row => row.OperationId!.Value).Distinct().ToArray();
+        var operationNumbers = await operationsDbContext.OperationLogs
+            .AsNoTracking()
+            .Where(operation => operationIds.Contains(operation.Id))
+            .ToDictionaryAsync(operation => operation.Id, operation => operation.OperationNumber, cancellationToken);
+
+        return Results.Ok(rows.Select(row =>
+        {
+            var references = new List<string>();
+            if (row.OperationId is { } operationId && operationNumbers.TryGetValue(operationId, out var operationNumber))
+            {
+                references.Add(operationNumber);
+            }
+            if (row.PaymentId is { } paymentId)
+            {
+                references.Add(DocumentRecordCode("PAY", paymentId));
+            }
+
+            return new MerchantAccountStatementResponse(
+                row.Id,
+                row.EntryType,
+                DescribeMerchantAccountEntry(row.EntryType),
+                references.Count == 0 ? "Related account activity" : string.Join(" · ", references),
+                row.PaymentMethod,
+                DescribePaymentMethod(row.PaymentMethod),
+                row.DebitAmount,
+                row.CreditAmount,
+                row.RunningBalance,
+                row.PostedAt,
+                row.PostedBy);
+        }));
     }
 
     private static async Task<IResult> ListPaymentLogsAsync(

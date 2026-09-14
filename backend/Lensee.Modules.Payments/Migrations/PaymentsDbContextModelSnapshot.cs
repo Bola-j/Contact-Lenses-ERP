@@ -36,6 +36,14 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("numeric(18,4)")
                         .HasColumnName("amount");
 
+                    b.Property<DateTime?>("ConfirmedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid?>("ConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_by");
+
                     b.Property<Guid>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
@@ -79,16 +87,21 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("character varying(50)")
                         .HasColumnName("sub_type");
 
+                    b.Property<string>("TransactionReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("transaction_reference");
+
                     b.HasKey("Id")
                         .HasName("cash_records_pkey");
+
+                    b.HasIndex(new[] { "FinancialAdjustmentId" }, "idx_cash_records_adjustment")
+                        .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
                     b.HasIndex(new[] { "PaymentDate" }, "idx_cash_records_date")
                         .IsDescending();
 
                     b.HasIndex(new[] { "OperationId" }, "idx_cash_records_operation");
-
-                    b.HasIndex(new[] { "FinancialAdjustmentId" }, "idx_cash_records_adjustment")
-                        .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
                     b.ToTable("cash_records", "payments", t =>
                         {
@@ -255,6 +268,11 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnName("sub_log_status")
                         .HasDefaultValueSql("'Draft'::character varying");
 
+                    b.Property<string>("TransactionReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("transaction_reference");
+
                     b.HasKey("Id")
                         .HasName("installment_sub_logs_pkey");
 
@@ -333,11 +351,9 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.Property<string>("PaymentMethod")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
-                        .HasColumnName("payment_method")
-                        .HasDefaultValueSql("'Installment'::character varying");
+                        .HasColumnName("payment_method");
 
                     b.Property<decimal>("PendingAmount")
                         .ValueGeneratedOnAdd()
@@ -345,6 +361,14 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("numeric(18,4)")
                         .HasDefaultValue(0m)
                         .HasColumnName("pending_amount");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("DirectOperation")
+                        .HasColumnName("scope");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -380,15 +404,552 @@ namespace Lensee.Modules.Payments.Migrations
                         {
                             t.HasCheckConstraint("chk_main_payment_amount_paid", "amount_paid >= 0");
 
-                            t.HasCheckConstraint("chk_main_payment_method", "payment_method in ('CashHandToHand','CashTransaction','Installment')");
+                            t.HasCheckConstraint("chk_main_payment_method", "payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment','Installlaugment')");
 
                             t.HasCheckConstraint("chk_main_payment_paid_lte_total", "amount_paid + pending_amount <= total_amount");
 
                             t.HasCheckConstraint("chk_main_payment_pending_amount", "pending_amount >= 0");
 
+                            t.HasCheckConstraint("chk_main_payment_scope", "scope in ('MerchantAccount','DirectOperation')");
+
                             t.HasCheckConstraint("chk_main_payment_status", "status in ('PendingAdmin','PendingAccountant','PendingAdminReview','Completed','Rejected','Cancelled')");
 
                             t.HasCheckConstraint("chk_main_payment_total_amount", "total_amount >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountClassificationSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<DateTime>("CalculatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("calculated_at");
+
+                    b.Property<int>("CalendarYear")
+                        .HasColumnType("integer")
+                        .HasColumnName("calendar_year");
+
+                    b.Property<string>("FlagsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("flags_json");
+
+                    b.Property<string>("Grade")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("grade");
+
+                    b.Property<bool>("IsPartialYear")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_partial_year");
+
+                    b.Property<decimal>("Score")
+                        .HasPrecision(7, 2)
+                        .HasColumnType("numeric(7,2)")
+                        .HasColumnName("score");
+
+                    b.Property<string>("SettingsVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("settings_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AccountId", "CalendarYear")
+                        .IsUnique();
+
+                    b.ToTable("merchant_account_classification_snapshots", "payments");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountCollectionDraft", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<string>("AllocationsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("allocations_json");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTime?>("AssignedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("assigned_at");
+
+                    b.Property<Guid?>("AssignedTo")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_to");
+
+                    b.Property<DateTime?>("ConfirmedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid?>("ConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_by");
+
+                    b.Property<DateTime>("DraftedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("drafted_at");
+
+                    b.Property<Guid>("DraftedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("drafted_by");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("PaymentMethod")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("MerchantAccount")
+                        .HasColumnName("scope");
+
+                    b.Property<Guid?>("SourceOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_operation_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TransactionReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("transaction_reference");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedTo")
+                        .HasFilter("(assigned_to IS NOT NULL)");
+
+                    b.HasIndex("AccountId", "Status", "DraftedAt");
+
+                    b.ToTable("merchant_account_collection_drafts", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_collection_draft_amount", "amount > 0");
+
+                            t.HasCheckConstraint("chk_merchant_collection_draft_method", "payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
+
+                            t.HasCheckConstraint("chk_merchant_collection_draft_scope", "scope = 'MerchantAccount'");
+
+                            t.HasCheckConstraint("chk_merchant_collection_draft_status", "status in ('Draft','PendingAdminReview','Confirmed','Rejected')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<decimal>("CreditAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("credit_amount");
+
+                    b.Property<decimal>("DebitAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("debit_amount");
+
+                    b.Property<string>("EntryType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("entry_type");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<Guid?>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<Guid?>("PaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_id");
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<DateTime>("PostedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("posted_at");
+
+                    b.Property<Guid>("PostedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("posted_by");
+
+                    b.Property<Guid?>("ReversesEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reverses_entry_id");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("sequence");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("source_type");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TransactionReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("transaction_reference");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OperationId");
+
+                    b.HasIndex("AccountId", "Sequence")
+                        .IsUnique();
+
+                    b.HasIndex("SourceType", "SourceId", "EntryType")
+                        .IsUnique();
+
+                    b.ToTable("merchant_account_entries", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_account_entry_amount", "(debit_amount > 0 and credit_amount = 0) or (credit_amount > 0 and debit_amount = 0)");
+
+                            t.HasCheckConstraint("chk_merchant_account_entry_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
+
+                            t.HasCheckConstraint("chk_merchant_account_entry_status", "status in ('Posted','Reversed')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantEntryAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AllocatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("allocated_at");
+
+                    b.Property<Guid>("AllocatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("allocated_by");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("EntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entry_id");
+
+                    b.Property<Guid>("ObligationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("obligation_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ObligationId");
+
+                    b.HasIndex("EntryId", "ObligationId")
+                        .IsUnique();
+
+                    b.ToTable("merchant_entry_allocations", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_entry_allocation_amount", "amount > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantOperationObligation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<decimal>("OriginalAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("original_amount");
+
+                    b.Property<DateTime>("PostedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("posted_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OperationId")
+                        .IsUnique();
+
+                    b.HasIndex("AccountId", "Status", "PostedAt");
+
+                    b.ToTable("merchant_operation_obligations", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_obligation_amount", "original_amount >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantReceivableAccount", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("MerchantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_id");
+
+                    b.Property<long>("NextSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("next_sequence");
+
+                    b.Property<DateTime>("OpenedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("opened_at");
+
+                    b.Property<Guid>("OpenedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("opened_by");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MerchantId")
+                        .IsUnique();
+
+                    b.ToTable("merchant_receivable_accounts", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_account_next_sequence", "next_sequence > 0");
+
+                            t.HasCheckConstraint("chk_merchant_account_status", "status in ('Open','Frozen','Closed')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantRefundReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTime?>("ApprovedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid?>("ApprovedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<decimal>("PaidAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("paid_amount");
+
+                    b.Property<Guid?>("PayoutEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payout_entry_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AccountId", "Status");
+
+                    b.ToTable("merchant_refund_reservations", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_merchant_refund_reservation_amount", "amount > 0");
+
+                            t.HasCheckConstraint("chk_merchant_refund_reservation_paid_amount", "paid_amount >= 0 and paid_amount <= amount");
+
+                            t.HasCheckConstraint("chk_merchant_refund_reservation_status", "status in ('PendingApproval','Approved','PartiallyPaid','Paid','Rejected','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.PaymentAuditEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<decimal?>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("CollectionDraftId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("collection_draft_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("DataJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("data_json");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid?>("MerchantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_id");
+
+                    b.Property<string>("NewStatus")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("new_status");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<Guid?>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<Guid?>("PaymentLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_log_id");
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("PreviousStatus")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("previous_status");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt")
+                        .IsDescending();
+
+                    b.HasIndex("CollectionDraftId", "OccurredAt");
+
+                    b.HasIndex("MerchantId", "OccurredAt");
+
+                    b.HasIndex("PaymentLogId", "OccurredAt");
+
+                    b.ToTable("payment_audit_events", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_payment_audit_amount", "amount is null or amount >= 0");
                         });
                 });
 
@@ -468,9 +1029,76 @@ namespace Lensee.Modules.Payments.Migrations
                     b.Navigation("MainLog");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountCollectionDraft", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantReceivableAccount", "Account")
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Account");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountEntry", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantReceivableAccount", "Account")
+                        .WithMany("Entries")
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Account");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantEntryAllocation", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantAccountEntry", "Entry")
+                        .WithMany("Allocations")
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantOperationObligation", "Obligation")
+                        .WithMany("Allocations")
+                        .HasForeignKey("ObligationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Entry");
+
+                    b.Navigation("Obligation");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantOperationObligation", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantReceivableAccount", "Account")
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Account");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Payments.Data.MainPaymentLog", b =>
                 {
                     b.Navigation("InstallmentSubLogs");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantAccountEntry", b =>
+                {
+                    b.Navigation("Allocations");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantOperationObligation", b =>
+                {
+                    b.Navigation("Allocations");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantReceivableAccount", b =>
+                {
+                    b.Navigation("Entries");
                 });
 #pragma warning restore 612, 618
         }

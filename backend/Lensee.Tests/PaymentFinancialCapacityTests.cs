@@ -52,6 +52,25 @@ public sealed class PaymentFinancialCapacityTests
     }
 
     [Fact]
+    public void PaymentBalance_IncludesSubmittedCollectionsInPendingAmount()
+    {
+        var paymentLog = PaymentLog();
+        paymentLog.TotalAmount = 1000m;
+        paymentLog.AmountPaid = 0m;
+        paymentLog.PendingAmount = 0m;
+        paymentLog.InstallmentSubLogs =
+        [
+            new InstallmentSubLog { MainLogId = paymentLog.Id, Amount = 250m, SubLogStatus = "PendingAdminReview" }
+        ];
+
+        var balance = PaymentBalanceCalculator.Calculate(paymentLog, [], []);
+
+        Assert.Equal(0m, balance.ConfirmedCollections);
+        Assert.Equal(250m, balance.PendingCollections);
+        Assert.Equal(1000m, balance.RemainingAmount);
+    }
+
+    [Fact]
     public async Task BalanceReductionCapacity_CompletedLinkedCashRefundReopensReceivable()
     {
         await using var context = CreateContext();

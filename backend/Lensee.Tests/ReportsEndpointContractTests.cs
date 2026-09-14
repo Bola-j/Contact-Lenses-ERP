@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.IO.Compression;
+using System.Text;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Identity.Data;
@@ -47,6 +50,101 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
     }
 
     [Fact]
+    public async Task Catalog_IsAuthorizedAndDeclaresBilingualTypedExports()
+    {
+        using var anonymous = _factory.CreateClient();
+        using var denied = await anonymous.GetAsync("/api/v1/reports/catalog");
+        Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+        using var response = await client.GetAsync("/api/v1/reports/catalog");
+        await using var content = await response.Content.ReadAsStreamAsync();
+        using var payload = await JsonDocument.ParseAsync(content);
+        var stock = payload.RootElement.EnumerateArray().Single(item => item.GetProperty("key").GetString() == "stock");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(stock.GetProperty("formats").EnumerateArray(), value => value.GetString() == "xlsx");
+        Assert.Contains(stock.GetProperty("languages").EnumerateArray(), value => value.GetString() == "bi");
+    }
+
+    [Fact]
+    public async Task ReportingAuthorization_EnforcesPermissionRoleAndLocationScope()
+    {
+        await _factory.ResetAsync();
+        var seed = await _factory.SeedPrintableDocumentsAsync();
+        using var client = _factory.CreateClient();
+
+        client.AuthorizeAs(LenseeRoles.Admin);
+        using var missingPermission = await client.GetAsync("/api/v1/reports/catalog");
+        Assert.Equal(HttpStatusCode.Forbidden, missingPermission.StatusCode);
+
+        client.AuthorizeAs(LenseeRoles.Accountant, LenseePermissions.ReportsRead);
+        using var accountantStock = await client.GetAsync("/api/v1/reports/stock/export?format=xlsx&language=en");
+        Assert.Equal(HttpStatusCode.Forbidden, accountantStock.StatusCode);
+
+        client.AuthorizeAsAtLocation(LenseeRoles.WarehouseClerk, seed.LocationId, LenseePermissions.ReportsRead);
+        using var foreignLocation = await client.GetAsync($"/api/v1/reports/stock/export?format=csv&language=en&locationId={Guid.NewGuid()}");
+        using var scopedLocation = await client.GetAsync("/api/v1/reports/stock/export?format=csv&language=en");
+        Assert.Equal(HttpStatusCode.Forbidden, foreignLocation.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, scopedLocation.StatusCode);
+    }
+
+    [Fact]
+    public async Task StandardRoutes_ReturnAllMimeTypesServerFilenamesAndProblemDetails()
+    {
+        await _factory.ResetAsync();
+        var seed = await _factory.SeedPrintableDocumentsAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+
+        var expectations = new[]
+        {
+            (Path: "/api/v1/reports/operations/export?format=pdf&language=bi", Mime: "application/pdf", Extension: ".pdf"),
+            (Path: "/api/v1/reports/operations/export?format=xlsx&language=ar", Mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Extension: ".xlsx"),
+            (Path: "/api/v1/reports/operations/export?format=csv&language=en", Mime: "text/csv", Extension: ".csv"),
+            (Path: $"/api/v1/documents/supply-landed-cost/{seed.ShipmentId}?format=xlsx&language=bi", Mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Extension: ".xlsx")
+        };
+
+        foreach (var expectation in expectations)
+        {
+            using var response = await client.GetAsync(expectation.Path);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(expectation.Mime, response.Content.Headers.ContentType?.MediaType);
+            Assert.EndsWith(expectation.Extension, response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName, StringComparison.OrdinalIgnoreCase);
+            Assert.True((await response.Content.ReadAsByteArrayAsync()).Length > 20);
+        }
+
+        using var badLanguage = await client.GetAsync("/api/v1/reports/operations/export?format=pdf&language=fr");
+        using var badFormat = await client.GetAsync($"/api/v1/documents/operation-bill/{seed.OperationId}?format=csv&language=en");
+        using var missingKey = await client.GetAsync($"/api/v1/documents/not-a-document/{seed.OperationId}?format=pdf&language=en");
+        using var badOperationType = await client.GetAsync("/api/v1/reports/operations/export?format=csv&operationType=Invented");
+        using var badSupplyStatus = await client.GetAsync("/api/v1/reports/supply/export?format=xlsx&status=Invented");
+
+        Assert.Equal(HttpStatusCode.BadRequest, badLanguage.StatusCode);
+        Assert.Equal("application/problem+json", badLanguage.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(HttpStatusCode.BadRequest, badFormat.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, missingKey.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, badOperationType.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, badSupplyStatus.StatusCode);
+    }
+
+    [Fact]
+    public async Task StandardExport_RejectsRowsBeyondConfiguredLimitWithoutTruncating()
+    {
+        await using var factory = new LimitedReportsEndpointFactory();
+        await factory.SeedPrintableDocumentsAsync();
+        await factory.SeedPrintableDocumentsAsync();
+        using var client = factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+
+        using var response = await client.GetAsync("/api/v1/reports/operations/export?format=xlsx&language=en");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
     public async Task PrintableDocuments_RenderInEnglishAndArabic_AndLogExports()
     {
         await _factory.ResetAsync();
@@ -80,9 +178,46 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
 
         Assert.Equal(12, await _factory.CountExportLogsAsync());
     }
+
+    [Fact]
+    public async Task MerchantStatement_UsesLedgerRowsWithFriendlyBusinessReferences()
+    {
+        await _factory.ResetAsync();
+        var seed = await _factory.SeedPrintableDocumentsAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.PaymentsRead, LenseePermissions.ReportsRead);
+
+        var rows = await client.GetFromJsonAsync<JsonElement>($"/api/v1/payments/merchant-accounts/{seed.MerchantId}/statement?from=2026-08-01&to=2026-08-31");
+
+        Assert.Equal(JsonValueKind.Array, rows.ValueKind);
+        var sale = rows.EnumerateArray().Single(row => row.GetProperty("entryType").GetString() == "SaleCharge");
+        Assert.Equal("Sale added", sale.GetProperty("eventLabel").GetString());
+        Assert.Equal("OP-2026-000001", sale.GetProperty("sourceReference").GetString());
+        Assert.False(sale.GetProperty("sourceReference").GetString()!.Contains(seed.OperationId.ToString("N"), StringComparison.OrdinalIgnoreCase));
+
+        var collection = rows.EnumerateArray().Single(row => row.GetProperty("entryType").GetString() == "Collection");
+        Assert.Equal("Money received", collection.GetProperty("eventLabel").GetString());
+        Assert.Contains("OP-2026-000001", collection.GetProperty("sourceReference").GetString());
+        Assert.Contains("PAY-", collection.GetProperty("sourceReference").GetString());
+        Assert.Equal("Bank transfer", collection.GetProperty("methodLabel").GetString());
+
+        using var arabicWorkbookResponse = await client.GetAsync($"/api/v1/documents/merchant-statement/{seed.MerchantId}?format=xlsx&language=ar");
+        Assert.Equal(HttpStatusCode.OK, arabicWorkbookResponse.StatusCode);
+        await using var workbookStream = await arabicWorkbookResponse.Content.ReadAsStreamAsync();
+        using var workbook = new ZipArchive(workbookStream, ZipArchiveMode.Read);
+        var workbookText = string.Join("\n", workbook.Entries
+            .Where(entry => entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            .Select(entry =>
+            {
+                using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
+                return reader.ReadToEnd();
+            }));
+        Assert.Contains("صافي التحصيل", workbookText);
+        Assert.DoesNotContain(">Net collected<", workbookText, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
-public sealed class ReportsEndpointFactory : WebApplicationFactory<Program>
+public class ReportsEndpointFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName = $"reports-contracts-{Guid.NewGuid()}";
 
@@ -281,6 +416,53 @@ public sealed class ReportsEndpointFactory : WebApplicationFactory<Program>
             CreatedBy = userId,
             Notes = "Cash handover"
         });
+        var accountId = Guid.NewGuid();
+        payments.MerchantReceivableAccounts.Add(new MerchantReceivableAccount
+        {
+            Id = accountId,
+            MerchantId = merchantId,
+            Status = "Open",
+            NextSequence = 3,
+            OpenedAt = now,
+            UpdatedAt = now,
+            OpenedBy = userId
+        });
+        payments.MerchantAccountEntries.AddRange(
+            new MerchantAccountEntry
+            {
+                Id = Guid.NewGuid(),
+                AccountId = accountId,
+                Sequence = 1,
+                EntryType = "SaleCharge",
+                DebitAmount = 3750m,
+                CreditAmount = 0m,
+                SourceType = "OperationSale",
+                SourceId = operationId,
+                OperationId = operationId,
+                Status = "Posted",
+                PostedBy = userId,
+                PostedAt = now,
+                Notes = "Completed sale."
+            },
+            new MerchantAccountEntry
+            {
+                Id = Guid.NewGuid(),
+                AccountId = accountId,
+                Sequence = 2,
+                EntryType = "Collection",
+                DebitAmount = 0m,
+                CreditAmount = 2500m,
+                PaymentMethod = "BankTransfer",
+                TransactionReference = "BANK-001",
+                SourceType = "PaymentCollection",
+                SourceId = paymentId,
+                OperationId = operationId,
+                PaymentId = paymentId,
+                Status = "Posted",
+                PostedBy = userId,
+                PostedAt = now.AddMinutes(5),
+                Notes = "Bank transfer received."
+            });
         operations.SupplyShipments.Add(new SupplyShipment
         {
             Id = shipmentId,
@@ -365,8 +547,18 @@ public sealed class ReportsEndpointFactory : WebApplicationFactory<Program>
         await operations.SaveChangesAsync();
         await payments.SaveChangesAsync();
 
-        return new PrintableDocumentSeed(operationId, paymentId, cashPaymentId, shipmentId, merchantId, stocktakeId);
+        return new PrintableDocumentSeed(operationId, paymentId, cashPaymentId, shipmentId, merchantId, stocktakeId, locationId);
     }
 }
 
-public sealed record PrintableDocumentSeed(Guid OperationId, Guid PaymentId, Guid CashPaymentId, Guid ShipmentId, Guid MerchantId, Guid StocktakeId);
+public sealed class LimitedReportsEndpointFactory : ReportsEndpointFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureAppConfiguration(configuration => configuration.AddInMemoryCollection(
+            new Dictionary<string, string?> { ["Reporting:MaxExportRows"] = "1" }));
+    }
+}
+
+public sealed record PrintableDocumentSeed(Guid OperationId, Guid PaymentId, Guid CashPaymentId, Guid ShipmentId, Guid MerchantId, Guid StocktakeId, Guid LocationId);
