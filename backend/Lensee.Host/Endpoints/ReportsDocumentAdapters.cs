@@ -58,10 +58,10 @@ public static partial class ReportsEndpoints
                     new DocumentCell.Code(row.ShipmentNumber), Text(row.SupplierName), new DocumentCell.Code(row.InvoiceNumber ?? string.Empty), Text(row.Status), new DocumentCell.Integer(row.Quantity),
                     new DocumentCell.Money(row.ProductSubtotal), new DocumentCell.Money(row.CostSubtotal), new DocumentCell.Money(row.LandedTotal), new DocumentCell.Code(row.InventoryReceiptOperationNumber ?? string.Empty), new DocumentCell.DateTimeValue(row.ShipmentDate)])).ToList()),
             "merchant-balances" => BuildTableDocument(key, "Merchant balances report", language, generatedBy, generatedAtUtc,
-                [Column("Merchant"), Column("Status"), Column("Sales", ColumnDataType.Money), Column("Returns", ColumnDataType.Money), Column("Change net", ColumnDataType.Money), Column("Payments", ColumnDataType.Money), Column("Refunds", ColumnDataType.Money), Column("Additional charges", ColumnDataType.Money), Column("Remaining reductions", ColumnDataType.Money), Column("Remaining", ColumnDataType.Money)],
+                [Column("Merchant"), Column("Status"), Column("Total sales", ColumnDataType.Money), Column("Net collected", ColumnDataType.Money), Column("Remaining owed", ColumnDataType.Money), Column("Refunds", ColumnDataType.Money), Column("Accepted return value", ColumnDataType.Money), Column("Additional charges", ColumnDataType.Money), Column("Amount reductions", ColumnDataType.Money)],
                 ((IEnumerable<MerchantBalanceReportRow>)value).Select(row => new TableRow([
-                    Text(row.BusinessName), Text(row.Status), new DocumentCell.Money(row.SaleTotal), new DocumentCell.Money(row.ReturnTotal), new DocumentCell.Money(row.ChangeNet),
-                    new DocumentCell.Money(row.PaymentsReceived), new DocumentCell.Money(row.CashRefunded), new DocumentCell.Money(row.AdditionalCharges), new DocumentCell.Money(row.BalanceReductions), new DocumentCell.Money(row.Balance)])).ToList()),
+                    Text(row.BusinessName), Text(row.Status), new DocumentCell.Money(row.TotalSales), new DocumentCell.Money(row.NetCollected), new DocumentCell.Money(row.RemainingOwed),
+                    new DocumentCell.Money(row.Refunds), new DocumentCell.Money(row.AcceptedReturnValue), new DocumentCell.Money(row.AdditionalCharges), new DocumentCell.Money(row.AmountReductions)])).ToList()),
             _ => throw new NotSupportedException($"Unknown report '{key}'.")
         };
 

@@ -125,6 +125,24 @@
 | Reset apply verification on isolated clone | Stopped the local API, cloned `lensee` to `lensee_reset_verification`, ran `-Apply -ConfirmReset 'RESET BUSINESS DATA' -DatabaseName lensee_reset_verification`, and verified 7 users, 19 permissions, 3 locations, 12 products, 4,698 SKUs, and 54 migrations remained while operations, payments, and stock transactions were zero. The clone was dropped and the local API restarted healthy; source `lensee` remained unchanged. |
 | Period closing-position clarity | Screen and PDF now expose positive `Period amount due` and `Period merchant credit` values instead of an unexplained signed closing balance; live PDF contains both labels and no raw negative closing-balance presentation. |
 
+## Current merchant-account contract
+
+Merchant account calculations intentionally expose only these seven financial aspects:
+
+1. Total sales — confirmed merchant sale charges.
+2. Net collected — approved collections less paid refunds.
+3. Remaining owed — total sales plus approved additional charges, less accepted returns, approved reductions, and net collected.
+4. Refunds — approved cash refunds that have actually been paid.
+5. Accepted return value — approved returns and lower-value exchange credits.
+6. Additional charges — approved adjustments and higher-value exchange surcharges.
+7. Amount reductions — approved reductions.
+
+Collections belong to the merchant account, not a compulsory single order. A source operation is optional; if absent, allocation is oldest-first across open merchant mini-invoices. Financial adjustments follow the same account-level rule; an optional order link narrows lineage, while a cash refund requires an order because its physical payout must reconcile to a cash record.
+
+The collection form has one mutation action: **Send collection for approval**. Once its POST has committed, form cleanup and refresh work are non-fatal; the idempotency key can be replayed or resolved without creating a duplicate collection.
+
+Payment audit rows must expose a friendly reference, actor and role, merchant or non-CRM buyer, operation number, scope, method, electronic transaction reference, lifecycle status, date/time, and recorded payload details. System Audit History remains the cross-module evidence source and links to the underlying record.
+
 ## Browser
 
 | Area | Evidence |

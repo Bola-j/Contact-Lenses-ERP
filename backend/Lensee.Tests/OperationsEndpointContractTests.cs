@@ -1155,7 +1155,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
             merchantId,
-            paymentMethod = "CashHandToHand",
+            paymentMethod = "MerchantAccount",
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
         });
 
@@ -1188,7 +1188,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
             merchantId,
-            paymentMethod = "CashHandToHand",
+            paymentMethod = "MerchantAccount",
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = "UNKNOWN", expiryDate = "2028-06-01" } }
         });
 
@@ -1230,7 +1230,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
             merchantId,
-            paymentMethod = "CashHandToHand",
+            paymentMethod = "MerchantAccount",
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = "CLERK-UNSOLD", expiryDate = "2028-06-01" } }
         });
 
@@ -1422,11 +1422,11 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             operationType = "Change",
             sourceLocationId = seed.MainLocationId,
             merchantId,
-            paymentMethod = "CashHandToHand",
+            paymentMethod = "MerchantAccount",
             lines = new[]
             {
                 new { skuId = seed.SkuId, section = "ChangeOut", packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01" },
-                new { skuId = seed.SkuId, section = "ChangeIn", packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)null, expiryDate = (string?)null }
+                new { skuId = seed.SkuId, section = "ChangeIn", packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01" }
             }
         });
 

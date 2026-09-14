@@ -4898,7 +4898,7 @@ async function renderOperations() {
         <label class="field"><span>Status</span><select id="operations-status" class="select"><option value="">All statuses</option><option value="Draft">Draft</option><option value="Confirmed">Confirmed</option><option value="Reserved">Reserved</option><option value="Shipped">Shipped</option><option value="Received">Received</option><option value="Completed">Completed</option><option value="Cancelled">Cancelled</option></select></label>
         <label class="field"><span>From</span><input id="operations-from" class="input" type="date"></label>
         <label class="field"><span>To</span><input id="operations-to" class="input" type="date"></label>
-        <label class="field"><span>Rows</span><select id="operations-page-size" class="select"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option></select></label>
+        <label class="field"><span>Rows</span><select id="operations-page-size" class="select"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option></select></label>
         <label class="check-field"><input id="operations-show-completed" type="checkbox"><span>Show completed/received/cancelled history</span></label>
       </div>
       <div class="table-wrap">
@@ -6607,12 +6607,12 @@ async function renderPayments() {
       </section>` : ""}
       ${canDraft ? `<section data-payment-panel="tools" class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
-        <p class="muted-text">Every adjustment is linked to its source operation. Cash refunds are approved first, then recorded when cash is actually paid.</p>
+        <p class="muted-text">Adjust the merchant account as a whole, or optionally link a specific mini-invoice. Cash refunds keep an order link because the paid cash movement must be reconciled.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
-          <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required disabled><option value="">Enter an operation first</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
+          <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required><option value="">Choose merchant...</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="adjustment-type">Type</label><select id="adjustment-type" class="select"><option value="AdditionalCharge">Additional charge</option><option value="BalanceReduction">Remaining reduction</option><option value="CashRefund">Cash refund</option></select></div>
-          <div class="field"><label for="adjustment-operation-id">Affected order</label><input id="adjustment-operation-id" class="input" placeholder="Order number or operation reference" required><p id="adjustment-order-preview" class="muted-text">Choose the merchant order affected by this adjustment.</p></div>
+          <div class="field"><label for="adjustment-operation-id">Affected order (optional)</label><input id="adjustment-operation-id" class="input" placeholder="Order number or operation reference"><p id="adjustment-order-preview" class="muted-text">Optional: link this adjustment to one mini-invoice.</p></div>
           <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field full-span"><label for="adjustment-notes">Notes</label><input id="adjustment-notes" class="input"></div>
           <button class="button" type="submit">Request adjustment</button>
@@ -7383,11 +7383,7 @@ async function createFinancialAdjustment(event) {
   const adjustmentType = canonicalSelectValue("adjustment-type", "adjustmentType");
   const operationId = document.getElementById("adjustment-operation-id").value.trim();
   const amount = Number(document.getElementById("adjustment-amount").value);
-  if (!operationId) {
-    showFormError("financial-adjustment-error", "Every financial adjustment must reference an operation ID.");
-    return;
-  }
-  if (!await resolveAdjustmentOperation()) {
+  if (operationId && !await resolveAdjustmentOperation()) {
     return;
   }
   if (!document.getElementById("adjustment-merchant").value || !Number.isFinite(amount) || amount <= 0) {
@@ -7396,6 +7392,10 @@ async function createFinancialAdjustment(event) {
   }
   if (adjustmentType === "AdditionalCharge" && !document.getElementById("adjustment-notes").value.trim()) {
     showFormError("financial-adjustment-error", "An additional charge requires a reason.");
+    return;
+  }
+  if (adjustmentType === "CashRefund" && !operationId) {
+    showFormError("financial-adjustment-error", "Choose the related order before requesting a cash refund.");
     return;
   }
 
@@ -7412,8 +7412,8 @@ async function createFinancialAdjustment(event) {
     });
     notice("Financial adjustment requested.", "success");
     event.target.reset();
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
-    await loadMerchantBalance();
+    await Promise.allSettled([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+    if (document.getElementById("payment-merchant")?.value) await loadMerchantBalance();
   } catch (exception) {
     showFormError("financial-adjustment-error", getFriendlyWorkspaceError(exception));
   }
@@ -7426,11 +7426,7 @@ async function resolveAdjustmentOperation() {
   const preview = document.getElementById("adjustment-order-preview");
   const reference = operationInput?.value.trim();
   if (!operationInput || !merchantSelect || !reference) {
-    if (merchantSelect) {
-      merchantSelect.value = "";
-      merchantSelect.disabled = true;
-    }
-    if (preview) preview.textContent = "Choose the merchant order affected by this adjustment.";
+    if (preview) preview.textContent = "Optional: link this adjustment to one mini-invoice.";
     return false;
   }
 
@@ -7438,19 +7434,17 @@ async function resolveAdjustmentOperation() {
     const operation = await request(`/api/v1/payments/operations/resolve?reference=${encodeURIComponent(reference)}`);
     if (!operation.merchantId || !merchantSelect.querySelector(`option[value="${CSS.escape(operation.merchantId)}"]`)) {
       merchantSelect.value = "";
-      merchantSelect.disabled = true;
       showFormError(errorId, "The operation has no active merchant available for a financial adjustment.");
       return false;
     }
 
     merchantSelect.value = operation.merchantId;
-    merchantSelect.disabled = true;
+    merchantSelect.disabled = false;
     if (preview) preview.textContent = `Affected order: ${operation.operationNumber || reference}. The account impact will be calculated after approval.`;
     clearFormError(errorId);
     return true;
   } catch (exception) {
     merchantSelect.value = "";
-    merchantSelect.disabled = true;
     showFormError(errorId, getFriendlyWorkspaceError(exception));
     return false;
   }
@@ -7482,23 +7476,21 @@ async function loadMerchantBalance() {
     const breakdown = account.breakdown || {};
     const classification = account.classification || {};
     status.textContent = "Loaded";
-    const amountDue = Number(balance.amountDue || 0);
-    const moneyReceived = Number(breakdown.paymentsReceived || 0);
-    const moneyRefunded = Number(breakdown.cashRefunded || 0);
-    const netCollected = Number(account.netCollected ?? (moneyReceived - moneyRefunded));
-    const totalSales = Number(breakdown.saleTotal || 0);
-    const acceptedReturns = Number(breakdown.returnTotal || 0);
+    const amountDue = Number(breakdown.remainingOwed ?? balance.amountDue ?? 0);
+    const moneyRefunded = Number(breakdown.refunds ?? breakdown.cashRefunded ?? 0);
+    const netCollected = Number(breakdown.netCollected ?? account.netCollected ?? 0);
+    const totalSales = Number(breakdown.totalSales ?? breakdown.saleTotal ?? 0);
+    const acceptedReturns = Number(breakdown.acceptedReturnValue ?? breakdown.returnTotal ?? 0);
     const additionalCharges = Number(breakdown.additionalCharges || 0);
     const amountReductions = Number(breakdown.balanceReductions || 0);
-    const refundDue = Number(balance.reservedRefunds || 0);
     panel.innerHTML = `
       <article class="merchant-account-answer"><span>Total sales</span><strong>${escapeHtml(formatMoney(totalSales))}</strong><p>Completed merchant sales.</p></article>
       <article class="merchant-account-answer is-net"><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong><p>Confirmed collections minus completed cash refunds.</p></article>
       <article class="merchant-account-answer is-due"><span>Remaining owed</span><strong>${escapeHtml(formatMoney(amountDue))}</strong><p>The confirmed amount still to collect.</p></article>
-      <article class="merchant-account-answer"><span>Refunds</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong><p>Paid refunds; approved/due amounts are in account details.</p></article>
-      <article class="merchant-account-answer"><span>Accepted return value</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong><p>Accepted returns credited to the account.</p></article>
-      <article class="merchant-account-answer"><span>Additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong><p>Approved charges.</p></article>
-      <article class="merchant-account-answer"><span>Amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong><p>Approved reductions.</p></article>`;
+      <article class="merchant-account-answer"><span>Refunds</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong><p>Approved and paid cash refunds.</p></article>
+      <article class="merchant-account-answer"><span>Accepted return value</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong><p>Approved return and exchange credits.</p></article>
+      <article class="merchant-account-answer"><span>Additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong><p>Approved charges, including higher-value exchanges.</p></article>
+      <article class="merchant-account-answer"><span>Amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong><p>Approved reductions applied to the account.</p></article>`;
     const detailPanel = document.getElementById("merchant-account-detail-panel");
     if (detailPanel) {
       const profile = account.profile || {};
@@ -7512,14 +7504,10 @@ async function loadMerchantBalance() {
         <div><span>Total sales</span><strong>${escapeHtml(formatMoney(totalSales))}</strong></div>
         <div><span>Net collected</span><strong>${escapeHtml(formatMoney(netCollected))}</strong></div>
         <div><span>Remaining owed</span><strong>${escapeHtml(formatMoney(amountDue))}</strong></div>
-        <div><span>Refunds paid</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong></div>
-        <div><span>Refunds approved / due</span><strong>${escapeHtml(formatMoney(refundDue))}</strong></div>
-        <div><span>Refunds applied as reductions</span><strong>${escapeHtml(formatMoney(breakdown.refundsApplied || 0))}</strong></div>
+        <div><span>Refunds</span><strong>${escapeHtml(formatMoney(moneyRefunded))}</strong></div>
         <div><span>Accepted return value</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong></div>
-        <div><span>Accepted return value applied</span><strong>${escapeHtml(formatMoney(breakdown.returnValueApplied || 0))}</strong></div>
-        <div><span>Approved additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong></div>
-        <div><span>Approved amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong></div>
-        <div><span>Money waiting for approval</span><strong>${escapeHtml(formatMoney(balance.pendingCollections || 0))}</strong></div>
+        <div><span>Additional charges</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong></div>
+        <div><span>Amount reductions</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong></div>
         <div><span>Account health</span><strong>${escapeHtml(merchantAccountGrade(classification))}</strong></div>
         <div class="full-span"><span>Account notes</span><strong>${escapeHtml(merchantAccountFlags(classification.flags || []))}</strong></div>`;
     }
@@ -7724,6 +7712,10 @@ function togglePaymentAuditDetails(row, item) {
     ["Operation", item.operationNumber || (item.operationId ? shortId(item.operationId, "OP") : "-")],
     ["Payment", item.paymentLogId ? shortId(item.paymentLogId, "PAY") : "-"],
     ["Collection", item.collectionDraftId ? shortId(item.collectionDraftId, "COL") : "-"],
+    ["Scope", item.scope === "MerchantAccount" ? "Merchant account" : "Other payment"],
+    ["Method", movementMethodLabel(item.paymentMethod)],
+    ["Transaction reference", item.transactionReference || "-"],
+    ["Status", `${paymentWorkflowStatusLabel(item.previousStatus)} → ${paymentWorkflowStatusLabel(item.newStatus)}`],
     ["Correlation", item.correlationId || "-"],
     ["Idempotency", item.idempotencyKey || "-"],
     ["Recorded details", item.dataJson ? displaySafeText(item.dataJson, "AUD") : "-" ]

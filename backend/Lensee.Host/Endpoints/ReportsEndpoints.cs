@@ -728,14 +728,13 @@ public static partial class ReportsEndpoints
                 merchant.Id,
                 merchant.BusinessName,
                 merchant.Status,
-                accountBreakdown?.SaleTotal ?? 0m,
-                accountBreakdown?.ReturnTotal ?? 0m,
-                accountBreakdown?.ChangeNet ?? 0m,
-                accountBreakdown?.PaymentsReceived ?? 0m,
-                accountBreakdown?.CashRefunded ?? 0m,
+                accountBreakdown?.TotalSales ?? 0m,
+                accountBreakdown?.NetCollected ?? 0m,
+                accountBreakdown?.RemainingOwed ?? 0m,
+                accountBreakdown?.Refunds ?? 0m,
+                accountBreakdown?.AcceptedReturnValue ?? 0m,
                 accountBreakdown?.AdditionalCharges ?? 0m,
-                accountBreakdown?.BalanceReductions ?? 0m,
-                accountBreakdown?.Balance ?? 0m));
+                accountBreakdown?.AmountReductions ?? 0m));
         }
 
         return Results.Ok(rows);
@@ -1159,14 +1158,10 @@ public static partial class ReportsEndpoints
             new("Contact person", merchant.ContactPersonName),
             new("Phone", JoinValues(merchant.PhoneNumbers)),
             new("Statement period", from.HasValue || to.HasValue ? $"{from:yyyy-MM-dd} to {to:yyyy-MM-dd}" : "Current month"),
-            new("Opening balance", FormatMoney(openingBalance)),
-            new("Amount due", FormatMoney(account?.AmountDue ?? 0m)),
-            new("Credit available", FormatMoney(account?.CreditAvailable ?? 0m)),
-            new("Closing amount due", FormatMoney(Math.Max(closingBalance, 0m))),
-            new("Closing merchant credit", FormatMoney(Math.Max(-closingBalance, 0m))),
-            new("Net collected", FormatMoney((accountBreakdown?.PaymentsReceived ?? 0m) - (accountBreakdown?.CashRefunded ?? 0m))),
-            new("Pending collections", FormatMoney(account?.PendingCollections ?? 0m)),
-            new("Refund waiting to be paid", FormatMoney(account?.ReservedRefunds ?? 0m))
+            new("Total sales", FormatMoney(accountBreakdown?.TotalSales ?? 0m)),
+            new("Net collected", FormatMoney(accountBreakdown?.NetCollected ?? 0m)),
+            new("Remaining owed", FormatMoney(accountBreakdown?.RemainingOwed ?? 0m)),
+            new("Refunds", FormatMoney(accountBreakdown?.Refunds ?? 0m))
         };
 
         var sections = new List<PdfSection>
@@ -1174,15 +1169,13 @@ public static partial class ReportsEndpoints
             new(
                 "Account summary",
                 [
-                    new PdfFact("Sales added", FormatMoney(accountBreakdown?.SaleTotal ?? 0m)),
-                    new PdfFact("Returns accepted", FormatMoney(accountBreakdown?.ReturnTotal ?? 0m)),
-                    new PdfFact("Exchange difference", FormatMoney(accountBreakdown?.ChangeNet ?? 0m)),
-                    new PdfFact("Money received", FormatMoney(accountBreakdown?.PaymentsReceived ?? 0m)),
-                    new PdfFact("Money refunded", FormatMoney(accountBreakdown?.CashRefunded ?? 0m)),
-                    new PdfFact("Net collected", FormatMoney((accountBreakdown?.PaymentsReceived ?? 0m) - (accountBreakdown?.CashRefunded ?? 0m))),
+                    new PdfFact("Total sales", FormatMoney(accountBreakdown?.TotalSales ?? 0m)),
+                    new PdfFact("Net collected", FormatMoney(accountBreakdown?.NetCollected ?? 0m)),
+                    new PdfFact("Remaining owed", FormatMoney(accountBreakdown?.RemainingOwed ?? 0m)),
+                    new PdfFact("Refunds", FormatMoney(accountBreakdown?.Refunds ?? 0m)),
+                    new PdfFact("Accepted return value", FormatMoney(accountBreakdown?.AcceptedReturnValue ?? 0m)),
                     new PdfFact("Additional charges", FormatMoney(accountBreakdown?.AdditionalCharges ?? 0m)),
-                    new PdfFact("Amount reduced", FormatMoney(accountBreakdown?.BalanceReductions ?? 0m)),
-                    new PdfFact("Amount due now", FormatMoney(account?.AmountDue ?? 0m))
+                    new PdfFact("Amount reductions", FormatMoney(accountBreakdown?.AmountReductions ?? 0m))
                 ]),
             new(
                 "Account activity",
@@ -1793,7 +1786,7 @@ public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? Operati
 
 public sealed record SupplyLandedCostReportRow(Guid Id, string ShipmentNumber, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, int Quantity, decimal ProductSubtotal, decimal CostSubtotal, decimal LandedTotal, Guid? InventoryReceiptOperationId, string? InventoryReceiptOperationNumber);
 
-public sealed record MerchantBalanceReportRow(Guid MerchantId, string BusinessName, string Status, decimal SaleTotal, decimal ReturnTotal, decimal ChangeNet, decimal PaymentsReceived, decimal CashRefunded, decimal AdditionalCharges, decimal BalanceReductions, decimal Balance);
+public sealed record MerchantBalanceReportRow(Guid MerchantId, string BusinessName, string Status, decimal TotalSales, decimal NetCollected, decimal RemainingOwed, decimal Refunds, decimal AcceptedReturnValue, decimal AdditionalCharges, decimal AmountReductions);
 
 public sealed record CreateExportLogRequest(string ReportType, string? GeneratedUrl);
 

@@ -285,7 +285,6 @@ builder.Services.AddScoped<StocktakeBalanceLockService>();
 builder.Services.AddScoped<MerchantBalanceService>();
 builder.Services.AddScoped<MerchantAccountService>();
 builder.Services.AddScoped<OperationCompletionService>();
-builder.Services.AddScoped<MerchantAccountReconciliationService>();
 builder.Services.AddScoped<MerchantBatchHistoryService>();
 builder.Services.AddScoped<MerchantExpiryRecallService>();
 builder.Services.AddScoped<TargetReplenishmentService>();
