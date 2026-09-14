@@ -1637,6 +1637,7 @@ public static class OperationsEndpoints
         NotificationsDbContext notificationsDbContext,
         IAppEventPublisher eventPublisher,
         MerchantAccountService merchantAccountService,
+        OperationCompletionService operationCompletionService,
         ICurrentUser currentUser,
         IClock clock,
         IAuditLogWriter auditLogWriter,
@@ -1757,13 +1758,11 @@ public static class OperationsEndpoints
                 await AddVersionAsync(operationsDbContext, operation, operation.OperationType == Reserve ? "Representative received stock" : "Customer completed sale", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
             }
 
-            await crmDbContext.SaveChangesAsync(cancellationToken);
-            await operationsDbContext.SaveChangesAsync(cancellationToken);
+            await operationCompletionService.SaveAsync(cancellationToken);
             if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Completed)
             {
                 await EnsureAnonymousRetailCashMerchantAsync(operation, crmDbContext, clock.EgyptNow, cancellationToken);
-                await crmDbContext.SaveChangesAsync(cancellationToken);
-                await operationsDbContext.SaveChangesAsync(cancellationToken);
+                await operationCompletionService.SaveAsync(cancellationToken);
                 if (operation.ClientId is { } merchantId)
                 {
                     await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, clock.EgyptNow, "Completed sale.", cancellationToken);

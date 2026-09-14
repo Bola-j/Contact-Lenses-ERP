@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.CRM.Data;
@@ -111,6 +112,44 @@ public static class PaymentsEndpoints
                 row.PostedBy);
         }));
     }
+
+    private static string DocumentRecordCode(string prefix, Guid id)
+    {
+        const string alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        var value = new BigInteger(id.ToByteArray(), isUnsigned: true, isBigEndian: false);
+        var characters = new char[26];
+        for (var index = characters.Length - 1; index >= 0; index--)
+        {
+            characters[index] = alphabet[(int)(value & 31)];
+            value >>= 5;
+        }
+
+        return $"{prefix}-{new string(characters)}";
+    }
+
+    private static string DescribePaymentMethod(string? value) => value switch
+    {
+        null or "" => "-",
+        "CashHandToHand" => "Cash hand to hand",
+        "CashTransaction" => "Cash transaction",
+        "BankTransfer" => "Bank transfer",
+        "Wallet" => "Wallet",
+        "MerchantAccount" or "Installment" or "Installlaugment" => "Merchant account",
+        _ => value
+    };
+
+    private static string DescribeMerchantAccountEntry(string entryType) => entryType switch
+    {
+        "SaleCharge" => "Sale added",
+        "ReturnCredit" => "Return accepted",
+        "ExchangeSurcharge" => "Exchange amount added",
+        "ExchangeCredit" => "Exchange credit added",
+        "Collection" => "Money received",
+        "RefundPayout" => "Money refunded",
+        "AdditionalCharge" => "Additional charge added",
+        "BalanceReduction" => "Amount reduced",
+        _ => "Account activity"
+    };
 
     private static async Task<IResult> ListPaymentLogsAsync(
         string? status,
@@ -2205,5 +2244,18 @@ public sealed record FinancialAdjustmentResponse(Guid Id, Guid MerchantId, Guid?
 public sealed record PaymentHistoryResponse(Guid Id, string RecordType, Guid? OperationId, string? OperationNumber, string? OperationType, Guid? MerchantId, string? MerchantName, string? BuyerName, string? PaymentMethod, decimal Amount, string Status, DateTime HappenedAt, string? ActorName, string? Notes);
 
 public sealed record PaymentStageResponse(string StageType, DateTime HappenedAt, string? ActorName, decimal Amount, string? PaymentMethod, string Status, string? Notes, string? OperationNumber);
+
+public sealed record MerchantAccountStatementResponse(
+    Guid Id,
+    string EntryType,
+    string EventLabel,
+    string SourceReference,
+    string? PaymentMethod,
+    string MethodLabel,
+    decimal DebitAmount,
+    decimal CreditAmount,
+    decimal RunningBalance,
+    DateTime PostedAt,
+    Guid PostedBy);
 
 internal sealed record PaymentOperationContext(Guid OperationId, string OperationNumber, string OperationType, string? BuyerName);

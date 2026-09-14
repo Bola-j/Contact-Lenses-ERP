@@ -56,3 +56,8 @@ scripts/capture-user-manual-screenshots.py
 .env.production.example
 .env.example
 docs/SHOPIFY_INTEGRATION_CONFIGURATION.md
+artifacts/analyzer-manual/
+artifacts/certification/
+artifacts/report-format-reference-2026-09-10/
+artifacts/reporting-refactor-2026-09-10/
+artifacts/workload/
