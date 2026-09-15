@@ -14,6 +14,10 @@ public partial class OperationLog
     public string OperationType { get; set; } = null!;
 
     public string Status { get; set; } = null!;
+    public string FinancialClosureStatus { get; set; } = "Open";
+    public Guid? FinancialClosureProposalId { get; set; }
+    public Guid? FinanciallyClosedBy { get; set; }
+    public DateTime? FinanciallyClosedAt { get; set; }
 
     public Guid? SourceLocationId { get; set; }
 

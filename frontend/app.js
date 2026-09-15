@@ -821,6 +821,7 @@ const arabicTranslations = Object.freeze({
   "WholesaleSale": "بيع جملة",
   "RetailSale": "بيع قطاعي / أونلاين",
   "Reserve": "حجز للمندوب",
+  "Representative reserve": "حجز للمندوب",
   "WriteOff": "إعدام / تسوية مخزون",
   "CashHandToHand": "نقدي مباشر",
   "CashTransaction": "تحويل أو إيداع نقدي",
@@ -4846,7 +4847,7 @@ async function addMerchantNote(merchantId) {
 async function renderOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
-  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "Change", "WriteOff"];
+  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "Return", "Change", "WriteOff"];
   operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : "WarehouseTransfer";
   document.getElementById("view").innerHTML = `
     ${pageIntro({
@@ -4870,7 +4871,7 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">Create</span>
             </div>
-          <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
+          <div class="field"><label for="op-type">Type</label><select id="op-type" class="select"><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail/online sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Change</option><option value="WriteOff">Write-off</option></select></div>
             <div class="field"><label for="op-source">Source location</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">Destination location</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">Merchant</label><select id="op-merchant" class="select"></select></div>
@@ -4899,7 +4900,7 @@ async function renderOperations() {
       </div>
       <div class="toolbar">
         <label class="field"><span>Search</span><input id="operations-search" class="input" type="search" placeholder="Operation, merchant, buyer, SKU, or payment reference"></label>
-        <label class="field"><span>Type</span><select id="operations-type" class="select"><option value="">All types</option><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail sale</option><option value="Return">Return</option><option value="Change">Exchange</option><option value="WriteOff">Write-off</option></select></label>
+        <label class="field"><span>Type</span><select id="operations-type" class="select"><option value="">All types</option><option value="InventoryReceipt">Inventory receipt</option><option value="WarehouseTransfer">Warehouse transfer</option><option value="WholesaleSale">Wholesale sale</option><option value="RetailSale">Retail sale</option><option value="Reserve">Representative reserve</option><option value="Return">Return</option><option value="Change">Exchange</option><option value="WriteOff">Write-off</option></select></label>
         <label class="field"><span>Status</span><select id="operations-status" class="select"><option value="">All statuses</option><option value="Draft">Draft</option><option value="Confirmed">Confirmed</option><option value="Reserved">Reserved</option><option value="Shipped">Shipped</option><option value="Received">Received</option><option value="Completed">Completed</option><option value="Cancelled">Cancelled</option></select></label>
         <label class="field"><span>From</span><input id="operations-from" class="input" type="date"></label>
         <label class="field"><span>To</span><input id="operations-to" class="input" type="date"></label>
@@ -6115,10 +6116,6 @@ async function loadOperations() {
 async function submitOperationEditor(event) {
   event.preventDefault();
   const type = canonicalSelectValue("op-type", "operationType");
-  if (type === "Reserve") {
-    notice("Reserve is temporarily unavailable.", "error");
-    return;
-  }
   const lines = readOperationLines(type);
   const isShopifyDraft = operationsUiState.mode === "edit" && document.getElementById("operation-form")?.dataset.shopifyDraft === "true";
   if (isShopifyDraft && operationsUiState.operationId) {
@@ -6612,7 +6609,7 @@ async function renderPayments() {
       </section>` : ""}
       ${canDraft ? `<section data-payment-panel="tools" class="band compact-band payment-tool-card">
         <h2>Financial adjustment</h2>
-        <p class="muted-text">Adjust the merchant account as a whole, or optionally link a specific mini-invoice. Cash refunds keep an order link because the paid cash movement must be reconciled.</p>
+        <p class="muted-text">Adjust the merchant account as a whole, or optionally link a specific mini-invoice. A cash refund belongs to the merchant account even when its original sale is unknown.</p>
         <form id="financial-adjustment-form" class="form grid-form">
           <div class="form-error full-span" id="financial-adjustment-error" hidden></div>
           <div class="field"><label for="adjustment-merchant">Merchant</label><select id="adjustment-merchant" class="select" required><option value="">Choose merchant...</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
@@ -6641,6 +6638,11 @@ async function renderPayments() {
       <section class="merchant-order-ledger">
         <div class="section-head tight-head"><div><h3>Orders and mini-invoices</h3><p>Each wholesale order, its collections, and its remaining amount.</p></div></div>
         <div class="table-wrap"><table><thead><tr><th>Order</th><th>Date</th><th>Items</th><th>Sale total</th><th>Collected</th><th>Returns</th><th>Charges</th><th>Reductions</th><th>Refunds</th><th>Remaining</th><th>Status</th></tr></thead><tbody id="merchant-order-rows"><tr><td colspan="11">Show an account to view orders.</td></tr></tbody></table></div>
+      </section>
+      <section class="merchant-financial-closure" id="merchant-financial-closure" hidden>
+        <div class="section-head tight-head"><div><h3>إغلاق مالي للمبيعات المسددة</h3><p>اختر المبيعات المسددة بالكامل لإرسالها إلى اعتماد المدير.</p></div><button id="merchant-closure-submit" class="button primary" type="button" hidden>إرسال للإغلاق المالي</button></div>
+        <div class="table-wrap"><table><thead><tr><th>اختيار</th><th>رقم العملية</th><th>قيمة البيع</th><th>المسدد</th><th>المتبقي</th></tr></thead><tbody id="merchant-closure-rows"><tr><td colspan="5">لا توجد مبيعات مؤهلة للإغلاق المالي.</td></tr></tbody></table></div>
+        <div id="merchant-closure-review" hidden></div>
       </section>
       <div class="section-head merchant-activity-head"><div><h3>Recent activity</h3><p>Every confirmed amount added to or removed from this merchant account.</p></div></div>
       <div class="table-wrap statement-table-wrap"><table><thead><tr><th>When</th><th>What happened</th><th>Related record</th><th>How</th><th>Added</th><th>Reduced</th><th>Balance</th></tr></thead><tbody id="merchant-statement-rows"><tr><td colspan="7">Show a merchant account to view activity.</td></tr></tbody></table></div>
@@ -7399,11 +7401,6 @@ async function createFinancialAdjustment(event) {
     showFormError("financial-adjustment-error", "An additional charge requires a reason.");
     return;
   }
-  if (adjustmentType === "CashRefund" && !operationId) {
-    showFormError("financial-adjustment-error", "Choose the related order before requesting a cash refund.");
-    return;
-  }
-
   try {
     await request("/api/v1/payments/adjustments", {
       method: "POST",
@@ -7530,12 +7527,68 @@ async function loadMerchantBalance() {
       orderRows.replaceChildren(...(orders.length ? orders.map((order) => {
         const row = document.createElement("tr");
         const items = (order.lines || []).map((line) => `${line.productName || line.skuCode || "Item"} × ${line.quantity}`).join(", ");
-        [order.operationNumber || shortId(order.operationId, "OP"), formatDateTime(order.date), items || "-", formatMoney(order.saleTotal), formatMoney(order.collectionsAllocated), formatMoney(order.acceptedReturns), formatMoney(order.additionalCharges), formatMoney(order.amountReductions), formatMoney(order.refunds), formatMoney(order.remaining), paymentWorkflowStatusLabel(order.status)].forEach((value) => { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); });
+        const financialState = order.financialClosureStatus === "FinanciallyClosed" ? " · Financially closed" : "";
+        [order.operationNumber || shortId(order.operationId, "OP"), formatDateTime(order.date), items || "-", formatMoney(order.saleTotal), formatMoney(order.collectionsAllocated), formatMoney(order.acceptedReturns), formatMoney(order.additionalCharges), formatMoney(order.amountReductions), formatMoney(order.refunds), formatMoney(order.remaining), paymentWorkflowStatusLabel(order.status) + financialState].forEach((value) => { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); });
         return row;
       }) : [paymentEmptyTableRow(11, "No completed merchant orders yet.")]));
     }
+    void loadMerchantFinancialClosure(merchantId);
   } catch (exception) {
     status.textContent = getFriendlyWorkspaceError(exception);
+  }
+}
+
+async function loadMerchantFinancialClosure(merchantId) {
+  const section = document.getElementById("merchant-financial-closure");
+  const rows = document.getElementById("merchant-closure-rows");
+  const submit = document.getElementById("merchant-closure-submit");
+  if (!section || !rows || !submit) return;
+  try {
+    const eligible = await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/eligible`);
+    if (document.getElementById("payment-merchant")?.value !== merchantId) return;
+    const items = Array.isArray(eligible) ? eligible : [];
+    section.hidden = false;
+    rows.replaceChildren(...(items.length ? items.map((item) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td><input type="checkbox" data-closure-operation="${escapeHtml(item.id)}" aria-label="اختيار ${escapeHtml(item.operationNumber)}"></td><td>${escapeHtml(item.operationNumber)}</td><td>${escapeHtml(formatMoney(item.settlementAmount))}</td><td>${escapeHtml(formatMoney(item.allocatedAmount))}</td><td>${escapeHtml(formatMoney(item.remainingAmount))}</td>`;
+      return row;
+    }) : [paymentEmptyTableRow(5, "لا توجد مبيعات مؤهلة للإغلاق المالي.")]));
+    const canSubmit = ["Accountant", "Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+    submit.hidden = !canSubmit || !items.length;
+    const review = document.getElementById("merchant-closure-review");
+    if (review) {
+      review.hidden = !["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+      if (!review.hidden) {
+        try {
+          const proposals = await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`);
+          const pending = (Array.isArray(proposals) ? proposals : []).filter((proposal) => proposal.status === "PendingAdminReview");
+          review.innerHTML = pending.length ? `<h4>طلبات الإغلاق المالي</h4>${pending.map((proposal) => {
+            const itemMarkup = (proposal.items || []).map((item) => `<label><input type="checkbox" data-review-operation="${escapeHtml(item.operationId)}" checked> ${escapeHtml(item.operationNumber)} — ${escapeHtml(formatMoney(item.settlementAmount))}</label>`).join(" ");
+            return `<div class="closure-review-card" data-closure-proposal="${escapeHtml(proposal.id)}"><p>طلب بتاريخ ${escapeHtml(formatDateTime(proposal.submittedAt))}</p><div>${itemMarkup}</div><button class="button secondary" type="button" data-review-closure="${escapeHtml(proposal.id)}">اعتماد الاختيار ورفض الباقي</button></div>`;
+          }).join("")}` : "";
+          review.querySelectorAll("[data-review-closure]").forEach((button) => button.addEventListener("click", async () => {
+            const card = button.closest("[data-closure-proposal]");
+            const approvedOperationIds = [...card.querySelectorAll("[data-review-operation]:checked")].map((input) => input.dataset.reviewOperation);
+            try {
+              await request(`/api/v1/payments/financial-closure/proposals/${button.dataset.reviewClosure}/review`, { method: "POST", body: JSON.stringify({ approvedOperationIds, rejectionReason: "Rejected by Admin selection." }) });
+              notice("تم اعتماد الإغلاق المالي.", "success");
+              await loadMerchantFinancialClosure(merchantId);
+            } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
+          }));
+        } catch (exception) { review.textContent = getFriendlyWorkspaceError(exception); }
+      }
+    }
+    submit.onclick = async () => {
+      const operationIds = [...document.querySelectorAll("[data-closure-operation]:checked")].map((node) => node.dataset.closureOperation);
+      if (!operationIds.length) { notice("اختر عملية واحدة على الأقل.", "error"); return; }
+      try {
+        await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ operationIds, notes: null }) });
+        notice("تم إرسال طلب الإغلاق المالي للمراجعة.", "success");
+        await loadMerchantFinancialClosure(merchantId);
+      } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
+    };
+  } catch (exception) {
+    section.hidden = true;
   }
 }
 

@@ -61,7 +61,7 @@ public static class FinancialProjection
             .Where(subLog => subLog.SubLogStatus == Confirmed && effectiveOperationIds.Contains(subLog.MainLog.OperationId))
             .Sum(subLog => subLog.Amount);
         var completedCashRecords = cashRecords
-            .Where(record => record.Status == Completed && effectiveOperationIds.Contains(record.OperationId))
+            .Where(record => record.Status == Completed && record.OperationId.HasValue && effectiveOperationIds.Contains(record.OperationId.Value))
             .ToArray();
         var cashReceived = completedCashRecords
             .Where(record => record.PaymentType == CashReceived)

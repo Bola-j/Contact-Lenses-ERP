@@ -36,10 +36,46 @@ public partial class PaymentsDbContext : DbContext
     public virtual DbSet<MerchantAccountCollectionDraft> MerchantAccountCollectionDrafts { get; set; }
 
     public virtual DbSet<PaymentAuditEvent> PaymentAuditEvents { get; set; }
+    public virtual DbSet<MerchantFinancialClosureProposal> MerchantFinancialClosureProposals { get; set; }
+    public virtual DbSet<MerchantFinancialClosureItem> MerchantFinancialClosureItems { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<MerchantFinancialClosureProposal>(entity =>
+        {
+            entity.ToTable("merchant_financial_closure_proposals", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_financial_closure_proposal_status", "status in ('PendingAdminReview','PartiallyApproved','Approved','Rejected')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.AccountId, x.Status });
+            entity.HasIndex(x => new { x.AccountId, x.IdempotencyKey }).IsUnique().HasFilter("(idempotency_key IS NOT NULL)");
+            entity.Property(x => x.Id).HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("PendingAdminReview");
+            entity.Property(x => x.SubmittedAt).HasColumnType("timestamp without time zone").HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(x => x.ReviewedAt).HasColumnType("timestamp without time zone");
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(200);
+            entity.HasMany(x => x.Items).WithOne(x => x.Proposal).HasForeignKey(x => x.ProposalId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<MerchantFinancialClosureItem>(entity =>
+        {
+            entity.ToTable("merchant_financial_closure_items", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_financial_closure_item_decision", "decision in ('Pending','Approved','Rejected')");
+                table.HasCheckConstraint("chk_financial_closure_item_amount", "settlement_amount >= 0 and remaining_amount >= 0");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.ProposalId, x.OperationId }).IsUnique();
+            entity.HasIndex(x => x.OperationId);
+            entity.Property(x => x.Id).HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(x => x.OperationNumber).HasMaxLength(50).IsRequired();
+            entity.Property(x => x.SettlementAmount).HasPrecision(18, 4);
+            entity.Property(x => x.RemainingAmount).HasPrecision(18, 4);
+            entity.Property(x => x.Decision).HasMaxLength(20).HasDefaultValue("Pending");
+            entity.Property(x => x.DecidedAt).HasColumnType("timestamp without time zone");
+        });
 
         modelBuilder.Entity<CashRecord>(entity =>
         {
@@ -50,11 +86,13 @@ public partial class PaymentsDbContext : DbContext
                 table.HasCheckConstraint("chk_cash_payment_type", "payment_type in ('CashReceived','CashRefund')");
                 table.HasCheckConstraint("chk_cash_status", "status in ('PendingAccountant','Completed','Cancelled')");
                 table.HasCheckConstraint("chk_cash_amount", "amount > 0");
+                table.HasCheckConstraint("chk_cash_record_scope", "operation_id is not null or merchant_id is not null");
             });
 
             entity.HasIndex(e => e.PaymentDate, "idx_cash_records_date").IsDescending();
 
             entity.HasIndex(e => e.OperationId, "idx_cash_records_operation");
+            entity.HasIndex(e => e.MerchantId, "idx_cash_records_merchant").HasFilter("(merchant_id IS NOT NULL)");
             entity.HasIndex(e => e.FinancialAdjustmentId, "idx_cash_records_adjustment")
                 .HasFilter("(financial_adjustment_id IS NOT NULL)");
 
@@ -70,6 +108,7 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(e => e.FinancialAdjustmentId).HasColumnName("financial_adjustment_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.MerchantId).HasColumnName("merchant_id");
             entity.Property(e => e.PaymentDate)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnType("timestamp without time zone")

@@ -246,7 +246,7 @@ public static partial class ReportsEndpoints
             .Where(value => !value.MainLog.IsDeleted && value.SubLogStatus == "Confirmed" && effectiveOperationIds.Contains(value.MainLog.OperationId))
             .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
         var cashTotals = await paymentsDbContext.CashRecords.AsNoTracking()
-            .Where(value => value.Status == Completed && effectiveOperationIds.Contains(value.OperationId))
+            .Where(value => value.Status == Completed && value.OperationId.HasValue && effectiveOperationIds.Contains(value.OperationId.Value))
             .GroupBy(value => value.PaymentType)
             .Select(group => new { PaymentType = group.Key, Amount = group.Sum(value => value.Amount) })
             .ToDictionaryAsync(value => value.PaymentType, value => value.Amount, cancellationToken);
@@ -445,9 +445,9 @@ public static partial class ReportsEndpoints
             .ToDictionaryAsync(operation => operation.Id, operation => new { operation.OperationNumber, operation.ClientId }, cancellationToken);
         var logIds = logs.Select(log => log.Id).ToArray();
         var cashByOperation = (await paymentsDbContext.CashRecords
-            .Where(record => operationIds.Contains(record.OperationId))
+            .Where(record => record.OperationId.HasValue && operationIds.Contains(record.OperationId.Value))
             .ToListAsync(cancellationToken))
-            .GroupBy(record => record.OperationId)
+            .GroupBy(record => record.OperationId!.Value)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
         var adjustmentsByLog = (await paymentsDbContext.FinancialAdjustments
             .Where(adjustment => adjustment.PaymentLogId.HasValue && logIds.Contains(adjustment.PaymentLogId.Value))
@@ -1128,11 +1128,11 @@ public static partial class ReportsEndpoints
             .Distinct()
             .ToArray();
         var cashRecords = await paymentsDbContext.CashRecords
-            .Where(value => operationIds.Contains(value.OperationId))
+            .Where(value => value.OperationId.HasValue && operationIds.Contains(value.OperationId.Value))
             .OrderByDescending(value => value.PaymentDate)
             .ToListAsync(cancellationToken);
         var cashByOperation = cashRecords
-            .GroupBy(value => value.OperationId)
+            .GroupBy(value => value.OperationId!.Value)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
         var adjustmentsByLog = adjustments
             .Where(value => value.PaymentLogId.HasValue)
@@ -1253,7 +1253,7 @@ public static partial class ReportsEndpoints
                         cashRecords.Select(record => (IReadOnlyList<string>)new[]
                         {
                             FormatDateTime(record.PaymentDate),
-                            operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? record.OperationId.ToString("N")[..8],
+                            operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? (record.OperationId?.ToString("N")[..8] ?? "Merchant account"),
                             DescribeCashRecordType(record.PaymentType),
                             FormatMoney(record.Amount),
                             GetUserDisplayName(record.CreatedBy, userLookup),

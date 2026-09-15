@@ -56,9 +56,13 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("text")
                         .HasColumnName("notes");
 
-                    b.Property<Guid>("OperationId")
+                    b.Property<Guid?>("OperationId")
                         .HasColumnType("uuid")
                         .HasColumnName("operation_id");
+
+                    b.Property<Guid?>("MerchantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_id");
 
                     b.Property<DateTime>("PaymentDate")
                         .ValueGeneratedOnAdd()
@@ -103,6 +107,9 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasIndex(new[] { "OperationId" }, "idx_cash_records_operation");
 
+                    b.HasIndex(new[] { "MerchantId" }, "idx_cash_records_merchant")
+                        .HasFilter("(merchant_id IS NOT NULL)");
+
                     b.ToTable("cash_records", "payments", t =>
                         {
                             t.HasCheckConstraint("chk_cash_amount", "amount > 0");
@@ -110,6 +117,8 @@ namespace Lensee.Modules.Payments.Migrations
                             t.HasCheckConstraint("chk_cash_payment_type", "payment_type in ('CashReceived','CashRefund')");
 
                             t.HasCheckConstraint("chk_cash_status", "status in ('PendingAccountant','Completed','Cancelled')");
+
+                            t.HasCheckConstraint("chk_cash_record_scope", "operation_id is not null or merchant_id is not null");
                         });
                 });
 
@@ -207,6 +216,55 @@ namespace Lensee.Modules.Payments.Migrations
                             t.HasCheckConstraint("chk_financial_adjustment_type", "adjustment_type in ('AdditionalCharge','BalanceReduction','CashRefund')");
                         });
                 });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantFinancialClosureProposal", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid").HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+                    b.Property<Guid>("AccountId").HasColumnType("uuid").HasColumnName("account_id");
+                    b.Property<string>("Status").IsRequired().ValueGeneratedOnAdd().HasMaxLength(40).HasColumnType("character varying(40)").HasColumnName("status").HasDefaultValue("PendingAdminReview");
+                    b.Property<Guid>("SubmittedBy").HasColumnType("uuid").HasColumnName("submitted_by");
+                    b.Property<DateTime>("SubmittedAt").ValueGeneratedOnAdd().HasColumnType("timestamp without time zone").HasColumnName("submitted_at").HasDefaultValueSql("CURRENT_TIMESTAMP");
+                    b.Property<Guid?>("ReviewedBy").HasColumnType("uuid").HasColumnName("reviewed_by");
+                    b.Property<DateTime?>("ReviewedAt").HasColumnType("timestamp without time zone").HasColumnName("reviewed_at");
+                    b.Property<string>("ReviewReason").HasColumnType("text").HasColumnName("review_reason");
+                    b.Property<string>("Notes").HasColumnType("text").HasColumnName("notes");
+                    b.Property<string>("IdempotencyKey").HasMaxLength(200).HasColumnType("character varying(200)").HasColumnName("idempotency_key");
+                    b.HasKey("Id").HasName("pk_merchant_financial_closure_proposals");
+                    b.HasIndex(new[] { "AccountId", "Status" }, "ix_closure_proposals_account_status");
+                    b.HasIndex(new[] { "AccountId", "IdempotencyKey" }, "uq_closure_proposals_account_idempotency").IsUnique().HasFilter("(idempotency_key IS NOT NULL)");
+                    b.ToTable("merchant_financial_closure_proposals", "payments", t => t.HasCheckConstraint("chk_financial_closure_proposal_status", "status in ('PendingAdminReview','PartiallyApproved','Approved','Rejected')"));
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantFinancialClosureItem", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid").HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+                    b.Property<Guid>("ProposalId").HasColumnType("uuid").HasColumnName("proposal_id");
+                    b.Property<Guid>("OperationId").HasColumnType("uuid").HasColumnName("operation_id");
+                    b.Property<string>("OperationNumber").IsRequired().HasMaxLength(50).HasColumnType("character varying(50)").HasColumnName("operation_number");
+                    b.Property<decimal>("SettlementAmount").HasPrecision(18, 4).HasColumnType("numeric(18,4)").HasColumnName("settlement_amount");
+                    b.Property<decimal>("RemainingAmount").HasPrecision(18, 4).HasColumnType("numeric(18,4)").HasColumnName("remaining_amount");
+                    b.Property<string>("Decision").IsRequired().ValueGeneratedOnAdd().HasMaxLength(20).HasColumnType("character varying(20)").HasColumnName("decision").HasDefaultValue("Pending");
+                    b.Property<string>("RejectionReason").HasColumnType("text").HasColumnName("rejection_reason");
+                    b.Property<Guid?>("DecidedBy").HasColumnType("uuid").HasColumnName("decided_by");
+                    b.Property<DateTime?>("DecidedAt").HasColumnType("timestamp without time zone").HasColumnName("decided_at");
+                    b.HasKey("Id").HasName("pk_merchant_financial_closure_items");
+                    b.HasIndex(new[] { "ProposalId", "OperationId" }, "ix_closure_items_proposal_operation").IsUnique();
+                    b.HasIndex("OperationId", "ix_closure_items_operation");
+                    b.ToTable("merchant_financial_closure_items", "payments", t => { t.HasCheckConstraint("chk_financial_closure_item_decision", "decision in ('Pending','Approved','Rejected')"); t.HasCheckConstraint("chk_financial_closure_item_amount", "settlement_amount >= 0 and remaining_amount >= 0"); });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantFinancialClosureItem", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.MerchantFinancialClosureProposal", "Proposal")
+                        .WithMany("Items")
+                        .HasForeignKey("ProposalId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_closure_item_proposal");
+                    b.Navigation("Proposal");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantFinancialClosureProposal", b => b.Navigation("Items"));
 
             modelBuilder.Entity("Lensee.Modules.Payments.Data.InstallmentSubLog", b =>
                 {

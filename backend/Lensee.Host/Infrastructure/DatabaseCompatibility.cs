@@ -55,6 +55,8 @@ public static class DatabaseCompatibility
                             (uuid_generate_v4(), 'ERPAdmin', 'inventory.write'),
                             (uuid_generate_v4(), 'ERPAdmin', 'operations.read'),
                             (uuid_generate_v4(), 'ERPAdmin', 'operations.write'),
+                            (uuid_generate_v4(), 'ERPAdmin', 'operations.corrections.request'),
+                            (uuid_generate_v4(), 'ERPAdmin', 'operations.corrections.approve'),
                             (uuid_generate_v4(), 'ERPAdmin', 'payments.read'),
                             (uuid_generate_v4(), 'ERPAdmin', 'payments.write'),
                             (uuid_generate_v4(), 'ERPAdmin', 'payments.draft'),
@@ -420,7 +422,8 @@ public static class DatabaseCompatibility
 
                 create table if not exists payments.cash_records (
                     id uuid primary key default uuid_generate_v4(),
-                    operation_id uuid not null,
+                    operation_id uuid,
+                    merchant_id uuid,
                     payment_type varchar(50) not null default 'CashReceived',
                     sub_type varchar(50),
                     amount numeric(18,4) not null,
@@ -465,6 +468,14 @@ public static class DatabaseCompatibility
 
                 create index if not exists idx_cash_records_operation
                     on payments.cash_records(operation_id);
+
+                alter table if exists payments.cash_records
+                    alter column operation_id drop not null;
+                alter table if exists payments.cash_records
+                    add column if not exists merchant_id uuid;
+                create index if not exists idx_cash_records_merchant
+                    on payments.cash_records(merchant_id)
+                    where merchant_id is not null;
 
                 create index if not exists idx_main_payment_operation
                     on payments.main_payment_logs(operation_id);

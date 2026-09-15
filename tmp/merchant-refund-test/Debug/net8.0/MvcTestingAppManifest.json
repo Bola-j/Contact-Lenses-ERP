@@ -1,0 +1,12 @@
+{
+  "Lensee.Host, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Host",
+  "Lensee.Modules.Catalog, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Catalog",
+  "Lensee.Modules.CRM, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.CRM",
+  "Lensee.Modules.Identity, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Identity",
+  "Lensee.Modules.Inventory, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Inventory",
+  "Lensee.Modules.Notifications, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Notifications",
+  "Lensee.Modules.Operations, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Operations",
+  "Lensee.Modules.Payments, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Payments",
+  "Lensee.Modules.Reporting, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.Modules.Reporting",
+  "Lensee.SharedKernel, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "D:\\LenseeProduction\\backend\\Lensee.SharedKernel"
+}

@@ -670,6 +670,7 @@ static async Task InitializeDatabaseAsync(WebApplication app)
     if (!autoMigrate)
     {
         await ValidatePendingMigrationsAsync(app, services);
+        await ValidateRequiredSchemaAsync(services);
         await ValidateShopifyStartupConfigurationAsync(services);
         return;
     }
@@ -816,6 +817,56 @@ static async Task ValidatePendingMigrationsAsync(WebApplication app, IServicePro
     if (pending.Count > 0)
     {
         throw new InvalidOperationException($"Database has pending EF migrations and Database:AutoMigrate is disabled: {string.Join(", ", pending)}.");
+    }
+}
+
+static async Task ValidateRequiredSchemaAsync(IServiceProvider services)
+{
+    var operations = services.GetRequiredService<OperationsDbContext>();
+    var payments = services.GetRequiredService<PaymentsDbContext>();
+    if (!operations.Database.IsRelational() || !payments.Database.IsRelational())
+    {
+        return;
+    }
+
+    var missing = new List<string>();
+    await using var connection = payments.Database.GetDbConnection();
+    if (connection.State != System.Data.ConnectionState.Open)
+    {
+        await connection.OpenAsync();
+    }
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        select required.table_schema || '.' || required.table_name || '.' || required.column_name
+        from (values
+            ('operations','operation_logs','financial_closure_status'),
+            ('operations','operation_logs','financial_closure_proposal_id'),
+            ('operations','operation_logs','financially_closed_by'),
+            ('operations','operation_logs','financially_closed_at'),
+            ('payments','cash_records','merchant_id'),
+            ('payments','merchant_financial_closure_proposals','id'),
+            ('payments','merchant_financial_closure_items','id')
+        ) required(table_schema, table_name, column_name)
+        where not exists (
+            select 1 from information_schema.columns c
+            where c.table_schema = required.table_schema
+              and c.table_name = required.table_name
+              and c.column_name = required.column_name
+        );
+        """;
+
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        missing.Add(reader.GetString(0));
+    }
+
+    if (missing.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Database schema is missing required financial workflow objects. Apply the latest Operations and Payments migrations before starting the host: "
+            + string.Join(", ", missing));
     }
 }
 

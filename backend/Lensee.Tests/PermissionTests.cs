@@ -24,6 +24,9 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.UsersWrite, permissions);
         Assert.Contains(LenseePermissions.InventoryWrite, permissions);
         Assert.Contains(LenseePermissions.PaymentsWrite, permissions);
+        Assert.Contains(LenseePermissions.OperationsRead, permissions);
+        Assert.Contains(LenseePermissions.OperationsWrite, permissions);
+        Assert.Contains(LenseePermissions.OperationsCorrectionsRequest, permissions);
         Assert.Contains(LenseePermissions.OperationsCorrectionsApprove, permissions);
         Assert.DoesNotContain(LenseePermissions.UsersPasswordWrite, permissions);
         Assert.DoesNotContain(LenseePermissions.SupplyRead, permissions);

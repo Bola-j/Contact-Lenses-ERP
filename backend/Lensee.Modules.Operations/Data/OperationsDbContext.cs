@@ -197,6 +197,7 @@ public partial class OperationsDbContext : DbContext
                 table.HasCheckConstraint(
                     "chk_op_status",
                     "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
+                table.HasCheckConstraint("chk_op_financial_closure_status", "financial_closure_status in ('Open','FinanciallyClosed')");
                 table.HasCheckConstraint(
                     "chk_op_payment_method",
                     "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
@@ -273,6 +274,10 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'Draft'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.FinancialClosureStatus).HasMaxLength(30).HasDefaultValue("Open").HasColumnName("financial_closure_status");
+            entity.Property(e => e.FinancialClosureProposalId).HasColumnName("financial_closure_proposal_id");
+            entity.Property(e => e.FinanciallyClosedBy).HasColumnName("financially_closed_by");
+            entity.Property(e => e.FinanciallyClosedAt).HasColumnType("timestamp without time zone").HasColumnName("financially_closed_at");
             entity.Property(e => e.RecordKind)
                 .HasMaxLength(30)
                 .HasDefaultValue("Standard")

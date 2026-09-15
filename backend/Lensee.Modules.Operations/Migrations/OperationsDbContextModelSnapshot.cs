@@ -473,6 +473,26 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("current_version_id");
 
+                    b.Property<DateTime?>("FinanciallyClosedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("financially_closed_at");
+
+                    b.Property<Guid?>("FinanciallyClosedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("financially_closed_by");
+
+                    b.Property<Guid?>("FinancialClosureProposalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("financial_closure_proposal_id");
+
+                    b.Property<string>("FinancialClosureStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("financial_closure_status")
+                        .HasDefaultValue("Open");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("deleted_at");
@@ -589,6 +609,8 @@ namespace Lensee.Modules.Operations.Migrations
                     b.ToTable("operation_logs", "operations", t =>
                         {
                             t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
+
+                            t.HasCheckConstraint("chk_op_financial_closure_status", "financial_closure_status in ('Open','FinanciallyClosed')");
 
                             t.HasCheckConstraint("chk_op_status", "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
 

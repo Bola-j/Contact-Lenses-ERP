@@ -960,13 +960,13 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var badType = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new { merchantId, adjustmentType = "Crypto", amount = 1m });
         var missingMerchant = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new { merchantId = Guid.NewGuid(), operationId = operation.Id.ToString(), adjustmentType = "MerchantCredit", amount = 1m });
         var wrongMerchantOperation = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new { merchantId = otherMerchantId, operationId = operation.Id.ToString(), adjustmentType = "MerchantCredit", amount = 1m });
-        var refundWithoutOperation = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new { merchantId, adjustmentType = "CashRefund", amount = 1m });
+        var refundWithoutOperation = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new { merchantId, adjustmentType = "CashRefund", amount = 1m, notes = "Merchant account refund without a source sale" });
 
         Assert.Equal(HttpStatusCode.BadRequest, zeroAmount.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, badType.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, missingMerchant.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, wrongMerchantOperation.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, refundWithoutOperation.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, refundWithoutOperation.StatusCode);
     }
 
     [Fact]
@@ -1453,13 +1453,13 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
-    public async Task WriteOff_IsAdminOnlyAndConsumesStock()
+    public async Task WriteOff_IsAvailableToErpAdminAndConsumesStock()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         using var clerk = _factory.CreateClient();
         clerk.AuthorizeAsAtLocation(LenseeRoles.WarehouseClerk, seed.MainLocationId, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
         using var admin = _factory.CreateClient();
-        admin.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+        admin.AuthorizeAs(LenseeRoles.ERPAdmin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
 
         var clerkResponse = await clerk.PostAsJsonAsync("/api/v1/operations", new
         {

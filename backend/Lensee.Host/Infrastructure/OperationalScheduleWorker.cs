@@ -101,8 +101,8 @@ public sealed class OperationalAlertScheduler
             .ToListAsync(cancellationToken);
         var operationIds = logs.Select(value => value.OperationId).ToArray();
         var logIds = logs.Select(value => value.Id).ToArray();
-        var cashByOperation = (await _payments.CashRecords.Where(value => operationIds.Contains(value.OperationId)).ToListAsync(cancellationToken))
-            .GroupBy(value => value.OperationId)
+        var cashByOperation = (await _payments.CashRecords.Where(value => value.OperationId.HasValue && operationIds.Contains(value.OperationId.Value)).ToListAsync(cancellationToken))
+            .GroupBy(value => value.OperationId!.Value)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
         var adjustmentsByLog = (await _payments.FinancialAdjustments.Where(value => value.PaymentLogId.HasValue && logIds.Contains(value.PaymentLogId.Value)).ToListAsync(cancellationToken))
             .GroupBy(value => value.PaymentLogId!.Value)

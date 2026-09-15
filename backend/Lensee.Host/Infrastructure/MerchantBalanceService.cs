@@ -51,11 +51,11 @@ public sealed class MerchantBalanceService
 
         var installmentSubLogs = await installmentQuery.ToListAsync(cancellationToken);
         var adjustments = await adjustmentQuery.ToListAsync(cancellationToken);
-        var cashRecords = operationIds.Length == 0
-            ? []
-            : await _paymentsDbContext.CashRecords
-                .Where(record => operationIds.Contains(record.OperationId) && record.Status == Completed)
-                .ToListAsync(cancellationToken);
+        var cashRecords = await _paymentsDbContext.CashRecords
+            .Where(record => record.Status == Completed &&
+                ((record.OperationId.HasValue && operationIds.Contains(record.OperationId.Value)) ||
+                 (!locationId.HasValue && record.MerchantId == merchantId)))
+            .ToListAsync(cancellationToken);
         var projection = FinancialProjection.Calculate(operations, installmentSubLogs, cashRecords, adjustments);
 
         return new MerchantBalanceSnapshot(

@@ -68,6 +68,11 @@ public static class PaymentsEndpoints
         group.MapGet("/merchant-accounts/{merchantId:guid}", GetMerchantAccountAsync).RequireAuthorization("payments.read");
         group.MapGet("/merchant-accounts/{merchantId:guid}/statement", GetMerchantStatementAsync).RequireAuthorization("payments.read");
         group.MapGet("/merchant-accounts/{merchantId:guid}/orders", GetMerchantOrdersAsync).RequireAuthorization("payments.read");
+        group.MapGet("/merchant-accounts/{merchantId:guid}/financial-closure/eligible", ListEligibleFinancialClosuresAsync).RequireAuthorization("payments.read");
+        group.MapGet("/financial-closure/proposals", ListFinancialClosureProposalsAsync).RequireAuthorization("payments.read");
+        group.MapGet("/merchant-accounts/{merchantId:guid}/financial-closure/proposals", ListMerchantFinancialClosureProposalsAsync).RequireAuthorization("payments.read");
+        group.MapPost("/merchant-accounts/{merchantId:guid}/financial-closure/proposals", CreateFinancialClosureProposalAsync).RequireAuthorization("payments.draft");
+        group.MapPost("/financial-closure/proposals/{id:guid}/review", ReviewFinancialClosureProposalAsync).RequireAuthorization("payments.approve");
         group.MapGet("/merchant-accounts/{merchantId:guid}/collections/preview", PreviewMerchantCollectionAsync).RequireAuthorization("payments.read");
         group.MapPost("/merchant-accounts/{merchantId:guid}/collections", RecordMerchantCollectionAsync).RequireAuthorization("payments.draft");
         group.MapGet("/merchant-account-collections", ListMerchantAccountCollectionDraftsAsync).RequireAuthorization("payments.read");
@@ -270,6 +275,7 @@ public static class PaymentsEndpoints
                 value.OperationNumber,
                 value.OperationType,
                 value.Status,
+                value.FinancialClosureStatus,
                 Date = value.ConfirmedAt ?? value.CreatedAt,
                 Lines = value.OperationLines.Select(line => new MerchantOrderLineResponse(line.ProductNameSnapshot, line.SkuCodeSnapshot, line.Quantity)).ToList()
             })
@@ -307,9 +313,73 @@ public static class PaymentsEndpoints
             var collectionsAllocated = allocatedByOperation.GetValueOrDefault(operation.Id);
             var remaining = Math.Max(saleTotal + additionalCharges - acceptedReturns - amountReductions - collectionsAllocated - refunds, 0m);
             return new MerchantOrderResponse(operation.Id, operation.OperationNumber, operation.OperationType, operation.Status, operation.Date, operation.Lines,
-                saleTotal, collectionsAllocated, acceptedReturns, additionalCharges, amountReductions, refunds, remaining);
+                saleTotal, collectionsAllocated, acceptedReturns, additionalCharges, amountReductions, refunds, remaining, operation.FinancialClosureStatus);
         }).ToList();
         return Results.Ok(result);
+    }
+
+    private static async Task<IResult> ListEligibleFinancialClosuresAsync(Guid merchantId, PaymentsDbContext payments, OperationsDbContext operations, CancellationToken ct)
+    {
+        var account = await payments.MerchantReceivableAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.MerchantId == merchantId, ct);
+        if (account is null) return Results.Ok(Array.Empty<object>());
+        var rows = await (from o in operations.OperationLogs.AsNoTracking()
+                          join obligation in payments.MerchantOperationObligations.AsNoTracking() on o.Id equals obligation.OperationId
+                          where obligation.AccountId == account.Id && !o.IsDeleted && o.Status == Completed && (o.OperationType == WholesaleSale || o.OperationType == RetailSale) && o.FinancialClosureStatus == "Open"
+                          let allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m
+                          where obligation.OriginalAmount - allocated <= 0.0001m
+                          select new { o.Id, o.OperationNumber, o.OperationType, o.Status, settlementAmount = obligation.OriginalAmount, allocatedAmount = allocated, remainingAmount = Math.Max(obligation.OriginalAmount - allocated, 0m), o.FinancialClosureStatus }).Take(500).ToListAsync(ct);
+        return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> ListFinancialClosureProposalsAsync(PaymentsDbContext payments, CancellationToken ct) => Results.Ok(await payments.MerchantFinancialClosureProposals.AsNoTracking().Include(x => x.Items).OrderByDescending(x => x.SubmittedAt).Take(200).ToListAsync(ct));
+
+    private static async Task<IResult> ListMerchantFinancialClosureProposalsAsync(Guid merchantId, PaymentsDbContext payments, CancellationToken ct)
+    {
+        var account = await payments.MerchantReceivableAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.MerchantId == merchantId, ct);
+        if (account is null) return Results.Ok(Array.Empty<object>());
+        return Results.Ok(await payments.MerchantFinancialClosureProposals.AsNoTracking().Include(x => x.Items).Where(x => x.AccountId == account.Id).OrderByDescending(x => x.SubmittedAt).ToListAsync(ct));
+    }
+
+    private static async Task<IResult> CreateFinancialClosureProposalAsync(Guid merchantId, FinancialClosureProposalRequest request, PaymentsDbContext payments, OperationsDbContext operations, ICurrentUser currentUser, IClock clock, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken ct)
+    {
+        var ids = request.OperationIds?.Distinct().ToArray() ?? [];
+        if (ids.Length == 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["operationIds"] = ["Select at least one settled merchant sale."] });
+        var account = await payments.MerchantReceivableAccounts.FirstOrDefaultAsync(x => x.MerchantId == merchantId, ct);
+        if (account is null) return Results.NotFound(new { detail = "Merchant account was not found." });
+        var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim();
+        if (normalizedIdempotencyKey is not null)
+        {
+            var replay = await payments.MerchantFinancialClosureProposals.AsNoTracking().Include(x => x.Items)
+                .FirstOrDefaultAsync(x => x.AccountId == account.Id && x.IdempotencyKey == normalizedIdempotencyKey, ct);
+            if (replay is not null) return Results.Ok(replay);
+        }
+        var rows = await (from o in operations.OperationLogs where ids.Contains(o.Id) && o.ClientId == merchantId && !o.IsDeleted && o.Status == Completed && (o.OperationType == WholesaleSale || o.OperationType == RetailSale) && o.FinancialClosureStatus == "Open" join obligation in payments.MerchantOperationObligations on o.Id equals obligation.OperationId where obligation.AccountId == account.Id let allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m select new { o, obligation, allocated }).ToListAsync(ct);
+        if (rows.Count != ids.Length || rows.Any(x => x.obligation.OriginalAmount - x.allocated > 0.0001m)) return Results.Conflict(new ProblemDetails { Title = "Operation is not eligible", Detail = "Every selected sale must be completed, open, belong to this merchant, and fully settled." });
+        var proposal = new MerchantFinancialClosureProposal { Id = Guid.NewGuid(), AccountId = account.Id, SubmittedBy = currentUser.UserId ?? Guid.Empty, SubmittedAt = clock.EgyptNow, Notes = request.Notes?.Trim(), IdempotencyKey = normalizedIdempotencyKey };
+        foreach (var row in rows) proposal.Items.Add(new MerchantFinancialClosureItem { Id = Guid.NewGuid(), OperationId = row.o.Id, OperationNumber = row.o.OperationNumber, SettlementAmount = row.obligation.OriginalAmount, RemainingAmount = Math.Max(row.obligation.OriginalAmount - row.allocated, 0m) });
+        payments.MerchantFinancialClosureProposals.Add(proposal); await payments.SaveChangesAsync(ct);
+        return Results.Created($"/api/v1/payments/financial-closure/proposals/{proposal.Id}", proposal);
+    }
+
+    private static async Task<IResult> ReviewFinancialClosureProposalAsync(Guid id, FinancialClosureReviewRequest request, PaymentsDbContext payments, OperationsDbContext operations, ICurrentUser currentUser, IClock clock, CancellationToken ct)
+    {
+        var proposal = await payments.MerchantFinancialClosureProposals.Include(x => x.Items).SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (proposal is null) return Results.NotFound();
+        if (proposal.Status != "PendingAdminReview") return Results.Conflict(new ProblemDetails { Title = "Proposal already reviewed", Detail = "This closure proposal has already received a decision." });
+        var approved = (request.ApprovedOperationIds ?? []).ToHashSet(); var selected = proposal.Items.Where(x => approved.Contains(x.OperationId)).ToList(); var rejected = proposal.Items.Where(x => !approved.Contains(x.OperationId)).ToList();
+        var operationIds = proposal.Items.Select(x => x.OperationId).ToArray(); var ops = await operations.OperationLogs.Where(x => operationIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+        if (ops.Count != proposal.Items.Count || ops.Values.Any(x => x.Status != Completed || x.FinancialClosureStatus != "Open")) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer eligible for closure." });
+        var accountId = proposal.AccountId;
+        var settlementRows = await payments.MerchantOperationObligations.AsNoTracking()
+            .Where(x => x.AccountId == accountId && operationIds.Contains(x.OperationId))
+            .Select(x => new { x.OperationId, x.OriginalAmount, Allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == x.Id).Sum(a => (decimal?)a.Amount) ?? 0m })
+            .ToListAsync(ct);
+        if (settlementRows.Count != proposal.Items.Count || settlementRows.Any(x => x.OriginalAmount - x.Allocated > 0.0001m)) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer fully settled." });
+        foreach (var item in selected) { var op = ops[item.OperationId]; op.FinancialClosureStatus = "FinanciallyClosed"; op.FinancialClosureProposalId = proposal.Id; op.FinanciallyClosedBy = currentUser.UserId; op.FinanciallyClosedAt = clock.EgyptNow; item.Decision = "Approved"; item.DecidedBy = currentUser.UserId; item.DecidedAt = clock.EgyptNow; }
+        foreach (var item in rejected) { item.Decision = "Rejected"; item.RejectionReason = request.RejectionReason?.Trim() ?? "Not selected by the approver."; item.DecidedBy = currentUser.UserId; item.DecidedAt = clock.EgyptNow; }
+        proposal.Status = selected.Count == 0 ? "Rejected" : rejected.Count == 0 ? "Approved" : "PartiallyApproved"; proposal.ReviewedBy = currentUser.UserId; proposal.ReviewedAt = clock.EgyptNow; proposal.ReviewReason = request.ReviewReason?.Trim();
+        await SharedDbTransaction.ExecuteAsync(payments, async () => { await payments.SaveChangesAsync(ct); await operations.SaveChangesAsync(ct); }, ct, operations);
+        return Results.Ok(proposal);
     }
 
     private static async Task<IResult> PreviewMerchantCollectionAsync(Guid merchantId, decimal amount, MerchantAccountService merchantAccountService, CancellationToken cancellationToken)
@@ -510,7 +580,7 @@ public static class PaymentsEndpoints
             })));
             var directOperationIds = logs.Select(log => log.OperationId).ToArray();
             var pendingCash = await paymentsDbContext.CashRecords.AsNoTracking()
-                .Where(value => (value.Status == PendingAccountant || value.Status == PendingAdminReview) && directOperationIds.Contains(value.OperationId))
+                .Where(value => value.OperationId.HasValue && (value.Status == PendingAccountant || value.Status == PendingAdminReview) && directOperationIds.Contains(value.OperationId.Value))
                 .Where(value => string.IsNullOrWhiteSpace(status) || value.Status == status.Trim())
                 .OrderByDescending(value => value.PaymentDate)
                 .Take(200)
@@ -526,7 +596,7 @@ public static class PaymentsEndpoints
                 {
                     id = record.Id, paymentLogId = log?.Id, scope = "DirectOperation", reference = $"CASH-{record.Id:N}"[..13].ToUpperInvariant(),
                     merchantId = log?.MerchantId, operationId = record.OperationId,
-                    operationNumber = operationRefs.GetValueOrDefault(record.OperationId)?.OperationNumber,
+                    operationNumber = record.OperationId.HasValue ? operationRefs.GetValueOrDefault(record.OperationId.Value)?.OperationNumber : null,
                     amount = record.Amount, movementMethod = record.SubType, transactionReference = record.TransactionReference,
                     status = workflowStatus, assignedTo = log?.AssignedTo, assignedToName = GetUserDisplayName(log?.AssignedTo, users),
                     draftedAt = record.PaymentDate, confirmedBy = (Guid?)null, confirmedAt = (DateTime?)null,
@@ -1010,10 +1080,10 @@ public static class PaymentsEndpoints
         var operationIds = rows.Select(row => row.OperationId).ToArray();
         var logIds = rows.Select(row => row.Id).ToArray();
         var cashRecords = operationIds.Length == 0 ? [] : await paymentsDbContext.CashRecords
-            .Where(record => operationIds.Contains(record.OperationId)).ToListAsync(cancellationToken);
+            .Where(record => record.OperationId.HasValue && operationIds.Contains(record.OperationId.Value)).ToListAsync(cancellationToken);
         var adjustments = logIds.Length == 0 ? [] : await paymentsDbContext.FinancialAdjustments
             .Where(adjustment => adjustment.PaymentLogId.HasValue && logIds.Contains(adjustment.PaymentLogId.Value)).ToListAsync(cancellationToken);
-        var cashByOperation = cashRecords.GroupBy(record => record.OperationId).ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
+        var cashByOperation = cashRecords.GroupBy(record => record.OperationId!.Value).ToDictionary(group => group.Key, group => (IReadOnlyList<CashRecord>)group.ToList());
         var adjustmentsByLog = adjustments.GroupBy(adjustment => adjustment.PaymentLogId!.Value).ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
         var userLookup = await LoadUserLookupAsync(identityDbContext, rows, cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, rows.Select(row => row.OperationId), cancellationToken);
@@ -1087,6 +1157,8 @@ public static class PaymentsEndpoints
                 .ToArrayAsync(cancellationToken);
             logsQuery = logsQuery.Where(log => log.MerchantId == merchantId.Value ||
                 (log.MerchantId == null && merchantOperationIds.Contains(log.OperationId)));
+            cashQuery = cashQuery.Where(record => record.MerchantId == merchantId.Value ||
+                (record.OperationId.HasValue && merchantOperationIds.Contains(record.OperationId.Value)));
             adjustmentsQuery = adjustmentsQuery.Where(adjustment => adjustment.MerchantId == merchantId.Value);
         }
         if (operationId.HasValue)
@@ -1101,7 +1173,7 @@ public static class PaymentsEndpoints
         var adjustments = await adjustmentsQuery.OrderByDescending(adjustment => adjustment.CreatedAt).Take(300).ToListAsync(cancellationToken);
 
         var operationIds = logs.Select(log => log.OperationId)
-            .Concat(cashRecords.Select(record => record.OperationId))
+            .Concat(cashRecords.Where(record => record.OperationId.HasValue).Select(record => record.OperationId!.Value))
             .Concat(adjustments.Where(adjustment => adjustment.OperationId.HasValue).Select(adjustment => adjustment.OperationId!.Value))
             .Distinct()
             .ToArray();
@@ -2135,8 +2207,6 @@ public static class PaymentsEndpoints
         else
         {
             var snapshot = await merchantAccountService.GetSnapshotAsync(request.MerchantId, cancellationToken);
-            if (adjustmentType == CashRefund)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Cash refunds need the related order so the payout can be reconciled to cash movement."] });
             if (adjustmentType == BalanceReduction && (snapshot is null || request.Amount > snapshot.AmountDue))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A merchant-level reduction cannot exceed the remaining amount owed."] });
         }
@@ -2322,7 +2392,7 @@ public static class PaymentsEndpoints
                 transactionResult = Results.NotFound();
                 return;
             }
-            if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved" || adjustment.OperationId is not { } operationId)
+            if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved")
             {
                 transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only an approved cash refund can be paid out." });
                 return;
@@ -2338,18 +2408,17 @@ public static class PaymentsEndpoints
                 return;
             }
 
-            var paymentLog = await LoadPaymentLogForUpdateAsync(adjustment.PaymentLogId!.Value, paymentsDbContext, cancellationToken);
-            if (paymentLog is null)
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentLog"] = ["The source payment log no longer exists."] });
-                return;
-            }
+            var operationId = adjustment.OperationId;
+            var paymentLog = adjustment.PaymentLogId is { } paymentLogId
+                ? await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken)
+                : null;
 
             var now = clock.EgyptNow;
             var payout = new CashRecord
             {
                 Id = Guid.NewGuid(),
                 OperationId = operationId,
+                MerchantId = adjustment.MerchantId,
                 PaymentType = CashRefund,
                 SubType = paymentMethod,
                 TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : request.TransactionReference!.Trim(),
@@ -2369,10 +2438,9 @@ public static class PaymentsEndpoints
                 adjustment.Status = PaymentCompleted;
                 adjustment.ReviewedAt = now;
             }
-            paymentLog.LastModifiedBy = currentUser.UserId;
-            paymentLog.LastModifiedAt = now;
-            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashRefundPaidOut", paymentLog.Id, new { adjustment.Id, request.Amount, remaining = due - request.Amount }, now, cancellationToken);
-            AddPaymentWorkflowAudit(paymentsDbContext, "CashRefundPaidOut", "Approved", adjustment.Status, adjustment.MerchantId, operationId, paymentLog.Id, null, currentUser.UserId ?? Guid.Empty, now, request.Amount, paymentMethod, null, httpContext, idempotencyKey, new { AdjustmentId = adjustment.Id, PayoutId = payout.Id, remaining = due - request.Amount });
+            if (paymentLog is not null) { paymentLog.LastModifiedBy = currentUser.UserId; paymentLog.LastModifiedAt = now; }
+            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashRefundPaidOut", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, request.Amount, remaining = due - request.Amount, merchantLevel = operationId is null }, now, cancellationToken);
+            AddPaymentWorkflowAudit(paymentsDbContext, "CashRefundPaidOut", "Approved", adjustment.Status, adjustment.MerchantId, operationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, request.Amount, paymentMethod, null, httpContext, idempotencyKey, new { AdjustmentId = adjustment.Id, PayoutId = payout.Id, remaining = due - request.Amount, merchantLevel = operationId is null });
             await PaymentPersistence.PersistAsync(paymentsDbContext, identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
 
@@ -2814,7 +2882,7 @@ public static class PaymentsEndpoints
                 OperationNumber = operationLookup.GetValueOrDefault(log.OperationId)?.OperationNumber,
                 Reference = $"SUB-{sub.Id:N}"[..12].ToUpperInvariant()
             }).ToList(),
-            cashRecords.OrderByDescending(record => record.PaymentDate).Select(record => ToCashResponse(record, userLookup, effectiveMerchantId, operationLookup.GetValueOrDefault(record.OperationId)?.OperationNumber)).ToList(),
+            cashRecords.OrderByDescending(record => record.PaymentDate).Select(record => ToCashResponse(record, userLookup, record.MerchantId ?? effectiveMerchantId, record.OperationId.HasValue ? operationLookup.GetValueOrDefault(record.OperationId.Value)?.OperationNumber : null)).ToList(),
             adjustments.OrderByDescending(adjustment => adjustment.CreatedAt).Select(adjustment => ToAdjustmentResponse(adjustment, userLookup)).ToList(),
             stages,
             log.Notes);
@@ -3090,7 +3158,7 @@ public static class PaymentsEndpoints
         var rows = new List<PaymentHistoryResponse>();
         foreach (var record in records)
         {
-            operationLookup.TryGetValue(record.OperationId, out var operation);
+            var operation = record.OperationId.HasValue && operationLookup.TryGetValue(record.OperationId.Value, out var operationValue) ? operationValue : null;
 
             rows.Add(new PaymentHistoryResponse(
                 record.Id,
@@ -3098,7 +3166,7 @@ public static class PaymentsEndpoints
                 record.OperationId,
                 operation?.OperationNumber,
                 operation?.OperationType,
-                operation?.MerchantId,
+                record.MerchantId ?? operation?.MerchantId,
                 operation?.BuyerName,
                 operation?.BuyerName,
                 record.SubType ?? record.PaymentType,
@@ -3530,7 +3598,7 @@ public sealed record PaymentSubLogResponse(Guid Id, decimal Amount, string? Paym
     };
 }
 
-public sealed record CashRecordResponse(Guid Id, Guid OperationId, string PaymentType, string? SubType, string? TransactionReference, decimal Amount, string Status, DateTime PaymentDate, Guid CreatedBy, string? CreatedByName, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? Notes)
+public sealed record CashRecordResponse(Guid Id, Guid? OperationId, string PaymentType, string? SubType, string? TransactionReference, decimal Amount, string Status, DateTime PaymentDate, Guid CreatedBy, string? CreatedByName, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? Notes)
 {
     public string Scope => MerchantId.HasValue ? "MerchantAccount" : "DirectOperation";
     public Guid? MerchantId { get; init; }
@@ -3592,4 +3660,6 @@ public sealed record MerchantAccountDetailResponse(Guid MerchantId, string Busin
 public sealed record MerchantAccountProfileResponse(string ContactPersonName, IReadOnlyList<string> PhoneNumbers, string? Email, string? Address, string BusinessType, string Status);
 public sealed record MerchantStatementDisplayRow(Guid Id, long Sequence, DateTime PostedAt, string EntryType, string EventLabel, Guid? OperationId, Guid? PaymentId, string SourceReference, decimal DebitAmount, decimal CreditAmount, decimal RunningBalance, string? PaymentMethod, string MethodLabel, string? TransactionReference, string Status, string? Notes, string ActorName);
 public sealed record MerchantOrderLineResponse(string ProductName, string SkuCode, int Quantity);
-public sealed record MerchantOrderResponse(Guid OperationId, string OperationNumber, string OperationType, string Status, DateTime Date, IReadOnlyList<MerchantOrderLineResponse> Lines, decimal SaleTotal, decimal CollectionsAllocated, decimal AcceptedReturns, decimal AdditionalCharges, decimal AmountReductions, decimal Refunds, decimal Remaining);
+public sealed record MerchantOrderResponse(Guid OperationId, string OperationNumber, string OperationType, string Status, DateTime Date, IReadOnlyList<MerchantOrderLineResponse> Lines, decimal SaleTotal, decimal CollectionsAllocated, decimal AcceptedReturns, decimal AdditionalCharges, decimal AmountReductions, decimal Refunds, decimal Remaining, string FinancialClosureStatus = "Open");
+public sealed record FinancialClosureProposalRequest(Guid[] OperationIds, string? Notes, string? IdempotencyKey);
+public sealed record FinancialClosureReviewRequest(Guid[]? ApprovedOperationIds, string? RejectionReason, string? ReviewReason);

@@ -415,7 +415,8 @@ public static class OperationsEndpoints
                 .ToListAsync(cancellationToken));
             paymentOperationIds.AddRange(await paymentsDbContext.CashRecords.AsNoTracking()
                 .Where(record => EF.Functions.ILike(record.TransactionReference ?? "", pattern))
-                .Select(record => record.OperationId)
+                .Where(record => record.OperationId.HasValue)
+                .Select(record => record.OperationId!.Value)
                 .ToListAsync(cancellationToken));
             paymentOperationIds.AddRange(await paymentsDbContext.MerchantAccountEntries.AsNoTracking()
                 .Where(entry => EF.Functions.ILike(entry.TransactionReference ?? "", pattern))
@@ -968,7 +969,7 @@ public static class OperationsEndpoints
             return Results.NotFound();
         }
 
-        if (!string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase))
+        if (!IsOperationsAdministrator(currentUser))
         {
             return Results.Forbid();
         }
@@ -2354,9 +2355,9 @@ public static class OperationsEndpoints
             {
                 errors[nameof(request.SourceLocationId)] = ["Write-off source location is required."];
             }
-            if (!string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase))
+            if (!IsOperationsAdministrator(currentUser))
             {
-                errors[nameof(request.OperationType)] = ["Write-off is Admin-only."];
+                errors[nameof(request.OperationType)] = ["Write-off requires an Operations administrator."];
             }
             if (request.Lines.Any(line => NormalizeEntryMode(line.EntryMode) != "Packs"))
             {
@@ -2498,12 +2499,7 @@ public static class OperationsEndpoints
 
     private static bool CanCreateDraft(ICurrentUser currentUser, OperationRequest request, Location? source, Location? destination)
     {
-        if (string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        if (string.Equals(currentUser.Role, LenseeRoles.ERPAdmin, StringComparison.OrdinalIgnoreCase) &&
-            NormalizeOperationType(request.OperationType) is Return or Change)
+        if (IsOperationsAdministrator(currentUser))
         {
             return true;
         }
@@ -2531,12 +2527,7 @@ public static class OperationsEndpoints
 
     private static async Task<bool> CanMutateOperationAsync(ICurrentUser currentUser, OperationLog operation, InventoryDbContext dbContext, string action, CancellationToken cancellationToken)
     {
-        if (string.Equals(currentUser.Role, LenseeRoles.Admin, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        if (string.Equals(currentUser.Role, LenseeRoles.ERPAdmin, StringComparison.OrdinalIgnoreCase) &&
-            (operation.OperationType is Return or Change || operation.AutomationType == "TargetReplenishment"))
+        if (IsOperationsAdministrator(currentUser))
         {
             return true;
         }
@@ -2575,6 +2566,9 @@ public static class OperationsEndpoints
 
         return false;
     }
+
+    private static bool IsOperationsAdministrator(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
 
     private static async Task<Dictionary<Guid, Location>> LoadLocationLookupAsync(InventoryDbContext dbContext, IReadOnlyCollection<OperationLog> operations, CancellationToken cancellationToken)
     {
