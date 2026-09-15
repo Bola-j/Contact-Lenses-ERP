@@ -169,33 +169,73 @@ public static class PaymentsEndpoints
     }
 
     private static async Task<IResult> GetMerchantAccountAsync(
-        Guid merchantId,
-        CrmDbContext crmDbContext,
-        MerchantAccountService merchantAccountService,
-        IClock clock,
-        CancellationToken cancellationToken)
+    Guid merchantId,
+    CrmDbContext crmDbContext,
+    MerchantAccountService merchantAccountService,
+    ICurrentUser currentUser,
+    IClock clock,
+    CancellationToken cancellationToken)
+{
+    var merchant = await crmDbContext.Merchants
+        .AsNoTracking()
+        .SingleOrDefaultAsync(
+            value => value.Id == merchantId && !value.IsDeleted,
+            cancellationToken);
+
+    if (merchant is null)
+        return Results.NotFound();
+
+    var snapshot = await merchantAccountService.GetSnapshotAsync(
+        merchantId,
+        cancellationToken);
+
+    if (snapshot is null)
     {
-        var merchant = await crmDbContext.Merchants.AsNoTracking().SingleOrDefaultAsync(value => value.Id == merchantId && !value.IsDeleted, cancellationToken);
-        if (merchant is null) return Results.NotFound();
-        var snapshot = await merchantAccountService.GetSnapshotAsync(merchantId, cancellationToken);
-        if (snapshot is null) return Results.NotFound();
-        var breakdown = await merchantAccountService.GetFinancialBreakdownAsync(merchantId, cancellationToken);
-        var classification = await merchantAccountService.GetClassificationAsync(merchantId, clock.EgyptNow, cancellationToken);
-        var netCollected = (breakdown?.PaymentsReceived ?? 0m) - (breakdown?.CashRefunded ?? 0m);
-        return Results.Ok(new MerchantAccountDetailResponse(
-            merchant.Id,
-            merchant.BusinessName,
-            snapshot,
-            breakdown,
-            netCollected,
-            classification,
-            new MerchantAccountProfileResponse(
-                merchant.ContactPersonName,
-                merchant.PhoneNumbers,
-                merchant.Email,
-                merchant.Address,
-                merchant.BusinessType,
-                merchant.Status)));
+        await merchantAccountService.GetOrCreateForUpdateAsync(
+            merchantId,
+            currentUser.UserId ?? Guid.Empty,
+            clock.EgyptNow,
+            cancellationToken);
+
+        snapshot = await merchantAccountService.GetSnapshotAsync(
+            merchantId,
+            cancellationToken);
+    }
+
+    if (snapshot is null)
+        return Results.Problem(
+            "Merchant account could not be initialized.",
+            statusCode: StatusCodes.Status500InternalServerError);
+
+    var breakdown =
+        await merchantAccountService.GetFinancialBreakdownAsync(
+            merchantId,
+            cancellationToken);
+
+    var classification =
+        await merchantAccountService.GetClassificationAsync(
+            merchantId,
+            clock.EgyptNow,
+            cancellationToken);
+
+    var netCollected =
+        (breakdown?.PaymentsReceived ?? 0m)
+        - (breakdown?.CashRefunded ?? 0m);
+
+    return Results.Ok(new MerchantAccountDetailResponse(
+        merchant.Id,
+        merchant.BusinessName,
+        snapshot,
+        breakdown,
+        netCollected,
+        classification,
+        new MerchantAccountProfileResponse(
+            merchant.ContactPersonName,
+            merchant.PhoneNumbers,
+            merchant.Email,
+            merchant.Address,
+            merchant.BusinessType,
+            merchant.Status)));
     }
 
     private static async Task<IResult> GetMerchantStatementAsync(
