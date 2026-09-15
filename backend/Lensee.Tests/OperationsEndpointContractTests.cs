@@ -581,9 +581,16 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var beforeApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
         Assert.Equal(200m, beforeApproval!.Balance);
 
-        var approval = await PostPaymentAsync(client, $"/api/v1/payments/cash-receipts/{paymentLog.Id}/approve");
+        using var accountant = _factory.CreateClient();
+        accountant.AuthorizeAs(LenseeRoles.Accountant, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsDraft);
+        var collectionRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
+        {
+            amount = 200m, paymentMethod = "CashHandToHand", submitForReview = true, sourceOperationId = operation.Id
+        });
+        var collection = await collectionRequest.Content.ReadFromJsonAsync<MerchantCollectionDraftContract>();
+        var approval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
         var afterApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
-        var duplicateApproval = await PostPaymentAsync(client, $"/api/v1/payments/cash-receipts/{paymentLog.Id}/approve");
+        var duplicateApproval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
         var afterDuplicateApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
 
         Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
@@ -660,7 +667,14 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         await client.PostAsync($"/api/v1/operations/{operation.Id}/complete", null);
         var logs = await client.GetFromJsonAsync<PagedContract<PaymentLogContract>>("/api/v1/payments?pageSize=10");
         var paymentLog = Assert.Single(logs!.Items, log => log.OperationId == operation.Id);
-        var approval = await PostPaymentAsync(client, $"/api/v1/payments/cash-receipts/{paymentLog.Id}/approve");
+        using var accountant = _factory.CreateClient();
+        accountant.AuthorizeAs(LenseeRoles.Accountant, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsDraft);
+        var collectionRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
+        {
+            amount = 200m, paymentMethod = "CashHandToHand", submitForReview = true, sourceOperationId = operation.Id
+        });
+        var collection = await collectionRequest.Content.ReadFromJsonAsync<MerchantCollectionDraftContract>();
+        var approval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
         var adjustmentRequesterId = Guid.NewGuid();
         client.AuthorizeAs(LenseeRoles.Admin, adjustmentRequesterId, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsRequest);
         var refundRequest = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new
@@ -680,7 +694,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             ? await PostPaymentAsync(approver, $"/api/v1/payments/adjustments/{refundAdjustment.Id}/approve")
             : refundRequest;
         var payout = refundAdjustment is not null
-            ? await PostPaymentJsonAsync(approver, $"/api/v1/payments/adjustments/{refundAdjustment.Id}/payout", new { amount = 200m })
+            ? await PostPaymentJsonAsync(approver, $"/api/v1/payments/adjustments/{refundAdjustment.Id}/payout", new { amount = 200m, paymentMethod = "CashHandToHand" })
             : refundRequest;
         var balance = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
 
@@ -819,6 +833,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         {
             amount = 120m,
             paymentMethod = "CashTransaction",
+            transactionReference = "BANK-20260702-001",
             dateReceived = "2026-07-02",
             notes = "First installment"
         });
@@ -830,7 +845,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var afterApproval = await admin.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
 
         Assert.Equal(200m, log.TotalAmount);
-        Assert.Equal("PendingAdmin", log.Status);
+        Assert.Equal("PendingAccountant", log.Status);
         Assert.Equal(HttpStatusCode.Created, draft.StatusCode);
         Assert.Equal(200m, beforeApproval!.Balance);
         Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
@@ -913,7 +928,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     {
         await _factory.SeedAsync();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsWrite);
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsWrite, LenseePermissions.PaymentsDraft);
 
         var zeroAmount = await PostPaymentJsonAsync(client, "/api/v1/payments/cash-records", new { operationId = Guid.NewGuid().ToString(), paymentType = "CashReceived", amount = 0m });
         var badType = await PostPaymentJsonAsync(client, "/api/v1/payments/cash-records", new { operationId = Guid.NewGuid().ToString(), paymentType = "Crypto", amount = 1m });
@@ -2504,6 +2519,8 @@ public sealed record FinancialAdjustmentContract(
     DateTime CreatedAt);
 
 public sealed record PaymentOperationResolutionContract(Guid OperationId, string OperationNumber, Guid? MerchantId, string? MerchantName, string OperationType);
+
+public sealed record MerchantCollectionDraftContract(Guid Id, string Status, decimal Amount);
 
 public sealed record OperationCorrectionContract(Guid Id, Guid OperationId, string Status, Guid? ReversalOperationId, Guid? ReplacementOperationId);
 
