@@ -100,7 +100,7 @@ if ($Apply) {
     $sql = $sql.Replace("ROLLBACK;", "COMMIT;")
 }
 
-$sql | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U lensee_user -d $DatabaseName
+$sql | docker compose exec -T lensee_db psql -v ON_ERROR_STOP=1 -U lensee_user -d $DatabaseName
 if ($LASTEXITCODE -ne 0) {
     throw "The local business-data reset failed. PostgreSQL rolled back the transaction."
 }

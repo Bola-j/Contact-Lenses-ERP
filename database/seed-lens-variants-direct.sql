@@ -30,12 +30,12 @@ set name = excluded.name;
 with lens_products as (
   select *
   from (values
+    ('Plain Medical Lens Box - 6 Months', 'Medical Lenses', 3, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainMedical","packaging":"Box","duration":"monthly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"6 months"}'::jsonb),
     ('Plain Medical Lens Box - 1 Year', 'Medical Lenses', 3, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"1 year"}'::jsonb),
     ('Plain Medical Lens Box - 3 Years', 'Medical Lenses', 3, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"3 years"}'::jsonb),
-    ('Plain Medical Lens Box - 5 Years', 'Medical Lenses', 3, 'SealedPackOnly', '5 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"5 years"}'::jsonb),
+    ('Plain Medical Lens Vial - 6 Months', 'Medical Lenses', 1, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainMedical","packaging":"Vial","duration":"monthly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"6 months"}'::jsonb),
     ('Plain Medical Lens Vial - 1 Year', 'Medical Lenses', 1, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"1 year"}'::jsonb),
     ('Plain Medical Lens Vial - 3 Years', 'Medical Lenses', 1, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"3 years"}'::jsonb),
-    ('Plain Medical Lens Vial - 5 Years', 'Medical Lenses', 1, 'SealedPackOnly', '5 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"5 years"}'::jsonb),
     ('Clear Vision Colored Lens Pack - 3 Months', 'Colored Lenses', 2, 'SinglePiece', '3 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"3 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"3 months"}'::jsonb),
     ('Clear Vision Colored Lens Pack - 6 Months', 'Colored Lenses', 2, 'SinglePiece', '6 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"6 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"6 months"}'::jsonb),
     ('Clear Vision Colored Lens Pack - 9 Months', 'Colored Lenses', 2, 'SinglePiece', '9 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"9 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"9 months"}'::jsonb),
@@ -119,6 +119,22 @@ where name in (
   'Plain Medical Lens Vial'
 );
 
+-- Retire old seeded clear-lens validity products that are no longer part of the catalog.
+-- Current clear-lens validity set: 6 months, 1 year, and 3 years for both Box and Vial.
+update catalog.products
+set is_active = false,
+    deleted_at = coalesce(deleted_at, current_timestamp)
+where extended_attributes ->> 'seed' = 'medical-lenses-direct-db'
+  and (name like 'Plain Medical Lens Box - %' or name like 'Plain Medical Lens Vial - %')
+  and name not in (
+    'Plain Medical Lens Box - 6 Months',
+    'Plain Medical Lens Box - 1 Year',
+    'Plain Medical Lens Box - 3 Years',
+    'Plain Medical Lens Vial - 6 Months',
+    'Plain Medical Lens Vial - 1 Year',
+    'Plain Medical Lens Vial - 3 Years'
+  );
+
 update catalog.skus sku
 set is_active = false,
     deleted_at = coalesce(sku.deleted_at, current_timestamp)
@@ -131,20 +147,32 @@ where sku.product_id = product.id
   );
 
 with
-colors(color_name, color_code) as (
+-- Color availability follows the supplied Clear Vision stock sheet.
+-- Main-grid colors receive the existing colored power range (including plano).
+-- Bottom-row colors are plano-only. Turquoise and Honey are fully shaded in the
+-- supplied sheet, so they are intentionally not seeded.
+colors(color_name, color_code, power_mode) as (
   values
-    ('Green', 'GREEN'),
-    ('Green 2T', 'GREEN2T'),
-    ('Marine', 'MARINE'),
-    ('Blue', 'BLUE'),
-    ('True Sapphire', 'TRUESAPPHIRE'),
-    ('Gray', 'GRAY'),
-    ('Galaxy Gray', 'GALAXYGRAY'),
-    ('Selena Gray', 'SELENAGRAY'),
-    ('Hazel', 'HAZEL'),
-    ('Pure Hazel', 'PUREHAZEL'),
-    ('Sunset', 'SUNSET'),
-    ('Jewel Brown', 'JEWELBROWN')
+    ('Sunset', 'SUNSET', 'Powered'),
+    ('Galaxy Gray', 'GALAXYGRAY', 'Powered'),
+    ('Ocean Gray', 'OCEANGRAY', 'Powered'),
+    ('Blue', 'BLUE', 'Powered'),
+    ('True Sapphire', 'TRUESAPPHIRE', 'Powered'),
+    ('Green', 'GREEN', 'Powered'),
+    ('Hazel', 'HAZEL', 'Powered'),
+    ('B Hazel', 'BHAZEL', 'Powered'),
+    ('Gray', 'GRAY', 'Powered'),
+    ('Marine', 'MARINE', 'PlanoOnly'),
+    ('Gray 2T', 'GRAY2T', 'PlanoOnly'),
+    ('Green 2T', 'GREEN2T', 'PlanoOnly'),
+    ('Jewel Brown', 'JEWELBROWN', 'PlanoOnly'),
+    ('Brown', 'BROWN', 'PlanoOnly'),
+    ('Pistachio', 'PISTACHIO', 'PlanoOnly'),
+    ('Golden Yellow', 'GOLDENYELLOW', 'PlanoOnly'),
+    ('Emma Gray', 'EMMAGRAY', 'PlanoOnly'),
+    ('Selena Gray', 'SELENAGRAY', 'PlanoOnly'),
+    ('Rachel Gray', 'RACHELGRAY', 'PlanoOnly'),
+    ('Misty Gray', 'MISTYGRAY', 'PlanoOnly')
 ),
 plain_powers as (
   select '-' as power_sign, value::numeric(5,2) as power_value
@@ -207,9 +235,9 @@ sku_rows as (
       regexp_replace(upper(coalesce(opened_expiry_rate, 'NA')), '[^A-Z0-9]', '', 'g') as rate_code,
       case when name like '%Box%' then 'Box 3' else 'Vial 1' end as size,
       case
-        when name like '%1 Year%' then 1
-        when name like '%3 Years%' then 2
-        when name like '%5 Years%' then 3
+        when name like '%6 Months%' then 1
+        when name like '%1 Year%' then 2
+        when name like '%3 Years%' then 3
         else 99
       end as sort_order
     from catalog.products
@@ -258,8 +286,10 @@ sku_rows as (
     from catalog.products
     where name like 'Clear Vision Colored Lens Pack - %'
   ) product
-  cross join colored_powers power
   cross join colors color
+  join colored_powers power
+    on color.power_mode = 'Powered'
+    or (color.power_mode = 'PlanoOnly' and power.power_value = 0.00)
 ),
 deduped_sku_rows as (
   select *
