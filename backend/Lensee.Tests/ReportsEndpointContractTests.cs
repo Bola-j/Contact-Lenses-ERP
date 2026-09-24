@@ -145,6 +145,37 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
     }
 
     [Fact]
+    public async Task ListReports_ReturnCanonicalPagedContract_WhileExportUsesAllFilteredRows()
+    {
+        await _factory.ResetAsync();
+        await _factory.SeedPrintableDocumentsAsync();
+        await _factory.SeedPrintableDocumentsAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+
+        using var pageResponse = await client.GetAsync("/api/v1/reports/operations?page=1&pageSize=1");
+        await using var pageStream = await pageResponse.Content.ReadAsStreamAsync();
+        using var page = await JsonDocument.ParseAsync(pageStream);
+        Assert.Equal(HttpStatusCode.OK, pageResponse.StatusCode);
+        Assert.Equal(1, page.RootElement.GetProperty("page").GetInt32());
+        Assert.Equal(1, page.RootElement.GetProperty("pageSize").GetInt32());
+        Assert.True(page.RootElement.GetProperty("totalCount").GetInt32() >= 2);
+        Assert.True(page.RootElement.GetProperty("totalPages").GetInt32() >= 2);
+        Assert.Single(page.RootElement.GetProperty("items").EnumerateArray());
+
+        using var sorted = await client.GetAsync("/api/v1/reports/operations?page=1&pageSize=1&sortBy=total&sortDirection=asc");
+        Assert.Equal(HttpStatusCode.OK, sorted.StatusCode);
+
+        using var invalidSort = await client.GetAsync("/api/v1/reports/operations?sortBy=not-a-field");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidSort.StatusCode);
+
+        using var export = await client.GetAsync("/api/v1/reports/operations/export?format=csv&language=en");
+        Assert.Equal(HttpStatusCode.OK, export.StatusCode);
+        var csv = await export.Content.ReadAsStringAsync();
+        Assert.True(csv.Split('\n').Length >= 3);
+    }
+
+    [Fact]
     public async Task PrintableDocuments_RenderInEnglishAndArabic_AndLogExports()
     {
         await _factory.ResetAsync();

@@ -6,6 +6,7 @@ const {
   users,
   makeRunData,
   gotoRoute,
+  openOtherPaymentsPanel,
   expectNotice,
   selectOptionByText,
   openMerchantDetail,
@@ -164,14 +165,21 @@ async function expectOperationEditorPrefilled(page, type, data, quantity = "2") 
 async function createInstallmentSale(page, data, amount = "100") {
   await seedMainStock(page, data, "10");
   await gotoRoute(page, "/operations");
+  await createOperationDraft(page, {
+    type: "WarehouseTransfer", skuText: data.product, quantity: "6",
+    stockText: data.mainLot, destinationText: /Retail|Online|Mohamed/i
+  });
+  await runLatestOperationAction(page, "WarehouseTransfer", /Confirm/i);
+  await runLatestOperationAction(page, "WarehouseTransfer", /Ship/i);
+  await runLatestOperationAction(page, "WarehouseTransfer", /Receive/i);
   const sale = await createOperationDraft(page, {
-    type: "WholesaleSale",
+    type: "RetailSale",
     skuText: data.product,
     quantity: "2",
     price: amount,
     stockText: data.mainLot,
-    merchantText: data.merchant,
-    paymentMethod: "Installment",
+    paymentMethod: "CashHandToHand",
+    buyerName: `${data.runId} payment buyer`,
     sourceText: /Roxy|Main/i
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
@@ -218,7 +226,9 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
   await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
 
   await gotoRoute(page, "/catalog");
-  await page.locator("#category-list [data-category-id]", { hasText: data.category }).first().click();
+  const categoryNode = page.locator("#category-list .category-tree-item").filter({ hasText: data.category }).first();
+  await expect(categoryNode).toBeVisible();
+  await categoryNode.locator("[data-category-id]").click();
   await page.locator("#category-name").fill(`${data.category} Updated`);
   await page.locator("#category-form button[type='submit']").click();
   await expectNotice(page, /Category saved/i);
@@ -267,14 +277,14 @@ test("editing: operation drafts and shipped revisions prefill lines, preserve ro
     price: "110",
     stockText: data.mainLot,
     merchantText: data.merchant,
-    paymentMethod: "Installment",
+    paymentMethod: "CashHandToHand",
     sourceText: /Roxy|Main/i
   });
 
   await openLatestOperationForEdit(page, "WholesaleSale", /Edit/i, sale.operationNumber);
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "2");
   await expect(page.locator("#op-merchant option:checked")).toContainText(data.merchant);
-  await expect(page.locator("#op-payment")).toHaveValue("Installment");
+  await expect(page.locator("#op-payment")).toHaveValue("CashHandToHand");
   await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("3");
   await submitOperationEditor(page, /Draft updated/i);
 
@@ -321,60 +331,45 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   const data = makeRunData("EDITPAY");
   const operationId = await createInstallmentSale(page, data, "150");
   const payment = await latestPaymentForOperation(page, operationId);
-  const accountantId = await firstAccountantId(page);
-
   await gotoRoute(page, "/payments");
-  await page.locator("#payment-accountant").selectOption(accountantId);
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Assign" }).click();
-  await expectNotice(page, /accountant queue|assigned/i);
-  const reassign = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
-  expect([200, 204]).toContain(reassign.status());
-
-  await logout(page);
-  await login(page, users.accountant);
-  await gotoRoute(page, "/payments");
+  await openOtherPaymentsPanel(page);
   await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
-  await page.locator("#payment-amount").fill("50");
-  await page.locator("#payment-method").selectOption("CashTransaction");
-  await page.locator("#payment-date").fill("2026-07-09");
-  await page.locator("#payment-notes").fill(`${data.runId} draft to reject`);
-  await page.locator("#payment-sublog-form button[type='submit']").click();
-  await expectNotice(page, /Payment sub-log drafted/i);
+  await page.locator("#collection-amount").fill("50");
+  await page.locator("#collection-method").selectOption("CashHandToHand");
+  const financeAccount = await page.locator("#collection-finance-account option:not([value=''])").first().getAttribute("value");
+  await page.locator("#collection-finance-account").selectOption(financeAccount);
+  await page.locator("#collection-date").fill("2026-07-09");
+  await page.locator("#collection-notes").fill(`${data.runId} draft to reject`);
+  await page.locator("#unified-collection-form button[type='submit']").click();
+  await expectNotice(page, /collection submitted|approval/i);
+  let work;
+  let collection;
+  await expect.poll(async () => {
+    work = await apiJson(page, "GET", "/api/v1/payments/collection-work?pageSize=200");
+    collection = (work.data?.items || work.data || []).find((item) => item.operationNumber === payment.operationNumber && item.status === "PendingAdminReview");
+    return Boolean(collection?.id);
+  }, { timeout: 20_000 }).toBeTruthy();
+  let rejected = await apiRequest(page, "POST", `/api/v1/payments/collections/${collection.id}/reject`, { reason: `${data.runId} rejected for test` });
+  expect(rejected.ok()).toBeTruthy();
 
-  await logout(page);
-  await login(page, users.admin);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
-  let paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
-  await paymentDetail.locator("[data-sublog-reject]").first().click();
-  await page.locator(".dialog-input").fill(`${data.runId} rejected for test`);
-  await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();
-  await expectNotice(page, /Payment rejected/i);
-  await expect(page.locator("#payment-detail-panel, #payment-rows")).toContainText(/Rejected/i);
-
-  await logout(page);
-  await login(page, users.accountant);
-  await gotoRoute(page, "/payments");
   await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
-  await page.locator("#payment-amount").fill("300");
-  await page.locator("#payment-method").selectOption("CashTransaction");
-  await page.locator("#payment-date").fill("2026-07-09");
-  await page.locator("#payment-notes").fill(`${data.runId} final approved`);
-  await page.locator("#payment-sublog-form button[type='submit']").click();
-  await expectNotice(page, /Payment sub-log drafted/i);
+  await page.locator("#collection-amount").fill("300");
+  await page.locator("#collection-method").selectOption("CashHandToHand");
+  await page.locator("#collection-finance-account").selectOption(financeAccount);
+  await page.locator("#collection-notes").fill(`${data.runId} final approved`);
+  await page.locator("#unified-collection-form button[type='submit']").click();
+  await expectNotice(page, /collection submitted|approval/i);
+  await expect.poll(async () => {
+    work = await apiJson(page, "GET", "/api/v1/payments/collection-work?pageSize=200");
+    collection = (work.data?.items || work.data || []).filter((item) => item.status === "PendingAdminReview").sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
+    return Boolean(collection?.id);
+  }, { timeout: 20_000 }).toBeTruthy();
+  const approved = await apiRequest(page, "POST", `/api/v1/payments/sub-logs/${collection.id}/approve`);
+  expect(approved.ok(), `Collection approval failed (${approved.status()}): ${await approved.text()}`).toBeTruthy();
+  work = await apiJson(page, "GET", "/api/v1/payments/collection-work?pageSize=200");
+  expect((work.data?.items || work.data || []).some((item) => item.id === collection.id && item.status === "Confirmed")).toBeTruthy();
 
-  await logout(page);
-  await login(page, users.admin);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
-  paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
-  await paymentDetail.locator("[data-sublog-approve]").first().click();
-  await expectNotice(page, /Payment approved/i);
-  await expect(paymentHistoryRowById(page, payment.id)).toContainText("Completed");
-  await expect(paymentQueueRowById(page, payment.id)).toHaveCount(0);
-  const assignCompleted = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
-  expect([400, 409, 422]).toContain(assignCompleted.status());
-
+  await page.getByRole("tab", { name: /Merchant account payments/i }).click();
   await selectOptionByText(page.locator("#payment-merchant"), data.merchant);
   await page.locator("#load-merchant-balance").click();
   await expect(page.locator("#merchant-balance-panel")).toContainText(/Remaining|Sales|Net collected/i);
@@ -390,7 +385,11 @@ test("editing: stocktake draft lines can be revised before confirmation and lock
   await page.locator("#stocktake-create-form button[type='submit']").click();
   await expectNotice(page, /Stocktake session opened/i);
 
-  await selectOptionByText(page.locator(".stocktake-line-sku").first(), data.product);
+  const stocktakeSkuRow = page.locator(".stocktake-line-row").first();
+  await stocktakeSkuRow.locator(".stocktake-line-search").fill(data.product);
+  const stocktakeSkuResult = stocktakeSkuRow.locator(".op-line-search-results .op-line-search-result:not([disabled])").filter({ hasText: data.product }).first();
+  await expect(stocktakeSkuResult).toBeVisible({ timeout: 25_000 });
+  await stocktakeSkuResult.click();
   await page.locator(".stocktake-line-lot").first().fill(data.mainLot);
   await page.locator(".stocktake-line-expiry").first().fill(data.expiry);
   await page.locator(".stocktake-line-count").first().fill("4");

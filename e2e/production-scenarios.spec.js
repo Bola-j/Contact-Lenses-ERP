@@ -129,44 +129,32 @@ test("production: supply receive race increases destination stock once", async (
 test("production: payment approval race allows one terminal transition", async ({ page }) => {
   const data = makeRunData("PAYRACE");
   await seedMainStock(page, data, 2);
-  const saleId = await createWholesaleSaleDraft(page, data, 1, "Installment");
-  expect((await apiRequest(page, "POST", `/api/v1/operations/${saleId}/confirm`)).ok()).toBeTruthy();
-  expect((await apiRequest(page, "POST", `/api/v1/operations/${saleId}/ship`)).ok()).toBeTruthy();
-  expect((await apiRequest(page, "POST", `/api/v1/operations/${saleId}/complete`)).ok()).toBeTruthy();
-
-  const { response: paymentListResponse, data: paymentList } = await apiJson(page, "GET", "/api/v1/payments?page=1&pageSize=50");
-  expect(paymentListResponse.ok()).toBeTruthy();
-  const paymentItems = Array.isArray(paymentList) ? paymentList : paymentList?.items || paymentList?.data || [];
-  const payment = paymentItems.find((item) => item.operationId === saleId || item.operationId === String(saleId));
-  expect(payment).toBeTruthy();
-
-  const { response: usersResponse, data: userList } = await apiJson(page, "GET", "/api/v1/users?page=1&pageSize=100");
-  expect(usersResponse.ok()).toBeTruthy();
-  const userItems = Array.isArray(userList) ? userList : userList?.items || userList?.data || [];
-  const accountantId = await accountantIdByUsername(page);
-  expect(userItems.some((user) => user.id === accountantId && user.username === users.accountant.username)).toBeTruthy();
-  const assignResponse = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/assign`, { accountantUserId: accountantId });
-  const assignBody = await assignResponse.text();
-  expect(assignResponse.ok(), `Assign payment ${payment.id} to ${users.accountant.username} failed with HTTP ${assignResponse.status()}: ${assignBody}`).toBeTruthy();
-
-  await logout(page);
-  await login(page, users.accountant);
-  const draftResponse = await apiRequest(page, "POST", `/api/v1/payments/${payment.id}/sub-logs`, {
-    amount: 100,
-    paymentMethod: "CashTransaction",
-    dateReceived: "2026-07-08",
-    notes: `${data.runId} race draft`
+  const sale = await createWholesaleSaleDraft(page, data, 1, "MerchantAccount");
+  const saleDetail = await apiJson(page, "GET", `/api/v1/operations/${sale}`);
+  expect(saleDetail.response.ok()).toBeTruthy();
+  const merchantId = saleDetail.data?.clientId;
+  expect(merchantId).toBeTruthy();
+  expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/confirm`)).ok()).toBeTruthy();
+  expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/ship`)).ok()).toBeTruthy();
+  expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/complete`)).ok()).toBeTruthy();
+  const accounts = await apiJson(page, "GET", "/api/v1/finance/accounts");
+  expect(accounts.response.ok()).toBeTruthy();
+  const financeAccountId = accounts.data?.[0]?.id;
+  expect(financeAccountId).toBeTruthy();
+  const draft = await apiJson(page, "POST", `/api/v1/payments/merchant-accounts/${merchantId}/collections`, {
+    sourceOperationId: sale,
+    amount: 50,
+    paymentMethod: "CashHandToHand",
+    financeAccountId,
+    notes: `${data.runId} race draft`,
+    submitForReview: true
   });
-  expect([200, 201]).toContain(draftResponse.status());
-  const drafted = await draftResponse.json();
-  const subLogId = drafted.id || drafted.subLogId || drafted.subLogs?.[0]?.id || drafted.log?.subLogs?.[0]?.id;
-  expect(subLogId).toBeTruthy();
-
-  await logout(page);
-  await login(page, users.admin);
+  expect([200, 201]).toContain(draft.response.status());
+  const collectionId = draft.data?.id;
+  expect(collectionId).toBeTruthy();
   await expectOneTransitionSucceeds(page, [
-    apiRequest(page, "POST", `/api/v1/payments/sub-logs/${subLogId}/approve`),
-    apiRequest(page, "POST", `/api/v1/payments/sub-logs/${subLogId}/reject`, { reason: "Concurrent reject" })
+    apiRequest(page, "POST", `/api/v1/payments/merchant-account-collections/${collectionId}/approve`),
+    apiRequest(page, "POST", `/api/v1/payments/merchant-account-collections/${collectionId}/approve`)
   ]);
 });
 

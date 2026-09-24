@@ -21,6 +21,18 @@ public partial class StocktakeAdjustmentLine
 
     public int PhysicalCount { get; set; }
 
+    public int SystemPackCount { get; set; }
+
+    public int SystemPieceCount { get; set; }
+
+    public int PhysicalPackCount { get; set; }
+
+    public int PhysicalPieceCount { get; set; }
+
+    public int DeltaPackCount { get; set; }
+
+    public int DeltaPieceCount { get; set; }
+
     public int Delta { get; set; }
 
     public string? LineNote { get; set; }

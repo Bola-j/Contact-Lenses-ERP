@@ -131,9 +131,9 @@ public sealed class ShopifyIntegrationService
         {
             return new ShopifyWebhookResult(StatusCodes.Status503ServiceUnavailable, "Disabled", "Shopify integration is not fully configured.");
         }
-        if (string.IsNullOrWhiteSpace(envelope.WebhookId) || string.IsNullOrWhiteSpace(envelope.Topic) || string.IsNullOrWhiteSpace(envelope.ShopDomain))
+        if ((string.IsNullOrWhiteSpace(envelope.WebhookId) && string.IsNullOrWhiteSpace(envelope.EventId)) || string.IsNullOrWhiteSpace(envelope.Topic) || string.IsNullOrWhiteSpace(envelope.ShopDomain))
         {
-            return new ShopifyWebhookResult(StatusCodes.Status400BadRequest, "Invalid", "Shopify webhook ID, topic, and shop domain are required.");
+            return new ShopifyWebhookResult(StatusCodes.Status400BadRequest, "Invalid", "Shopify delivery ID, topic, and shop domain are required.");
         }
         if (body.Length > _options.MaxBodyBytes)
         {
@@ -144,22 +144,29 @@ public sealed class ShopifyIntegrationService
             return new ShopifyWebhookResult(StatusCodes.Status403Forbidden, "Rejected", "Shop domain is not configured for this ERP integration.");
         }
 
+        var topic = envelope.Topic.Trim().ToLowerInvariant();
+        var shopDomain = envelope.ShopDomain.Trim().ToLowerInvariant();
+        var deliveryId = TrimToNull(envelope.WebhookId) ?? TrimToNull(envelope.EventId)!;
+        // The existing durable inbox uniqueness constraint is intentionally used
+        // as the cross-worker gate.  Persist a bounded hash of the natural
+        // identity, rather than the provider's bare delivery id, so an id from a
+        // different shop or topic cannot suppress a legitimate event.
+        var deliveryKey = CreateDeliveryKey(shopDomain, topic, deliveryId);
         var existing = await _operations.ShopifyWebhookEvents
-            .FirstOrDefaultAsync(value => value.WebhookId == envelope.WebhookId.Trim(), cancellationToken);
+            .FirstOrDefaultAsync(value => value.WebhookId == deliveryKey || value.WebhookId == deliveryId, cancellationToken);
         if (existing is not null)
         {
             return new ShopifyWebhookResult(StatusCodes.Status200OK, "Duplicate", existing.Detail, existing.OperationId);
         }
 
         var now = _clock.EgyptNow;
-        var topic = envelope.Topic.Trim().ToLowerInvariant();
         var status = topic is "orders/create" or "orders/cancelled" or "refunds/create" ? "Queued" : "Ignored";
         var eventRecord = new ShopifyWebhookEvent
         {
             Id = Guid.NewGuid(),
-            WebhookId = envelope.WebhookId.Trim(),
+            WebhookId = deliveryKey,
             Topic = topic,
-            ShopDomain = envelope.ShopDomain.Trim().ToLowerInvariant(),
+            ShopDomain = shopDomain,
             VerificationMode = envelope.VerificationMode,
             EventId = TrimToNull(envelope.EventId),
             ApiVersion = TrimToNull(envelope.ApiVersion),
@@ -179,7 +186,10 @@ public sealed class ShopifyIntegrationService
         }
         catch (DbUpdateException)
         {
-            return new ShopifyWebhookResult(StatusCodes.Status200OK, "Duplicate", "Webhook was already accepted.");
+            _operations.ChangeTracker.Clear();
+            var replay = await _operations.ShopifyWebhookEvents.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.WebhookId == deliveryKey, cancellationToken);
+            return new ShopifyWebhookResult(StatusCodes.Status200OK, "Duplicate", replay?.Detail ?? "Webhook was already accepted.", replay?.OperationId);
         }
         return new ShopifyWebhookResult(StatusCodes.Status202Accepted, status, eventRecord.Detail, eventRecord.OperationId);
     }
@@ -392,11 +402,14 @@ public sealed class ShopifyIntegrationService
             throw new ShopifyBusinessException($"Shopify order {orderId} cannot be imported: {string.Join(" ", errors)}");
         }
 
-        var customer = await ResolveCustomerAsync(root, orderId, cancellationToken);
-        if (_crm.Entry(customer).State == EntityState.Detached)
-        {
-            _crm.Merchants.Add(customer);
-        }
+        // Shopify identity is never an implicit CRM selection.  Only a
+        // pre-existing, explicitly linked merchant can enter MerchantAccount;
+        // external name, email and phone remain an identity snapshot.
+        var merchant = await ResolveExplicitMerchantAsync(root, cancellationToken);
+        var customer = TryGetObject(root, "customer");
+        var buyerName = merchant?.BusinessName ?? BuildCustomerName(root, customer);
+        var buyerEmail = NormalizeEmail(ReadValue(root, "email") ?? (customer.HasValue ? ReadValue(customer.Value, "email") : null));
+        var buyerPhone = NormalizePhone(ReadValue(root, "phone") ?? (customer.HasValue ? ReadValue(customer.Value, "phone") : null) ?? ReadValue(TryGetObject(root, "shipping_address"), "phone"));
         var now = _clock.EgyptNow;
         var operation = new OperationLog
         {
@@ -406,10 +419,10 @@ public sealed class ShopifyIntegrationService
             Status = Draft,
             SalesChannel = Shopify,
             SourceLocationId = location.Id,
-            ClientId = customer.Id,
-            ClientName = customer.BusinessName,
-            BuyerPhone = FirstPhone(customer.PhoneNumbers),
-            BuyerEmail = customer.Email,
+            ClientId = merchant?.Id,
+            ClientName = buyerName,
+            BuyerPhone = buyerPhone,
+            BuyerEmail = buyerEmail,
             ShippingAddress = ReadAddress(root),
             PaymentMethod = IsCod(root) ? CashHandToHand : CashTransaction,
             Notes = $"Imported from Shopify order {ReadValue(root, "name") ?? orderId}.",
@@ -430,7 +443,7 @@ public sealed class ShopifyIntegrationService
                 SkuId = sku.Id,
                 ProductNameSnapshot = sku.Product.Name,
                 SkuCodeSnapshot = sku.SkuCode,
-                MerchantNameSnapshot = customer.BusinessName,
+                MerchantNameSnapshot = merchant?.BusinessName,
                 Section = "Standard",
                 Quantity = line.Quantity,
                 EntryMode = "Pieces",
@@ -473,7 +486,6 @@ public sealed class ShopifyIntegrationService
             CreatedAt = now,
             UpdatedAt = now
         });
-        await _crm.SaveChangesAsync(cancellationToken);
         await _operations.SaveChangesAsync(cancellationToken);
         return new ShopifyWebhookResult(StatusCodes.Status201Created, "Imported", "Shopify order was imported as an unallocated draft.", operation.Id);
     }
@@ -527,62 +539,15 @@ public sealed class ShopifyIntegrationService
         return new ShopifyWebhookResult(StatusCodes.Status202Accepted, "RequiresAttention", "Refund requires manual stock and finance review.", link?.OperationId);
     }
 
-    private async Task<Merchant> ResolveCustomerAsync(JsonElement root, string orderId, CancellationToken cancellationToken)
+    private async Task<Merchant?> ResolveExplicitMerchantAsync(JsonElement root, CancellationToken cancellationToken)
     {
         var customer = TryGetObject(root, "customer");
         var externalId = customer.HasValue ? ReadValue(customer.Value, "id") : null;
-        var email = NormalizeEmail(ReadValue(root, "email") ?? (customer.HasValue ? ReadValue(customer.Value, "email") : null));
-        var phone = NormalizePhone(ReadValue(root, "phone") ?? (customer.HasValue ? ReadValue(customer.Value, "phone") : null) ?? ReadValue(TryGetObject(root, "shipping_address"), "phone"));
-        var name = BuildCustomerName(root, customer);
+        if (string.IsNullOrWhiteSpace(externalId)) return null;
 
-        if (!string.IsNullOrWhiteSpace(externalId))
-        {
-            var byExternalId = await _crm.Merchants.FirstOrDefaultAsync(value => !value.IsDeleted && value.ExternalProvider == Shopify && value.ExternalCustomerId == externalId, cancellationToken);
-            if (byExternalId is not null)
-            {
-                return byExternalId;
-            }
-        }
-
-        var candidates = await _crm.Merchants.Where(value => !value.IsDeleted && value.ExternalProvider == Shopify).ToListAsync(cancellationToken);
-        var byEmail = !string.IsNullOrWhiteSpace(email)
-            ? candidates.FirstOrDefault(value => NormalizeEmail(value.Email) == email)
-            : null;
-        var byPhone = !string.IsNullOrWhiteSpace(phone)
-            ? candidates.FirstOrDefault(value => value.PhoneNumbers.Any(number => NormalizePhone(number) == phone))
-            : null;
-        if (byEmail is not null && byPhone is not null && byEmail.Id != byPhone.Id)
-        {
-            throw new ShopifyBusinessException($"Shopify order {orderId} email and phone match different CRM customers.");
-        }
-        var matched = byEmail ?? byPhone;
-        if (matched is not null)
-        {
-            if (!string.IsNullOrWhiteSpace(externalId) && string.IsNullOrWhiteSpace(matched.ExternalCustomerId))
-            {
-                matched.ExternalCustomerId = externalId;
-                matched.ExternalProvider = Shopify;
-                matched.UpdatedAt = _clock.EgyptNow;
-            }
-            return matched;
-        }
-
-        return new Merchant
-        {
-            Id = Guid.NewGuid(),
-            BusinessName = name,
-            ContactPersonName = name,
-            PhoneNumbers = string.IsNullOrWhiteSpace(phone) ? [] : [phone],
-            Email = email,
-            Address = ReadAddress(root),
-            BusinessType = "Other",
-            Status = "Active",
-            Notes = "Created from Shopify order.",
-            ExternalProvider = Shopify,
-            ExternalCustomerId = externalId,
-            CreatedAt = _clock.EgyptNow,
-            UpdatedAt = _clock.EgyptNow
-        };
+        return await _crm.Merchants.FirstOrDefaultAsync(value =>
+            !value.IsDeleted && value.Status == "Active" && value.ExternalProvider == Shopify && value.ExternalCustomerId == externalId,
+            cancellationToken);
     }
 
     private async Task CreateExceptionNotificationAsync(string alertType, string message, string orderId, Guid? operationId, CancellationToken cancellationToken)
@@ -634,6 +599,9 @@ public sealed class ShopifyIntegrationService
         DateTimeOffset.TryParse(value, out var parsed) ? parsed.UtcDateTime : null;
 
     private static string? TrimToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string CreateDeliveryKey(string shopDomain, string topic, string deliveryId) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{shopDomain}\n{topic}\n{deliveryId}"))).ToLowerInvariant();
 
     private static bool IsValidLegacyPathSecret(string? value) =>
         !string.IsNullOrWhiteSpace(value) &&

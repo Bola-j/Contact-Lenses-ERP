@@ -35,6 +35,10 @@ public partial class OperationLog
 
     public string? PaymentMethod { get; set; }
 
+    // The actual company-funds destination for an immediately settled sale. The
+    // merchant-account track is derived from ClientId and is never stored here.
+    public Guid? FinanceAccountId { get; set; }
+
     public string SalesChannel { get; set; } = "Manual";
 
     public string? BuyerPhone { get; set; }

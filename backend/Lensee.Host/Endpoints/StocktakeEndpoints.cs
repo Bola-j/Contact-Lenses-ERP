@@ -162,7 +162,7 @@ public static class StocktakeEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Lines)] = ["Every stocktake line requires a SKU."] });
         }
-        if (request.Lines.Any(line => line.PhysicalCount < 0))
+        if (request.Lines.Any(line => line.PhysicalCount < 0 || line.PhysicalPackCount < 0 || line.PhysicalPieceCount < 0))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(StocktakeCountLineRequest.PhysicalCount)] = ["Physical count cannot be negative."] });
         }
@@ -208,6 +208,11 @@ public static class StocktakeEndpoints
                     var systemQty = batches
                         .Where(batch => batch.SkuId == line.SkuId && batch.LotNumber == normalizedLot && batch.ExpiryDate == line.ExpiryDate)
                         .Sum(batch => batch.Quantity);
+                    var systemPieces = await inventoryDbContext.OpenedPieceLots
+                        .Where(piece => piece.LocationId == session.LocationId && piece.SkuId == line.SkuId && piece.LotNumber == normalizedLot && piece.BatchExpiryDate == line.ExpiryDate)
+                        .SumAsync(piece => (int?)piece.LoosePieceQuantity, cancellationToken) ?? 0;
+                    var physicalPacks = line.PhysicalPackCount ?? line.PhysicalCount;
+                    var physicalPieces = line.PhysicalPieceCount ?? 0;
                     acceptedLines.Add(new StocktakeAdjustmentLine
                     {
                         Id = Guid.NewGuid(),
@@ -218,7 +223,13 @@ public static class StocktakeEndpoints
                         SystemQtyBefore = systemQty,
                         BaselineStockRowVersion = baselineVersions[line.SkuId],
                         PhysicalCount = line.PhysicalCount,
-                        Delta = line.PhysicalCount - systemQty,
+                        SystemPackCount = systemQty,
+                        SystemPieceCount = systemPieces,
+                        PhysicalPackCount = physicalPacks,
+                        PhysicalPieceCount = physicalPieces,
+                        DeltaPackCount = physicalPacks - systemQty,
+                        DeltaPieceCount = physicalPieces - systemPieces,
+                        Delta = (physicalPacks - systemQty) + (physicalPieces - systemPieces),
                         LineNote = line.LineNote
                     });
                 }
@@ -329,17 +340,19 @@ public static class StocktakeEndpoints
                     }
 
                     var userId = currentUser.UserId ?? Guid.Empty;
-                    foreach (var line in session.StocktakeAdjustmentLines.Where(line => line.Delta != 0))
+                    foreach (var line in session.StocktakeAdjustmentLines.Where(line => line.DeltaPackCount != 0 || line.DeltaPieceCount != 0))
                     {
                         await ledgerService.AdjustStocktakeBatchAsync(
                             session.LocationId,
                             line.SkuId,
                             line.LotNumber,
                             line.ExpiryDate,
-                            line.Delta,
+                            line.DeltaPackCount,
                             userId,
                             session.Id,
                             cancellationToken);
+                        if (line.DeltaPieceCount != 0)
+                            await ledgerService.AdjustStocktakePiecesAsync(session.LocationId, line.SkuId, line.LotNumber, line.ExpiryDate, line.DeltaPieceCount, userId, session.Id, cancellationToken);
                     }
 
                     session.Status = Confirmed;
@@ -398,7 +411,7 @@ public static class StocktakeEndpoints
             session.ConfirmedAt,
             session.StocktakeAdjustmentLines
                 .OrderBy(line => line.SkuId)
-                .Select(line => new StocktakeLineResponse(line.Id, line.SkuId, line.LotNumber, line.ExpiryDate, line.SystemQtyBefore, line.PhysicalCount, line.Delta, line.BaselineStockRowVersion, line.LineNote))
+            .Select(line => new StocktakeLineResponse(line.Id, line.SkuId, line.LotNumber, line.ExpiryDate, line.SystemQtyBefore, line.PhysicalCount, line.Delta, line.BaselineStockRowVersion, line.LineNote, line.SystemPackCount, line.SystemPieceCount, line.PhysicalPackCount, line.PhysicalPieceCount, line.DeltaPackCount, line.DeltaPieceCount))
                 .ToList());
 
     private static string? NormalizeBlank(string? value) =>
@@ -426,12 +439,12 @@ public sealed record CreateStocktakeRequest(Guid LocationId, DateTime? SessionDa
 
 public sealed record UpsertStocktakeLinesRequest(IReadOnlyList<StocktakeCountLineRequest> Lines);
 
-public sealed record StocktakeCountLineRequest(Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int PhysicalCount, string? LineNote);
+public sealed record StocktakeCountLineRequest(Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int PhysicalCount, string? LineNote, int? PhysicalPackCount = null, int? PhysicalPieceCount = null);
 
 public sealed record StocktakeListResponse(Guid Id, Guid LocationId, string Status, int ProductsCounted, int TotalDiscrepancyUnits, DateTime CreatedAt, DateTime? ConfirmedAt);
 
 public sealed record StocktakeDetailResponse(Guid Id, Guid LocationId, DateTime SessionDate, string Status, Guid PerformedBy, Guid? ConfirmedBy, int ProductsCounted, int TotalDiscrepancyUnits, string? Notes, DateTime CreatedAt, DateTime? ConfirmedAt, IReadOnlyList<StocktakeLineResponse> Lines);
 
-public sealed record StocktakeLineResponse(Guid Id, Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int SystemQtyBefore, int PhysicalCount, int Delta, int BaselineStockRowVersion, string? LineNote);
+public sealed record StocktakeLineResponse(Guid Id, Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int SystemQtyBefore, int PhysicalCount, int Delta, int BaselineStockRowVersion, string? LineNote, int SystemPackCount, int SystemPieceCount, int PhysicalPackCount, int PhysicalPieceCount, int DeltaPackCount, int DeltaPieceCount);
 
 internal sealed class StocktakeConflictException(string message) : Exception(message);

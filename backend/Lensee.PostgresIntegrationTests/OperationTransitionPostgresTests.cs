@@ -139,7 +139,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Conflict);
         await using var scope = _factory.Services.CreateAsyncScope();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
-        Assert.Single(await operations.OperationCorrectionProposals.Where(value => value.OperationId == operationId && value.Status == "PendingApproval").ToListAsync());
+        Assert.Single(await operations.OperationCorrectionProposals.Where(value => value.OperationId == operationId && value.Status == "Draft").ToListAsync());
     }
 
     [PostgreSqlIntegrationFact]
@@ -151,6 +151,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         await _factory.SeedUserAsync(requester);
         using var client = CreateCorrectionClient(requester);
         var proposalId = await CreateCorrectionAsync(client, operationId, "Settlement persistence");
+        await SubmitCorrectionAsync(client, proposalId);
 
         var settlement = await client.PostAsJsonAsync($"/api/v1/operations/corrections/{proposalId}/settlement", new
         {
@@ -177,6 +178,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         await _factory.SeedUserAsync(reviewer);
         using var requesterClient = CreateCorrectionClient(requester);
         var proposalId = await CreateCorrectionAsync(requesterClient, operationId, "First approved correction");
+        await SubmitCorrectionAsync(requesterClient, proposalId);
         using var reviewerClient = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });
         reviewerClient.AuthorizeAs(LenseeRoles.Admin, reviewer, LenseePermissions.OperationsRead, LenseePermissions.OperationsCorrectionsApprove);
         var approved = await reviewerClient.PostAsync($"/api/v1/operations/corrections/{proposalId}/approve", null);
@@ -187,7 +189,7 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         Assert.Contains("transition-conflict", await second.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         await using var scope = _factory.Services.CreateAsyncScope();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
-        Assert.Empty(await operations.OperationCorrectionProposals.Where(value => value.OperationId == operationId && value.Status == "PendingApproval").ToListAsync());
+        Assert.Empty(await operations.OperationCorrectionProposals.Where(value => value.OperationId == operationId && (value.Status == "Draft" || value.Status == "PendingReview")).ToListAsync());
     }
 
     private HttpClient CreateOperationsClient(Guid userId)
@@ -222,6 +224,13 @@ public sealed class OperationTransitionPostgresTests : IAsyncLifetime
         Assert.True(response.StatusCode == HttpStatusCode.Created, body);
         using var document = JsonDocument.Parse(body);
         return document.RootElement.GetProperty("id").GetGuid();
+    }
+
+    private static async Task SubmitCorrectionAsync(HttpClient client, Guid proposalId)
+    {
+        var response = await client.PostAsync($"/api/v1/operations/corrections/{proposalId}/submit", null);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK, body);
     }
 
     private static object ReceiptRequest(PostgresOperationSeed seed, int quantity, uint? expectedVersion) => new

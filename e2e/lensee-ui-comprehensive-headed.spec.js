@@ -2,8 +2,8 @@ const { test, expect } = require("@playwright/test");
 const {
   installApiBase, login, logout, users, makeRunData, gotoRoute, expectNotice,
   selectOptionByText, ensureCoreData, createOperationDraft,
-  runLatestOperationAction, runOperationActionByNumber, createChangeDraft, expectDownload,
-  accountantIdByUsername, paymentForOperation, paymentQueueRowById, paymentHistoryRowById
+  runLatestOperationAction, runOperationActionByNumber, createChangeDraft, expectDownload, openOtherPaymentsPanel,
+  accountantIdByUsername, paymentForOperation, paymentQueueRowById, paymentHistoryRowById, apiJson
 } = require("./support/helpers");
 
 test.describe.configure({ mode: "serial" });
@@ -59,9 +59,7 @@ test("AUTH-010/012/NFR/PERM: deep links, language persistence, responsive shell,
   // The unknown-route assertion above already verifies a cold deep link. Keep
   // the responsive/role-boundary checks in the same authenticated SPA session
   // so they do not race refresh-cookie restoration on every navigation.
-  await page.evaluate(() => { location.hash = "/operations"; });
-  await expect(page.locator("#view")).toBeVisible();
-  await expect(page.locator("#operation-rows")).toBeVisible();
+  await gotoRoute(page, "/operations");
   await expect.soft.poll(async () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
   await logout(page);
 
@@ -72,17 +70,16 @@ test("AUTH-010/012/NFR/PERM: deep links, language persistence, responsive shell,
     ["onlineClerk", /Online/i]
   ]) {
     await login(page, users[role]);
-    await page.evaluate(() => { location.hash = "/inventory"; });
-    await expect(page.locator("#view")).toBeVisible();
+    await gotoRoute(page, "/inventory");
     await expect(page.locator("#inventory-locations")).toContainText(location);
     await expect(page.locator("#nav a", { hasText: "Admin" })).toHaveCount(0);
     await logout(page);
   }
 
   await login(page, users.accountant);
-  await page.evaluate(() => { location.hash = "/catalog"; });
+  await gotoRoute(page, "/catalog");
   await expect(page.locator("#product-form")).toHaveCount(0);
-  await page.evaluate(() => { location.hash = "/inventory"; });
+  await gotoRoute(page, "/inventory");
   await expect(page.locator("#inventory-balances")).toHaveCount(0);
 });
 
@@ -148,29 +145,31 @@ test("SALE/RSV/RET/CHG/WO: visible operation flows preserve batch, party, status
   });
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
 
-  await createOperationDraft(page, {
+  const sale = await createOperationDraft(page, {
     type: "WholesaleSale", skuText: data.product, quantity: "2", price: "125",
-    stockText: data.mainLot, merchantText: data.merchant, paymentMethod: "Installment", sourceText: /Roxy|Main/i
+    stockText: data.mainLot, merchantText: data.merchant, paymentMethod: "MerchantAccount", sourceText: /Roxy|Main/i
   });
   await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
   await runLatestOperationAction(page, "WholesaleSale", /Ship/i);
   await runLatestOperationAction(page, "WholesaleSale", /Complete/i);
-
-  await createOperationDraft(page, {
-    type: "Reserve", skuText: data.product, quantity: "1", stockText: data.mainLot,
-    sourceText: /Roxy|Main/i, representativeText: data.representative
-  });
-  await runLatestOperationAction(page, "Reserve", /Confirm/i);
-  await page.locator("#operation-rows tr", { hasText: "Reserve" }).first().getByRole("button", { name: /Show|Details/i }).first().click();
-  await expect(page.locator(".operation-detail").first()).toContainText(/Operation code|Current version|Batch expiry/i);
+  const saleDetailResult = await apiJson(page, "GET", `/api/v1/operations/${sale.id}`);
+  expect(saleDetailResult.response.ok()).toBeTruthy();
+  const sourceMerchantId = saleDetailResult.data.clientId;
+  expect(sourceMerchantId).toBeTruthy();
+  const allocationResult = await apiJson(page, "GET", `/api/v1/operations/${sale.id}/allocations?page=1&pageSize=10`);
+  expect(allocationResult.response.ok()).toBeTruthy();
+  const saleAllocation = (allocationResult.data?.items || allocationResult.data?.data || [])[0];
+  expect(saleAllocation?.batchId).toBeTruthy();
 
   await createOperationDraft(page, {
     type: "Return", skuText: data.product, quantity: "1", lot: data.mainLot, expiry: data.expiry,
-    merchantText: data.merchant, sourceText: /Roxy|Main/i, paymentMethod: "CashHandToHand"
+    merchantText: data.merchant, sourceText: /Roxy|Main/i, paymentMethod: "MerchantAccount",
+    sourceOperationId: sale.id, sourceOperationLineId: sale.lines?.[0]?.id, sourceBatchId: saleAllocation.batchId,
+    sourceMerchantId
   });
   await runLatestOperationAction(page, "Return", /Confirm/i);
 
-  await createChangeDraft(page, data);
+  await createChangeDraft(page, data, { id: sale.id, lineId: sale.lines?.[0]?.id, batchId: saleAllocation.batchId, merchantId: sourceMerchantId });
   await runLatestOperationAction(page, "Change", /Confirm/i);
 
   await createOperationDraft(page, {
@@ -180,7 +179,7 @@ test("SALE/RSV/RET/CHG/WO: visible operation flows preserve batch, party, status
   await expect(page.locator("#operation-rows tr", { hasText: "WriteOff" }).first()).toContainText(/Confirmed|WriteOff/i);
 });
 
-test("PAY: accountant draft and admin approval are visible in queue, detail, and final status", async ({ page }) => {
+test("PAY: unified collection review is visible in queue, detail, and final status", async ({ page }) => {
   test.setTimeout(180_000);
   const data = makeRunData("UI-PAY");
   await login(page, users.admin);
@@ -194,42 +193,37 @@ test("PAY: accountant draft and admin approval are visible in queue, detail, and
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
   const sale = await createOperationDraft(page, {
     type: "WholesaleSale", skuText: data.product, quantity: "2", price: "125",
-    stockText: data.mainLot, merchantText: data.merchant, paymentMethod: "Installment", sourceText: /Roxy|Main/i
+    stockText: data.mainLot, merchantText: data.merchant, paymentMethod: "CashHandToHand", sourceText: /Roxy|Main/i
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
   await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
   await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
   const payment = await paymentForOperation(page, sale.id);
-  const accountantId = await accountantIdByUsername(page);
+  const accounts = await apiJson(page, "GET", "/api/v1/finance/accounts");
+  expect(accounts.response.ok()).toBeTruthy();
+  const financeAccountId = accounts.data?.[0]?.id;
+  expect(financeAccountId).toBeTruthy();
 
   await gotoRoute(page, "/payments");
-  const paymentRow = paymentQueueRowById(page, payment.id);
-  await expect(paymentRow).toBeVisible();
-  await page.locator("#payment-accountant").selectOption(accountantId);
-  await paymentRow.getByRole("button", { name: /Assign/i }).click();
-  await expectNotice(page, /assigned|Payment log/i);
-  await logout(page);
-
-  await login(page, users.accountant);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
-  await page.locator("#payment-amount").fill("50");
-  await page.locator("#payment-method").selectOption("CashTransaction");
-  await page.locator("#payment-date").fill("2026-07-11");
-  await page.locator("#payment-notes").fill(data.runId + " headed payment");
-  await page.locator("#payment-sublog-form button[type='submit']").click();
-  await expectNotice(page, /Payment sub-log drafted/i);
-  await logout(page);
-
-  await login(page, users.admin);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
-  const paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
-  await paymentDetail.locator("[data-sublog-approve]").first().click();
-  await expectNotice(page, /Payment approved/i);
-  // The test drafts 50 against a 250 sale; approval records the installment
-  // but correctly leaves the payment log pending until the liability is paid.
-  await expect(paymentHistoryRowById(page, payment.id)).toContainText("PendingAccountant");
+  await page.getByRole("tab", { name: /Merchant account payments/i }).click();
+  await page.locator("#payment-merchant").selectOption({ label: data.merchant });
+  await page.locator("#merchant-collection-toggle").click();
+  await page.locator("#collection-amount").fill("50");
+  await page.locator("#collection-method").selectOption("CashHandToHand");
+  await page.locator("#collection-finance-account").selectOption(financeAccountId);
+  await page.locator("#collection-date").fill("2026-07-11");
+  await page.locator("#collection-notes").fill(data.runId + " headed payment");
+  await page.locator("#unified-collection-form button[type='submit']").click();
+  await expectNotice(page, /collection submitted|approval/i);
+  const work = await apiJson(page, "GET", "/api/v1/payments/collection-work?pageSize=200");
+  expect(work.response.ok()).toBeTruthy();
+  const collection = (work.data?.items || work.data || []).find((item) => /PendingAdminReview/i.test(item.status));
+  expect(collection?.id).toBeTruthy();
+  const approval = await apiJson(page, "POST", `/api/v1/payments/collections/${collection.id}/approve`);
+  expect(approval.response.ok()).toBeTruthy();
+  const finalWork = await apiJson(page, "GET", "/api/v1/payments/collection-work?pageSize=200");
+  expect(finalWork.response.ok()).toBeTruthy();
+  expect((finalWork.data?.items || finalWork.data || []).some((item) => item.id === collection.id && item.status === "Confirmed")).toBeTruthy();
 });
 
 test("STK/NOT/REPORT: stocktake confirmation, alerts, read state, and CSV export are UI reachable", async ({ page }) => {
@@ -250,7 +244,11 @@ test("STK/NOT/REPORT: stocktake confirmation, alerts, read state, and CSV export
   await page.locator("#stocktake-notes").fill(data.runId + " stocktake");
   await page.locator("#stocktake-create-form button[type='submit']").click();
   await expect(page.locator("#stocktake-detail")).toContainText(/Draft|stocktake/i);
-  await selectOptionByText(page.locator(".stocktake-line-sku").first(), data.product);
+  const stocktakeSkuRow = page.locator(".stocktake-line-row").first();
+  await stocktakeSkuRow.locator(".stocktake-line-search").fill(data.product);
+  const stocktakeSkuResult = stocktakeSkuRow.locator(".op-line-search-results .op-line-search-result:not([disabled])").filter({ hasText: data.product }).first();
+  await expect(stocktakeSkuResult).toBeVisible({ timeout: 25_000 });
+  await stocktakeSkuResult.click();
   await page.locator(".stocktake-line-lot").first().fill(data.mainLot);
   await page.locator(".stocktake-line-expiry").first().fill(data.expiry);
   await page.locator(".stocktake-line-count").first().fill("5");
@@ -289,6 +287,7 @@ test("ROLE-CLEVEL/ACCOUNTANT: oversight and accounting users execute their own r
 
   await login(page, users.accountant);
   await gotoRoute(page, "/payments");
+  await page.getByRole("tab", { name: /Other payments/i }).click();
   await expect(page.locator("#payment-rows")).toBeVisible();
   await gotoRoute(page, "/reports");
   // Accountants can use financial/operations reports, but stock reporting is

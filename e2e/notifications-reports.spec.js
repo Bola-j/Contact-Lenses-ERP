@@ -9,7 +9,9 @@ const {
   expectDownload,
   ensureCoreData,
   createOperationDraft,
-  runLatestOperationAction
+  runLatestOperationAction,
+  getStockBalances,
+  apiJson
 } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
@@ -18,6 +20,45 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("notifications: filters, read state, details, and manual alert triggers", async ({ page }) => {
+  const data = makeRunData("NOTIFY");
+  await ensureCoreData(page, data);
+  await gotoRoute(page, "/operations");
+  await createOperationDraft(page, {
+    type: "InventoryReceipt",
+    skuText: data.product,
+    quantity: "1",
+    lot: data.mainLot,
+    expiry: data.expiry,
+    supplier: `${data.runId} Supplier`,
+    invoice: `${data.runId}-INV`
+  });
+  await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
+
+  const { response: skuResponse, data: skuData } = await apiJson(
+    page,
+    "GET",
+    `/api/v1/catalog/skus?search=${encodeURIComponent(data.product)}&page=1&pageSize=10`
+  );
+  expect(skuResponse.ok(), `SKU lookup failed: ${JSON.stringify(skuData)}`).toBeTruthy();
+  const sku = (skuData?.items || skuData?.data || [])[0];
+  expect(sku, "Expected the notification fixture SKU to be searchable").toBeTruthy();
+  const { response: balanceResponse, data: balanceData } = await apiJson(
+    page,
+    "GET",
+    `/api/v1/inventory/stock-balances?skuId=${sku.id}&page=1&pageSize=20`
+  );
+  expect(balanceResponse.ok(), `Stock balance lookup failed: ${JSON.stringify(balanceData)}`).toBeTruthy();
+  const balances = balanceData?.items || balanceData?.data || [];
+  const balance = balances.find((row) => row.availablePacks === 1);
+  expect(balance, `Expected a low-stock candidate for notification fixture; balances=${JSON.stringify(balances)}`).toBeTruthy();
+  const { response: targetResponse, data: targetData } = await apiJson(
+    page,
+    "PUT",
+    `/api/v1/inventory/stock-balances/${balance.locationId}/${balance.skuId}/target`,
+    { targetPacks: 2 }
+  );
+  expect(targetResponse.ok(), `Setting low-stock target failed: ${JSON.stringify(targetData)}`).toBeTruthy();
+
   await gotoRoute(page, "/notifications");
   await expect(page.locator("#notification-list")).toBeVisible();
 

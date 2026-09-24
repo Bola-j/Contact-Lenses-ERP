@@ -278,6 +278,35 @@ public sealed class MerchantExpiryRecallService
             return MerchantRecallCommandResult<MerchantRecallReturnDraft>.Invalid("recall", "The merchant or SKU referenced by this recall is no longer available.");
         }
 
+        // Recall returns are new financially effective operations.  They must
+        // use the same durable source identity as an operator-created return;
+        // batch-history totals alone are not a safe source for stock or track
+        // routing.
+        var sourceLine = await _operations.OperationLines.AsNoTracking()
+            .Include(value => value.Operation)
+            .Where(value =>
+                value.Operation.ClientId == recall.MerchantId &&
+                !value.Operation.IsDeleted &&
+                (value.Operation.OperationType == "WholesaleSale" || value.Operation.OperationType == "RetailSale") &&
+                (value.Operation.Status == "Confirmed" || value.Operation.Status == "Completed" || value.Operation.Status == "Received") &&
+                value.SkuId == recall.SkuId && value.EntryMode == "Packs" &&
+                value.LotNumber == recall.LotNumber && value.ExpiryDate == recall.ExpiryDate)
+            .OrderBy(value => value.Operation.CreatedAt)
+            .ThenBy(value => value.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (sourceLine is null)
+        {
+            return MerchantRecallCommandResult<MerchantRecallReturnDraft>.Invalid("recall", "This recall has no finalized source sale line that can be linked safely.");
+        }
+        var sourceBatch = await _inventory.InventoryBatches.AsNoTracking()
+            .Where(value => value.SkuId == recall.SkuId && value.LotNumber == recall.LotNumber && value.ExpiryDate == recall.ExpiryDate)
+            .OrderBy(value => value.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (sourceBatch is null)
+        {
+            return MerchantRecallCommandResult<MerchantRecallReturnDraft>.Invalid("recall", "This recall has no durable inventory batch that matches its finalized source sale.");
+        }
+
         var now = _clock.EgyptNow;
         var operation = new OperationLog
         {
@@ -288,6 +317,7 @@ public sealed class MerchantExpiryRecallService
             SourceLocationId = receivingLocationId,
             ClientId = merchant.Id,
             ClientName = merchant.BusinessName,
+            PaymentMethod = "MerchantAccount",
             MerchantExpiryRecallId = recall.Id,
             Notes = string.IsNullOrWhiteSpace(notes) ? "Merchant expiry recall" : notes.Trim(),
             CreatedBy = actorId,
@@ -315,6 +345,20 @@ public sealed class MerchantExpiryRecallService
         await SharedDbTransaction.ExecuteAsync(_operations, async () =>
         {
             _operations.OperationLogs.Add(operation);
+            _operations.OperationLineSourceAllocations.Add(new OperationLineSourceAllocation
+            {
+                Id = Guid.NewGuid(),
+                TargetOperationLineId = line.Id,
+                SourceOperationId = sourceLine.OperationId,
+                SourceOperationLineId = sourceLine.Id,
+                SkuId = line.SkuId,
+                SourceBatchId = sourceBatch.Id,
+                EntryMode = line.EntryMode,
+                LotNumber = line.LotNumber,
+                ExpiryDate = line.ExpiryDate,
+                Quantity = line.Quantity,
+                CreatedAt = now
+            });
             await _operations.SaveChangesAsync(cancellationToken);
 
             var version = new OperationVersion

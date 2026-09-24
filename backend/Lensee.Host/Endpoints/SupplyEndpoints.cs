@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
 using Lensee.Modules.Operations.Data;
@@ -18,6 +19,8 @@ public static class SupplyEndpoints
     private const string Cancelled = "Cancelled";
     private const string InventoryReceipt = "InventoryReceipt";
     private static readonly string[] AllowedCostTypes = ["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"];
+    private static readonly string[] AllowedPaymentCategories = ["SupplierPurchase", "Freight", "Customs", "Transport", "OtherShipmentCost"];
+    private static readonly string[] AllowedMovementMethods = ["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static RouteGroupBuilder MapSupplyEndpoints(this IEndpointRouteBuilder routes)
@@ -32,10 +35,16 @@ public static class SupplyEndpoints
         group.MapGet("/{id:guid}/costs", GetCostsAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentCosts");
         group.MapGet("/{id:guid}/editor", GetEditorAsync).RequireAuthorization("supply.write").WithName("GetSupplyShipmentEditor");
         group.MapGet("/{id:guid}/history", GetHistoryAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentHistory");
+        group.MapGet("/{id:guid}/payments", ListPaymentsAsync).RequireAuthorization("supply.read").WithName("ListSupplyPayments");
         group.MapPost("/", CreateShipmentAsync).RequireAuthorization("supply.write").WithName("CreateSupplyShipment");
         group.MapPut("/{id:guid}", UpdateShipmentAsync).RequireAuthorization("supply.write").WithName("UpdateSupplyShipment");
         group.MapPost("/{id:guid}/confirm", ConfirmShipmentAsync).RequireAuthorization("supply.write").WithName("ConfirmSupplyShipment");
         group.MapPost("/{id:guid}/cancel", CancelShipmentAsync).RequireAuthorization("supply.write").WithName("CancelSupplyShipment");
+        group.MapPost("/{id:guid}/payments", CreatePaymentAsync).RequireAuthorization("supply.write").WithName("CreateSupplyPayment");
+        group.MapPost("/{id:guid}/payments/{paymentId:guid}/submit", SubmitPaymentAsync).RequireAuthorization("supply.write").WithName("SubmitSupplyPayment");
+        group.MapPost("/{id:guid}/payments/{paymentId:guid}/approve", ApprovePaymentAsync).RequireAuthorization("supply.payments.approve").WithName("ApproveSupplyPayment");
+        group.MapPost("/{id:guid}/payments/{paymentId:guid}/reject", RejectPaymentAsync).RequireAuthorization("supply.payments.approve").WithName("RejectSupplyPayment");
+        group.MapPost("/{id:guid}/payments/{paymentId:guid}/correct", CorrectPaymentAsync).RequireAuthorization("supply.write").WithName("CorrectSupplyPayment");
 
         return group;
     }
@@ -179,6 +188,107 @@ public static class SupplyEndpoints
         return Results.Ok(history);
     }
 
+    private static async Task<IResult> ListPaymentsAsync(Guid id, OperationsDbContext dbContext, CancellationToken cancellationToken)
+    {
+        if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
+        var payments = await dbContext.SupplyPayments.AsNoTracking().Where(value => value.ShipmentId == id)
+            .OrderByDescending(value => value.CreatedAt).ToListAsync(cancellationToken);
+        var rows = payments.Select(ToPaymentResponse).ToList();
+        var posted = rows.Where(value => value.Status == "Posted").Sum(value => value.Amount);
+        var shipmentTotal = await dbContext.SupplyShipments.Where(value => value.Id == id).Select(value => value.LandedTotal).SingleAsync(cancellationToken);
+        return Results.Ok(new SupplyPaymentSummaryResponse(rows, posted, shipmentTotal <= 0 || posted <= 0 ? "Unpaid" : posted < shipmentTotal ? "PartiallyPaid" : "Paid"));
+    }
+
+    private static async Task<IResult> CreatePaymentAsync(Guid id, SupplyPaymentRequest request, OperationsDbContext dbContext, FinanceDbContext financeDbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    {
+        if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
+        var errors = await ValidatePaymentRequestAsync(request, financeDbContext, cancellationToken);
+        if (errors.Count > 0) return Results.ValidationProblem(errors);
+        var payment = new SupplyPayment
+        {
+            Id = Guid.NewGuid(),
+            ShipmentId = id,
+            Category = request.Category!.Trim(),
+            Amount = request.Amount,
+            MovementMethod = request.MovementMethod!.Trim(),
+            FinanceAccountId = request.FinanceAccountId,
+            ExternalReference = FinanceLedgerService.NormalizeExternalReference(request.ExternalReference),
+            Notes = TrimToNull(request.Notes),
+            Status = Draft,
+            CreatedBy = currentUser.UserId ?? Guid.Empty,
+            CreatedAt = clock.EgyptNow,
+            CorrelationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString("N") : request.CorrelationId.Trim()
+        };
+        dbContext.SupplyPayments.Add(payment);
+        AddHistory(dbContext, new SupplyShipment { Id = id }, "SupplyPaymentCreate", payment.CreatedBy, payment.CreatedAt, $"Supply payment {payment.Id} created as draft.");
+        await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        return Results.Created($"/api/v1/supply/shipments/{id}/payments/{payment.Id}", ToPaymentResponse(payment));
+    }
+
+    private static async Task<IResult> SubmitPaymentAsync(Guid id, Guid paymentId, OperationsDbContext dbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    {
+        var payment = await dbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken);
+        if (payment is null) return Results.NotFound();
+        if (payment.Status != Draft) return Results.Conflict(new { code = "invalid-transition", detail = "Only draft supply payments can be submitted." });
+        payment.Status = "PendingReview"; payment.SubmittedBy = currentUser.UserId ?? Guid.Empty; payment.SubmittedAt = clock.EgyptNow;
+        await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        return Results.Ok(ToPaymentResponse(payment));
+    }
+
+    private static async Task<IResult> ApprovePaymentAsync(Guid id, Guid paymentId, OperationsDbContext operationsDbContext, FinanceDbContext financeDbContext, FinanceLedgerService financeLedgerService, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    {
+        SupplyPayment? posted = null;
+        try
+        {
+            await SharedDbTransaction.ExecuteAsync(operationsDbContext, async () =>
+            {
+                await LockShipmentAsync(operationsDbContext, id, cancellationToken);
+                await LockSupplyPaymentAsync(operationsDbContext, paymentId, cancellationToken);
+                var payment = await operationsDbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken) ?? throw new KeyNotFoundException();
+                if (payment.Status == "Posted") { posted = payment; return; }
+                if (payment.Status != "PendingReview") throw new InvalidOperationException("Only submitted supply payments can be approved.");
+                var actorId = currentUser.UserId ?? Guid.Empty;
+                if (payment.CreatedBy == actorId || payment.SubmittedBy == actorId) throw new InvalidOperationException("The supply-payment creator cannot approve it.");
+                if (payment.ReversesPaymentId is Guid originalPaymentId)
+                {
+                    await LockSupplyPaymentAsync(operationsDbContext, originalPaymentId, cancellationToken);
+                    var original = await operationsDbContext.SupplyPayments.SingleAsync(value => value.Id == originalPaymentId, cancellationToken);
+                    if (original.Status != "Posted" || original.PostedFinanceLedgerEntryId is null) throw new InvalidOperationException("The original supply payment is not posted.");
+                    var originalEntry = await financeDbContext.FinanceLedgerEntries.SingleAsync(value => value.Id == original.PostedFinanceLedgerEntryId.Value, cancellationToken);
+                    await financeLedgerService.ReverseMovementAsync(originalEntry, "SupplyPaymentReversal", payment.Id, actorId, payment.CorrelationId, cancellationToken, "Supply");
+                    original.Status = "Corrected"; original.ReplacedByPaymentId = payment.Id;
+                }
+                var entry = await financeLedgerService.PostMovementAsync("SupplyPayment", payment.Id, "Supply", payment.MovementMethod, payment.Amount, payment.FinanceAccountId, payment.ExternalReference, payment.Category, FinanceLedgerService.Debit, actorId, null, payment.CorrelationId, cancellationToken);
+                payment.Status = "Posted"; payment.ReviewedBy = actorId; payment.ReviewedAt = clock.EgyptNow; payment.PostedFinanceLedgerEntryId = entry.Id;
+                posted = payment;
+                await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+            }, cancellationToken, financeDbContext);
+        }
+        catch (KeyNotFoundException) { return Results.NotFound(); }
+        catch (InvalidOperationException) { return Results.Conflict(new { code = "supply-payment-posting-rejected", detail = "The supply payment could not be posted in its current state." }); }
+        return Results.Ok(ToPaymentResponse(posted!));
+    }
+
+    private static async Task<IResult> RejectPaymentAsync(Guid id, Guid paymentId, SupplyPaymentRejectionRequest request, OperationsDbContext dbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    {
+        var payment = await dbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken);
+        if (payment is null) return Results.NotFound();
+        if (payment.Status != "PendingReview") return Results.Conflict(new { code = "invalid-transition", detail = "Only submitted supply payments can be rejected." });
+        payment.Status = "Rejected"; payment.ReviewedBy = currentUser.UserId ?? Guid.Empty; payment.ReviewedAt = clock.EgyptNow; payment.RejectionReason = TrimToNull(request.Reason) ?? "Rejected by reviewer.";
+        await PersistenceBoundary.CommitAsync(dbContext, cancellationToken); return Results.Ok(ToPaymentResponse(payment));
+    }
+
+    private static async Task<IResult> CorrectPaymentAsync(Guid id, Guid paymentId, SupplyPaymentRequest request, OperationsDbContext dbContext, FinanceDbContext financeDbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    {
+        var original = await dbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken);
+        if (original is null) return Results.NotFound();
+        if (original.Status != "Posted" || original.ReplacedByPaymentId is not null) return Results.Conflict(new { code = "supply-payment-not-correctable", detail = "Only an unreplaced posted supply payment can be corrected." });
+        var errors = await ValidatePaymentRequestAsync(request, financeDbContext, cancellationToken); if (errors.Count > 0) return Results.ValidationProblem(errors);
+        var replacement = new SupplyPayment { Id = Guid.NewGuid(), ShipmentId = id, Category = request.Category!.Trim(), Amount = request.Amount, MovementMethod = request.MovementMethod!.Trim(), FinanceAccountId = request.FinanceAccountId, ExternalReference = FinanceLedgerService.NormalizeExternalReference(request.ExternalReference), Notes = TrimToNull(request.Notes), Status = Draft, CreatedBy = currentUser.UserId ?? Guid.Empty, CreatedAt = clock.EgyptNow, ReversesPaymentId = original.Id, CorrelationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString("N") : request.CorrelationId.Trim() };
+        dbContext.SupplyPayments.Add(replacement); await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        return Results.Created($"/api/v1/supply/shipments/{id}/payments/{replacement.Id}", ToPaymentResponse(replacement));
+    }
+
     private static async Task<IResult> CreateShipmentAsync(
         SupplyShipmentRequest request,
         OperationsDbContext operationsDbContext,
@@ -212,7 +322,7 @@ public static class SupplyEndpoints
         ApplyParts(shipment, built);
         operationsDbContext.SupplyShipments.Add(shipment);
         AddHistory(operationsDbContext, shipment, "Create", currentUser.UserId ?? Guid.Empty, now, "Shipment created.");
-        await operationsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
 
         return Results.Created($"/api/v1/supply/shipments/{shipment.Id}", ToDetailResponse(shipment, built.LocationLookup));
     }
@@ -249,7 +359,7 @@ public static class SupplyEndpoints
         }
 
         await using var transaction = operationsDbContext.Database.IsRelational()
-            ? await operationsDbContext.Database.BeginTransactionAsync(cancellationToken)
+            ? await PersistenceBoundary.OpenTransactionAsync(operationsDbContext, cancellationToken)
             : null;
 
         await LockShipmentAsync(operationsDbContext, shipment.Id, cancellationToken);
@@ -267,7 +377,7 @@ public static class SupplyEndpoints
         var oldCosts = await operationsDbContext.SupplyShipmentCosts.Where(value => value.ShipmentId == shipment.Id).ToListAsync(cancellationToken);
         operationsDbContext.SupplyShipmentLines.RemoveRange(oldLines);
         operationsDbContext.SupplyShipmentCosts.RemoveRange(oldCosts);
-        await operationsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
 
         var now = clock.EgyptNow;
         shipment.SupplierName = request.SupplierName!.Trim();
@@ -315,7 +425,7 @@ public static class SupplyEndpoints
                 Costs = built.Costs.Select(cost => new { cost.CostType, cost.Amount })
             }, JsonOptions)
         });
-        await operationsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
         if (transaction is not null)
         {
             await transaction.CommitAsync(cancellationToken);
@@ -425,7 +535,7 @@ public static class SupplyEndpoints
             // Persist the operation and its initial version before linking the operation
             // back to that version.  Setting CurrentVersionId before this insert makes
             // OperationLog and OperationVersion depend on each other in one SaveChanges.
-            await operationsDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
 
             operation.CurrentVersionId = version.Id;
             shipment.Status = Received;
@@ -433,7 +543,7 @@ public static class SupplyEndpoints
             shipment.ConfirmedBy = userId;
             shipment.InventoryReceiptOperationId = operation.Id;
             AddHistory(operationsDbContext, shipment, "Confirm", userId, now, $"Shipment received through operation {operation.OperationNumber}.");
-            await operationsDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
         }, cancellationToken, operationsDbContext);
 
         return Results.NoContent();
@@ -462,7 +572,7 @@ public static class SupplyEndpoints
         shipment.CancelledAt = now;
         shipment.CancelledBy = currentUser.UserId ?? Guid.Empty;
         AddHistory(operationsDbContext, shipment, "Cancel", currentUser.UserId ?? Guid.Empty, now, "Draft shipment cancelled.");
-        await operationsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
         return Results.NoContent();
     }
 
@@ -473,6 +583,30 @@ public static class SupplyEndpoints
             $"select 1 from operations.supply_shipments where id = {shipmentId} for update",
             cancellationToken);
     }
+
+    private static async Task LockSupplyPaymentAsync(OperationsDbContext dbContext, Guid paymentId, CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsRelational()) return;
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"select 1 from operations.supply_payments where id = {paymentId} for update", cancellationToken);
+    }
+
+    private static async Task<Dictionary<string, string[]>> ValidatePaymentRequestAsync(SupplyPaymentRequest request, FinanceDbContext financeDbContext, CancellationToken cancellationToken)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        var category = AllowedPaymentCategories.FirstOrDefault(value => string.Equals(value, request.Category?.Trim(), StringComparison.OrdinalIgnoreCase));
+        var method = AllowedMovementMethods.FirstOrDefault(value => string.Equals(value, request.MovementMethod?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (category is null) errors[nameof(request.Category)] = ["Supply payment category is invalid."];
+        if (method is null) errors[nameof(request.MovementMethod)] = ["Supply payment movement method is invalid."];
+        if (request.Amount <= 0) errors[nameof(request.Amount)] = ["Supply payment amount must be positive."];
+        if (request.FinanceAccountId == Guid.Empty || !await financeDbContext.FinanceAccounts.AsNoTracking().AnyAsync(value => value.Id == request.FinanceAccountId && value.IsActive, cancellationToken))
+            errors[nameof(request.FinanceAccountId)] = ["An active FinanceAccount is required."];
+        if (method is "BankTransfer" or "Wallet" && string.IsNullOrWhiteSpace(request.ExternalReference))
+            errors[nameof(request.ExternalReference)] = ["Bank and wallet supply payments require an external reference."];
+        return errors;
+    }
+
+    private static SupplyPaymentResponse ToPaymentResponse(SupplyPayment value) => new(value.Id, value.ShipmentId, value.Category, value.Amount, value.MovementMethod, value.FinanceAccountId, value.ExternalReference, value.Status, value.Notes, value.CreatedBy, value.CreatedAt, value.SubmittedBy, value.SubmittedAt, value.ReviewedBy, value.ReviewedAt, value.RejectionReason, value.PostedFinanceLedgerEntryId, value.ReversesPaymentId, value.ReplacedByPaymentId, value.CorrelationId);
 
     private static async Task<SupplyBuildResult> BuildShipmentPartsAsync(SupplyShipmentRequest request, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
@@ -832,6 +966,14 @@ public sealed record SupplyShipmentRequest(
 public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, decimal? UnitPrice, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyShipmentCostRequest(string? CostType, string? Description, decimal Amount);
+
+public sealed record SupplyPaymentRequest(string? Category, decimal Amount, string? MovementMethod, Guid FinanceAccountId, string? ExternalReference, string? Notes, string? CorrelationId = null);
+
+public sealed record SupplyPaymentRejectionRequest(string? Reason);
+
+public sealed record SupplyPaymentResponse(Guid Id, Guid ShipmentId, string Category, decimal Amount, string MovementMethod, Guid FinanceAccountId, string? ExternalReference, string Status, string? Notes, Guid CreatedBy, DateTime CreatedAt, Guid? SubmittedBy, DateTime? SubmittedAt, Guid? ReviewedBy, DateTime? ReviewedAt, string? RejectionReason, Guid? PostedFinanceLedgerEntryId, Guid? ReversesPaymentId, Guid? ReplacedByPaymentId, string CorrelationId);
+
+public sealed record SupplyPaymentSummaryResponse(IReadOnlyList<SupplyPaymentResponse> Payments, decimal PostedAmount, string SettlementStatus);
 
 public sealed record SupplyShipmentListResponse(
     Guid Id,

@@ -15,6 +15,7 @@ using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.Modules.Reporting.Data;
 using Lensee.Modules.Reporting.Infrastructure;
+using Lensee.Modules.Finance.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Security;
@@ -247,6 +248,9 @@ builder.Services.AddDbContext<OperationsDbContext>((services, options) =>
 builder.Services.AddDbContext<PaymentsDbContext>((services, options) =>
     options.UseNpgsql(services.GetRequiredService<NpgsqlConnection>()));
 
+builder.Services.AddDbContext<FinanceDbContext>((services, options) =>
+    options.UseNpgsql(services.GetRequiredService<NpgsqlConnection>()));
+
 builder.Services.AddDbContext<NotificationsDbContext>((services, options) =>
     options.UseNpgsql(services.GetRequiredService<NpgsqlConnection>()));
 
@@ -268,6 +272,8 @@ builder.Services.AddScoped<RefreshTokenSessionService>();
 builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<CatalogMutationTransaction>();
+builder.Services.AddScoped<FinanceLedgerService>();
+builder.Services.AddScoped<ReconciliationImportService>();
 if (builder.Environment.IsEnvironment("Testing"))
 {
     // Contract fixtures deliberately replace only the context under test.  The
@@ -471,6 +477,29 @@ builder.Services.AddAuthorization(options =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
             .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsApprove));
 
+    options.AddPolicy("finance.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant).RequireClaim("permission", LenseePermissions.FinanceRead));
+    options.AddPolicy("finance.expense.create", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceExpenseCreate));
+    options.AddPolicy("finance.expense.approve", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceExpenseApprove));
+    options.AddPolicy("finance.withdrawal.create", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceWithdrawalCreate));
+    options.AddPolicy("finance.withdrawal.assign", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceWithdrawalAssign));
+    options.AddPolicy("finance.withdrawal.approve", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceWithdrawalApprove));
+    options.AddPolicy("finance.accounts.manage", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceAccountsManage));
+    options.AddPolicy("finance.reconcile", policy =>
+        policy.RequireRole(LenseeRoles.Admin).RequireClaim("permission", LenseePermissions.FinanceReconcile));
+    options.AddPolicy("finance.opening.create", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.Accountant).RequireClaim("permission", LenseePermissions.FinanceOpeningCreate));
+    options.AddPolicy("finance.opening.correct", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.Accountant).RequireClaim("permission", LenseePermissions.FinanceOpeningCorrect));
+    options.AddPolicy("reports.executive.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel).RequireClaim("permission", LenseePermissions.ExecutiveSummaryRead));
+
     options.AddPolicy("reports.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
 
@@ -483,8 +512,12 @@ builder.Services.AddAuthorization(options =>
             .RequireClaim("permission", LenseePermissions.SupplyRead));
 
     options.AddPolicy("supply.write", policy =>
-        policy.RequireRole(LenseeRoles.Admin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.SupplyWrite));
+
+    options.AddPolicy("supply.payments.approve", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+            .RequireClaim("permission", LenseePermissions.SupplyPaymentsApprove));
 
     options.AddPolicy("settings.write", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
@@ -647,6 +680,8 @@ app.MapMerchantExpiryRecallEndpoints();
 app.MapInventoryEndpoints();
 app.MapOperationsEndpoints();
 app.MapPaymentsEndpoints();
+app.MapFinanceEndpoints();
+app.MapReconciliationImportEndpoints();
 app.MapOutboxEndpoints();
 app.MapShopifyEndpoints();
 app.MapNotificationsEndpoints();
@@ -688,6 +723,7 @@ static async Task InitializeDatabaseAsync(WebApplication app)
             create schema if not exists crm;
             create schema if not exists operations;
             create schema if not exists payments;
+            create schema if not exists finance;
             create schema if not exists notifications;
             create schema if not exists reporting;
         """);
@@ -704,6 +740,7 @@ static async Task InitializeDatabaseAsync(WebApplication app)
         await services.GetRequiredService<CatalogDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<InventoryDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<CrmDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<FinanceDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<OperationsDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<PaymentsDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<NotificationsDbContext>().Database.MigrateAsync();
@@ -743,6 +780,7 @@ static async Task RunDatabaseMigrationsWithAdvisoryLockAsync(WebApplication app)
             create schema if not exists crm;
             create schema if not exists operations;
             create schema if not exists payments;
+            create schema if not exists finance;
             create schema if not exists notifications;
             create schema if not exists reporting;
             create schema if not exists shared;
@@ -756,6 +794,7 @@ static async Task RunDatabaseMigrationsWithAdvisoryLockAsync(WebApplication app)
         await services.GetRequiredService<CatalogDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<InventoryDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<CrmDbContext>().Database.MigrateAsync();
+        await services.GetRequiredService<FinanceDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<OperationsDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<PaymentsDbContext>().Database.MigrateAsync();
         await services.GetRequiredService<NotificationsDbContext>().Database.MigrateAsync();
@@ -797,6 +836,7 @@ static async Task ValidatePendingMigrationsAsync(WebApplication app, IServicePro
         ("crm", services.GetRequiredService<CrmDbContext>()),
         ("operations", services.GetRequiredService<OperationsDbContext>()),
         ("payments", services.GetRequiredService<PaymentsDbContext>()),
+        ("finance", services.GetRequiredService<FinanceDbContext>()),
         ("notifications", services.GetRequiredService<NotificationsDbContext>()),
         ("reporting", services.GetRequiredService<ReportingDbContext>()),
         ("shared", services.GetRequiredService<SharedDbContext>())
@@ -845,6 +885,8 @@ static async Task ValidateRequiredSchemaAsync(IServiceProvider services)
             ('operations','operation_logs','financially_closed_by'),
             ('operations','operation_logs','financially_closed_at'),
             ('payments','cash_records','merchant_id'),
+            ('payments','cash_records','finance_account_id'),
+            ('payments','installment_sub_logs','finance_account_id'),
             ('payments','merchant_financial_closure_proposals','id'),
             ('payments','merchant_financial_closure_items','id')
         ) required(table_schema, table_name, column_name)

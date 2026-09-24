@@ -28,6 +28,7 @@ COPY ["backend/Lensee.Modules.Inventory/Lensee.Modules.Inventory.csproj", "backe
 COPY ["backend/Lensee.Modules.CRM/Lensee.Modules.CRM.csproj", "backend/Lensee.Modules.CRM/"]
 COPY ["backend/Lensee.Modules.Operations/Lensee.Modules.Operations.csproj", "backend/Lensee.Modules.Operations/"]
 COPY ["backend/Lensee.Modules.Payments/Lensee.Modules.Payments.csproj", "backend/Lensee.Modules.Payments/"]
+COPY ["backend/Lensee.Modules.Finance/Lensee.Modules.Finance.csproj", "backend/Lensee.Modules.Finance/"]
 COPY ["backend/Lensee.Modules.Notifications/Lensee.Modules.Notifications.csproj", "backend/Lensee.Modules.Notifications/"]
 COPY ["backend/Lensee.Modules.Reporting/Lensee.Modules.Reporting.csproj", "backend/Lensee.Modules.Reporting/"]
 RUN dotnet restore "./backend/Lensee.Host/Lensee.Host.csproj"

@@ -82,9 +82,9 @@ public static class MerchantExpiryRecallEndpoints
                 request.IsActive,
                 cancellationToken));
         }
-        catch (ArgumentException exception)
+        catch (ArgumentException)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["thresholdValue"] = [exception.Message] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["thresholdValue"] = ["The recall threshold is not valid."] });
         }
     }
 

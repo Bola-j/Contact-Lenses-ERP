@@ -244,19 +244,20 @@ namespace Lensee.Modules.Identity.Migrations
                     b.HasKey("Id")
                         .HasName("users_pkey");
 
+                    b.HasIndex(new[] { "CreatedByAdminId" }, "idx_users_created_by_admin");
+
                     b.HasIndex(new[] { "LocationId" }, "idx_users_location");
 
                     b.HasIndex(new[] { "Role" }, "idx_users_role");
-
-                    b.HasIndex(new[] { "CreatedByAdminId" }, "idx_users_created_by_admin");
 
                     b.HasIndex(new[] { "IsPrimaryAdmin" }, "uq_users_primary_admin")
                         .IsUnique()
                         .HasFilter("is_primary_admin");
 
-                    b.HasCheckConstraint("chk_users_primary_admin_role", "not is_primary_admin or role = 'Admin'");
-
-                    b.ToTable("users", "identity");
+                    b.ToTable("users", "identity", t =>
+                        {
+                            t.HasCheckConstraint("chk_users_primary_admin_role", "not is_primary_admin or role = 'Admin'");
+                        });
                 });
 
             modelBuilder.Entity("Lensee.Modules.Identity.Data.AuditLog", b =>
@@ -288,19 +289,22 @@ namespace Lensee.Modules.Identity.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Identity.Data.User", b =>
+                {
+                    b.HasOne("Lensee.Modules.Identity.Data.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByAdminId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("users_created_by_admin_id_fkey");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Identity.Data.RefreshToken", b =>
                 {
                     b.Navigation("InverseReplacedByNavigation");
                 });
 
             modelBuilder.Entity("Lensee.Modules.Identity.Data.User", b =>
-            {
-                b.HasOne("Lensee.Modules.Identity.Data.User", null)
-                    .WithMany()
-                    .HasForeignKey("CreatedByAdminId")
-                    .OnDelete(DeleteBehavior.Restrict)
-                    .HasConstraintName("users_created_by_admin_id_fkey");
-
+                {
                     b.Navigation("AuditLogs");
 
                     b.Navigation("RefreshTokens");

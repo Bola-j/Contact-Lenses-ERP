@@ -54,4 +54,6 @@ public partial class SupplyShipment
     public virtual ICollection<SupplyShipmentHistory> HistoryLogs { get; set; } = new List<SupplyShipmentHistory>();
 
     public virtual ICollection<SupplyShipmentLine> Lines { get; set; } = new List<SupplyShipmentLine>();
+
+    public virtual ICollection<SupplyPayment> Payments { get; set; } = new List<SupplyPayment>();
 }

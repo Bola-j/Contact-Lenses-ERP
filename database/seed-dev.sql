@@ -151,6 +151,41 @@ set password_hash = excluded.password_hash,
     location_id = excluded.location_id,
     is_active = excluded.is_active;
 
+-- Finance workspace fixtures keep the seeded application useful for treasury
+-- verification. These are isolated development/E2E values, not production
+-- history; production opening balances must come from a signed package.
+insert into finance.finance_accounts (id, name, type, is_active, reference, details, created_by, created_at)
+values
+  ('40000000-0000-0000-0000-000000000001', 'Main Cash', 'CashOnHand', true, 'SEED-CASH', 'Development treasury fixture', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp),
+  ('40000000-0000-0000-0000-000000000002', 'CIB Bank', 'BankAccount', true, 'SEED-BANK', 'Development treasury fixture', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp),
+  ('40000000-0000-0000-0000-000000000003', 'Vodafone Cash', 'Wallet', true, 'SEED-WALLET', 'Development treasury fixture', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp)
+on conflict (id) do update
+set name = excluded.name,
+    type = excluded.type,
+    is_active = excluded.is_active,
+    reference = excluded.reference,
+    details = excluded.details;
+
+insert into finance.finance_ledger_entries (
+  id, finance_account_id, direction, amount, category, movement_method,
+  source_type, source_id, business_date, status, created_by, created_at,
+  correlation_id, external_reference
+)
+values
+  ('50000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'Credit', 25000.0000, 'TreasuryOpeningBalance', 'CashHandToHand', 'SeedTreasuryOpeningBalance', '50000000-0000-0000-0000-000000000001', current_date, 'Posted', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp, 'seed-treasury-cash', 'SEED-TREASURY-CASH'),
+  ('50000000-0000-0000-0000-000000000002', '40000000-0000-0000-0000-000000000002', 'Credit', 50000.0000, 'TreasuryOpeningBalance', 'BankTransfer', 'SeedTreasuryOpeningBalance', '50000000-0000-0000-0000-000000000002', current_date, 'Posted', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp, 'seed-treasury-bank', 'SEED-TREASURY-BANK'),
+  ('50000000-0000-0000-0000-000000000003', '40000000-0000-0000-0000-000000000003', 'Credit', 7500.0000, 'TreasuryOpeningBalance', 'Wallet', 'SeedTreasuryOpeningBalance', '50000000-0000-0000-0000-000000000003', current_date, 'Posted', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', current_timestamp, 'seed-treasury-wallet', 'SEED-TREASURY-WALLET')
+on conflict (id) do update
+set finance_account_id = excluded.finance_account_id,
+    direction = excluded.direction,
+    amount = excluded.amount,
+    category = excluded.category,
+    movement_method = excluded.movement_method,
+    business_date = excluded.business_date,
+    status = excluded.status,
+    correlation_id = excluded.correlation_id,
+    external_reference = excluded.external_reference;
+
 insert into catalog.categories (id, parent_id, name)
 values
   ('10000000-0000-0000-0000-000000000001', null, 'Products'),

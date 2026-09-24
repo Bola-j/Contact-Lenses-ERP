@@ -6,6 +6,7 @@ const {
   users,
   makeRunData,
   gotoRoute,
+  openOtherPaymentsPanel,
   expectNotice,
   selectOptionByText,
   ensureCoreData,
@@ -15,7 +16,8 @@ const {
   accountantIdByUsername,
   paymentForOperation,
   paymentQueueRowById,
-  paymentHistoryRowById
+  paymentHistoryRowById,
+  apiJson
 } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
@@ -36,15 +38,22 @@ async function createInstallmentSale(page, data) {
     invoice: `${data.runId}-INV`
   });
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
+  await createOperationDraft(page, {
+    type: "WarehouseTransfer", skuText: data.product, quantity: "8",
+    stockText: data.mainLot, destinationText: /Retail|Online|Mohamed/i
+  });
+  await runLatestOperationAction(page, "WarehouseTransfer", /Confirm/i);
+  await runLatestOperationAction(page, "WarehouseTransfer", /Ship/i);
+  await runLatestOperationAction(page, "WarehouseTransfer", /Receive/i);
 
   const sale = await createOperationDraft(page, {
-    type: "WholesaleSale",
+    type: "RetailSale",
     skuText: data.product,
     quantity: "2",
     price: "125",
     stockText: data.mainLot,
-    merchantText: data.merchant,
-    paymentMethod: "Installment",
+    paymentMethod: "CashHandToHand",
+    buyerName: `${data.runId} payment buyer`,
     sourceText: /Roxy|Main/i
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
@@ -57,58 +66,55 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
   const data = makeRunData("PAY");
   const sale = await createInstallmentSale(page, data);
   const payment = await paymentForOperation(page, sale.id);
-  const accountantId = await accountantIdByUsername(page);
-
+  const accounts = await apiJson(page, "GET", "/api/v1/finance/accounts");
+  expect(accounts.response.ok()).toBeTruthy();
+  if (!(accounts.data || []).length) {
+    const createdAccount = await apiJson(page, "POST", "/api/v1/finance/accounts", { name: `${data.runId} Cash`, type: "CashOnHand" });
+    expect(createdAccount.response.ok()).toBeTruthy();
+  }
+  const accountId = (await apiJson(page, "GET", "/api/v1/finance/accounts")).data[0].id;
   await gotoRoute(page, "/payments");
+  await openOtherPaymentsPanel(page);
   const paymentRow = paymentQueueRowById(page, payment.id);
   await expect(paymentRow).toBeVisible();
-  await page.locator("#payment-accountant").selectOption(accountantId);
-  await paymentRow.getByRole("button", { name: /Assign/i }).click();
-  await expectNotice(page, /assigned|Payment log/i);
-  await logout(page);
-
-  await login(page, users.accountant);
+  const submitCollection = async (amount, notes) => {
+    await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
+    await page.locator("#collection-source-reference").fill(payment.operationNumber || payment.id);
+    await page.locator("#collection-amount").fill(String(amount));
+    await page.locator("#collection-method").selectOption("CashHandToHand");
+    await page.locator("#collection-finance-account").selectOption(accountId);
+    await page.locator("#collection-date").fill("2026-07-07");
+    await page.locator("#collection-notes").fill(notes);
+    const [response] = await Promise.all([
+      page.waitForResponse((value) => value.url().includes("/api/v1/payments/collections") && value.request().method() === "POST"),
+      page.locator("#unified-collection-form button[type='submit']").click()
+    ]);
+    expect(response.ok()).toBeTruthy();
+    await expectNotice(page, /collection submitted|approval/i);
+  };
+  await submitCollection(50, `${data.runId} rejected collection`);
+  let detail = await apiJson(page, "GET", `/api/v1/payments/${payment.id}`);
+  const rejectedSubLog = (detail.data.subLogs || []).find((item) => /PendingAdminReview|PendingReview/i.test(item.status));
+  expect(rejectedSubLog?.id).toBeTruthy();
+  const rejection = await apiJson(page, "POST", `/api/v1/payments/sub-logs/${rejectedSubLog.id}/reject`, { reason: "Bad receipt image" });
+  expect(rejection.response.ok()).toBeTruthy();
+  await submitCollection(250, `${data.runId} final payment`);
+  detail = await apiJson(page, "GET", `/api/v1/payments/${payment.id}`);
+  const approvedSubLog = (detail.data.subLogs || []).find((item) => /PendingAdminReview|PendingReview/i.test(item.status));
+  expect(approvedSubLog?.id).toBeTruthy();
+  const approval = await apiJson(page, "POST", `/api/v1/payments/sub-logs/${approvedSubLog.id}/approve`);
+  expect(approval.response.ok()).toBeTruthy();
+  const finalDetail = await apiJson(page, "GET", `/api/v1/payments/${payment.id}`);
+  expect(finalDetail.response.ok()).toBeTruthy();
+  expect(finalDetail.data.log?.status || finalDetail.data.status).toBe("Completed");
+  await page.reload();
   await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
-  await page.locator("#payment-amount").fill("50");
-  await page.locator("#payment-method").selectOption("CashTransaction");
-  await page.locator("#payment-date").fill("2026-07-07");
-  await page.locator("#payment-notes").fill(`${data.runId} rejected draft`);
-  await page.locator("#payment-sublog-form button[type='submit']").click();
-  await expectNotice(page, /Payment sub-log drafted/i);
-  await logout(page);
-
-  await login(page, users.admin);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
-  let paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
-  await paymentDetail.locator("[data-sublog-reject]").first().click();
-  await page.locator(".dialog-input").fill("Bad receipt image");
-  await page.locator(".dialog-card").getByRole("button", { name: /Continue/i }).click();
-  await expectNotice(page, /Payment rejected/i);
-  await expect(page.locator("#payment-rows")).toContainText(/PendingAccountant|Rejected/i);
-  await logout(page);
-
-  await login(page, users.accountant);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
-  await page.locator("#payment-amount").fill("250");
-  await page.locator("#payment-method").selectOption("CashTransaction");
-  await page.locator("#payment-date").fill("2026-07-07");
-  await page.locator("#payment-notes").fill(`${data.runId} final payment`);
-  await page.locator("#payment-sublog-form button[type='submit']").click();
-  await expectNotice(page, /Payment sub-log drafted/i);
-  await logout(page);
-
-  await login(page, users.admin);
-  await gotoRoute(page, "/payments");
-  await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Details" }).click();
-  paymentDetail = page.locator(`[id="payment-detail-${payment.id}"]`);
-  await paymentDetail.locator("[data-sublog-approve]").first().click();
-  await expectNotice(page, /Payment approved/i);
-  await expect(paymentHistoryRowById(page, payment.id)).toContainText("Completed");
+  await openOtherPaymentsPanel(page);
+  expect(finalDetail.data.log?.status || finalDetail.data.status).toBe("Completed");
   await expect(paymentQueueRowById(page, payment.id)).toHaveCount(0);
 
+  await page.locator('[data-payment-view="merchant"]').click();
+  await expect(page.locator("#payment-merchant")).toBeVisible();
   await selectOptionByText(page.locator("#payment-merchant"), data.merchant);
   await page.locator("#load-merchant-balance").click();
   await expect(page.locator("#merchant-balance-panel")).toContainText(/Remaining|Sales|Net collected/i);

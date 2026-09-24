@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.CRM.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
@@ -57,6 +58,7 @@ public static class PaymentsEndpoints
         group.MapGet("/other-payments", ListPaymentLogsAsync).RequireAuthorization("payments.read");
         group.MapGet("/other-payments/history", ListPaymentHistoryAsync).RequireAuthorization("payments.read");
         group.MapGet("/collection-work", ListCollectionWorkAsync).RequireAuthorization("payments.read");
+        group.MapGet("/kpis", GetPaymentKpisAsync).RequireAuthorization("payments.read");
         group.MapPost("/collections", RecordCollectionAsync).RequireAuthorization("payments.draft");
         group.MapPost("/collections/{id:guid}/submit", SubmitCollectionAsync).RequireAuthorization("payments.draft");
         group.MapPost("/collections/{id:guid}/approve", ApproveCollectionAsync).RequireAuthorization("payments.approve");
@@ -74,6 +76,10 @@ public static class PaymentsEndpoints
         group.MapPost("/merchant-accounts/{merchantId:guid}/financial-closure/proposals", CreateFinancialClosureProposalAsync).RequireAuthorization("payments.draft");
         group.MapPost("/financial-closure/proposals/{id:guid}/review", ReviewFinancialClosureProposalAsync).RequireAuthorization("payments.approve");
         group.MapGet("/merchant-accounts/{merchantId:guid}/collections/preview", PreviewMerchantCollectionAsync).RequireAuthorization("payments.read");
+        group.MapPost("/merchant-accounts/{merchantId:guid}/opening-balances", CreateOpeningBalanceAsync).RequireAuthorization("payments.draft");
+        group.MapGet("/merchant-accounts/{merchantId:guid}/opening-balances", ListMerchantOpeningBalancesAsync).RequireAuthorization("payments.read");
+        group.MapPost("/opening-balances/{id:guid}/approve", ApproveOpeningBalanceAsync).RequireAuthorization("payments.approve");
+        group.MapPost("/opening-balances/{id:guid}/correct", CorrectOpeningBalanceAsync).RequireAuthorization("payments.adjustments.request");
         group.MapPost("/merchant-accounts/{merchantId:guid}/collections", RecordMerchantCollectionAsync).RequireAuthorization("payments.draft");
         group.MapGet("/merchant-account-collections", ListMerchantAccountCollectionDraftsAsync).RequireAuthorization("payments.read");
         group.MapPost("/merchant-account-collections/{id:guid}/approve", ApproveMerchantAccountCollectionAsync).RequireAuthorization("payments.approve");
@@ -104,6 +110,49 @@ public static class PaymentsEndpoints
         group.MapPost("/adjustments/{id:guid}/reject", RejectFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
 
         return group;
+    }
+
+    private static async Task<IResult> GetPaymentKpisAsync(
+        PaymentsDbContext payments,
+        FinanceDbContext finance,
+        CancellationToken ct)
+    {
+        var logs = await payments.MainPaymentLogs.AsNoTracking()
+            .Where(value => !value.IsDeleted)
+            .Select(value => new { value.MerchantId, value.TotalAmount, value.AmountPaid, value.PendingAmount })
+            .ToListAsync(ct);
+        var obligations = await payments.MerchantOperationObligations.AsNoTracking()
+            .Where(value => value.Status == "Open" || value.Status == "Settled")
+            .Select(value => new
+            {
+                value.SourceType,
+                value.OriginalAmount,
+                Allocated = payments.EffectiveAllocations()
+                    .Where(allocation => allocation.ObligationId == value.Id)
+                    .Sum(allocation => (decimal?)allocation.Amount) ?? 0m
+            })
+            .ToListAsync(ct);
+        var financeRows = await finance.FinanceLedgerEntries.AsNoTracking()
+            .Where(value => value.Status == "Posted")
+            .Select(value => new { value.Direction, value.Amount, value.MovementMethod, value.Category })
+            .ToListAsync(ct);
+        var creditRows = financeRows.Where(value => value.Direction == FinanceLedgerService.Credit).ToList();
+        var totalSales = logs.Sum(value => value.TotalAmount);
+        var merchantSales = logs.Where(value => value.MerchantId.HasValue).Sum(value => value.TotalAmount);
+        var otherPaymentsSales = logs.Where(value => !value.MerchantId.HasValue).Sum(value => value.TotalAmount);
+        var openingReceivable = obligations.Where(value => value.SourceType == "OpeningBalanceCharge").Sum(value => value.OriginalAmount);
+        var openingRemaining = obligations.Where(value => value.SourceType == "OpeningBalanceCharge").Sum(value => Math.Max(value.OriginalAmount - value.Allocated, 0m));
+        var erpMerchantRemaining = obligations.Where(value => value.SourceType != "OpeningBalanceCharge").Sum(value => Math.Max(value.OriginalAmount - value.Allocated, 0m));
+        var cash = creditRows.Where(value => value.MovementMethod is "CashHandToHand" or "CashTransaction").Sum(value => value.Amount);
+        var bank = creditRows.Where(value => value.MovementMethod == "BankTransfer").Sum(value => value.Amount);
+        var wallet = creditRows.Where(value => value.MovementMethod == "Wallet").Sum(value => value.Amount);
+        return Results.Ok(new
+        {
+            totalActivity = new { erpSales = totalSales, merchantSales, otherPaymentsSales, openingReceivable },
+            actuallyCollected = new { cash, bank, wallet, other = creditRows.Where(value => value.MovementMethod is not ("CashHandToHand" or "CashTransaction" or "BankTransfer" or "Wallet")).Sum(value => value.Amount) },
+            remaining = new { openingBalance = openingRemaining, erpMerchantObligations = erpMerchantRemaining, otherPayments = logs.Where(value => !value.MerchantId.HasValue).Sum(value => Math.Max(value.TotalAmount - value.AmountPaid - value.PendingAmount, 0m)) },
+            treasury = new { cash, bank, wallet, totalExpectedLiquidFunds = cash + bank + wallet }
+        });
     }
 
     private static string DocumentRecordCode(string prefix, Guid id)
@@ -175,68 +224,196 @@ public static class PaymentsEndpoints
     ICurrentUser currentUser,
     IClock clock,
     CancellationToken cancellationToken)
-{
-    var merchant = await crmDbContext.Merchants
-        .AsNoTracking()
-        .SingleOrDefaultAsync(
-            value => value.Id == merchantId && !value.IsDeleted,
-            cancellationToken);
-
-    if (merchant is null)
-        return Results.NotFound();
-
-    var snapshot = await merchantAccountService.GetSnapshotAsync(
-        merchantId,
-        cancellationToken);
-
-    if (snapshot is null)
     {
-        await merchantAccountService.GetOrCreateForUpdateAsync(
+        var merchant = await crmDbContext.Merchants
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                value => value.Id == merchantId && !value.IsDeleted,
+                cancellationToken);
+
+        if (merchant is null)
+            return Results.NotFound();
+
+        var snapshot = await merchantAccountService.GetSnapshotAsync(
             merchantId,
-            currentUser.UserId ?? Guid.Empty,
-            clock.EgyptNow,
             cancellationToken);
 
-        snapshot = await merchantAccountService.GetSnapshotAsync(
-            merchantId,
-            cancellationToken);
+        if (snapshot is null)
+        {
+            await merchantAccountService.GetOrCreateForUpdateAsync(
+                merchantId,
+                currentUser.UserId ?? Guid.Empty,
+                clock.EgyptNow,
+                cancellationToken);
+
+            snapshot = await merchantAccountService.GetSnapshotAsync(
+                merchantId,
+                cancellationToken);
+        }
+
+        if (snapshot is null)
+            return Results.Problem(
+                "Merchant account could not be initialized.",
+                statusCode: StatusCodes.Status500InternalServerError);
+
+        var breakdown =
+            await merchantAccountService.GetFinancialBreakdownAsync(
+                merchantId,
+                cancellationToken);
+
+        var classification =
+            await merchantAccountService.GetClassificationAsync(
+                merchantId,
+                clock.EgyptNow,
+                cancellationToken);
+
+        var netCollected =
+            (breakdown?.PaymentsReceived ?? 0m)
+            - (breakdown?.CashRefunded ?? 0m);
+        var openingBalance = await merchantAccountService.GetOpeningBalanceSummaryAsync(merchantId, cancellationToken);
+
+        return Results.Ok(new MerchantAccountDetailResponse(
+            merchant.Id,
+            merchant.BusinessName,
+            snapshot,
+            breakdown,
+            netCollected,
+            classification,
+            openingBalance,
+            new MerchantAccountProfileResponse(
+                merchant.ContactPersonName,
+                merchant.PhoneNumbers,
+                merchant.Email,
+                merchant.Address,
+                merchant.BusinessType,
+                merchant.Status)));
     }
 
-    if (snapshot is null)
-        return Results.Problem(
-            "Merchant account could not be initialized.",
-            statusCode: StatusCodes.Status500InternalServerError);
-
-    var breakdown =
-        await merchantAccountService.GetFinancialBreakdownAsync(
-            merchantId,
-            cancellationToken);
-
-    var classification =
-        await merchantAccountService.GetClassificationAsync(
-            merchantId,
-            clock.EgyptNow,
-            cancellationToken);
-
-    var netCollected =
-        (breakdown?.PaymentsReceived ?? 0m)
-        - (breakdown?.CashRefunded ?? 0m);
-
-    return Results.Ok(new MerchantAccountDetailResponse(
-        merchant.Id,
-        merchant.BusinessName,
-        snapshot,
-        breakdown,
-        netCollected,
-        classification,
-        new MerchantAccountProfileResponse(
-            merchant.ContactPersonName,
-            merchant.PhoneNumbers,
-            merchant.Email,
-            merchant.Address,
-            merchant.BusinessType,
-            merchant.Status)));
+    private static async Task<IResult> ListMerchantOpeningBalancesAsync(Guid merchantId, PaymentsDbContext paymentsDbContext, CancellationToken cancellationToken)
+    {
+        var charges = await paymentsDbContext.MerchantOpeningBalanceCharges.AsNoTracking()
+            .Where(value => value.MerchantId == merchantId)
+            .OrderBy(value => value.CreatedAt).ToListAsync(cancellationToken);
+        return Results.Ok(charges.Select(ToOpeningBalanceResponse));
     }
+
+    private static async Task<IResult> CreateOpeningBalanceAsync(
+        Guid merchantId,
+        OpeningBalanceRequest request,
+        CrmDbContext crmDbContext,
+        PaymentsDbContext paymentsDbContext,
+        PaymentIdempotencyService paymentIdempotencyService,
+        ICurrentUser currentUser,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey,
+            $"POST /api/v1/payments/merchant-accounts/{merchantId}/opening-balances", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Description))
+        {
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.Amount)] = request.Amount <= 0 ? ["Opening balance amount must be greater than zero."] : [],
+                [nameof(request.Description)] = string.IsNullOrWhiteSpace(request.Description) ? ["A reason is required for an opening balance."] : []
+            }));
+        }
+
+        var merchant = await crmDbContext.Merchants.AsNoTracking()
+            .SingleOrDefaultAsync(value => value.Id == merchantId && !value.IsDeleted && value.Status == "Active", cancellationToken);
+        if (merchant is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
+
+        // One historical root per merchant. Replacements are created only by the
+        // correction workflow, which preserves allocations and the statement.
+        if (paymentsDbContext.Database.IsNpgsql())
+        {
+            var lockKey = $"merchant-opening:{merchantId}";
+            await paymentsDbContext.Database.ExecuteSqlInterpolatedAsync($"select pg_advisory_xact_lock(hashtextextended({lockKey}, 0))", cancellationToken);
+        }
+        if (await paymentsDbContext.MerchantOpeningBalanceCharges.AnyAsync(value => value.MerchantId == merchantId &&
+                value.ReversesChargeId == null && value.Status != "Rejected", cancellationToken))
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new { code = "merchant-opening-already-exists" }));
+
+        var now = clock.EgyptNow;
+        var charge = new MerchantOpeningBalanceCharge
+        {
+            Id = Guid.NewGuid(),
+            MerchantId = merchantId,
+            Amount = request.Amount,
+            AsOfDate = request.AsOfDate,
+            Description = request.Description.Trim(),
+            Status = request.SubmitForReview ? "PendingReview" : "Draft",
+            CreatedBy = currentUser.UserId ?? Guid.Empty,
+            CreatedAt = now,
+            CorrelationId = Guid.NewGuid().ToString("N")
+        };
+        paymentsDbContext.MerchantOpeningBalanceCharges.Add(charge);
+        return await paymentIdempotencyService.CompleteAsync(idempotency, ToOpeningBalanceResponse(charge), StatusCodes.Status201Created, cancellationToken);
+    }
+
+    private static async Task<IResult> ApproveOpeningBalanceAsync(
+        Guid id,
+        PaymentsDbContext paymentsDbContext,
+        MerchantAccountService merchantAccountService,
+        PaymentIdempotencyService paymentIdempotencyService,
+        ICurrentUser currentUser,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey,
+            $"POST /api/v1/payments/opening-balances/{id}/approve", new { id }, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        var charge = await paymentsDbContext.MerchantOpeningBalanceCharges
+            .SingleOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (charge is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
+        if (charge.Status != "PendingReview") return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new ProblemDetails { Title = "Opening balance is not awaiting approval." }));
+
+        await merchantAccountService.PostOpeningBalanceAsync(charge, currentUser.UserId ?? Guid.Empty, clock.EgyptNow, cancellationToken);
+        return await paymentIdempotencyService.CompleteAsync(idempotency, ToOpeningBalanceResponse(charge), StatusCodes.Status200OK, cancellationToken);
+    }
+
+    private static async Task<IResult> CorrectOpeningBalanceAsync(
+        Guid id,
+        OpeningBalanceCorrectionRequest request,
+        PaymentsDbContext paymentsDbContext,
+        MerchantAccountService merchantAccountService,
+        PaymentIdempotencyService paymentIdempotencyService,
+        ICurrentUser currentUser,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(
+            idempotencyKey,
+            $"POST /api/v1/payments/opening-balances/{id}/correct",
+            request,
+            cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        var original = await paymentsDbContext.MerchantOpeningBalanceCharges.SingleOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (original is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
+        if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Description))
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.Amount)] = request.Amount <= 0 ? ["Corrected opening balance amount must be greater than zero."] : [],
+                [nameof(request.Description)] = string.IsNullOrWhiteSpace(request.Description) ? ["A correction description is required."] : []
+            }));
+        try
+        {
+            var replacement = await merchantAccountService.CorrectOpeningBalanceAsync(original, request.Amount, request.AsOfDate, request.Description.Trim(), currentUser.UserId ?? Guid.Empty, clock.EgyptNow, cancellationToken);
+            return await paymentIdempotencyService.CompleteAsync(idempotency, ToOpeningBalanceResponse(replacement), StatusCodes.Status200OK, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["openingBalance"] = ["The merchant opening balance correction is not valid."] }));
+        }
+    }
+
+    private static OpeningBalanceResponse ToOpeningBalanceResponse(MerchantOpeningBalanceCharge charge) =>
+        new(charge.Id, charge.MerchantId, charge.Amount, charge.AsOfDate, charge.Description, charge.Status, charge.CreatedBy,
+            charge.CreatedAt, charge.ReviewedBy, charge.ReviewedAt, charge.PostedEntryId, charge.CorrelationId,
+            charge.ReversesChargeId, charge.ReplacedByChargeId, charge.ReviewReason);
 
     private static async Task<IResult> GetMerchantStatementAsync(
         Guid merchantId,
@@ -329,10 +506,10 @@ public static class PaymentsEndpoints
             .Select(value => new { value.OperationId, value.EntryType, value.DebitAmount, value.CreditAmount })
             .ToListAsync(cancellationToken);
         var obligations = await paymentsDbContext.MerchantOperationObligations.AsNoTracking()
-            .Where(value => operationIds.Contains(value.OperationId))
+            .Where(value => value.OperationId.HasValue && operationIds.Contains(value.OperationId.Value))
             .Select(value => new { value.Id, value.OperationId })
             .ToListAsync(cancellationToken);
-        var allocationTotals = await paymentsDbContext.MerchantEntryAllocations.AsNoTracking()
+        var allocationTotals = await paymentsDbContext.EffectiveAllocations().AsNoTracking()
             .Where(value => obligations.Select(item => item.Id).Contains(value.ObligationId))
             .GroupBy(value => value.ObligationId)
             .Select(group => new { ObligationId = group.Key, Amount = group.Sum(value => value.Amount) })
@@ -365,7 +542,7 @@ public static class PaymentsEndpoints
         var rows = await (from o in operations.OperationLogs.AsNoTracking()
                           join obligation in payments.MerchantOperationObligations.AsNoTracking() on o.Id equals obligation.OperationId
                           where obligation.AccountId == account.Id && !o.IsDeleted && o.Status == Completed && (o.OperationType == WholesaleSale || o.OperationType == RetailSale) && o.FinancialClosureStatus == "Open"
-                          let allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m
+                          let allocated = payments.EffectiveAllocations().Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m
                           where obligation.OriginalAmount - allocated <= 0.0001m
                           select new { o.Id, o.OperationNumber, o.OperationType, o.Status, settlementAmount = obligation.OriginalAmount, allocatedAmount = allocated, remainingAmount = Math.Max(obligation.OriginalAmount - allocated, 0m), o.FinancialClosureStatus }).Take(500).ToListAsync(ct);
         return Results.Ok(rows);
@@ -393,11 +570,11 @@ public static class PaymentsEndpoints
                 .FirstOrDefaultAsync(x => x.AccountId == account.Id && x.IdempotencyKey == normalizedIdempotencyKey, ct);
             if (replay is not null) return Results.Ok(replay);
         }
-        var rows = await (from o in operations.OperationLogs where ids.Contains(o.Id) && o.ClientId == merchantId && !o.IsDeleted && o.Status == Completed && (o.OperationType == WholesaleSale || o.OperationType == RetailSale) && o.FinancialClosureStatus == "Open" join obligation in payments.MerchantOperationObligations on o.Id equals obligation.OperationId where obligation.AccountId == account.Id let allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m select new { o, obligation, allocated }).ToListAsync(ct);
+        var rows = await (from o in operations.OperationLogs where ids.Contains(o.Id) && o.ClientId == merchantId && !o.IsDeleted && o.Status == Completed && (o.OperationType == WholesaleSale || o.OperationType == RetailSale) && o.FinancialClosureStatus == "Open" join obligation in payments.MerchantOperationObligations on o.Id equals obligation.OperationId where obligation.AccountId == account.Id let allocated = payments.EffectiveAllocations().Where(a => a.ObligationId == obligation.Id).Sum(a => (decimal?)a.Amount) ?? 0m select new { o, obligation, allocated }).ToListAsync(ct);
         if (rows.Count != ids.Length || rows.Any(x => x.obligation.OriginalAmount - x.allocated > 0.0001m)) return Results.Conflict(new ProblemDetails { Title = "Operation is not eligible", Detail = "Every selected sale must be completed, open, belong to this merchant, and fully settled." });
         var proposal = new MerchantFinancialClosureProposal { Id = Guid.NewGuid(), AccountId = account.Id, SubmittedBy = currentUser.UserId ?? Guid.Empty, SubmittedAt = clock.EgyptNow, Notes = request.Notes?.Trim(), IdempotencyKey = normalizedIdempotencyKey };
         foreach (var row in rows) proposal.Items.Add(new MerchantFinancialClosureItem { Id = Guid.NewGuid(), OperationId = row.o.Id, OperationNumber = row.o.OperationNumber, SettlementAmount = row.obligation.OriginalAmount, RemainingAmount = Math.Max(row.obligation.OriginalAmount - row.allocated, 0m) });
-        payments.MerchantFinancialClosureProposals.Add(proposal); await payments.SaveChangesAsync(ct);
+        payments.MerchantFinancialClosureProposals.Add(proposal); await PersistenceBoundary.CommitAsync(payments, ct);
         return Results.Created($"/api/v1/payments/financial-closure/proposals/{proposal.Id}", proposal);
     }
 
@@ -411,14 +588,14 @@ public static class PaymentsEndpoints
         if (ops.Count != proposal.Items.Count || ops.Values.Any(x => x.Status != Completed || x.FinancialClosureStatus != "Open")) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer eligible for closure." });
         var accountId = proposal.AccountId;
         var settlementRows = await payments.MerchantOperationObligations.AsNoTracking()
-            .Where(x => x.AccountId == accountId && operationIds.Contains(x.OperationId))
-            .Select(x => new { x.OperationId, x.OriginalAmount, Allocated = payments.MerchantEntryAllocations.Where(a => a.ObligationId == x.Id).Sum(a => (decimal?)a.Amount) ?? 0m })
+            .Where(x => x.AccountId == accountId && x.OperationId.HasValue && operationIds.Contains(x.OperationId.Value))
+            .Select(x => new { x.OperationId, x.OriginalAmount, Allocated = payments.EffectiveAllocations().Where(a => a.ObligationId == x.Id).Sum(a => (decimal?)a.Amount) ?? 0m })
             .ToListAsync(ct);
         if (settlementRows.Count != proposal.Items.Count || settlementRows.Any(x => x.OriginalAmount - x.Allocated > 0.0001m)) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer fully settled." });
         foreach (var item in selected) { var op = ops[item.OperationId]; op.FinancialClosureStatus = "FinanciallyClosed"; op.FinancialClosureProposalId = proposal.Id; op.FinanciallyClosedBy = currentUser.UserId; op.FinanciallyClosedAt = clock.EgyptNow; item.Decision = "Approved"; item.DecidedBy = currentUser.UserId; item.DecidedAt = clock.EgyptNow; }
         foreach (var item in rejected) { item.Decision = "Rejected"; item.RejectionReason = request.RejectionReason?.Trim() ?? "Not selected by the approver."; item.DecidedBy = currentUser.UserId; item.DecidedAt = clock.EgyptNow; }
         proposal.Status = selected.Count == 0 ? "Rejected" : rejected.Count == 0 ? "Approved" : "PartiallyApproved"; proposal.ReviewedBy = currentUser.UserId; proposal.ReviewedAt = clock.EgyptNow; proposal.ReviewReason = request.ReviewReason?.Trim();
-        await SharedDbTransaction.ExecuteAsync(payments, async () => { await payments.SaveChangesAsync(ct); await operations.SaveChangesAsync(ct); }, ct, operations);
+        await SharedDbTransaction.ExecuteAsync(payments, async () => { await PersistenceBoundary.CommitAsync(payments, ct); await PersistenceBoundary.CommitAsync(operations, ct); }, ct, operations);
         return Results.Ok(proposal);
     }
 
@@ -494,6 +671,7 @@ public static class PaymentsEndpoints
                     Amount = request.Amount,
                     PaymentMethod = method,
                     TransactionReference = request.TransactionReference?.Trim(),
+                    FinanceAccountId = request.FinanceAccountId,
                     AllocationsJson = request.Allocations is { Count: > 0 } ? JsonSerializer.Serialize(request.Allocations) : null,
                     Notes = request.Notes?.Trim(),
                     Status = request.SubmitForReview ? PendingAdminReview : Draft,
@@ -508,9 +686,9 @@ public static class PaymentsEndpoints
             }, cancellationToken);
             return await paymentIdempotencyService.CompleteAsync(idempotency, ToMerchantAccountCollectionDraftResponse(draft!), StatusCodes.Status201Created, cancellationToken);
         }
-        catch (InvalidOperationException exception)
+        catch (InvalidOperationException)
         {
-            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = [exception.Message] }));
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = ["The collection could not be recorded in its current state."] }));
         }
     }
 
@@ -564,7 +742,7 @@ public static class PaymentsEndpoints
             var effectiveMerchant = value.MerchantId ?? operationRefs.GetValueOrDefault(value.OperationId)?.MerchantId;
             return string.IsNullOrWhiteSpace(scope)
                 || (string.Equals(scope, "MerchantAccount", StringComparison.OrdinalIgnoreCase) && effectiveMerchant.HasValue && (!merchantId.HasValue || effectiveMerchant == merchantId))
-                || (string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase) && !effectiveMerchant.HasValue);
+                || ((string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase)) && !effectiveMerchant.HasValue);
         }).ToList();
         var directLogsForUsers = scopedLogs
             .Where(value => !(value.MerchantId ?? operationRefs.GetValueOrDefault(value.OperationId)?.MerchantId).HasValue)
@@ -579,15 +757,27 @@ public static class PaymentsEndpoints
         {
             result.AddRange(draftRows.Select(value => new
             {
-                id = value.Id, scope = "MerchantAccount", reference = $"COL-{value.Id:N}"[..12].ToUpperInvariant(), merchantId = value.Account.MerchantId,
-                operationId = value.SourceOperationId, operationNumber = value.SourceOperationId is { } sourceId
+                id = value.Id,
+                scope = "MerchantAccount",
+                reference = $"COL-{value.Id:N}"[..12].ToUpperInvariant(),
+                merchantId = value.Account.MerchantId,
+                operationId = value.SourceOperationId,
+                operationNumber = value.SourceOperationId is { } sourceId
                     ? operationRefs.GetValueOrDefault(sourceId)?.OperationNumber
                     : null,
-                amount = value.Amount, movementMethod = value.PaymentMethod, status = value.Status,
-                transactionReference = value.TransactionReference, confirmedBy = value.ConfirmedBy, confirmedAt = value.ConfirmedAt,
-                rejectionReason = value.RejectionReason, allocations = value.AllocationsJson,
+                amount = value.Amount,
+                movementMethod = value.PaymentMethod,
+                status = value.Status,
+                transactionReference = value.TransactionReference,
+                confirmedBy = value.ConfirmedBy,
+                confirmedAt = value.ConfirmedAt,
+                rejectionReason = value.RejectionReason,
+                notes = value.Notes,
+                allocations = value.AllocationsJson,
                 permittedActions = CollectionPermittedActions(value.Status),
-                assignedTo = value.AssignedTo, assignedToName = GetUserDisplayName(value.AssignedTo, users), draftedAt = value.DraftedAt,
+                assignedTo = value.AssignedTo,
+                assignedToName = GetUserDisplayName(value.AssignedTo, users),
+                draftedAt = value.DraftedAt,
                 source = "Merchant account"
             }));
             result.AddRange(scopedLogs
@@ -596,26 +786,52 @@ public static class PaymentsEndpoints
                     .Where(sub => string.IsNullOrWhiteSpace(status) || sub.SubLogStatus == status.Trim())
                     .Select(sub => new
                     {
-                        id = sub.Id, scope = "MerchantAccount", reference = $"SUB-{sub.Id:N}"[..12].ToUpperInvariant(),
+                        id = sub.Id,
+                        scope = "MerchantAccount",
+                        reference = $"SUB-{sub.Id:N}"[..12].ToUpperInvariant(),
                         merchantId = log.MerchantId ?? operationRefs.GetValueOrDefault(log.OperationId)?.MerchantId,
-                        operationId = log.OperationId, operationNumber = operationRefs.GetValueOrDefault(log.OperationId)?.OperationNumber,
-                        amount = sub.Amount, movementMethod = sub.PaymentMethod, status = sub.SubLogStatus,
-                        assignedTo = log.AssignedTo, assignedToName = GetUserDisplayName(log.AssignedTo, users), draftedAt = sub.DraftedAt,
-                        transactionReference = sub.TransactionReference, confirmedBy = sub.ConfirmedBy, confirmedAt = sub.ConfirmedAt,
-                        rejectionReason = sub.RejectionReason, allocations = (string?)null, permittedActions = CollectionPermittedActions(sub.SubLogStatus),
+                        operationId = log.OperationId,
+                        operationNumber = operationRefs.GetValueOrDefault(log.OperationId)?.OperationNumber,
+                        amount = sub.Amount,
+                        movementMethod = sub.PaymentMethod,
+                        status = sub.SubLogStatus,
+                        assignedTo = log.AssignedTo,
+                        assignedToName = GetUserDisplayName(log.AssignedTo, users),
+                        draftedAt = sub.DraftedAt,
+                        transactionReference = sub.TransactionReference,
+                        confirmedBy = sub.ConfirmedBy,
+                        confirmedAt = sub.ConfirmedAt,
+                        rejectionReason = sub.RejectionReason,
+                        notes = sub.Notes,
+                        allocations = (string?)null,
+                        permittedActions = CollectionPermittedActions(sub.SubLogStatus),
                         source = "Merchant account legacy collection"
                     })));
         }
-        if (string.IsNullOrWhiteSpace(scope) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(scope) || string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
         {
             var logs = scopedLogs.Where(log => !(log.MerchantId ?? operationRefs.GetValueOrDefault(log.OperationId)?.MerchantId).HasValue).ToList();
             result.AddRange(logs.SelectMany(log => log.InstallmentSubLogs.Where(sub => string.IsNullOrWhiteSpace(status) || sub.SubLogStatus == status.Trim()).Select(sub => new
             {
-                id = sub.Id, scope = "DirectOperation", reference = $"SUB-{sub.Id:N}"[..12].ToUpperInvariant(), merchantId = (Guid?)null,
-                operationId = log.OperationId, operationNumber = operationRefs.GetValueOrDefault(log.OperationId)?.OperationNumber, amount = sub.Amount,
-                movementMethod = sub.PaymentMethod, status = sub.SubLogStatus, assignedTo = log.AssignedTo, assignedToName = GetUserDisplayName(log.AssignedTo, users),
-                draftedAt = sub.DraftedAt, transactionReference = sub.TransactionReference, confirmedBy = sub.ConfirmedBy, confirmedAt = sub.ConfirmedAt,
-                rejectionReason = sub.RejectionReason, allocations = (string?)null, permittedActions = CollectionPermittedActions(sub.SubLogStatus),
+                id = sub.Id,
+                scope = "OtherPayments",
+                reference = $"SUB-{sub.Id:N}"[..12].ToUpperInvariant(),
+                merchantId = (Guid?)null,
+                operationId = log.OperationId,
+                operationNumber = operationRefs.GetValueOrDefault(log.OperationId)?.OperationNumber,
+                amount = sub.Amount,
+                movementMethod = sub.PaymentMethod,
+                status = sub.SubLogStatus,
+                assignedTo = log.AssignedTo,
+                assignedToName = GetUserDisplayName(log.AssignedTo, users),
+                draftedAt = sub.DraftedAt,
+                transactionReference = sub.TransactionReference,
+                confirmedBy = sub.ConfirmedBy,
+                confirmedAt = sub.ConfirmedAt,
+                rejectionReason = sub.RejectionReason,
+                notes = sub.Notes,
+                allocations = (string?)null,
+                permittedActions = CollectionPermittedActions(sub.SubLogStatus),
                 source = "Direct operation"
             })));
             var directOperationIds = logs.Select(log => log.OperationId).ToArray();
@@ -634,13 +850,26 @@ public static class PaymentsEndpoints
                 var workflowStatus = record.Status;
                 return new
                 {
-                    id = record.Id, paymentLogId = log?.Id, scope = "DirectOperation", reference = $"CASH-{record.Id:N}"[..13].ToUpperInvariant(),
-                    merchantId = log?.MerchantId, operationId = record.OperationId,
+                    id = record.Id,
+                    paymentLogId = log?.Id,
+                    scope = "OtherPayments",
+                    reference = $"CASH-{record.Id:N}"[..13].ToUpperInvariant(),
+                    merchantId = log?.MerchantId,
+                    operationId = record.OperationId,
                     operationNumber = record.OperationId.HasValue ? operationRefs.GetValueOrDefault(record.OperationId.Value)?.OperationNumber : null,
-                    amount = record.Amount, movementMethod = record.SubType, transactionReference = record.TransactionReference,
-                    status = workflowStatus, assignedTo = log?.AssignedTo, assignedToName = GetUserDisplayName(log?.AssignedTo, users),
-                    draftedAt = record.PaymentDate, confirmedBy = (Guid?)null, confirmedAt = (DateTime?)null,
-                    rejectionReason = (string?)null, allocations = (string?)null, permittedActions = CollectionPermittedActions(workflowStatus),
+                    amount = record.Amount,
+                    movementMethod = record.SubType,
+                    transactionReference = record.TransactionReference,
+                    status = workflowStatus,
+                    assignedTo = log?.AssignedTo,
+                    assignedToName = GetUserDisplayName(log?.AssignedTo, users),
+                    draftedAt = record.PaymentDate,
+                    confirmedBy = (Guid?)null,
+                    confirmedAt = (DateTime?)null,
+                    rejectionReason = (string?)null,
+                    notes = record.Notes,
+                    allocations = (string?)null,
+                    permittedActions = CollectionPermittedActions(workflowStatus),
                     source = "Direct operation cash receipt"
                 };
             }));
@@ -668,12 +897,12 @@ public static class PaymentsEndpoints
         {
             if (!request.MerchantId.HasValue) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.MerchantId)] = ["MerchantId is required for merchant-account collections."] });
             return await RecordMerchantCollectionAsync(request.MerchantId.Value,
-                new MerchantCollectionRequest(request.Amount, request.PaymentMethod, request.TransactionReference, request.Allocations, request.Notes, request.SubmitForReview, request.OperationId),
+                new MerchantCollectionRequest(request.Amount, request.PaymentMethod, request.TransactionReference, request.Allocations, request.Notes, request.SubmitForReview, request.OperationId, request.FinanceAccountId),
                 crmDbContext,
                 paymentsDbContext, operationsDbContext, identityDbContext, merchantAccountService, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken);
         }
-        if (!string.Equals(request.Scope, "DirectOperation", StringComparison.OrdinalIgnoreCase) || !request.OperationId.HasValue)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Scope)] = ["Scope must be MerchantAccount or DirectOperation."], [nameof(request.OperationId)] = ["OperationId is required for direct-operation collections."] });
+        if (!(string.Equals(request.Scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(request.Scope, "DirectOperation", StringComparison.OrdinalIgnoreCase)) || !request.OperationId.HasValue)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Scope)] = ["Scope must be MerchantAccount or OtherPayments."], [nameof(request.OperationId)] = ["OperationId is required for other-payment collections."] });
         if (request.MerchantId.HasValue)
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.MerchantId)] = ["Direct-operation collections cannot include a merchant account. Submit a separate merchant-account collection."] });
         var directOperation = await operationsDbContext.OperationLogs.AsNoTracking()
@@ -687,7 +916,7 @@ public static class PaymentsEndpoints
             .FirstOrDefaultAsync(cancellationToken);
         if (!logId.HasValue) return Results.NotFound();
         return await DraftSubLogAsync(logId.Value,
-            new PaymentSubLogRequest(request.Amount, request.PaymentMethod, request.DateReceived, request.Notes, request.TransactionReference, request.SubmitForReview),
+            new PaymentSubLogRequest(request.Amount, request.PaymentMethod, request.DateReceived, request.Notes, request.TransactionReference, request.SubmitForReview, request.FinanceAccountId),
             paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, httpContext, currentUser, merchantAccountService, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
     }
 
@@ -739,7 +968,9 @@ public static class PaymentsEndpoints
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
+        FinanceDbContext financeDbContext,
         MerchantAccountService merchantAccountService,
+        FinanceLedgerService financeLedgerService,
         HttpContext httpContext,
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
@@ -748,13 +979,10 @@ public static class PaymentsEndpoints
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        if (await paymentsDbContext.InstallmentSubLogs.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken))
-            return await ApproveSubLogAsync(id, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
-        if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && value.PaymentType == CashReceived, cancellationToken))
-            return await ApproveCashReceiptAsync(id, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken, cashRecordId: id);
-        if (await paymentsDbContext.MainPaymentLogs.AsNoTracking().AnyAsync(value => value.Id == id && !value.IsDeleted, cancellationToken))
-            return await ApproveCashReceiptAsync(id, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
-        return await ApproveMerchantAccountCollectionAsync(id, paymentsDbContext, merchantAccountService, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken);
+        // This compatibility route is explicitly a merchant-collection command.
+        // Other payment aggregates use their typed endpoints below; no table-existence
+        // probing is allowed to decide which aggregate receives an approval.
+        return await ApproveMerchantAccountCollectionAsync(id, paymentsDbContext, financeDbContext, merchantAccountService, financeLedgerService, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken);
     }
 
     private static async Task<IResult> SubmitCollectionAsync(
@@ -774,6 +1002,7 @@ public static class PaymentsEndpoints
         Guid id,
         RejectionRequest request,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
@@ -782,12 +1011,13 @@ public static class PaymentsEndpoints
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         PaymentIdempotencyService paymentIdempotencyService,
+        FinanceLedgerService financeLedgerService,
         IClock clock,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
         if (await paymentsDbContext.InstallmentSubLogs.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken))
-            return await RejectSubLogAsync(id, request, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
+            return await RejectSubLogAsync(id, request, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken);
         if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && value.PaymentType == CashReceived, cancellationToken))
             return await RejectCashReceiptAsync(id, request, paymentsDbContext, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken, cashRecordId: id);
         if (await paymentsDbContext.MainPaymentLogs.AsNoTracking().AnyAsync(value => value.Id == id && !value.IsDeleted, cancellationToken))
@@ -825,7 +1055,9 @@ public static class PaymentsEndpoints
     private static async Task<IResult> ApproveMerchantAccountCollectionAsync(
         Guid id,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         MerchantAccountService merchantAccountService,
+        FinanceLedgerService financeLedgerService,
         PaymentIdempotencyService paymentIdempotencyService,
         ICurrentUser currentUser,
         IClock clock,
@@ -848,7 +1080,10 @@ public static class PaymentsEndpoints
                 var allocations = string.IsNullOrWhiteSpace(draft.AllocationsJson)
                     ? null
                     : JsonSerializer.Deserialize<List<MerchantAllocationInput>>(draft.AllocationsJson);
+                if (draft.FinanceAccountId is null)
+                    throw new InvalidOperationException("A FinanceAccountId is required before approving a merchant collection.");
                 await merchantAccountService.PostCollectionAsync(draft.Account.MerchantId, draft.Id, draft.Amount, draft.PaymentMethod, draft.TransactionReference, actorId, now, allocations, draft.Notes, cancellationToken);
+                await financeLedgerService.PostMovementAsync("MerchantCollection", draft.Id, "MerchantAccount", draft.PaymentMethod, draft.Amount, draft.FinanceAccountId, draft.TransactionReference, "MerchantCollection", FinanceLedgerService.Credit, actorId, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
                 if (draft.SourceOperationId is { } sourceOperationId)
                 {
                     var sourcePayment = await paymentsDbContext.MainPaymentLogs
@@ -868,13 +1103,13 @@ public static class PaymentsEndpoints
                 draft.ConfirmedAt = now;
                 AddPaymentWorkflowAudit(paymentsDbContext, "MerchantAccountCollectionApproved", previous, draft.Status, draft.Account.MerchantId, null, null, draft.Id, actorId, now, draft.Amount, draft.PaymentMethod, null, httpContext: null, idempotencyKey, null);
                 await MerchantCollectionWorkspacePersistence.SaveAsync(paymentsDbContext, cancellationToken);
-            }, cancellationToken);
+            }, cancellationToken, financeDbContext);
             if (draft is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
             return await paymentIdempotencyService.CompleteAsync(idempotency, ToMerchantAccountCollectionDraftResponse(draft), StatusCodes.Status200OK, cancellationToken);
         }
-        catch (InvalidOperationException exception)
+        catch (InvalidOperationException)
         {
-            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = [exception.Message] }));
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = ["The collection could not be recorded in its current state."] }));
         }
     }
 
@@ -961,7 +1196,7 @@ public static class PaymentsEndpoints
             merchantNames.GetValueOrDefault(value.MerchantId ?? Guid.Empty), operations.GetValueOrDefault(value.OperationId ?? Guid.Empty)?.OperationNumber,
             operations.GetValueOrDefault(value.OperationId ?? Guid.Empty)?.BuyerName, actors.GetValueOrDefault(value.ActorId)?.Name,
             actors.GetValueOrDefault(value.ActorId)?.Role, drafts.GetValueOrDefault(value.CollectionDraftId ?? Guid.Empty),
-            value.MerchantId.HasValue ? "MerchantAccount" : "DirectOperation")).ToList();
+            value.MerchantId.HasValue ? "MerchantAccount" : "OtherPayments")).ToList();
         return Results.Ok(new PagedResult<PaymentAuditEventResponse>(items, safePage, safePageSize, total));
     }
 
@@ -1002,7 +1237,7 @@ public static class PaymentsEndpoints
         return await paymentIdempotencyService.CompleteAsync(idempotency, reservation, StatusCodes.Status200OK, cancellationToken);
     }
 
-    private static async Task<IResult> PayoutMerchantRefundAsync(Guid id, MerchantRefundPayoutRequest request, PaymentsDbContext paymentsDbContext, MerchantAccountService merchantAccountService, ICurrentUser currentUser, IClock clock, PaymentIdempotencyService paymentIdempotencyService, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
+    private static async Task<IResult> PayoutMerchantRefundAsync(Guid id, MerchantRefundPayoutRequest request, PaymentsDbContext paymentsDbContext, FinanceDbContext financeDbContext, MerchantAccountService merchantAccountService, FinanceLedgerService financeLedgerService, ICurrentUser currentUser, IClock clock, PaymentIdempotencyService paymentIdempotencyService, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
     {
         await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey, $"POST /api/v1/payments/merchant-accounts/refund-requests/{id}/payout", request, cancellationToken);
         if (idempotency.Result is not null) return idempotency.Result;
@@ -1012,14 +1247,21 @@ public static class PaymentsEndpoints
         var method = NormalizeMovementMethod(request.PaymentMethod);
         if (method is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
         if (MerchantAccountService.RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(request.TransactionReference)) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
+        if (request.FinanceAccountId is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = ["A FinanceAccountId is required for a refund payout."] });
         try
         {
-            var entry = await merchantAccountService.PostRefundPayoutAsync(account.MerchantId, id, Guid.NewGuid(), request.Amount, method, request.TransactionReference?.Trim(), currentUser.UserId ?? Guid.Empty, clock.EgyptNow, request.Notes, cancellationToken);
+            var payoutId = Guid.TryParse(idempotencyKey, out var parsedPayoutId) && parsedPayoutId != Guid.Empty ? parsedPayoutId : throw new InvalidOperationException("A valid UUID Idempotency-Key is required for a refund payout.");
+            MerchantAccountEntry? entry = null;
+            await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+            {
+                entry = await merchantAccountService.PostRefundPayoutAsync(account.MerchantId, id, payoutId, request.Amount, method, request.TransactionReference?.Trim(), currentUser.UserId ?? Guid.Empty, clock.EgyptNow, request.Notes, cancellationToken);
+                await financeLedgerService.PostMovementAsync("RefundPayout", payoutId, "MerchantAccount", method, request.Amount, request.FinanceAccountId, request.TransactionReference, "RefundPayout", FinanceLedgerService.Debit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(clock.EgyptNow), idempotencyKey, cancellationToken);
+            }, cancellationToken, financeDbContext);
             return await paymentIdempotencyService.CompleteAsync(idempotency, entry, StatusCodes.Status200OK, cancellationToken);
         }
-        catch (InvalidOperationException exception)
+        catch (InvalidOperationException)
         {
-            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["refund"] = [exception.Message] }));
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["refund"] = ["The refund could not be recorded in its current state."] }));
         }
     }
 
@@ -1050,6 +1292,7 @@ public static class PaymentsEndpoints
         string? status,
         Guid? merchantId,
         Guid? operationId,
+        bool? openOnly,
         int? page,
         int? pageSize,
         PaymentsDbContext paymentsDbContext,
@@ -1058,7 +1301,7 @@ public static class PaymentsEndpoints
         CancellationToken cancellationToken)
     {
         scope ??= httpContext.Request.Path.Value?.Contains("/other-payments", StringComparison.OrdinalIgnoreCase) == true
-            ? "DirectOperation"
+            ? "OtherPayments"
             : httpContext.Request.Path.Value?.Contains("/merchant-account-payments", StringComparison.OrdinalIgnoreCase) == true
                 ? "MerchantAccount"
                 : null;
@@ -1072,6 +1315,10 @@ public static class PaymentsEndpoints
         {
             query = query.Where(log => log.Status == status.Trim());
         }
+        if (openOnly == true)
+        {
+            query = query.Where(log => log.Status != PaymentCompleted && log.Status != Rejected);
+        }
         if (merchantId.HasValue)
         {
             query = query.Where(log => log.MerchantId == merchantId.Value);
@@ -1083,6 +1330,7 @@ public static class PaymentsEndpoints
         // Scope is derived from the source operation as a fallback for legacy
         // payment rows whose denormalized MerchantId was never populated.
         if (string.Equals(scope, "MerchantAccount", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase) ||
             merchantId.HasValue)
         {
@@ -1105,7 +1353,7 @@ public static class PaymentsEndpoints
             {
                 query = query.Where(log => log.MerchantId.HasValue || merchantOperationIds.Contains(log.OperationId));
             }
-            else if (string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
             {
                 query = query.Where(log => !log.MerchantId.HasValue && directOperationIds.Contains(log.OperationId));
             }
@@ -1176,7 +1424,7 @@ public static class PaymentsEndpoints
         CancellationToken cancellationToken)
     {
         scope ??= httpContext.Request.Path.Value?.Contains("/other-payments", StringComparison.OrdinalIgnoreCase) == true
-            ? "DirectOperation"
+            ? "OtherPayments"
             : httpContext.Request.Path.Value?.Contains("/merchant-account-payments", StringComparison.OrdinalIgnoreCase) == true
                 ? "MerchantAccount"
                 : null;
@@ -1253,7 +1501,7 @@ public static class PaymentsEndpoints
         {
             ordered = ordered.Where(row => row.MerchantId.HasValue).ToList();
         }
-        else if (string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
         {
             ordered = ordered.Where(row => !row.MerchantId.HasValue && string.Equals(row.OperationType, RetailSale, StringComparison.OrdinalIgnoreCase)).ToList();
         }
@@ -1353,8 +1601,8 @@ public static class PaymentsEndpoints
             paymentsDbContext.MainPaymentLogs.Add(log);
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentLogInitialized", log.Id, new { log.OperationId, log.TotalAmount, log.PaymentMethod }, now, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "PaymentLogInitialized", null, log.Status, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, log.TotalAmount, log.PaymentMethod, null, httpContext, idempotencyKey, null);
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
         var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
@@ -1425,8 +1673,8 @@ public static class PaymentsEndpoints
             log.LastModifiedBy = currentUser.UserId;
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentAssigned", log.Id, new { log.AssignedTo }, now, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "PaymentReassigned", null, log.Status, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, null, log.PaymentMethod, null, httpContext, idempotencyKey, new { log.AssignedTo });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
             await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
                 log.Id,
                 log.MerchantId,
@@ -1548,6 +1796,7 @@ public static class PaymentsEndpoints
                 Amount = request.Amount,
                 PaymentMethod = paymentMethod,
                 TransactionReference = request.TransactionReference?.Trim(),
+                FinanceAccountId = request.FinanceAccountId,
                 DateReceived = request.DateReceived ?? DateOnly.FromDateTime(now),
                 SubLogStatus = request.SubmitForReview ? PendingAdminReview : Draft,
                 DraftedBy = currentUser.UserId ?? Guid.Empty,
@@ -1569,8 +1818,8 @@ public static class PaymentsEndpoints
                     log.Id, log.MerchantId, log.OperationId, "PaymentSubLogDrafted",
                     $"A payment sub-log for {request.Amount:0.####} is awaiting Admin review.", null, LenseeRoles.Admin, now), cancellationToken);
             }
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
 
         if (transactionResult is not null)
@@ -1588,6 +1837,7 @@ public static class PaymentsEndpoints
     private static Task<IResult> ApproveSubLogAsync(
         Guid id,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
@@ -1596,15 +1846,17 @@ public static class PaymentsEndpoints
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         PaymentIdempotencyService paymentIdempotencyService,
+        FinanceLedgerService financeLedgerService,
         IClock clock,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken) =>
-        SetSubLogStatusAsync(id, ConfirmedPayment, null, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
+        SetSubLogStatusAsync(id, ConfirmedPayment, null, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken);
 
     private static Task<IResult> RejectSubLogAsync(
         Guid id,
         RejectionRequest request,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
@@ -1613,10 +1865,11 @@ public static class PaymentsEndpoints
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         PaymentIdempotencyService paymentIdempotencyService,
+        FinanceLedgerService financeLedgerService,
         IClock clock,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken) =>
-        SetSubLogStatusAsync(id, Rejected, request.Reason, paymentsDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, clock, idempotencyKey, cancellationToken);
+        SetSubLogStatusAsync(id, Rejected, request.Reason, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken);
 
     private static async Task<IResult> SubmitSubLogAsync(
         Guid id,
@@ -1648,7 +1901,7 @@ public static class PaymentsEndpoints
             log.LastModifiedBy = currentUser.UserId;
             log.LastModifiedAt = now;
             AddPaymentWorkflowAudit(paymentsDbContext, "PaymentSubLogSubmittedForApproval", Draft, PendingAdminReview, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, subLog.Amount, subLog.PaymentMethod, null, null, null, new { subLog.Id });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
         }, cancellationToken, identityDbContext);
         return failure ?? Results.Ok(new { Id = subLog!.Id, status = subLog.SubLogStatus, MainLogId = subLog.MainLogId, AssignedTo = log!.AssignedTo });
     }
@@ -1656,6 +1909,7 @@ public static class PaymentsEndpoints
     private static async Task<IResult> ApproveCashReceiptAsync(
         Guid id,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
@@ -1664,6 +1918,7 @@ public static class PaymentsEndpoints
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         PaymentIdempotencyService paymentIdempotencyService,
+        FinanceLedgerService financeLedgerService,
         IClock clock,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken,
@@ -1730,6 +1985,11 @@ public static class PaymentsEndpoints
                 transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentMethod"] = ["The cash receipt has no valid movement method or electronic reference and must be reconciled before approval."] });
                 return;
             }
+            if (cashRecord.FinanceAccountId is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(cashRecord.FinanceAccountId)] = ["A FinanceAccountId is required before approving a cash receipt."] });
+                return;
+            }
             cashRecord.Status = PaymentCompleted;
             cashRecord.ConfirmedBy = currentUser.UserId;
             cashRecord.ConfirmedAt = now;
@@ -1749,6 +2009,7 @@ public static class PaymentsEndpoints
             {
                 await merchantAccountService.PostCollectionAsync(merchantId, cashRecord.Id, cashRecord.Amount, cashRecord.SubType!, cashRecord.TransactionReference, currentUser.UserId ?? Guid.Empty, now, null, cashRecord.Notes, cancellationToken);
             }
+            await financeLedgerService.PostMovementAsync("CashRecord", cashRecord.Id, effectiveMerchantId.HasValue ? "MerchantAccount" : "OtherPayments", cashRecord.SubType!, cashRecord.Amount, cashRecord.FinanceAccountId, cashRecord.TransactionReference, "CashReceipt", FinanceLedgerService.Credit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
             log.LastModifiedBy = currentUser.UserId;
             log.LastModifiedAt = now;
 
@@ -1763,9 +2024,9 @@ public static class PaymentsEndpoints
                 null,
                 null,
                 now), cancellationToken);
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
-        }, cancellationToken, identityDbContext, sharedDbContext);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext, financeDbContext);
 
         if (transactionResult is not null)
         {
@@ -1829,7 +2090,7 @@ public static class PaymentsEndpoints
             log.LastModifiedBy = currentUser.UserId;
             log.LastModifiedAt = now;
             AddPaymentWorkflowAudit(paymentsDbContext, "CashReceiptRejected", PendingAccountant, Rejected, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, record.Amount, record.SubType, request.Reason.Trim(), null, idempotencyKey, new { record.Id });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
         }, cancellationToken);
 
         if (log is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
@@ -1842,6 +2103,7 @@ public static class PaymentsEndpoints
         string status,
         string? rejectionReason,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         OperationsDbContext operationsDbContext,
         IdentityDbContext identityDbContext,
         SharedDbContext sharedDbContext,
@@ -1850,6 +2112,7 @@ public static class PaymentsEndpoints
         ICurrentUser currentUser,
         IAppEventPublisher eventPublisher,
         PaymentIdempotencyService paymentIdempotencyService,
+        FinanceLedgerService financeLedgerService,
         IClock clock,
         string? idempotencyKey,
         CancellationToken cancellationToken)
@@ -1920,6 +2183,11 @@ public static class PaymentsEndpoints
                 transactionResult = Results.Conflict(new { code = "collection-already-posted", detail = "A collection for this registered-merchant sale has already been approved." });
                 return;
             }
+            if (status == ConfirmedPayment && subLog.FinanceAccountId is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(subLog.FinanceAccountId)] = ["A FinanceAccountId is required before approving a payment."] });
+                return;
+            }
 
             var now = clock.EgyptNow;
             subLog.SubLogStatus = status;
@@ -1931,6 +2199,10 @@ public static class PaymentsEndpoints
             if (status == ConfirmedPayment && effectiveMerchantId is { } merchantId)
             {
                 await merchantAccountService.PostCollectionAsync(merchantId, subLog.Id, subLog.Amount, subLog.PaymentMethod!, subLog.TransactionReference, currentUser.UserId ?? Guid.Empty, now, null, subLog.Notes, cancellationToken);
+            }
+            if (status == ConfirmedPayment)
+            {
+                await financeLedgerService.PostMovementAsync("InstallmentSubLog", subLog.Id, effectiveMerchantId.HasValue ? "MerchantAccount" : "OtherPayments", subLog.PaymentMethod!, subLog.Amount, subLog.FinanceAccountId, subLog.TransactionReference, "InstallmentCollection", FinanceLedgerService.Credit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
             }
             log.LastModifiedBy = currentUser.UserId;
             log.LastModifiedAt = now;
@@ -1963,9 +2235,9 @@ public static class PaymentsEndpoints
                     cancellationToken);
             }
 
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
-        }, cancellationToken, identityDbContext, sharedDbContext);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+        }, cancellationToken, identityDbContext, sharedDbContext, financeDbContext);
 
         if (transactionResult is not null)
         {
@@ -2038,6 +2310,7 @@ public static class PaymentsEndpoints
             PaymentType = paymentType,
             SubType = paymentMethod,
             TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : request.TransactionReference!.Trim(),
+            FinanceAccountId = request.FinanceAccountId,
             Amount = request.Amount,
             Status = PendingAccountant,
             PaymentDate = now,
@@ -2100,8 +2373,8 @@ public static class PaymentsEndpoints
             mainLog.LastModifiedAt = now;
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashReceiptSubmittedForApproval", record.Id, new { record.OperationId, record.Amount, record.Status }, record.PaymentDate, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "CashReceiptSubmittedForApproval", null, PendingAdminReview, mainLog.MerchantId, mainLog.OperationId, mainLog.Id, null, currentUser.UserId ?? Guid.Empty, now, record.Amount, paymentMethod, null, httpContext, idempotencyKey, new { record.Id, record.TransactionReference, mainLog.AssignedTo });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, operationsDbContext, identityDbContext, sharedDbContext);
         if (cashResult is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, cashResult);
 
@@ -2294,8 +2567,8 @@ public static class PaymentsEndpoints
             paymentsDbContext.FinancialAdjustments.Add(adjustment);
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRequested", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustmentType, request.Amount, adjustment.LineageKind }, now, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentRequested", null, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, userId, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
 
         if (transactionResult is not null)
@@ -2378,8 +2651,8 @@ public static class PaymentsEndpoints
 
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.LineageKind }, now, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentApproved", PendingApproval, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
 
         if (transactionResult is not null)
@@ -2538,8 +2811,8 @@ public static class PaymentsEndpoints
             adjustment.RejectionReason = request.Reason.Trim();
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRejected", adjustment.PaymentLogId ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.RejectionReason }, now, cancellationToken);
             AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentRejected", PendingApproval, Rejected, adjustment.MerchantId, adjustment.OperationId, adjustment.PaymentLogId, null, currentUser.UserId ?? Guid.Empty, now, adjustment.Amount, null, adjustment.RejectionReason, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType });
-            await paymentsDbContext.SaveChangesAsync(cancellationToken);
-            await identityDbContext.SaveChangesAsync(cancellationToken);
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
         }, cancellationToken, identityDbContext, sharedDbContext);
 
         if (transactionResult is not null)
@@ -2638,6 +2911,8 @@ public static class PaymentsEndpoints
         OperationLog operation,
         PaymentsDbContext paymentsDbContext,
         IdentityDbContext? identityDbContext,
+        MerchantAccountService? merchantAccountService,
+        FinanceLedgerService? financeLedgerService,
         Guid userId,
         DateTime now,
         CancellationToken cancellationToken)
@@ -2664,51 +2939,66 @@ public static class PaymentsEndpoints
                 : await SelectLeastLoadedAccountantAsync(identityDbContext, paymentsDbContext, cancellationToken)
             : null;
 
-        paymentsDbContext.MainPaymentLogs.Add(new MainPaymentLog
+        var paymentLog = new MainPaymentLog
         {
             Id = Guid.NewGuid(),
-                OperationId = operation.Id,
-                MerchantId = operation.ClientId,
-                Scope = operation.ClientId.HasValue ? "MerchantAccount" : "DirectOperation",
+            OperationId = operation.Id,
+            MerchantId = operation.ClientId,
+            Scope = operation.ClientId.HasValue ? "MerchantAccount" : "OtherPayments",
             TotalAmount = total,
-            AmountPaid = 0,
-            PaymentMethod = operation.PaymentMethod ?? throw new InvalidOperationException("A completed financial sale must have an explicit settlement method."),
-            Status = PendingAccountant,
+            AmountPaid = operation.ClientId.HasValue && MerchantAccountService.IsMovementMethod(operation.PaymentMethod) ? total : 0,
+            // Deferred merchant sales create a receivable, not a fictitious cash
+            // movement. The real method is captured only with the collection.
+            PaymentMethod = operation.PaymentMethod,
+            Status = operation.ClientId.HasValue && MerchantAccountService.IsMovementMethod(operation.PaymentMethod) ? PaymentCompleted : PendingAccountant,
             InitializedBy = userId,
             InitializedAt = now,
             AssignedTo = assignedTo,
             AssignedAt = assignedTo.HasValue ? now : null,
             LastModifiedBy = userId,
             LastModifiedAt = now,
-            Notes = "Created from completed sale. Record the collection separately for approval."
-        });
+            Notes = operation.ClientId.HasValue && MerchantAccountService.IsMovementMethod(operation.PaymentMethod)
+                ? "Completed registered-merchant sale with immediate collection and allocation."
+                : "Created from completed sale. Record the collection separately for approval."
+        };
+        paymentsDbContext.MainPaymentLogs.Add(paymentLog);
         if (operation.ClientId is { } merchantId &&
             identityDbContext is not null &&
             MerchantAccountService.IsMovementMethod(operation.PaymentMethod))
         {
-            var account = await paymentsDbContext.MerchantReceivableAccounts
-                .SingleOrDefaultAsync(value => value.MerchantId == merchantId, cancellationToken);
-            if (account is not null && !await paymentsDbContext.MerchantAccountCollectionDrafts
-                    .AnyAsync(value => value.SourceOperationId == operation.Id && value.Status != "Rejected", cancellationToken))
+            if (merchantAccountService is not null)
             {
-                paymentsDbContext.MerchantAccountCollectionDrafts.Add(new MerchantAccountCollectionDraft
+                await merchantAccountService.PostCollectionAsync(merchantId, paymentLog.Id, total, operation.PaymentMethod!, null, userId, now, null, "Immediate collection from completed registered-merchant sale.", cancellationToken);
+                if (financeLedgerService is null)
+                    throw new InvalidOperationException("Immediate merchant collection requires the finance ledger service.");
+                await financeLedgerService.PostMovementAsync("MerchantCollection", paymentLog.Id, "MerchantAccount", operation.PaymentMethod!, total, operation.FinanceAccountId, null, "MerchantCollection", FinanceLedgerService.Credit, userId, DateOnly.FromDateTime(now), null, cancellationToken);
+            }
+            else
+            {
+                var account = await paymentsDbContext.MerchantReceivableAccounts
+                    .SingleOrDefaultAsync(value => value.MerchantId == merchantId, cancellationToken);
+                if (account is not null && !await paymentsDbContext.MerchantAccountCollectionDrafts
+                        .AnyAsync(value => value.SourceOperationId == operation.Id && value.Status != "Rejected", cancellationToken))
                 {
-                    Id = Guid.NewGuid(),
-                    AccountId = account.Id,
-                    Account = account,
-                    SourceOperationId = operation.Id,
-                    Amount = total,
-                    PaymentMethod = operation.PaymentMethod!,
-                    Status = Draft,
-                    DraftedBy = userId,
-                    DraftedAt = now,
-                    AssignedTo = assignedTo,
-                    AssignedAt = assignedTo.HasValue ? now : null,
-                    Notes = "Prefilled from completed registered-merchant sale; submit after money is received."
-                });
+                    paymentsDbContext.MerchantAccountCollectionDrafts.Add(new MerchantAccountCollectionDraft
+                    {
+                        Id = Guid.NewGuid(),
+                        AccountId = account.Id,
+                        Account = account,
+                        SourceOperationId = operation.Id,
+                        Amount = total,
+                        PaymentMethod = operation.PaymentMethod!,
+                        Status = Draft,
+                        DraftedBy = userId,
+                        DraftedAt = now,
+                        AssignedTo = assignedTo,
+                        AssignedAt = assignedTo.HasValue ? now : null,
+                        Notes = "Prefilled from completed registered-merchant sale; submit after money is received."
+                    });
+                }
             }
         }
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
     }
 
     public static Task CreatePaymentArtifactsForCompletedSaleAsync(
@@ -2717,7 +3007,7 @@ public static class PaymentsEndpoints
         Guid userId,
         DateTime now,
         CancellationToken cancellationToken) =>
-        CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, null, userId, now, cancellationToken);
+        CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, null, null, null, userId, now, cancellationToken);
 
     public static async Task<string?> GetRevisionBlockReasonForCompletedSaleAsync(
         Guid operationId,
@@ -2782,7 +3072,7 @@ public static class PaymentsEndpoints
         }
 
         await RemoveCashRecordsForRevisionAsync(paymentsDbContext, cashRecords.Select(record => record.Id).ToArray(), cancellationToken);
-        await paymentsDbContext.SaveChangesAsync(cancellationToken);
+        await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
     }
 
     private static async Task RemoveCashRecordsForRevisionAsync(
@@ -2859,6 +3149,9 @@ public static class PaymentsEndpoints
         operationLookup.TryGetValue(log.OperationId, out var operation);
         var effectiveMerchantId = log.MerchantId ?? operation?.MerchantId;
         var balance = PaymentBalanceCalculator.Calculate(log, adjustments ?? [], cashRecords ?? []);
+        var confirmedCollections = log.Status == PaymentCompleted
+            ? Math.Max(balance.ConfirmedCollections, log.AmountPaid)
+            : balance.ConfirmedCollections;
         return
         new(
             log.Id,
@@ -2868,8 +3161,8 @@ public static class PaymentsEndpoints
             operation?.OperationType,
             operation?.BuyerName,
             log.TotalAmount,
-            balance.ConfirmedCollections,
-            balance.RemainingAmount,
+            confirmedCollections,
+            Math.Max(log.TotalAmount - confirmedCollections - balance.AdjustedAmount + balance.BalanceReductions, 0m),
             log.PaymentMethod,
             log.Status,
             log.AssignedTo,
@@ -3533,7 +3826,8 @@ public static class PaymentsEndpoints
             GetUserDisplayName(draft.DraftedBy, users ?? new Dictionary<Guid, User>()),
             GetUserDisplayName(draft.AssignedTo, users ?? new Dictionary<Guid, User>()),
             GetUserDisplayName(draft.ConfirmedBy, users ?? new Dictionary<Guid, User>()),
-            draft.SourceOperationId);
+            draft.SourceOperationId,
+            draft.FinanceAccountId);
 
     private static void AddPaymentWorkflowAudit(
         PaymentsDbContext paymentsDbContext,
@@ -3601,13 +3895,13 @@ public sealed record InitializePaymentRequest(Guid OperationId, string? PaymentM
 
 public sealed record AssignPaymentRequest(Guid? AccountantUserId);
 
-public sealed record PaymentSubLogRequest(decimal Amount, string? PaymentMethod, DateOnly? DateReceived, string? Notes, string? TransactionReference = null, bool SubmitForReview = true);
+public sealed record PaymentSubLogRequest(decimal Amount, string? PaymentMethod, DateOnly? DateReceived, string? Notes, string? TransactionReference = null, bool SubmitForReview = true, Guid? FinanceAccountId = null);
 
 public sealed record RejectionRequest(string? Reason);
 
 public sealed record CollectionRejectionRequest(string? Reason);
 
-public sealed record CashRecordRequest(string? OperationId, string? PaymentType, string? SubType, decimal Amount, string? Notes, string? PaymentMethod = null, string? TransactionReference = null);
+public sealed record CashRecordRequest(string? OperationId, string? PaymentType, string? SubType, decimal Amount, string? Notes, string? PaymentMethod = null, string? TransactionReference = null, Guid? FinanceAccountId = null);
 
 public sealed record FinancialAdjustmentRequest(Guid MerchantId, string? OperationId, string AdjustmentType, decimal Amount, string? Notes);
 
@@ -3617,14 +3911,14 @@ public sealed record CashRefundPayoutRequest(decimal Amount, string? Notes, stri
 
 public sealed record PaymentLogListResponse(Guid Id, Guid OperationId, Guid? MerchantId, string? OperationNumber, string? OperationType, string? BuyerName, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string PaymentMethod, string Status, Guid? AssignedTo, DateTime LastModifiedAt, string? InitializedByName, string? AssignedToName, string? LastModifiedByName, decimal RefundDue, decimal AdjustedAmount, decimal AdditionalCharges, decimal BalanceReductions, decimal PendingCollections, decimal CompletedRefunds)
 {
-    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "DirectOperation";
+    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "OtherPayments";
 }
 
 public sealed record PaymentLogDetailResponse(PaymentLogListResponse Log, IReadOnlyList<PaymentSubLogResponse> SubLogs, IReadOnlyList<CashRecordResponse> CashRecords, IReadOnlyList<FinancialAdjustmentResponse> Adjustments, IReadOnlyList<PaymentStageResponse> Stages, string? Notes);
 
 public sealed record PaymentSubLogResponse(Guid Id, decimal Amount, string? PaymentMethod, DateOnly DateReceived, string Status, Guid DraftedBy, DateTime DraftedAt, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? RejectionReason, string? Notes, string? DraftedByName, string? ConfirmedByName)
 {
-    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "DirectOperation";
+    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "OtherPayments";
     public Guid? OperationId { get; init; }
     public Guid? MerchantId { get; init; }
     public string? OperationNumber { get; init; }
@@ -3640,7 +3934,7 @@ public sealed record PaymentSubLogResponse(Guid Id, decimal Amount, string? Paym
 
 public sealed record CashRecordResponse(Guid Id, Guid? OperationId, string PaymentType, string? SubType, string? TransactionReference, decimal Amount, string Status, DateTime PaymentDate, Guid CreatedBy, string? CreatedByName, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? Notes)
 {
-    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "DirectOperation";
+    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "OtherPayments";
     public Guid? MerchantId { get; init; }
     public string? OperationNumber { get; init; }
     public string? Reference { get; init; }
@@ -3656,7 +3950,7 @@ public sealed record FinancialAdjustmentResponse(Guid Id, Guid MerchantId, Guid?
 
 public sealed record PaymentHistoryResponse(Guid Id, string RecordType, Guid? OperationId, string? OperationNumber, string? OperationType, Guid? MerchantId, string? MerchantName, string? BuyerName, string? PaymentMethod, decimal Amount, string Status, DateTime HappenedAt, string? ActorName, string? Notes)
 {
-    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "DirectOperation";
+    public string Scope => MerchantId.HasValue ? "MerchantAccount" : "OtherPayments";
 }
 
 public sealed record PaymentStageResponse(string StageType, DateTime HappenedAt, string? ActorName, decimal Amount, string? PaymentMethod, string Status, string? Notes, string? OperationNumber);
@@ -3676,10 +3970,10 @@ public sealed record MerchantAccountStatementResponse(
 
 internal sealed record PaymentOperationContext(Guid OperationId, string OperationNumber, string OperationType, Guid? MerchantId, string? BuyerName);
 
-public sealed record MerchantCollectionRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, IReadOnlyList<MerchantAllocationInput>? Allocations, string? Notes, bool SubmitForReview = true, Guid? SourceOperationId = null);
-public sealed record CollectionWorkspaceRequest(string Scope, decimal Amount, string? PaymentMethod, string? TransactionReference, Guid? MerchantId = null, Guid? OperationId = null, DateOnly? DateReceived = null, IReadOnlyList<MerchantAllocationInput>? Allocations = null, string? Notes = null, bool SubmitForReview = true);
+public sealed record MerchantCollectionRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, IReadOnlyList<MerchantAllocationInput>? Allocations, string? Notes, bool SubmitForReview = true, Guid? SourceOperationId = null, Guid? FinanceAccountId = null);
+public sealed record CollectionWorkspaceRequest(string Scope, decimal Amount, string? PaymentMethod, string? TransactionReference, Guid? MerchantId = null, Guid? OperationId = null, DateOnly? DateReceived = null, IReadOnlyList<MerchantAllocationInput>? Allocations = null, string? Notes = null, bool SubmitForReview = true, Guid? FinanceAccountId = null);
 public sealed record CollectionReassignmentRequest(Guid? AccountantUserId, string? Reason = null);
-public sealed record MerchantAccountCollectionDraftResponse(Guid Id, string Reference, Guid MerchantId, decimal Amount, string PaymentMethod, string? TransactionReference, string Status, Guid DraftedBy, DateTime DraftedAt, Guid? AssignedTo, DateTime? AssignedAt, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? RejectionReason, string? Notes, string? AllocationsJson, string? DraftedByName, string? AssignedToName, string? ConfirmedByName, Guid? SourceOperationId = null)
+public sealed record MerchantAccountCollectionDraftResponse(Guid Id, string Reference, Guid MerchantId, decimal Amount, string PaymentMethod, string? TransactionReference, string Status, Guid DraftedBy, DateTime DraftedAt, Guid? AssignedTo, DateTime? AssignedAt, Guid? ConfirmedBy, DateTime? ConfirmedAt, string? RejectionReason, string? Notes, string? AllocationsJson, string? DraftedByName, string? AssignedToName, string? ConfirmedByName, Guid? SourceOperationId = null, Guid? FinanceAccountId = null)
 {
     public string Scope => "MerchantAccount";
     public string MovementMethod => PaymentMethod;
@@ -3694,10 +3988,13 @@ public sealed record PaymentAuditEventResponse(Guid Id, string Action, string? P
 internal sealed record PaymentAuditOperationContext(Guid Id, string OperationNumber, string? BuyerName);
 internal sealed record PaymentAuditActorContext(Guid Id, string Name, string Role);
 public sealed record MerchantRefundRequest(decimal Amount, string? Notes);
-public sealed record MerchantRefundPayoutRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, string? Notes);
+public sealed record MerchantRefundPayoutRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, string? Notes, Guid? FinanceAccountId = null);
 public sealed record MerchantAccountListResponse(Guid MerchantId, string BusinessName, decimal AmountDue, decimal CreditAvailable, decimal ReservedRefunds, decimal ConfirmedCollections, decimal NetCollected, DateTime OpenedAt, MerchantAccountClassification Classification);
-public sealed record MerchantAccountDetailResponse(Guid MerchantId, string BusinessName, MerchantAccountSnapshot Balance, MerchantAccountFinancialBreakdown? Breakdown, decimal NetCollected, MerchantAccountClassification Classification, MerchantAccountProfileResponse? Profile = null);
+public sealed record MerchantAccountDetailResponse(Guid MerchantId, string BusinessName, MerchantAccountSnapshot Balance, MerchantAccountFinancialBreakdown? Breakdown, decimal NetCollected, MerchantAccountClassification Classification, MerchantOpeningBalanceSummary? OpeningBalance = null, MerchantAccountProfileResponse? Profile = null);
 public sealed record MerchantAccountProfileResponse(string ContactPersonName, IReadOnlyList<string> PhoneNumbers, string? Email, string? Address, string BusinessType, string Status);
+public sealed record OpeningBalanceRequest(decimal Amount, DateOnly AsOfDate, string Description, bool SubmitForReview = true);
+public sealed record OpeningBalanceCorrectionRequest(decimal Amount, DateOnly AsOfDate, string Description);
+public sealed record OpeningBalanceResponse(Guid Id, Guid MerchantId, decimal Amount, DateOnly AsOfDate, string Description, string Status, Guid CreatedBy, DateTime CreatedAt, Guid? ReviewedBy, DateTime? ReviewedAt, Guid? PostedEntryId, string? CorrelationId, Guid? ReversesChargeId = null, Guid? ReplacedByChargeId = null, string? ReviewReason = null);
 public sealed record MerchantStatementDisplayRow(Guid Id, long Sequence, DateTime PostedAt, string EntryType, string EventLabel, Guid? OperationId, Guid? PaymentId, string SourceReference, decimal DebitAmount, decimal CreditAmount, decimal RunningBalance, string? PaymentMethod, string MethodLabel, string? TransactionReference, string Status, string? Notes, string ActorName);
 public sealed record MerchantOrderLineResponse(string ProductName, string SkuCode, int Quantity);
 public sealed record MerchantOrderResponse(Guid OperationId, string OperationNumber, string OperationType, string Status, DateTime Date, IReadOnlyList<MerchantOrderLineResponse> Lines, decimal SaleTotal, decimal CollectionsAllocated, decimal AcceptedReturns, decimal AdditionalCharges, decimal AmountReductions, decimal Refunds, decimal Remaining, string FinancialClosureStatus = "Open");

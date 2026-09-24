@@ -16,6 +16,7 @@ public sealed class MerchantAccountCollectionDraft
     public decimal Amount { get; set; }
     public string PaymentMethod { get; set; } = null!;
     public string? TransactionReference { get; set; }
+    public Guid? FinanceAccountId { get; set; }
     public string? AllocationsJson { get; set; }
     public string? Notes { get; set; }
     public string Status { get; set; } = "PendingAdminReview";

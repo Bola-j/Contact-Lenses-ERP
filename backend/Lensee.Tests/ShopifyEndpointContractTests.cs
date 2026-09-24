@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Lensee.Modules.Catalog.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Notifications.Data;
 using Lensee.Modules.Operations.Data;
@@ -78,6 +79,64 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         Assert.Equal("line-1002", line.ShopifyLineItemId);
         Assert.Contains("Eye", line.ShopifyPropertiesSnapshot);
         Assert.Equal(1, await operations.ShopifyWebhookEvents.CountAsync());
+    }
+
+    [Fact]
+    public async Task UnlinkedShopifyCustomer_RemainsOtherPaymentsWithoutCreatingOrMatchingMerchant()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        using var request = CreateWebhookRequest("orders/create", "webhook-unlinked-customer", OrderPayload("unlinked-customer", SkuCode(seed.SkuId)));
+
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(request)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var crm = scope.ServiceProvider.GetRequiredService<Lensee.Modules.CRM.Data.CrmDbContext>();
+        var operation = await operations.OperationLogs.SingleAsync();
+        Assert.Null(operation.ClientId);
+        Assert.Equal("Online Buyer", operation.ClientName);
+        Assert.Equal("201000000000", operation.BuyerPhone);
+        Assert.Equal("buyer@example.com", operation.BuyerEmail);
+        Assert.Empty(await crm.Merchants.Where(value => value.ExternalProvider == "Shopify").ToListAsync());
+    }
+
+    [Fact]
+    public async Task SameDeliveryIdInDifferentTopics_HasIndependentDurableIdentity()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        using var create = CreateWebhookRequest("orders/create", "same-provider-delivery", OrderPayload("topic-identity", SkuCode(seed.SkuId)));
+        using var cancellation = CreateWebhookRequest("orders/cancelled", "same-provider-delivery", "{\"id\":\"customer-topic-identity\"}");
+
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(create)).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(cancellation)).StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        Assert.Equal(2, await operations.ShopifyWebhookEvents.CountAsync());
+    }
+
+    [Fact]
+    public async Task MonetaryRefundNotice_DoesNotImplicitlyCreateInventoryOrFinanceEffects()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        using var order = CreateWebhookRequest("orders/create", "webhook-refund-order", OrderPayload("refund-order", SkuCode(seed.SkuId)));
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(order)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var refund = CreateWebhookRequest("refunds/create", "webhook-refund-money", "{\"order_id\":\"customer-refund-order\",\"id\":\"refund-1\"}");
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(refund)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var finance = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
+        var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+        Assert.Single(await operations.OperationLogs.ToListAsync());
+        Assert.Empty(await finance.FinanceLedgerEntries.ToListAsync());
+        Assert.Single(await notifications.NotificationLogs.Where(value => value.AlertType == "ShopifyRefundException").ToListAsync());
     }
 
     [Theory]

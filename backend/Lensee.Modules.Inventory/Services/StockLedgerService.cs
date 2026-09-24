@@ -711,6 +711,65 @@ public sealed class StockLedgerService
         return allocations;
     }
 
+    public async Task AdjustStocktakePiecesAsync(Guid locationId, Guid skuId, string? lotNumber, DateOnly? expiryDate, int delta, Guid userId, Guid? referenceOperationId = null, CancellationToken cancellationToken = default)
+    {
+        if (delta == 0) return;
+        var normalizedLot = NormalizeBlank(lotNumber);
+        var lots = await _dbContext.OpenedPieceLots
+            .Where(value => value.LocationId == locationId && value.SkuId == skuId && value.LotNumber == normalizedLot && value.BatchExpiryDate == expiryDate)
+            .OrderBy(value => value.PieceExpiryDate == null).ThenBy(value => value.PieceExpiryDate).ToListAsync(cancellationToken);
+        if (delta < 0)
+        {
+            var remaining = -delta;
+            foreach (var lot in lots)
+            {
+                var take = Math.Min(remaining, lot.LoosePieceQuantity);
+                lot.LoosePieceQuantity -= take;
+                remaining -= take;
+                if (remaining == 0) break;
+            }
+            if (remaining > 0) throw new InvalidOperationException("Selected loose-piece stock is insufficient.");
+        }
+        else
+        {
+            var batch = await FindBatchAsync(locationId, skuId, normalizedLot, expiryDate, cancellationToken);
+            if (batch is null) throw new InvalidOperationException("A stock batch is required for a positive loose-piece adjustment.");
+            _dbContext.OpenedPieceLots.Add(new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id, LotNumber = normalizedLot, BatchExpiryDate = expiryDate, OpenedDate = DateOnly.FromDateTime(_clock.EgyptNow), PieceExpiryDate = expiryDate, LoosePieceQuantity = delta, CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = _clock.EgyptNow });
+        }
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, userId, referenceOperationId, _clock.EgyptNow);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Restores returned pieces to the exact loose lot from which they were
+    /// issued. Pack stock is deliberately not changed: the pack was already
+    /// opened when the original piece sale was made.
+    /// </summary>
+    public async Task RestorePiecesToOpenedLotAsync(
+        Guid openedPieceLotId,
+        int pieceQuantity,
+        CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(pieceQuantity, nameof(pieceQuantity));
+        var today = DateOnly.FromDateTime(_clock.EgyptNow);
+        if (!_dbContext.Database.IsRelational())
+        {
+            var lot = await _dbContext.OpenedPieceLots.FirstOrDefaultAsync(value => value.Id == openedPieceLotId, cancellationToken)
+                ?? throw new InvalidOperationException("The original opened piece lot no longer exists.");
+            if (lot.PieceExpiryDate is { } expiry && expiry < today)
+                throw new InvalidOperationException("Expired loose pieces cannot be returned to available inventory.");
+            lot.LoosePieceQuantity += pieceQuantity;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var restored = await _dbContext.OpenedPieceLots
+            .Where(value => value.Id == openedPieceLotId && (value.PieceExpiryDate == null || value.PieceExpiryDate >= today))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.LoosePieceQuantity, value => value.LoosePieceQuantity + pieceQuantity), cancellationToken);
+        if (restored != 1)
+            throw new InvalidOperationException("The original opened piece lot is unavailable or expired.");
+    }
+
     public async Task ReserveInWarehouseAsync(Guid locationId, Guid skuId, int quantity, Guid userId, Guid? referenceOperationId = null, CancellationToken cancellationToken = default)
     {
         EnsurePositive(quantity, nameof(quantity));

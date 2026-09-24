@@ -145,7 +145,7 @@ public static class DatabaseCompatibility
 
                         alter table payments.main_payment_logs
                             add constraint chk_main_payment_method
-                            check (payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment','Installlaugment'));
+                            check (payment_method is null or payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet'));
 
                         alter table payments.cash_records
                             drop constraint if exists chk_cash_status;
@@ -424,6 +424,7 @@ public static class DatabaseCompatibility
                     id uuid primary key default uuid_generate_v4(),
                     operation_id uuid,
                     merchant_id uuid,
+                    finance_account_id uuid,
                     payment_type varchar(50) not null default 'CashReceived',
                     sub_type varchar(50),
                     amount numeric(18,4) not null,
@@ -462,6 +463,7 @@ public static class DatabaseCompatibility
                     drafted_at timestamp without time zone not null default current_timestamp,
                     confirmed_by uuid,
                     confirmed_at timestamp without time zone,
+                    finance_account_id uuid,
                     rejection_reason text,
                     notes text
                 );
@@ -473,9 +475,13 @@ public static class DatabaseCompatibility
                     alter column operation_id drop not null;
                 alter table if exists payments.cash_records
                     add column if not exists merchant_id uuid;
+                alter table if exists payments.cash_records
+                    add column if not exists finance_account_id uuid;
                 create index if not exists idx_cash_records_merchant
                     on payments.cash_records(merchant_id)
                     where merchant_id is not null;
+                create index if not exists ix_cash_records_finance_account_id
+                    on payments.cash_records(finance_account_id);
 
                 create index if not exists idx_main_payment_operation
                     on payments.main_payment_logs(operation_id);
@@ -485,6 +491,10 @@ public static class DatabaseCompatibility
 
                 create index if not exists idx_sub_logs_main_log
                     on payments.installment_sub_logs(main_log_id);
+                alter table if exists payments.installment_sub_logs
+                    add column if not exists finance_account_id uuid;
+                create index if not exists ix_installment_sub_logs_finance_account_id
+                    on payments.installment_sub_logs(finance_account_id);
             """);
         }
         catch (Exception exception)

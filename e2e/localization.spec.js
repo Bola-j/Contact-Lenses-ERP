@@ -51,6 +51,7 @@ async function mockAuthenticatedFrontend(page) {
     }
     if (url.pathname === "/api/v1/integrations/shopify/sku-readiness/products") return json([]);
     if (url.pathname === "/api/v1/integrations/shopify/sku-readiness") return json({ items: [], page: 1, pageSize: 50, totalCount: 0 });
+    if (url.pathname === "/api/v1/reports/catalog") return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     return route.continue();
   });
@@ -71,6 +72,67 @@ test("language switch keeps login content and document direction bilingual", asy
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
   await expect(page.locator("#login-form")).toContainText("Sign in");
   await expect(page.locator("#login-language-toggle")).toHaveText("العربية");
+});
+
+test("login failures use Arabic and English semantic error messages", async ({ page }) => {
+  await page.route("**/api/v1/auth/login", (route) => route.fulfill({ status: 401, body: "Unauthorized" }));
+  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
+  await page.goto("/#/login", { waitUntil: "domcontentloaded" });
+  await page.locator("#username").fill("wrong");
+  await page.locator("#password").fill("wrong-password");
+  await page.locator("#login-submit").click();
+  await expect(page.locator("#login-error")).toHaveText("اسم المستخدم أو كلمة المرور غير صحيحة.");
+
+  await page.locator("#login-language-toggle").click();
+  await page.locator("#username").fill("wrong");
+  await page.locator("#password").fill("wrong-password");
+  await page.locator("#login-submit").click();
+  await expect(page.locator("#login-error")).toHaveText("Username or password is incorrect.");
+});
+
+test("Arabic dashboard renders command and workspace copy from semantic keys", async ({ page }) => {
+  await mockAuthenticatedFrontend(page);
+  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
+  await page.goto("/#/dashboard", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.locator(".command-grid")).toContainText("قائمة العمليات");
+  await expect(page.locator(".command-grid")).toContainText("متابعة المخزون");
+  await expect(page.locator(".workspace-card-grid")).toContainText("النقد والبنوك والمحافظ");
+});
+
+test("Arabic Supply form renders semantic labels and keeps typed notes", async ({ page }) => {
+  await mockAuthenticatedFrontend(page);
+  await page.route("**/api/v1/inventory/locations", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
+  await page.goto("/#/supply", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.locator("#supply-detail h2")).toHaveText("تفاصيل الشحنة");
+  await expect(page.locator("#supply-search")).toHaveAttribute("placeholder", "بحث في الشحنات");
+  const notes = page.locator("#supply-notes");
+  await notes.fill("Supplier agreed to deliver on Friday");
+  await page.locator("#supply-add-line").click();
+  await page.locator(".supply-line-notes").nth(1).fill("Second carton note");
+  await page.locator("#supply-add-cost").click();
+  await page.locator(".supply-cost-description").nth(1).fill("Broker document fee");
+  await page.locator("#language-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  await expect(page.locator("#supply-notes")).toHaveValue("Supplier agreed to deliver on Friday");
+  await expect(page.locator(".supply-line-row")).toHaveCount(2);
+  await expect(page.locator(".supply-line-notes").nth(1)).toHaveValue("Second carton note");
+  await expect(page.locator(".supply-cost-row")).toHaveCount(2);
+  await expect(page.locator(".supply-cost-description").nth(1)).toHaveValue("Broker document fee");
+});
+
+test("Reports keep filters when the presentation language changes", async ({ page }) => {
+  await mockAuthenticatedFrontend(page);
+  await page.goto("/#/reports", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#report-filter-from")).toBeVisible();
+  await page.locator("#report-filter-from").fill("2026-09-01");
+  await page.locator("#report-filter-supply-status").selectOption("Draft");
+  await page.locator("#language-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(page.locator("#report-filter-from")).toHaveValue("2026-09-01");
+  await expect(page.locator("#report-filter-supply-status")).toHaveValue("Draft");
 });
 
 test("Arabic covers audit and Shopify workspaces and restores their English copy", async ({ page }) => {

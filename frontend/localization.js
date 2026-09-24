@@ -42,6 +42,7 @@ export const canonicalValueSets = Object.freeze({
   operationType: Object.freeze(["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "Return", "Change", "WriteOff"]),
   paymentMethod: Object.freeze(["CashHandToHand", "CashTransaction", "MerchantAccount"]),
   movementMethod: Object.freeze(["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"]),
+  financeAccountType: Object.freeze(["CashOnHand", "BankAccount", "Wallet"]),
   entryMode: Object.freeze(["Packs", "Pieces"]),
   lineSection: Object.freeze(["Standard", "ChangeOut", "ChangeIn"]),
   paymentType: Object.freeze(["CashReceived", "CashRefund"]),

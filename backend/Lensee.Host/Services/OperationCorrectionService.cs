@@ -18,8 +18,9 @@ namespace Lensee.Host.Services;
 /// </summary>
 public sealed class OperationCorrectionService
 {
-    private const string PendingApproval = "PendingApproval";
-    private const string Approved = "Approved";
+    private const string Draft = "Draft";
+    private const string PendingApproval = "PendingReview";
+    private const string Approved = "Posted";
     private const string Rejected = "Rejected";
     private const string CashRefund = "CashRefund";
 
@@ -92,6 +93,11 @@ public sealed class OperationCorrectionService
                 result = CorrectionCommandResult.Conflict("Only a finalized original operation can enter the correction workflow.");
                 return;
             }
+            if (operation.ClientId is null && command.SettlementAmount is not null)
+            {
+                result = CorrectionCommandResult.Validation("settlementAmount", "OtherPayments corrections cannot create a merchant settlement. Record an explicit OtherPayments refund with its Finance account instead.");
+                return;
+            }
             if (await _operations.OperationLogs.AnyAsync(value =>
                     value.ReversesOperationId == operation.Id && value.RecordKind == "Reversal" && !value.IsDeleted,
                     cancellationToken))
@@ -100,7 +106,7 @@ public sealed class OperationCorrectionService
                 return;
             }
             if (await _operations.OperationCorrectionProposals.AnyAsync(
-                    value => value.OperationId == operationId && value.Status == PendingApproval,
+                    value => value.OperationId == operationId && (value.Status == Draft || value.Status == PendingApproval),
                     cancellationToken))
             {
                 result = CorrectionCommandResult.Conflict("A correction proposal is already awaiting review for this operation.");
@@ -111,7 +117,7 @@ public sealed class OperationCorrectionService
             {
                 Id = Guid.NewGuid(),
                 OperationId = operationId,
-                Status = PendingApproval,
+                Status = Draft,
                 Reason = reason,
                 SettlementMethod = NormalizeSettlement(command.SettlementMethod),
                 SettlementAmount = command.SettlementAmount,
@@ -120,7 +126,7 @@ public sealed class OperationCorrectionService
                 RequestedAt = now
             };
             _operations.OperationCorrectionProposals.Add(proposal);
-            StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "Requested", new
+            StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "Drafted", new
             {
                 proposal.OperationId,
                 proposal.Reason,
@@ -128,7 +134,7 @@ public sealed class OperationCorrectionService
                 proposal.SettlementAmount,
                 proposal.CreateReplacementDraft
             }, now);
-            StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "Requested", requesterId, now));
+            StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "Drafted", requesterId, now));
             await _operations.SaveChangesAsync(cancellationToken);
             await _identity.SaveChangesAsync(cancellationToken);
             await _shared.SaveChangesAsync(cancellationToken);
@@ -136,6 +142,42 @@ public sealed class OperationCorrectionService
         }, cancellationToken, _identity, _shared);
 
         return result ?? throw new InvalidOperationException("The correction request did not produce a result.");
+    }
+
+    public async Task<CorrectionCommandResult> SubmitAsync(
+        Guid proposalId,
+        Guid requesterId,
+        string? requesterRole,
+        CancellationToken cancellationToken)
+    {
+        var now = _clock.EgyptNow;
+        try
+        {
+            OperationCorrectionProposal? proposal = null;
+            await SharedDbTransaction.ExecuteAsync(_operations, async () =>
+            {
+                proposal = await LoadProposalForUpdateAsync(proposalId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The correction proposal was not found.", 404);
+                if (proposal.RequesterId != requesterId)
+                    throw new CorrectionBusinessException("Only the requester can submit this correction proposal.", 403);
+                if (proposal.Status != Draft)
+                    throw new CorrectionBusinessException("Only a draft correction proposal can be submitted for review.", 409);
+
+                _ = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken)
+                    ?? throw new CorrectionBusinessException("The source operation no longer exists.", 404);
+                proposal.Status = PendingApproval;
+                StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "SubmittedForReview", new { proposal.OperationId }, now);
+                StageOutbox(new OperationCorrectionChangedEvent(proposal.Id, proposal.OperationId, "PendingReview", requesterId, now));
+                await _operations.SaveChangesAsync(cancellationToken);
+                await _identity.SaveChangesAsync(cancellationToken);
+                await _shared.SaveChangesAsync(cancellationToken);
+            }, cancellationToken, _identity, _shared);
+            return CorrectionCommandResult.Ok(ToResponse(proposal!));
+        }
+        catch (CorrectionBusinessException exception)
+        {
+            return new CorrectionCommandResult(exception.StatusCode, exception.Message, null, null, exception.Code);
+        }
     }
 
     public async Task<CorrectionCommandResult> SubmitSettlementAsync(
@@ -165,8 +207,10 @@ public sealed class OperationCorrectionService
                     ?? throw new CorrectionBusinessException("The correction proposal no longer exists.", 404);
                 if (proposal.RequesterId != requesterId) throw new CorrectionBusinessException("Only the requester can update this settlement.", 403);
                 if (proposal.Status != PendingApproval) throw new CorrectionBusinessException("Only a pending proposal can receive a settlement.", 409);
-                _ = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken)
+                var sourceOperation = await LoadOperationForUpdateAsync(proposal.OperationId, cancellationToken)
                     ?? throw new CorrectionBusinessException("The source operation no longer exists.", 404);
+                if (sourceOperation.ClientId is null && settlementAmount is not null)
+                    throw new CorrectionBusinessException("OtherPayments corrections cannot create a merchant settlement. Record an explicit OtherPayments refund with its Finance account instead.", 422);
                 proposal.SettlementMethod = settlementMethod;
                 proposal.SettlementAmount = settlementAmount;
                 StageAudit(proposal.Id, requesterId, requesterRole, "OperationCorrection", "SettlementSubmitted", new
@@ -417,11 +461,13 @@ public sealed class OperationCorrectionService
         if (proposal.SettlementMethod is null || proposal.SettlementAmount is null) return Task.CompletedTask;
         if (proposal.SettlementMethod == CashRefund)
         {
+            if (original.ClientId is null)
+                throw new CorrectionBusinessException("OtherPayments corrections require an explicit OtherPayments refund; they cannot write a merchant adjustment.", 422);
             if (payment is null) throw new CorrectionBusinessException("Cash settlement requires an active payment log.", 409);
             var adjustment = new FinancialAdjustment
             {
                 Id = Guid.NewGuid(),
-                MerchantId = original.ClientId!.Value,
+                MerchantId = original.ClientId.Value,
                 OperationId = original.Id,
                 PaymentLogId = payment.Id,
                 AdjustmentType = CashRefund,
@@ -543,6 +589,7 @@ public sealed class OperationCorrectionService
                 Section = line.Section,
                 Quantity = line.Quantity,
                 EntryMode = line.EntryMode,
+                PiecesPerPackSnapshot = line.PiecesPerPackSnapshot,
                 BonusQuantity = line.BonusQuantity,
                 UnitPrice = line.UnitPrice,
                 LineTotal = line.LineTotal,

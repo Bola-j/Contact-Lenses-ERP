@@ -9,8 +9,7 @@ const {
   ensureCoreData,
   openMerchantDetail,
   createOperationDraft,
-  runLatestOperationAction,
-  createChangeDraft
+  runLatestOperationAction
 } = require("./support/helpers");
 
 test.beforeEach(async ({ page }) => {
@@ -56,7 +55,7 @@ test("operations: wholesale and retail sales move through reserved, shipped, com
     price: "125",
     stockText: data.mainLot,
     merchantText: data.merchant,
-    paymentMethod: "Installment",
+    paymentMethod: "MerchantAccount",
     sourceText: /Roxy|Main/i
   });
   await runLatestOperationAction(page, "WholesaleSale", /Confirm/i);
@@ -82,37 +81,11 @@ test("operations: wholesale and retail sales move through reserved, shipped, com
   await expect(page.locator("#merchant-detail-panel")).toContainText(/WholesaleSale|Merchant Batch History|Balance/i);
 });
 
-test("operations: returns outside recorded sales warn, can be bypassed, and write-off is confirmed", async ({ page }) => {
+test("operations: write-off is confirmed without return quantity-cap bypass", async ({ page }) => {
   const data = makeRunData("RET");
   await seedStock(page, data);
 
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
-    type: "Return",
-    skuText: data.product,
-    quantity: "1",
-    lot: data.badLot,
-    expiry: data.expiry,
-    merchantText: data.merchant,
-    sourceText: /Roxy|Main/i,
-    paymentMethod: "CashHandToHand"
-  });
-  await runLatestOperationAction(page, "Return", /Confirm/i);
-  const salesWarning = page.locator(".dialog-overlay", { hasText: /Recorded sales warning/i });
-  await expect(salesWarning).toBeVisible();
-  await expect(salesWarning).toContainText(/Sold to merchant|Requested now|Above recorded balance/i);
-  await salesWarning.locator("#merchant-sales-variance-reason").fill("Verified physical stock during merchant collection.");
-  await salesWarning.getByRole("button", { name: /Confirm with exception/i }).click();
-  await expect(page.locator("#operation-rows tr", { hasText: "Return" }).first()).toContainText(/Confirmed/i);
-
-  await createChangeDraft(page, data);
-  await runLatestOperationAction(page, "Change", /Confirm/i);
-  const changeWarning = page.locator(".dialog-overlay", { hasText: /Recorded sales warning/i });
-  await expect(changeWarning).toBeVisible();
-  await changeWarning.locator("#merchant-sales-variance-reason").fill("Verified exchange stock during merchant collection.");
-  await changeWarning.getByRole("button", { name: /Confirm with exception/i }).click();
-  await expect(page.locator("#operation-rows tr", { hasText: "Change" }).first()).toContainText(/Confirmed/i);
-
   await createOperationDraft(page, {
     type: "WriteOff",
     skuText: data.product,
@@ -124,22 +97,22 @@ test("operations: returns outside recorded sales warn, can be bypassed, and writ
   await expect(page.locator("#operation-rows tr", { hasText: "WriteOff" }).first()).toContainText(/Confirmed|WriteOff/i);
 });
 
-test("operations: reserve, detail expansion, actor labels, and version timeline are visible", async ({ page }) => {
-  const data = makeRunData("RES");
+test("operations: transfer detail expansion, actor labels, and version timeline are visible", async ({ page }) => {
+  const data = makeRunData("DETAIL");
   await seedStock(page, data);
 
   await gotoRoute(page, "/operations");
   await createOperationDraft(page, {
-    type: "Reserve",
+    type: "WarehouseTransfer",
     skuText: data.product,
     quantity: "1",
     stockText: data.mainLot,
     sourceText: /Roxy|Main/i,
-    representativeText: data.representative
+    destinationText: /Retail|Online|Mohamed/i
   });
-  await runLatestOperationAction(page, "Reserve", /Confirm/i);
+  await runLatestOperationAction(page, "WarehouseTransfer", /Confirm/i);
 
-  const reserveRow = page.locator("#operation-rows tr", { hasText: "Reserve" }).first();
-  await reserveRow.getByRole("button", { name: /Show|Details/i }).first().click();
+  const transferRow = page.locator("#operation-rows tr", { hasText: "WarehouseTransfer" }).first();
+  await transferRow.getByRole("button", { name: /Show|Details/i }).first().click();
   await expect(page.locator(".operation-detail").first()).toContainText(/Operation code|Created by|Confirmed by|Current version|Batch expiry/i);
 });

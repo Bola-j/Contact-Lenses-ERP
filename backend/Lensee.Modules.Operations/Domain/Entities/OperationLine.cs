@@ -25,6 +25,9 @@ public partial class OperationLine
 
     public string EntryMode { get; set; } = null!;
 
+    // Null on historical lines whose pack size was never captured.
+    public int? PiecesPerPackSnapshot { get; set; }
+
     public int BonusQuantity { get; set; }
 
     public decimal UnitPrice { get; set; }
@@ -56,4 +59,6 @@ public partial class OperationLine
     public string? ShopifyPropertiesSnapshot { get; set; }
 
     public virtual OperationLog Operation { get; set; } = null!;
+
+    public virtual ICollection<OperationLineSourceAllocation> SourceAllocations { get; set; } = new List<OperationLineSourceAllocation>();
 }

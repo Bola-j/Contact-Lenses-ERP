@@ -11,6 +11,8 @@ public partial class CashRecord
 
     public Guid? MerchantId { get; set; }
 
+    public Guid? FinanceAccountId { get; set; }
+
     public Guid? FinancialAdjustmentId { get; set; }
 
     public string PaymentType { get; set; } = null!;

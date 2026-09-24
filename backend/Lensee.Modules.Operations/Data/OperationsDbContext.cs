@@ -17,6 +17,8 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<OperationLine> OperationLines { get; set; }
 
+    public virtual DbSet<OperationLineSourceAllocation> OperationLineSourceAllocations { get; set; }
+
     public virtual DbSet<OperationCorrectionProposal> OperationCorrectionProposals { get; set; }
 
     public virtual DbSet<OperationLog> OperationLogs { get; set; }
@@ -36,6 +38,8 @@ public partial class OperationsDbContext : DbContext
     public virtual DbSet<SupplyShipmentHistory> SupplyShipmentHistoryLogs { get; set; }
 
     public virtual DbSet<SupplyShipmentLine> SupplyShipmentLines { get; set; }
+
+    public virtual DbSet<SupplyPayment> SupplyPayments { get; set; }
 
     public virtual DbSet<ShopifyOrderLink> ShopifyOrderLinks { get; set; }
 
@@ -118,6 +122,7 @@ public partial class OperationsDbContext : DbContext
                 table.HasCheckConstraint("chk_operation_lines_unit_price", "unit_price >= 0");
                 table.HasCheckConstraint("chk_operation_lines_line_total", "line_total >= 0");
                 table.HasCheckConstraint("chk_operation_lines_unit_cost", "unit_cost is null or unit_cost >= 0");
+                table.HasCheckConstraint("chk_operation_lines_pieces_per_pack_snapshot", "pieces_per_pack_snapshot is null or pieces_per_pack_snapshot > 0");
             });
 
             entity.HasIndex(e => e.OperationId, "idx_op_lines_operation");
@@ -150,6 +155,7 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(255)
                 .HasColumnName("product_name_snapshot");
             entity.Property(e => e.Quantity).HasColumnName("quantity");
+            entity.Property(e => e.PiecesPerPackSnapshot).HasColumnName("pieces_per_pack_snapshot");
             entity.Property(e => e.RepresentativeNameSnapshot)
                 .HasMaxLength(255)
                 .HasColumnName("representative_name_snapshot");
@@ -184,6 +190,33 @@ public partial class OperationsDbContext : DbContext
                 .HasConstraintName("operation_lines_operation_id_fkey");
         });
 
+        modelBuilder.Entity<OperationLineSourceAllocation>(entity =>
+        {
+            entity.ToTable("operation_line_source_allocations", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_operation_source_allocation_quantity", "quantity > 0");
+                table.HasCheckConstraint("chk_operation_source_allocation_entry_mode", "entry_mode in ('Packs','Pieces')");
+                table.HasCheckConstraint("chk_operation_source_allocation_piece_lot", "entry_mode = 'Packs' or source_opened_piece_lot_id is not null");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => value.TargetOperationLineId).IsUnique();
+            entity.HasIndex(value => new { value.SourceOperationLineId, value.EntryMode });
+            entity.HasIndex(value => new { value.SourceOperationId, value.SkuId, value.LotNumber, value.ExpiryDate });
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.TargetOperationLineId).HasColumnName("target_operation_line_id");
+            entity.Property(value => value.SourceOperationId).HasColumnName("source_operation_id");
+            entity.Property(value => value.SourceOperationLineId).HasColumnName("source_operation_line_id");
+            entity.Property(value => value.SkuId).HasColumnName("sku_id");
+            entity.Property(value => value.SourceBatchId).HasColumnName("source_batch_id");
+            entity.Property(value => value.SourceOpenedPieceLotId).HasColumnName("source_opened_piece_lot_id");
+            entity.Property(value => value.EntryMode).HasColumnName("entry_mode").HasMaxLength(20);
+            entity.Property(value => value.LotNumber).HasColumnName("lot_number").HasMaxLength(100);
+            entity.Property(value => value.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(value => value.Quantity).HasColumnName("quantity");
+            entity.Property(value => value.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone");
+            entity.HasOne(value => value.TargetOperationLine).WithMany(value => value.SourceAllocations).HasForeignKey(value => value.TargetOperationLineId).OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<OperationLog>(entity =>
         {
             entity.Property(e => e.ConcurrencyVersion).HasColumnName("xmin").IsRowVersion();
@@ -200,7 +233,7 @@ public partial class OperationsDbContext : DbContext
                 table.HasCheckConstraint("chk_op_financial_closure_status", "financial_closure_status in ('Open','FinanciallyClosed')");
                 table.HasCheckConstraint(
                     "chk_op_payment_method",
-                    "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
+                    "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
                 table.HasCheckConstraint(
                     "chk_operation_record_kind",
                     "record_kind in ('Standard','Reversal','Replacement')");
@@ -264,6 +297,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.PaymentMethod)
                 .HasMaxLength(50)
                 .HasColumnName("payment_method");
+            entity.Property(e => e.FinanceAccountId).HasColumnName("finance_account_id");
             entity.Property(e => e.MerchantExpiryRecallId).HasColumnName("merchant_expiry_recall_id");
             entity.Property(e => e.AutomationType).HasMaxLength(50).HasColumnName("automation_type");
             entity.Property(e => e.SalesChannel).HasMaxLength(50).HasDefaultValue("Manual").HasColumnName("sales_channel");
@@ -304,14 +338,14 @@ public partial class OperationsDbContext : DbContext
             entity.HasKey(e => e.Id).HasName("operation_correction_proposals_pkey");
             entity.ToTable("operation_correction_proposals", "operations", table =>
             {
-                table.HasCheckConstraint("chk_operation_correction_status", "status in ('PendingApproval','Approved','Rejected')");
+                table.HasCheckConstraint("chk_operation_correction_status", "status in ('Draft','PendingReview','Posted','Rejected')");
                 table.HasCheckConstraint("chk_operation_correction_settlement", "settlement_method is null or settlement_method in ('CashRefund','MerchantCredit')");
                 table.HasCheckConstraint("chk_operation_correction_amount", "settlement_amount is null or settlement_amount > 0");
             });
             entity.HasIndex(e => e.OperationId, "idx_operation_corrections_operation");
             entity.HasIndex(e => e.OperationId, "uq_operation_active_correction")
                 .IsUnique()
-                .HasFilter("(status = 'PendingApproval')");
+                .HasFilter("(status in ('Draft','PendingReview'))");
             entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.Status).HasMaxLength(30).HasColumnName("status");
@@ -435,6 +469,12 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(100)
                 .HasColumnName("lot_number");
             entity.Property(e => e.PhysicalCount).HasColumnName("physical_count");
+            entity.Property(e => e.SystemPackCount).HasColumnName("system_pack_count");
+            entity.Property(e => e.SystemPieceCount).HasColumnName("system_piece_count");
+            entity.Property(e => e.PhysicalPackCount).HasColumnName("physical_pack_count");
+            entity.Property(e => e.PhysicalPieceCount).HasColumnName("physical_piece_count");
+            entity.Property(e => e.DeltaPackCount).HasColumnName("delta_pack_count");
+            entity.Property(e => e.DeltaPieceCount).HasColumnName("delta_piece_count");
             entity.Property(e => e.SessionId).HasColumnName("session_id");
             entity.Property(e => e.SkuId).HasColumnName("sku_id");
             entity.Property(e => e.SystemQtyBefore).HasColumnName("system_qty_before");
@@ -588,6 +628,42 @@ public partial class OperationsDbContext : DbContext
                 .HasForeignKey(d => d.ShipmentId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("supply_shipment_costs_shipment_id_fkey");
+        });
+
+        modelBuilder.Entity<SupplyPayment>(entity =>
+        {
+            entity.ToTable("supply_payments", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_supply_payment_amount", "amount > 0");
+                table.HasCheckConstraint("chk_supply_payment_category", "category in ('SupplierPurchase','Freight','Customs','Transport','OtherShipmentCost')");
+                table.HasCheckConstraint("chk_supply_payment_method", "movement_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
+                table.HasCheckConstraint("chk_supply_payment_status", "status in ('Draft','PendingReview','Posted','Rejected','Corrected')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => value.ShipmentId).HasDatabaseName("idx_supply_payments_shipment");
+            entity.HasIndex(value => value.PostedFinanceLedgerEntryId).IsUnique().HasFilter("(posted_finance_ledger_entry_id is not null)");
+            entity.HasIndex(value => value.ReplacedByPaymentId).IsUnique().HasFilter("(replaced_by_payment_id is not null)");
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.ShipmentId).HasColumnName("shipment_id");
+            entity.Property(value => value.Category).HasColumnName("category").HasMaxLength(40);
+            entity.Property(value => value.Amount).HasColumnName("amount").HasPrecision(18, 4);
+            entity.Property(value => value.MovementMethod).HasColumnName("movement_method").HasMaxLength(50);
+            entity.Property(value => value.FinanceAccountId).HasColumnName("finance_account_id");
+            entity.Property(value => value.ExternalReference).HasColumnName("external_reference").HasMaxLength(200);
+            entity.Property(value => value.Status).HasColumnName("status").HasMaxLength(30);
+            entity.Property(value => value.Notes).HasColumnName("notes");
+            entity.Property(value => value.CreatedBy).HasColumnName("created_by");
+            entity.Property(value => value.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.SubmittedBy).HasColumnName("submitted_by");
+            entity.Property(value => value.SubmittedAt).HasColumnName("submitted_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(value => value.ReviewedAt).HasColumnName("reviewed_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.RejectionReason).HasColumnName("rejection_reason");
+            entity.Property(value => value.PostedFinanceLedgerEntryId).HasColumnName("posted_finance_ledger_entry_id");
+            entity.Property(value => value.ReversesPaymentId).HasColumnName("reverses_payment_id");
+            entity.Property(value => value.ReplacedByPaymentId).HasColumnName("replaced_by_payment_id");
+            entity.Property(value => value.CorrelationId).HasColumnName("correlation_id").HasMaxLength(100);
+            entity.HasOne(value => value.Shipment).WithMany(value => value.Payments).HasForeignKey(value => value.ShipmentId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<SupplyShipmentHistory>(entity =>

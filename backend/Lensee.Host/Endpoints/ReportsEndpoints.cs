@@ -1,6 +1,7 @@
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Operations.Data;
@@ -57,11 +58,32 @@ public static partial class ReportsEndpoints
         "stocktake-summary.pdf"
     };
 
+    private static PageRequest NormalizeReportPage(int page, int pageSize, int maxExportRows) =>
+        new(Math.Max(1, page), Math.Clamp(pageSize, 1, Math.Max(1, maxExportRows + 1)));
+
+    private static bool TryNormalizeSort(string? sortBy, string? sortDirection, IReadOnlySet<string> allowed, string defaultSort, out string normalizedSort, out bool descending)
+    {
+        normalizedSort = string.IsNullOrWhiteSpace(sortBy) ? defaultSort : sortBy.Trim();
+        descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+        return allowed.Contains(normalizedSort);
+    }
+
+    private static object UnwrapReportPage(object value) => value switch
+    {
+        PagedResult<StockReportRow> page => page.Items,
+        PagedResult<OperationReportRow> page => page.Items,
+        PagedResult<PaymentReportRow> page => page.Items,
+        PagedResult<SupplyLandedCostReportRow> page => page.Items,
+        PagedResult<MerchantBalanceReportRow> page => page.Items,
+        _ => value
+    };
+
     public static RouteGroupBuilder MapReportsEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/v1/reports").WithTags("Reports");
 
-        group.MapGet("/financial-summary", GetFinancialSummaryAsync).RequireAuthorization("reports.read");
+        group.MapGet("/financial-summary", GetFinancialSummaryAsync).RequireAuthorization("reports.executive.read");
+        group.MapGet("/executive-summary", GetExecutiveSummaryAsync).RequireAuthorization("reports.executive.read");
         group.MapGet("/catalog", GetReportCatalog).RequireAuthorization("reports.read");
         group.MapGet("/{key}/export", ExportReportAsync).RequireAuthorization("reports.read");
         group.MapGet("/stock", GetStockReportAsync).RequireAuthorization("reports.read");
@@ -111,6 +133,7 @@ public static partial class ReportsEndpoints
         string? status,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         CrmDbContext crmDbContext,
@@ -127,6 +150,9 @@ public static partial class ReportsEndpoints
         {
             return Results.NotFound();
         }
+        if (string.Equals(key, "financial-summary", StringComparison.OrdinalIgnoreCase) &&
+            currentUser.Role is not (LenseeRoles.Admin or LenseeRoles.CLevel))
+            return Results.Forbid();
         if (!ReportingServiceCollectionExtensions.TryParseFormat(format, out var exportFormat) || !descriptor.Formats.Contains(exportFormat))
         {
             return InvalidExportFormat();
@@ -142,12 +168,12 @@ public static partial class ReportsEndpoints
 
         IResult queryResult = key.ToLowerInvariant() switch
         {
-            "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, cancellationToken),
-            "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken),
-            "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken),
-            "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken),
-            "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken),
-            "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken),
+            "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, financeDbContext, cancellationToken),
+            "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
+            "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
+            "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
+            "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
+            "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
             _ => Results.NotFound()
         };
 
@@ -160,7 +186,7 @@ public static partial class ReportsEndpoints
             return queryResult;
         }
 
-        var document = BuildAnalyticalDocument(key, valueResult.Value, documentLanguage, currentUser.Role, clock.UtcNow);
+        var document = BuildAnalyticalDocument(key, UnwrapReportPage(valueResult.Value), documentLanguage, currentUser.Role, clock.UtcNow);
         if (document.Metadata.RowCount > reportingOptions.Value.MaxExportRows)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]>
@@ -221,6 +247,7 @@ public static partial class ReportsEndpoints
     private static async Task<IResult> GetFinancialSummaryAsync(
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
+        FinanceDbContext financeDbContext,
         CancellationToken cancellationToken)
     {
         var operationEffects = await operationsDbContext.OperationLogs.AsNoTracking()
@@ -256,14 +283,34 @@ public static partial class ReportsEndpoints
             .Select(group => new { AdjustmentType = group.Key, Amount = group.Sum(value => value.Amount) })
             .ToDictionaryAsync(value => value.AdjustmentType, value => value.Amount, cancellationToken);
 
-        var cashReceived = cashTotals.GetValueOrDefault("CashReceived");
-        var cashRefunded = cashTotals.GetValueOrDefault("CashRefund");
-        var additionalCharges = adjustmentTotals.GetValueOrDefault("AdditionalCharge") + adjustmentTotals.GetValueOrDefault("MerchantCredit");
-        var balanceReductions = adjustmentTotals.GetValueOrDefault("BalanceReduction");
-        var paymentsNet = confirmedSubLogs + cashReceived - cashRefunded;
-        var balance = operationNet + additionalCharges - confirmedSubLogs - cashReceived + cashRefunded - balanceReductions;
+        // Treasury metrics are derived from the immutable Finance ledger rather
+        // than mutable payment projections. Legacy rows above are retained only
+        // for backwards-compatible operation-scope discovery.
+        var ledgerRows = await financeDbContext.FinanceLedgerEntries.AsNoTracking()
+            .Include(value => value.FinanceAccount)
+            .Where(value => value.Status == "Posted")
+            .Select(value => new { value.Direction, value.Amount, value.SourceType, AccountType = value.FinanceAccount.Type })
+            .ToListAsync(cancellationToken);
+        var actualCollected = ledgerRows
+            .Where(value => value.Direction == "Credit" && value.SourceType is "MerchantCollection" or "CashRecord" or "InstallmentSubLog")
+            .Sum(value => value.Amount);
+        var openObligations = paymentsDbContext.MerchantOperationObligations.AsNoTracking()
+            .Where(value => value.Status != "Settled" && value.Status != "Reversed")
+            .Select(value => new
+            {
+                value.SourceType,
+                Remaining = value.OriginalAmount - (paymentsDbContext.EffectiveAllocations()
+                    .Where(allocation => allocation.ObligationId == value.Id)
+                    .Sum(allocation => (decimal?)allocation.Amount) ?? 0m)
+            });
+        var obligationRows = await openObligations.ToListAsync(cancellationToken);
+        var openingRemaining = obligationRows.Where(value => value.SourceType == "OpeningBalanceCharge").Sum(value => value.Remaining);
+        var merchantRemaining = obligationRows.Sum(value => value.Remaining);
+        var cashExpected = ledgerRows.Where(value => value.AccountType == FinanceLedgerService.CashOnHand).Sum(value => value.Direction == "Credit" ? value.Amount : -value.Amount);
+        var bankExpected = ledgerRows.Where(value => value.AccountType == FinanceLedgerService.BankAccount).Sum(value => value.Direction == "Credit" ? value.Amount : -value.Amount);
+        var walletExpected = ledgerRows.Where(value => value.AccountType == FinanceLedgerService.Wallet).Sum(value => value.Direction == "Credit" ? value.Amount : -value.Amount);
 
-        return Results.Ok(new FinancialSummaryResponse(operationNet, paymentsNet, balance));
+        return Results.Ok(new FinancialSummaryResponse(operationNet, actualCollected, merchantRemaining, openingRemaining, merchantRemaining - openingRemaining, cashExpected, bankExpected, walletExpected));
     }
     private static async Task<IResult> GetStockReportAsync(
         Guid? locationId,
@@ -271,7 +318,11 @@ public static partial class ReportsEndpoints
         CatalogDbContext catalogDbContext,
         ICurrentUser currentUser,
         IOptions<ReportingOptions> reportingOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50,
+        string? sortBy = null,
+        string? sortDirection = null)
     {
         if (string.Equals(currentUser.Role, LenseeRoles.Accountant, StringComparison.OrdinalIgnoreCase))
         {
@@ -297,10 +348,13 @@ public static partial class ReportsEndpoints
             query = query.Where(balance => balance.LocationId == effectiveLocationId.Value);
         }
 
+        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var total = await query.CountAsync(cancellationToken);
         var balances = await query
             .OrderBy(balance => balance.Location.Name)
             .ThenBy(balance => balance.SkuId)
-            .Take(reportingOptions.Value.MaxExportRows + 1)
+            .Skip(request.Skip)
+            .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
         var skuIds = balances.Select(balance => balance.SkuId).Distinct().ToArray();
@@ -326,7 +380,7 @@ public static partial class ReportsEndpoints
                 balance.LastUpdated);
         }).ToList();
 
-        return Results.Ok(rows);
+        return Results.Ok(new PagedResult<StockReportRow>(rows, request.Page, request.PageSize, total));
     }
 
     private static async Task<IResult> GetStockCsvAsync(
@@ -341,10 +395,10 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken);
-        if (result is IValueHttpResult { Value: IEnumerable<StockReportRow> rows })
+        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        if (result is IValueHttpResult { Value: PagedResult<StockReportRow> rows })
         {
-            return await ExportLegacyCsvAsync("stock", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
+            return await ExportLegacyCsvAsync("stock", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
@@ -355,7 +409,11 @@ public static partial class ReportsEndpoints
         string? operationType,
         OperationsDbContext operationsDbContext,
         IOptions<ReportingOptions> reportingOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50,
+        string? sortBy = null,
+        string? sortDirection = null)
     {
         if (from.HasValue && to.HasValue && from.Value > to.Value)
         {
@@ -364,6 +422,11 @@ public static partial class ReportsEndpoints
         if (!string.IsNullOrWhiteSpace(operationType) && !OperationTypes.Contains(operationType.Trim()))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["operationType"] = ["Operation type is not valid."] });
+        }
+        var allowedSorts = new HashSet<string>(StringComparer.Ordinal) { "createdAt", "operationNumber", "total", "quantity" };
+        if (!TryNormalizeSort(sortBy, sortDirection, allowedSorts, "createdAt", out var normalizedSort, out var descending))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["sortBy"] = ["Sort field is not valid."] });
         }
         var query = operationsDbContext.OperationLogs
             .AsNoTracking()
@@ -384,9 +447,18 @@ public static partial class ReportsEndpoints
             query = query.Where(operation => operation.OperationType == operationType.Trim());
         }
 
-        var operations = await query
-            .OrderByDescending(operation => operation.CreatedAt)
-            .Take(reportingOptions.Value.MaxExportRows + 1)
+        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var total = await query.CountAsync(cancellationToken);
+        var ordered = normalizedSort switch
+        {
+            "operationNumber" => descending ? query.OrderByDescending(operation => operation.OperationNumber) : query.OrderBy(operation => operation.OperationNumber),
+            "total" => descending ? query.OrderByDescending(operation => operation.OperationLines.Sum(line => line.LineTotal)) : query.OrderBy(operation => operation.OperationLines.Sum(line => line.LineTotal)),
+            "quantity" => descending ? query.OrderByDescending(operation => operation.OperationLines.Sum(line => line.Quantity)) : query.OrderBy(operation => operation.OperationLines.Sum(line => line.Quantity)),
+            _ => descending ? query.OrderByDescending(operation => operation.CreatedAt) : query.OrderBy(operation => operation.CreatedAt)
+        };
+        var operations = await ordered
+            .Skip(request.Skip)
+            .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
         var rows = operations.Select(operation => new OperationReportRow(
@@ -403,7 +475,7 @@ public static partial class ReportsEndpoints
             operation.CreatedAt,
             operation.ConfirmedAt)).ToList();
 
-        return Results.Ok(rows);
+        return Results.Ok(new PagedResult<OperationReportRow>(rows, request.Page, request.PageSize, total));
     }
 
     private static async Task<IResult> GetOperationsCsvAsync(
@@ -419,10 +491,10 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken);
-        if (result is IValueHttpResult { Value: IEnumerable<OperationReportRow> rows })
+        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        if (result is IValueHttpResult { Value: PagedResult<OperationReportRow> rows })
         {
-            return await ExportLegacyCsvAsync("operations", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
+            return await ExportLegacyCsvAsync("operations", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
@@ -431,13 +503,29 @@ public static partial class ReportsEndpoints
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
         IOptions<ReportingOptions> reportingOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50,
+        string? sortBy = null,
+        string? sortDirection = null)
     {
-        var logs = await paymentsDbContext.MainPaymentLogs
+        var allowedSorts = new HashSet<string>(StringComparer.Ordinal) { "lastModifiedAt", "totalAmount" };
+        if (!TryNormalizeSort(sortBy, sortDirection, allowedSorts, "lastModifiedAt", out var normalizedSort, out var descending))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["sortBy"] = ["Sort field is not valid."] });
+        }
+        var query = paymentsDbContext.MainPaymentLogs
             .Include(log => log.InstallmentSubLogs)
             .Where(log => !log.IsDeleted)
-            .OrderByDescending(log => log.LastModifiedAt)
-            .Take(reportingOptions.Value.MaxExportRows + 1)
+            .AsQueryable();
+        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var total = await query.CountAsync(cancellationToken);
+        var ordered = normalizedSort == "totalAmount"
+            ? (descending ? query.OrderByDescending(log => log.TotalAmount) : query.OrderBy(log => log.TotalAmount))
+            : (descending ? query.OrderByDescending(log => log.LastModifiedAt) : query.OrderBy(log => log.LastModifiedAt));
+        var logs = await ordered
+            .Skip(request.Skip)
+            .Take(request.PageSize)
             .ToListAsync(cancellationToken);
         var operationIds = logs.Select(log => log.OperationId).Distinct().ToArray();
         var operationContexts = await operationsDbContext.OperationLogs
@@ -480,7 +568,7 @@ public static partial class ReportsEndpoints
             OperationNumber = operationContexts.TryGetValue(row.OperationId, out var operation) ? operation.OperationNumber : null
         }).ToList();
 
-        return Results.Ok(rows);
+        return Results.Ok(new PagedResult<PaymentReportRow>(rows, request.Page, request.PageSize, total));
     }
 
     private static async Task<IResult> GetPaymentsCsvAsync(
@@ -494,10 +582,10 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken);
-        if (result is IValueHttpResult { Value: IEnumerable<PaymentReportRow> rows })
+        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        if (result is IValueHttpResult { Value: PagedResult<PaymentReportRow> rows })
         {
-            return await ExportLegacyCsvAsync("payments", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
+            return await ExportLegacyCsvAsync("payments", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
@@ -508,7 +596,11 @@ public static partial class ReportsEndpoints
         string? status,
         OperationsDbContext operationsDbContext,
         IOptions<ReportingOptions> reportingOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50,
+        string? sortBy = null,
+        string? sortDirection = null)
     {
         if (from.HasValue && to.HasValue && from.Value > to.Value)
         {
@@ -540,9 +632,23 @@ public static partial class ReportsEndpoints
             query = query.Where(shipment => shipment.Status == status.Trim());
         }
 
-        var rows = await query
-            .OrderByDescending(shipment => shipment.ShipmentDate)
-            .Take(reportingOptions.Value.MaxExportRows + 1)
+        var allowedSorts = new HashSet<string>(StringComparer.Ordinal) { "shipmentDate", "shipmentNumber", "landedTotal" };
+        if (!TryNormalizeSort(sortBy, sortDirection, allowedSorts, "shipmentDate", out var normalizedSort, out var descending))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["sortBy"] = ["Sort field is not valid."] });
+        }
+
+        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var total = await query.CountAsync(cancellationToken);
+        var ordered = normalizedSort switch
+        {
+            "shipmentNumber" => descending ? query.OrderByDescending(shipment => shipment.ShipmentNumber) : query.OrderBy(shipment => shipment.ShipmentNumber),
+            "landedTotal" => descending ? query.OrderByDescending(shipment => shipment.LandedTotal) : query.OrderBy(shipment => shipment.LandedTotal),
+            _ => descending ? query.OrderByDescending(shipment => shipment.ShipmentDate) : query.OrderBy(shipment => shipment.ShipmentDate)
+        };
+        var rows = await ordered
+            .Skip(request.Skip)
+            .Take(request.PageSize)
             .Select(shipment => new SupplyLandedCostReportRow(
                 shipment.Id,
                 shipment.ShipmentNumber,
@@ -558,7 +664,7 @@ public static partial class ReportsEndpoints
                 shipment.InventoryReceiptOperation == null ? null : shipment.InventoryReceiptOperation.OperationNumber))
             .ToListAsync(cancellationToken);
 
-        return Results.Ok(rows);
+        return Results.Ok(new PagedResult<SupplyLandedCostReportRow>(rows, request.Page, request.PageSize, total));
     }
 
     private static async Task<IResult> GetSupplyLandedCostCsvAsync(
@@ -574,10 +680,10 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken);
-        if (result is IValueHttpResult { Value: IEnumerable<SupplyLandedCostReportRow> rows })
+        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        if (result is IValueHttpResult { Value: PagedResult<SupplyLandedCostReportRow> rows })
         {
-            return await ExportLegacyCsvAsync("supply", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
+            return await ExportLegacyCsvAsync("supply", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
@@ -711,13 +817,19 @@ public static partial class ReportsEndpoints
         CrmDbContext crmDbContext,
         MerchantAccountService merchantAccountService,
         IOptions<ReportingOptions> reportingOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50)
     {
-        var merchants = await crmDbContext.Merchants
+        var query = crmDbContext.Merchants
             .AsNoTracking()
             .Where(merchant => !merchant.IsDeleted)
-            .OrderBy(merchant => merchant.BusinessName)
-            .Take(reportingOptions.Value.MaxExportRows + 1)
+            .AsQueryable();
+        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var total = await query.CountAsync(cancellationToken);
+        var merchants = await query.OrderBy(merchant => merchant.BusinessName)
+            .Skip(request.Skip)
+            .Take(request.PageSize)
             .ToListAsync(cancellationToken);
         var breakdowns = await merchantAccountService.GetFinancialBreakdownsAsync(merchants.Select(merchant => merchant.Id).ToArray(), cancellationToken);
         var rows = new List<MerchantBalanceReportRow>(merchants.Count);
@@ -737,7 +849,7 @@ public static partial class ReportsEndpoints
                 accountBreakdown?.AmountReductions ?? 0m));
         }
 
-        return Results.Ok(rows);
+        return Results.Ok(new PagedResult<MerchantBalanceReportRow>(rows, request.Page, request.PageSize, total));
     }
     private static async Task<IResult> GetMerchantBalancesCsvAsync(
         string? language,
@@ -752,10 +864,10 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken);
-        if (result is IValueHttpResult { Value: IEnumerable<MerchantBalanceReportRow> rows })
+        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        if (result is IValueHttpResult { Value: PagedResult<MerchantBalanceReportRow> rows })
         {
-            return await ExportLegacyCsvAsync("merchant-balances", rows.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
+            return await ExportLegacyCsvAsync("merchant-balances", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
         }
 
         return result;
@@ -1778,7 +1890,18 @@ public static partial class ReportsEndpoints
 
 public sealed record StockReportRow(Guid LocationId, string LocationName, string LocationType, Guid SkuId, string? SkuCode, string? ProductName, int AvailableQty, int ReservedInWarehouseQty, int ReservedWithRepQty, int? TargetQty, DateTime LastUpdated);
 
-public sealed record FinancialSummaryResponse(decimal TotalSales, decimal ActualCollected, decimal RemainingReceivable);
+public sealed record FinancialSummaryResponse(
+    decimal TotalSales,
+    decimal ActualCollected,
+    decimal RemainingReceivable,
+    decimal OpeningReceivable,
+    decimal MerchantObligationRemaining,
+    decimal ExpectedCashOnHand,
+    decimal ExpectedBankBalance,
+    decimal ExpectedWalletBalance)
+{
+    public decimal TotalExpectedLiquidFunds => ExpectedCashOnHand + ExpectedBankBalance + ExpectedWalletBalance;
+}
 
 public sealed record OperationReportRow(Guid Id, string OperationNumber, string OperationType, string Status, Guid? MerchantId, string? ClientName, string? PaymentMethod, int Quantity, int BonusQuantity, decimal Total, DateTime CreatedAt, DateTime? ConfirmedAt);
 

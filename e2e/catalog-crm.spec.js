@@ -54,7 +54,7 @@ test("catalog: create, validate, update, deactivate, and reactivate product/SKU 
   await expect(page.locator("#catalog-detail")).toContainText(/Active|Deactivate/i);
 });
 
-test("crm: merchant and representative lifecycle, validation, notes, and profile panels", async ({ page }) => {
+test("crm: merchant lifecycle, validation, notes, and profile panels", async ({ page }) => {
   const data = makeRunData("CRM");
   await createCrmFixture(page, data);
 
@@ -76,16 +76,6 @@ test("crm: merchant and representative lifecycle, validation, notes, and profile
   await expect(merchantRow).toContainText(/Inactive|Reactivate/i);
   await merchantRow.getByRole("button", { name: /Reactivate/i }).click();
   await expect(merchantRow).toContainText(/Active|Deactivate/i);
-
-  await page.locator("#rep-rows tr", { hasText: data.representative }).getByRole("button", { name: /Edit/i }).click();
-  await expect(page.locator("#rep-save-button")).toContainText(/Update representative/i);
-  await page.locator("#rep-name").fill(`${data.representative} Updated`);
-  await page.locator("#rep-form button[type='submit']").click();
-  await expectNotice(page, /Representative (created|saved|updated)/i);
-  const updatedRepresentative = `${data.representative} Updated`;
-  const representativeRow = page.locator("#rep-rows tr", { hasText: updatedRepresentative }).first();
-  await representativeRow.getByRole("button", { name: /Deactivate/i }).click();
-  await expect(representativeRow).toContainText(/Inactive|Reactivate/i);
 
   await openMerchantDetail(page, { ...data, merchant: updatedMerchant });
   await expect(page.locator("#merchant-detail-panel")).toContainText(/Merchant Batch History|Recent operations|Balance/i);

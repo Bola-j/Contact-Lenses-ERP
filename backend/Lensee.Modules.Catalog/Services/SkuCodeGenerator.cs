@@ -121,7 +121,7 @@ public sealed class SkuCodeGenerator
             return "P0";
         }
 
-        var normalized = decimal.Round(powerValue.Value, 2).ToString("0.##", CultureInfo.InvariantCulture).Replace(".", string.Empty);
+        var normalized = decimal.Round(powerValue.Value, 2).ToString("0.##", CultureInfo.InvariantCulture);
         return $"{(powerSign == "-" ? "M" : "P")}{normalized}";
     }
 

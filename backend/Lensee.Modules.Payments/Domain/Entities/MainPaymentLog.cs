@@ -16,7 +16,7 @@ public partial class MainPaymentLog
     /// operation is still authoritative for legacy rows, but new rows persist
     /// the classification so a movement cannot silently cross workspaces.
     /// </summary>
-    public string Scope { get; set; } = "DirectOperation";
+    public string Scope { get; set; } = "OtherPayments";
 
     public decimal TotalAmount { get; set; }
 
@@ -24,7 +24,7 @@ public partial class MainPaymentLog
 
     public decimal PendingAmount { get; set; }
 
-    public string PaymentMethod { get; set; } = null!;
+    public string? PaymentMethod { get; set; }
 
     public string Status { get; set; } = null!;
 

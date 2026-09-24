@@ -16,6 +16,15 @@ test.beforeEach(async ({ page }) => {
   await login(page, users.admin);
 });
 
+async function selectStocktakeSku(row, productName) {
+  const finder = row.locator(".stocktake-line-search");
+  await finder.fill(productName);
+  const option = row.locator("[data-stocktake-sku-id]").first();
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(row.locator(".stocktake-line-sku")).not.toHaveValue("");
+}
+
 test("stocktake: create session, count SKU/lot/expiry, confirm, and validate duplicate/invalid lines", async ({ page }) => {
   const data = makeRunData("STK");
   await ensureCoreData(page, data);
@@ -48,22 +57,26 @@ test("stocktake: create session, count SKU/lot/expiry, confirm, and validate dup
   await expect(page.locator("#notification-area")).toContainText(/Stocktake session opened/i);
   await expect(page.locator("#stocktake-detail")).toContainText(/Draft|stocktake/i);
 
-  await selectOptionByText(page.locator(".stocktake-line-sku").first(), data.product);
+  await selectStocktakeSku(page.locator(".stocktake-line-row").first(), data.product);
   await page.locator(".stocktake-line-lot").first().fill(data.mainLot);
   await page.locator(".stocktake-line-expiry").first().fill(data.expiry);
-  await page.locator(".stocktake-line-count").first().fill("-1");
+  await page.locator(".stocktake-line-pack-count").first().fill("-1");
+  await page.locator(".stocktake-line-piece-count").first().fill("0");
   await page.locator("#stocktake-lines-form button[type='submit']").click();
-  await expect(page.locator(".stocktake-line-count").first()).toBeFocused();
+  await expect(page.locator(".stocktake-line-pack-count").first()).toBeFocused();
 
-  await page.locator(".stocktake-line-count").first().fill("4");
+  await page.locator(".stocktake-line-pack-count").first().fill("4");
+  await page.locator(".stocktake-line-piece-count").first().fill("2");
   await page.locator("#stocktake-lines-form button[type='submit']").click();
   await expect(page.locator("#stocktake-detail")).toContainText(data.mainLot);
+  await expect(page.locator("#stocktake-detail")).toContainText(/Counted packs|العبوات المعدودة/i);
 
   await page.locator("#add-stocktake-line").click();
-  await selectOptionByText(page.locator(".stocktake-line-sku").nth(1), data.product);
+  await selectStocktakeSku(page.locator(".stocktake-line-row").nth(1), data.product);
   await page.locator(".stocktake-line-lot").nth(1).fill(data.mainLot);
   await page.locator(".stocktake-line-expiry").nth(1).fill(data.expiry);
-  await page.locator(".stocktake-line-count").nth(1).fill("4");
+  await page.locator(".stocktake-line-pack-count").nth(1).fill("4");
+  await page.locator(".stocktake-line-piece-count").nth(1).fill("2");
   await page.locator("#stocktake-lines-form button[type='submit']").click();
   await expect(page.locator("#stocktake-detail")).toContainText(data.mainLot);
 

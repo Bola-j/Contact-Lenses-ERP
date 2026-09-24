@@ -15,6 +15,8 @@ public partial class InstallmentSubLog
 
     public string? TransactionReference { get; set; }
 
+    public Guid? FinanceAccountId { get; set; }
+
     public DateOnly DateReceived { get; set; }
 
     public string SubLogStatus { get; set; } = null!;

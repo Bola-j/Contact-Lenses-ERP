@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Notifications.Data;
@@ -77,6 +78,9 @@ internal sealed class PostgresApplicationFactory : WebApplicationFactory<Program
         await provider.GetRequiredService<CatalogDbContext>().Database.MigrateAsync();
         await provider.GetRequiredService<InventoryDbContext>().Database.MigrateAsync();
         await provider.GetRequiredService<CrmDbContext>().Database.MigrateAsync();
+        // Finance owns the referenced account tables used by the Operations
+        // and Payments migration chains.
+        await provider.GetRequiredService<FinanceDbContext>().Database.MigrateAsync();
         await provider.GetRequiredService<OperationsDbContext>().Database.MigrateAsync();
         await provider.GetRequiredService<PaymentsDbContext>().Database.MigrateAsync();
         await provider.GetRequiredService<NotificationsDbContext>().Database.MigrateAsync();
@@ -124,8 +128,22 @@ internal sealed class PostgresApplicationFactory : WebApplicationFactory<Program
     public async Task<Guid> SeedFinalizedCorrectionOperationAsync(PostgresOperationSeed seed)
     {
         await using var scope = Services.CreateAsyncScope();
+        var crm = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
         var id = Guid.NewGuid();
+        var merchantId = Guid.NewGuid();
+        crm.Merchants.Add(new Merchant
+        {
+            Id = merchantId,
+            BusinessName = $"Correction merchant {merchantId:N}",
+            ContactPersonName = "Correction merchant",
+            PhoneNumbers = [],
+            BusinessType = "Wholesale",
+            Status = "Active",
+            IsDeleted = false,
+            CreatedAt = DatabaseNow,
+            UpdatedAt = DatabaseNow
+        });
         operations.OperationLogs.Add(new OperationLog
         {
             Id = id,
@@ -134,10 +152,14 @@ internal sealed class PostgresApplicationFactory : WebApplicationFactory<Program
             Status = "Completed",
             RecordKind = "Standard",
             SourceLocationId = seed.MainLocationId,
+            ClientId = merchantId,
+            ClientName = "Correction merchant",
+            PaymentMethod = null,
             CreatedBy = Guid.NewGuid(),
             CreatedAt = DatabaseNow,
             ConfirmedAt = DatabaseNow
         });
+        await crm.SaveChangesAsync();
         await operations.SaveChangesAsync();
         return id;
     }

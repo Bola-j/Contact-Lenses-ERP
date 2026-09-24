@@ -27,7 +27,10 @@ public partial class PaymentsDbContext : DbContext
 
     public virtual DbSet<MerchantOperationObligation> MerchantOperationObligations { get; set; }
 
+    public virtual DbSet<MerchantOpeningBalanceCharge> MerchantOpeningBalanceCharges { get; set; }
+
     public virtual DbSet<MerchantEntryAllocation> MerchantEntryAllocations { get; set; }
+    public virtual DbSet<MerchantAllocationReconciliation> MerchantAllocationReconciliations { get; set; }
 
     public virtual DbSet<MerchantRefundReservation> MerchantRefundReservations { get; set; }
 
@@ -106,6 +109,7 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(e => e.ConfirmedBy).HasColumnName("confirmed_by");
             entity.Property(e => e.ConfirmedAt).HasColumnType("timestamp without time zone").HasColumnName("confirmed_at");
             entity.Property(e => e.FinancialAdjustmentId).HasColumnName("financial_adjustment_id");
+            entity.Property(e => e.FinanceAccountId).HasColumnName("finance_account_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.MerchantId).HasColumnName("merchant_id");
@@ -125,6 +129,7 @@ public partial class PaymentsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasColumnName("sub_type");
             entity.Property(e => e.TransactionReference).HasMaxLength(200).HasColumnName("transaction_reference");
+            entity.Property(e => e.FinanceAccountId).HasColumnName("finance_account_id");
         });
 
         modelBuilder.Entity<InstallmentSubLog>(entity =>
@@ -158,6 +163,10 @@ public partial class PaymentsDbContext : DbContext
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("drafted_at");
             entity.Property(e => e.DraftedBy).HasColumnName("drafted_by");
+            // This column was introduced by the Phase 2 finance migration.
+            // Explicit mapping is required because the database convention is
+            // snake_case while this legacy entity is otherwise convention-based.
+            entity.Property(e => e.FinanceAccountId).HasColumnName("finance_account_id");
             entity.Property(e => e.MainLogId).HasColumnName("main_log_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.PaymentMethod)
@@ -271,8 +280,8 @@ public partial class PaymentsDbContext : DbContext
 
             entity.ToTable("main_payment_logs", "payments", table =>
             {
-                table.HasCheckConstraint("chk_main_payment_method", "payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment','Installlaugment')");
-                table.HasCheckConstraint("chk_main_payment_scope", "scope in ('MerchantAccount','DirectOperation')");
+                table.HasCheckConstraint("chk_main_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
+                table.HasCheckConstraint("chk_main_payment_scope", "scope in ('MerchantAccount','OtherPayments')");
                 table.HasCheckConstraint("chk_main_payment_status", "status in ('PendingAdmin','PendingAccountant','PendingAdminReview','Completed','Rejected','Cancelled')");
                 table.HasCheckConstraint("chk_main_payment_total_amount", "total_amount >= 0");
                 table.HasCheckConstraint("chk_main_payment_amount_paid", "amount_paid >= 0");
@@ -318,7 +327,7 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(e => e.MerchantId).HasColumnName("merchant_id");
             entity.Property(e => e.Scope)
                 .HasMaxLength(30)
-                .HasDefaultValue("DirectOperation")
+                .HasDefaultValue("OtherPayments")
                 .HasColumnName("scope");
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
@@ -373,6 +382,7 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(value => value.Amount).HasPrecision(18, 4).HasColumnName("amount");
             entity.Property(value => value.PaymentMethod).HasMaxLength(50).HasColumnName("payment_method");
             entity.Property(value => value.TransactionReference).HasMaxLength(200).HasColumnName("transaction_reference");
+            entity.Property(value => value.FinanceAccountId).HasColumnName("finance_account_id");
             entity.Property(value => value.AllocationsJson).HasColumnType("jsonb").HasColumnName("allocations_json");
             entity.Property(value => value.Notes).HasColumnName("notes");
             entity.Property(value => value.Status).HasMaxLength(50).HasColumnName("status");
@@ -449,14 +459,47 @@ public partial class PaymentsDbContext : DbContext
         {
             entity.HasKey(value => value.Id);
             entity.ToTable("merchant_operation_obligations", "payments", table => table.HasCheckConstraint("chk_merchant_obligation_amount", "original_amount >= 0"));
-            entity.HasIndex(value => value.OperationId).IsUnique();
+            entity.HasIndex(value => value.OperationId).IsUnique().HasFilter("(operation_id IS NOT NULL)");
+            entity.HasIndex(value => new { value.SourceType, value.SourceId }).IsUnique();
             entity.HasIndex(value => new { value.AccountId, value.Status, value.PostedAt });
             entity.Property(value => value.AccountId).HasColumnName("account_id");
             entity.Property(value => value.OperationId).HasColumnName("operation_id");
+            entity.Property(value => value.SourceType).HasMaxLength(50).HasColumnName("source_type");
+            entity.Property(value => value.SourceId).HasColumnName("source_id");
             entity.Property(value => value.OriginalAmount).HasPrecision(18, 4).HasColumnName("original_amount");
             entity.Property(value => value.PostedAt).HasColumnType("timestamp without time zone").HasColumnName("posted_at");
             entity.Property(value => value.Status).HasMaxLength(30).HasColumnName("status");
             entity.HasOne(value => value.Account).WithMany().HasForeignKey(value => value.AccountId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MerchantOpeningBalanceCharge>(entity =>
+        {
+            entity.HasKey(value => value.Id);
+            entity.ToTable("merchant_opening_balance_charges", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_opening_balance_amount", "amount > 0");
+                table.HasCheckConstraint("chk_opening_balance_status", "status in ('Draft','PendingReview','Posted','Rejected','Reversed','Corrected')");
+            });
+            entity.HasIndex(value => new { value.MerchantId, value.Status });
+            entity.HasIndex(value => value.MerchantId).IsUnique()
+                .HasDatabaseName("ux_merchant_opening_one_root")
+                .HasFilter("(reverses_charge_id IS NULL AND status <> 'Rejected')");
+            entity.HasIndex(value => value.PostedEntryId).IsUnique().HasFilter("(posted_entry_id IS NOT NULL)");
+            entity.Property(value => value.Id).HasColumnName("id");
+            entity.Property(value => value.MerchantId).HasColumnName("merchant_id");
+            entity.Property(value => value.Amount).HasPrecision(18, 4).HasColumnName("amount");
+            entity.Property(value => value.AsOfDate).HasColumnName("as_of_date");
+            entity.Property(value => value.Description).HasColumnName("description");
+            entity.Property(value => value.Status).HasMaxLength(30).HasColumnName("status");
+            entity.Property(value => value.CreatedBy).HasColumnName("created_by");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(value => value.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(value => value.ReviewedAt).HasColumnType("timestamp without time zone").HasColumnName("reviewed_at");
+            entity.Property(value => value.ReviewReason).HasColumnName("review_reason");
+            entity.Property(value => value.PostedEntryId).HasColumnName("posted_entry_id");
+            entity.Property(value => value.ReversesChargeId).HasColumnName("reverses_charge_id");
+            entity.Property(value => value.ReplacedByChargeId).HasColumnName("replaced_by_charge_id");
+            entity.Property(value => value.CorrelationId).HasMaxLength(200).HasColumnName("correlation_id");
         });
 
         modelBuilder.Entity<MerchantEntryAllocation>(entity =>
@@ -471,6 +514,24 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(value => value.AllocatedBy).HasColumnName("allocated_by");
             entity.HasOne(value => value.Entry).WithMany(value => value.Allocations).HasForeignKey(value => value.EntryId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(value => value.Obligation).WithMany(value => value.Allocations).HasForeignKey(value => value.ObligationId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MerchantAllocationReconciliation>(entity =>
+        {
+            entity.HasKey(value => value.Id);
+            entity.ToTable("merchant_allocation_reconciliations", "payments");
+            entity.HasIndex(value => value.SourceAllocationId).IsUnique();
+            entity.HasIndex(value => value.ReplacementAllocationId).IsUnique();
+            entity.HasIndex(value => new { value.CorrectionChargeId, value.CorrelationId }).IsUnique();
+            entity.Property(value => value.CorrelationId).HasMaxLength(200).HasColumnName("correlation_id");
+            entity.Property(value => value.SourceAllocationId).HasColumnName("source_allocation_id");
+            entity.Property(value => value.ReplacementAllocationId).HasColumnName("replacement_allocation_id");
+            entity.Property(value => value.CorrectionChargeId).HasColumnName("correction_charge_id");
+            entity.Property(value => value.CreatedBy).HasColumnName("created_by");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.HasOne(value => value.SourceAllocation).WithMany().HasForeignKey(value => value.SourceAllocationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(value => value.ReplacementAllocation).WithMany().HasForeignKey(value => value.ReplacementAllocationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(value => value.CorrectionCharge).WithMany().HasForeignKey(value => value.CorrectionChargeId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<MerchantRefundReservation>(entity =>

@@ -242,7 +242,7 @@ test("roles: API function matrix matches every seeded user's permissions", async
 
     for (const path of readChecks[roleKey]) {
       const response = await apiRequest(page, "GET", path);
-      expect(response.ok(), `${roleKey} should read ${path}, got ${response.status()}`).toBeTruthy();
+      expect(response.ok(), `${roleKey} should read ${path}, got ${response.status()}: ${await response.text()}`).toBeTruthy();
     }
 
     for (const path of forbiddenReads[roleKey]) {

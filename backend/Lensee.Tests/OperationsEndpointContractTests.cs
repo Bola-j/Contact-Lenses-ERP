@@ -1,10 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Lensee.Host.Infrastructure;
 using Lensee.Host.Services;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.CRM.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Inventory.Services;
@@ -49,6 +51,71 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", Guid.NewGuid().ToString());
         return client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task FinanceOpeningBalance_AccountantCorrectionNeedsAdminApproval_AndPreservesReversalLineage()
+    {
+        await _factory.SeedAsync();
+        var accountId = Guid.NewGuid();
+        using (var accountScope = _factory.Services.CreateScope())
+        {
+            var accountFinance = accountScope.ServiceProvider.GetRequiredService<FinanceDbContext>();
+            accountFinance.FinanceAccounts.Add(new FinanceAccount
+            {
+                Id = accountId,
+                Name = $"Opening cash {accountId:N}",
+                Type = FinanceLedgerService.CashOnHand,
+                IsActive = true,
+                CreatedBy = Guid.NewGuid(),
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+            await accountFinance.SaveChangesAsync();
+        }
+        var creatorId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+        using var creator = _factory.CreateClient();
+        creator.AuthorizeAs(LenseeRoles.Accountant, creatorId, LenseePermissions.FinanceRead, LenseePermissions.FinanceOpeningCreate, LenseePermissions.FinanceOpeningCorrect);
+
+        var created = await creator.PostAsJsonAsync("/api/v1/finance/opening-balances", new
+        {
+            financeAccountId = accountId,
+            amount = 125m,
+            direction = "Credit",
+            asOfDate = "2026-01-01",
+            description = "Treasury opening cash",
+            correlationId = "finance-opening-test"
+        });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var draft = await created.Content.ReadFromJsonAsync<FinanceOpeningBalance>();
+        Assert.NotNull(draft);
+        Assert.Equal("Posted", draft!.Status);
+
+        using var reviewer = _factory.CreateClient();
+        reviewer.AuthorizeAs(LenseeRoles.Admin, reviewerId, LenseePermissions.FinanceRead, LenseePermissions.FinanceExpenseApprove);
+
+        var correction = await creator.PostAsJsonAsync($"/api/v1/finance/opening-balances/{draft.Id}/correct", new
+        {
+            amount = 150m,
+            direction = "Credit",
+            asOfDate = "2026-01-01",
+            description = "Corrected treasury opening cash",
+            correlationId = "finance-opening-correction-test"
+        });
+        Assert.Equal(HttpStatusCode.Created, correction.StatusCode);
+        var replacement = await correction.Content.ReadFromJsonAsync<FinanceOpeningBalance>();
+        Assert.NotNull(replacement);
+        Assert.Equal("PendingReview", replacement!.Status);
+
+        var replacementApproved = await reviewer.PostAsync($"/api/v1/finance/opening-balances/{replacement.Id}/approve", null);
+        Assert.Equal(HttpStatusCode.OK, replacementApproved.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var finance = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
+        var entries = await finance.FinanceLedgerEntries.Where(value => value.FinanceAccountId == accountId).ToListAsync();
+        Assert.Equal(3, entries.Count);
+        Assert.Equal(150m, entries.Sum(value => value.Direction == FinanceLedgerService.Credit ? value.Amount : -value.Amount));
+        Assert.Equal("Corrected", await finance.FinanceOpeningBalances.Where(value => value.Id == draft.Id).Select(value => value.Status).SingleAsync());
     }
 
     [Fact]
@@ -119,6 +186,9 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         Assert.NotNull(proposal);
+
+        var submitted = await requester.PostAsync($"/api/v1/operations/corrections/{proposal!.Id}/submit", null);
+        Assert.Equal(HttpStatusCode.OK, submitted.StatusCode);
 
         using var selfApprover = _factory.CreateClient();
         selfApprover.AuthorizeAs(LenseeRoles.Admin, requesterId, LenseePermissions.OperationsCorrectionsApprove);
@@ -575,30 +645,12 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         Assert.Equal(HttpStatusCode.NoContent, complete.StatusCode);
         var paymentLog = Assert.Single(logs!.Items, log => log.OperationId == operation.Id);
         Assert.Equal("CashHandToHand", paymentLog.PaymentMethod);
-        Assert.Equal("PendingAccountant", paymentLog.Status);
-        Assert.Equal(0m, paymentLog.AmountPaid);
+        Assert.Equal("Completed", paymentLog.Status);
+        Assert.Equal(200m, paymentLog.AmountPaid);
 
-        var beforeApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
-        Assert.Equal(200m, beforeApproval!.Balance);
-
-        using var accountant = _factory.CreateClient();
-        accountant.AuthorizeAs(LenseeRoles.Accountant, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsDraft);
-        var collectionRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
-        {
-            amount = 200m, paymentMethod = "CashHandToHand", submitForReview = true, sourceOperationId = operation.Id
-        });
-        var collection = await collectionRequest.Content.ReadFromJsonAsync<MerchantCollectionDraftContract>();
-        var approval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
-        var afterApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
-        var duplicateApproval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
-        var afterDuplicateApproval = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
-
-        Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
-        Assert.Equal(200m, afterApproval!.PaymentsReceived);
-        Assert.Equal(0m, afterApproval.Balance);
-        Assert.NotEqual(HttpStatusCode.OK, duplicateApproval.StatusCode);
-        Assert.Equal(afterApproval.PaymentsReceived, afterDuplicateApproval!.PaymentsReceived);
-        Assert.Equal(afterApproval.Balance, afterDuplicateApproval.Balance);
+        var afterCompletion = await client.GetFromJsonAsync<MerchantBalanceContract>($"/api/v1/payments/merchants/{merchantId}/balance");
+        Assert.Equal(200m, afterCompletion!.PaymentsReceived);
+        Assert.Equal(0m, afterCompletion.Balance);
     }
 
     [Fact]
@@ -633,16 +685,13 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
 
         Assert.Equal(HttpStatusCode.NoContent, complete.StatusCode);
         Assert.NotNull(detail);
-        Assert.NotNull(detail!.ClientId);
+        Assert.Null(detail!.ClientId);
         Assert.Equal(buyerName, detail.ClientName);
 
         var paymentLog = Assert.Single(logs!.Items, log => log.OperationId == operation.Id);
-        Assert.Equal(detail.ClientId!.Value, paymentLog.MerchantId);
+        Assert.Null(paymentLog.MerchantId);
         Assert.Equal("CashHandToHand", paymentLog.PaymentMethod);
-
-        var merchant = Assert.Single(merchants!.Items, item => item.Id == detail.ClientId.Value);
-        Assert.Equal(buyerName, merchant.BusinessName);
-        Assert.Equal("Other", merchant.BusinessType);
+        Assert.DoesNotContain(merchants!.Items, item => item.BusinessName == buyerName);
     }
 
     [Fact]
@@ -667,14 +716,6 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         await client.PostAsync($"/api/v1/operations/{operation.Id}/complete", null);
         var logs = await client.GetFromJsonAsync<PagedContract<PaymentLogContract>>("/api/v1/payments?pageSize=10");
         var paymentLog = Assert.Single(logs!.Items, log => log.OperationId == operation.Id);
-        using var accountant = _factory.CreateClient();
-        accountant.AuthorizeAs(LenseeRoles.Accountant, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsDraft);
-        var collectionRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
-        {
-            amount = 200m, paymentMethod = "CashHandToHand", submitForReview = true, sourceOperationId = operation.Id
-        });
-        var collection = await collectionRequest.Content.ReadFromJsonAsync<MerchantCollectionDraftContract>();
-        var approval = collection is null ? collectionRequest : await PostPaymentAsync(client, $"/api/v1/payments/merchant-account-collections/{collection.Id}/approve");
         var adjustmentRequesterId = Guid.NewGuid();
         client.AuthorizeAs(LenseeRoles.Admin, adjustmentRequesterId, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsRequest);
         var refundRequest = await PostPaymentJsonAsync(client, "/api/v1/payments/adjustments", new
@@ -701,7 +742,6 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         Assert.Equal(HttpStatusCode.Created, refundRequest.StatusCode);
         Assert.Equal(HttpStatusCode.OK, refund.StatusCode);
         Assert.Equal(HttpStatusCode.OK, payout.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
         Assert.Equal(200m, balance!.SaleTotal);
         Assert.Equal(200m, balance.PaymentsReceived);
         Assert.Equal(200m, balance.CashRefunded);
@@ -835,7 +875,8 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             paymentMethod = "CashTransaction",
             transactionReference = "BANK-20260702-001",
             dateReceived = "2026-07-02",
-            notes = "First installment"
+            notes = "First installment",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync()
         });
         var draftedDetail = await draft.Content.ReadFromJsonAsync<PaymentLogDetailContract>();
         var draftedSubLog = Assert.Single(draftedDetail!.SubLogs);
@@ -983,6 +1024,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             sourceLocationId = seed.MainLocationId,
             merchantId,
             paymentMethod = "CashHandToHand",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync(),
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 0, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
         });
         var bonus = await client.PostAsJsonAsync("/api/v1/operations", new
@@ -991,6 +1033,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             sourceLocationId = seed.MainLocationId,
             merchantId,
             paymentMethod = "CashHandToHand",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync(),
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 0, isBonus = true, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
         });
 
@@ -1164,14 +1207,14 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         await client.PostAsync($"/api/v1/operations/{sale.Id}/confirm", null);
         await client.PostAsync($"/api/v1/operations/{sale.Id}/ship", null);
         await client.PostAsync($"/api/v1/operations/{sale.Id}/receive", null);
+        var sourceLine = (await client.GetFromJsonAsync<IReadOnlyList<SourceSaleLineContract>>($"/api/v1/operations/source-sales/{sale.Id}/lines"))!.Single();
+        var sourceBatchId = sourceLine.SourceBatches.Single().SourceBatchId;
 
         var returnOperation = await CreateOperationAsync(client, new
         {
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
-            merchantId,
-            paymentMethod = "MerchantAccount",
-            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = "MAIN-A", expiryDate = "2028-06-01", sourceOperationId = sale.Id, sourceOperationLineId = sourceLine.SourceOperationLineId, sourceBatchId } }
         });
 
         var confirm = await client.PostAsync($"/api/v1/operations/{returnOperation.Id}/confirm", null);
@@ -1191,14 +1234,14 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     [Theory]
     [InlineData(LenseeRoles.Admin)]
     [InlineData(LenseeRoles.ERPAdmin)]
-    public async Task Return_ExceedingRecordedSalesWarnsAndSystemAdminCanConfirmWithException(string role)
+    public async Task Return_WithoutImmutableSourceLine_IsRejectedForEveryRole(string role)
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
         using var client = _factory.CreateClient();
         client.AuthorizeAs(role, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
 
-        var returnOperation = await CreateOperationAsync(client, new
+        var response = await client.PostAsJsonAsync("/api/v1/operations", new
         {
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
@@ -1207,40 +1250,19 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = "UNKNOWN", expiryDate = "2028-06-01" } }
         });
 
-        var confirm = await client.PostAsync($"/api/v1/operations/{returnOperation.Id}/confirm", null);
-        var body = await confirm.Content.ReadAsStringAsync();
-        using var warningDocument = JsonDocument.Parse(body);
-        var warningRoot = warningDocument.RootElement;
-        var legacyOverrideAttempt = await client.PostAsJsonAsync($"/api/v1/operations/{returnOperation.Id}/confirm?overrideEligibilityWarnings=true", new { overrideEligibilityWarnings = true });
-        var missingReason = await client.PostAsJsonAsync($"/api/v1/operations/{returnOperation.Id}/confirm", new { acknowledgeSalesVariance = true });
-        var bypass = await client.PostAsJsonAsync($"/api/v1/operations/{returnOperation.Id}/confirm", new { acknowledgeSalesVariance = true, salesVarianceReason = "Physical count verified by the returns supervisor." });
-        var afterConfirm = await client.GetFromJsonAsync<OperationDetailContract>($"/api/v1/operations/{returnOperation.Id}");
-        var batchHistory = await client.GetFromJsonAsync<IReadOnlyList<MerchantBatchHistoryContract>>($"/api/v1/crm/merchants/{merchantId}/batch-history");
-
-        Assert.Equal(HttpStatusCode.Conflict, confirm.StatusCode);
-        Assert.Equal("MerchantSalesVariance", warningRoot.GetProperty("code").GetString());
-        Assert.True(warningRoot.GetProperty("canBypass").GetBoolean());
-        var warning = warningRoot.GetProperty("warnings")[0];
-        Assert.Equal(0, warning.GetProperty("soldQuantity").GetInt32());
-        Assert.Equal(0, warning.GetProperty("returnedQuantity").GetInt32());
-        Assert.Equal(2, warning.GetProperty("requestedQuantity").GetInt32());
-        Assert.Equal(2, warning.GetProperty("excessQuantity").GetInt32());
-        Assert.Equal(HttpStatusCode.Conflict, legacyOverrideAttempt.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, missingReason.StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, bypass.StatusCode);
-        Assert.Equal("Confirmed", afterConfirm!.Status);
-        Assert.Contains(afterConfirm.Versions!, version => version.Reason.Contains("recorded sales exception", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(batchHistory!, row => row.LotNumber == "UNKNOWN" && row.SoldQuantity == 0 && row.ReturnedQuantity == 2);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("source line", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Return_RecordedSalesWarningCannotBeBypassedByWarehouseClerk()
+    public async Task Return_WithoutImmutableSourceLine_IsRejectedForWarehouseClerk()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
         using var admin = _factory.CreateClient();
         admin.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
-        var returnOperation = await CreateOperationAsync(admin, new
+        var create = await admin.PostAsJsonAsync("/api/v1/operations", new
         {
             operationType = "Return",
             sourceLocationId = seed.MainLocationId,
@@ -1249,15 +1271,9 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = "CLERK-UNSOLD", expiryDate = "2028-06-01" } }
         });
 
-        using var clerk = _factory.CreateClient();
-        clerk.AuthorizeAsAtLocation(LenseeRoles.WarehouseClerk, seed.MainLocationId, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite);
-        var warningResponse = await clerk.PostAsync($"/api/v1/operations/{returnOperation.Id}/confirm", null);
-        using var warningDocument = JsonDocument.Parse(await warningResponse.Content.ReadAsStringAsync());
-        var bypassAttempt = await clerk.PostAsJsonAsync($"/api/v1/operations/{returnOperation.Id}/confirm", new { acknowledgeSalesVariance = true, salesVarianceReason = "Clerk override attempt" });
-
-        Assert.Equal(HttpStatusCode.Conflict, warningResponse.StatusCode);
-        Assert.False(warningDocument.RootElement.GetProperty("canBypass").GetBoolean());
-        Assert.Equal(HttpStatusCode.Forbidden, bypassAttempt.StatusCode);
+        var body = await create.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, create.StatusCode);
+        Assert.Contains("source line", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1350,7 +1366,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
-    public async Task MerchantExpiryRecall_ReturnDraftAboveRecordedSalesIsCreatedThenWarnedAtConfirmation()
+    public async Task MerchantExpiryRecall_ReturnDraftAboveRecordedSalesIsRejectedWithoutOverride()
     {
         var seed = await _factory.SeedAsync();
         var merchantId = await _factory.CreateMerchantAsync();
@@ -1365,15 +1381,15 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var draftResponse = await client.PostAsJsonAsync($"/api/v1/merchant-expiry-recalls/{recall.Id}/return-draft", new { receivingLocationId = seed.MainLocationId, quantity = 3, notes = "Physical count is above recorded sales" });
         var draft = await draftResponse.Content.ReadFromJsonAsync<MerchantRecallDraftContract>();
         var confirmation = await client.PostAsync($"/api/v1/operations/{draft!.OperationId}/confirm", null);
-        using var warningDocument = JsonDocument.Parse(await confirmation.Content.ReadAsStringAsync());
-        var warning = warningDocument.RootElement.GetProperty("warnings")[0];
+        using var conflictDocument = JsonDocument.Parse(await confirmation.Content.ReadAsStringAsync());
 
         Assert.Equal(HttpStatusCode.Created, draftResponse.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, confirmation.StatusCode);
-        Assert.True(warningDocument.RootElement.GetProperty("canBypass").GetBoolean());
+        Assert.Equal("MerchantSalesVariance", conflictDocument.RootElement.GetProperty("code").GetString());
+        Assert.False(conflictDocument.RootElement.GetProperty("canBypass").GetBoolean());
+        var warning = conflictDocument.RootElement.GetProperty("warnings")[0];
         Assert.Equal(2, warning.GetProperty("soldQuantity").GetInt32());
         Assert.Equal(3, warning.GetProperty("requestedQuantity").GetInt32());
-        Assert.Equal(1, warning.GetProperty("excessQuantity").GetInt32());
     }
 
     [Fact]
@@ -1431,17 +1447,17 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         await client.PostAsync($"/api/v1/operations/{sale.Id}/confirm", null);
         await client.PostAsync($"/api/v1/operations/{sale.Id}/ship", null);
         await client.PostAsync($"/api/v1/operations/{sale.Id}/receive", null);
+        var sourceLine = (await client.GetFromJsonAsync<IReadOnlyList<SourceSaleLineContract>>($"/api/v1/operations/source-sales/{sale.Id}/lines"))!.Single();
+        var sourceBatchId = sourceLine.SourceBatches.Single().SourceBatchId;
 
         var operation = await CreateOperationAsync(client, new
         {
             operationType = "Change",
             sourceLocationId = seed.MainLocationId,
-            merchantId,
-            paymentMethod = "MerchantAccount",
             lines = new[]
             {
-                new { skuId = seed.SkuId, section = "ChangeOut", packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01" },
-                new { skuId = seed.SkuId, section = "ChangeIn", packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01" }
+                new { skuId = seed.SkuId, section = "ChangeOut", packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01", sourceOperationId = (Guid?)sale.Id, sourceOperationLineId = (Guid?)sourceLine.SourceOperationLineId, sourceBatchId = (Guid?)sourceBatchId },
+                new { skuId = seed.SkuId, section = "ChangeIn", packQuantity = 2, entryMode = "Packs", unitPrice = 100, lotNumber = (string?)"MAIN-A", expiryDate = (string?)"2028-06-01", sourceOperationId = (Guid?)null, sourceOperationLineId = (Guid?)null, sourceBatchId = (Guid?)null }
             }
         });
 
@@ -1628,7 +1644,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var stocktake = await create.Content.ReadFromJsonAsync<StocktakeDetailContract>();
         var response = await client.PutAsJsonAsync($"/api/v1/stocktakes/{stocktake!.Id}/lines", new
         {
-            lines = new[] { new { skuId = seed.SkuId, physicalCount = 1 } }
+            lines = new[] { new { skuId = seed.SkuId, physicalCount = 1, physicalPackCount = 1, physicalPieceCount = 2 } }
         });
         var detail = await client.GetFromJsonAsync<StocktakeDetailContract>($"/api/v1/stocktakes/{stocktake.Id}");
 
@@ -1676,11 +1692,11 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var stocktake = await create.Content.ReadFromJsonAsync<StocktakeDetailContract>();
         var valid = await client.PutAsJsonAsync($"/api/v1/stocktakes/{stocktake!.Id}/lines", new
         {
-            lines = new[] { new { skuId = seed.SkuId, physicalCount = 1 } }
+            lines = new[] { new { skuId = seed.SkuId, physicalCount = 1, physicalPackCount = 1, physicalPieceCount = 2 } }
         });
         var invalid = await client.PutAsJsonAsync($"/api/v1/stocktakes/{stocktake.Id}/lines", new
         {
-            lines = new[] { new { skuId = seed.SkuId, physicalCount = -1 } }
+            lines = new[] { new { skuId = seed.SkuId, physicalCount = 1, physicalPackCount = -1, physicalPieceCount = 0 } }
         });
         var detail = await client.GetFromJsonAsync<StocktakeDetailContract>($"/api/v1/stocktakes/{stocktake.Id}");
 
@@ -1690,6 +1706,8 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var line = Assert.Single(detail!.Lines);
         Assert.Equal(seed.SkuId, line.SkuId);
         Assert.Equal(1, line.PhysicalCount);
+        Assert.Equal(1, line.PhysicalPackCount);
+        Assert.Equal(2, line.PhysicalPieceCount);
     }
 
     [Fact]
@@ -1887,9 +1905,20 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
-    private static async Task<OperationDetailContract> CreateOperationAsync(HttpClient client, object request)
+    private async Task<OperationDetailContract> CreateOperationAsync(HttpClient client, object request)
     {
-        var response = await client.PostAsJsonAsync("/api/v1/operations", request);
+        // Merchant immediate-sale fixtures must model the production contract:
+        // a real movement selects an active receiving Finance account.
+        var payload = JsonSerializer.SerializeToNode(request)!.AsObject();
+        if (payload["merchantId"] is not null && payload["paymentMethod"]?.GetValue<string>() is "Installment" or "Installlaugment")
+            payload["paymentMethod"] = null;
+        if (payload["merchantId"] is not null &&
+            payload["financeAccountId"] is null &&
+            payload["paymentMethod"]?.GetValue<string>() is "CashHandToHand" or "CashTransaction" or "BankTransfer" or "Wallet")
+        {
+            payload["financeAccountId"] = await _factory.GetFinanceAccountIdAsync();
+        }
+        var response = await client.PostAsJsonAsync("/api/v1/operations", payload);
         var body = await response.Content.ReadAsStringAsync();
         Assert.True(response.StatusCode == HttpStatusCode.Created, $"Expected Created but got {response.StatusCode}: {body}");
         return (await response.Content.ReadFromJsonAsync<OperationDetailContract>())!;
@@ -1943,6 +1972,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
             services.RemoveAll<DbContextOptions<NotificationsDbContext>>();
             services.RemoveAll<DbContextOptions<OperationsDbContext>>();
             services.RemoveAll<DbContextOptions<PaymentsDbContext>>();
+            services.RemoveAll<DbContextOptions<FinanceDbContext>>();
             services.RemoveAll<DbContextOptions<SharedDbContext>>();
             services.RemoveAll<IAuditLogWriter>();
             services.AddDbContext<CatalogDbContext>(options => options.UseInMemoryDatabase(_databaseName));
@@ -1952,6 +1982,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
             services.AddDbContext<NotificationsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<OperationsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<PaymentsDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+            services.AddDbContext<FinanceDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             services.AddDbContext<SharedDbContext>(options => options.UseInMemoryDatabase(_databaseName));
             if (_useRealAuditWriter)
             {
@@ -1981,6 +2012,7 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
         var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
         var payments = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
+        var finance = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
         var ledger = scope.ServiceProvider.GetRequiredService<StockLedgerService>();
         var mainLocationId = Guid.NewGuid();
         var onlineLocationId = _shopifyOnlineLocationId;
@@ -2010,6 +2042,13 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         payments.InstallmentSubLogs.RemoveRange(payments.InstallmentSubLogs);
         payments.MainPaymentLogs.RemoveRange(payments.MainPaymentLogs);
         payments.CashRecords.RemoveRange(payments.CashRecords);
+        // This class shares one in-memory factory.  Financial assertions must start
+        // from an empty ledger rather than inherit unrelated prior test effects.
+        finance.FinanceLedgerEntries.RemoveRange(finance.FinanceLedgerEntries);
+        finance.FinanceOpeningBalances.RemoveRange(finance.FinanceOpeningBalances);
+        finance.FinanceExpenses.RemoveRange(finance.FinanceExpenses);
+        finance.CLevelWithdrawals.RemoveRange(finance.CLevelWithdrawals);
+        finance.PaymentMovementRegistries.RemoveRange(finance.PaymentMovementRegistries);
         inventory.StockTransactions.RemoveRange(inventory.StockTransactions);
         inventory.InventoryBatches.RemoveRange(inventory.InventoryBatches);
         inventory.StockBalances.RemoveRange(inventory.StockBalances);
@@ -2023,6 +2062,20 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         await identity.SaveChangesAsync();
         await notifications.SaveChangesAsync();
         await payments.SaveChangesAsync();
+        await finance.SaveChangesAsync();
+        if (!await finance.FinanceAccounts.AnyAsync())
+        {
+            finance.FinanceAccounts.Add(new FinanceAccount
+            {
+                Id = Guid.NewGuid(),
+                Name = "Test Cash",
+                Type = "CashOnHand",
+                IsActive = true,
+                CreatedBy = Guid.NewGuid(),
+                CreatedAt = DateTime.UtcNow
+            });
+            await finance.SaveChangesAsync();
+        }
         await inventory.SaveChangesAsync();
         await catalog.SaveChangesAsync();
 
@@ -2059,6 +2112,15 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
         }
 
         return new OperationsSeed(mainLocationId, onlineLocationId, skuId);
+    }
+
+    public async Task<Guid> GetFinanceAccountIdAsync()
+    {
+        using var scope = Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<FinanceDbContext>().FinanceAccounts
+            .Where(value => value.IsActive)
+            .Select(value => value.Id)
+            .FirstAsync();
     }
 
     public async Task<LocationScopedCrmCorrectionSeed> SeedLocationScopedCrmAndCorrectionsAsync(OperationsSeed seed)
@@ -2326,18 +2388,38 @@ public sealed class OperationsEndpointFactory : WebApplicationFactory<Program>
     {
         using var scope = Services.CreateScope();
         var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
         var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
         var crm = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
         var sku = await catalog.Skus.Include(value => value.Product).SingleAsync(value => value.Id == skuId);
         var merchant = await crm.Merchants.SingleAsync(value => value.Id == merchantId);
+        var sourceLocationId = await inventory.Locations.OrderBy(value => value.Id).Select(value => value.Id).FirstAsync();
+        var sourceBatch = await inventory.InventoryBatches.FirstOrDefaultAsync(value =>
+            value.LocationId == sourceLocationId && value.SkuId == skuId && value.LotNumber == lotNumber && value.ExpiryDate == expiryDate);
+        if (sourceBatch is null)
+        {
+            inventory.InventoryBatches.Add(new InventoryBatch
+            {
+                Id = Guid.NewGuid(),
+                LocationId = sourceLocationId,
+                SkuId = skuId,
+                LotNumber = lotNumber,
+                ExpiryDate = expiryDate,
+                Quantity = 0,
+                CreatedAt = DateTime.UtcNow
+            });
+            await inventory.SaveChangesAsync();
+        }
         var operation = new OperationLog
         {
             Id = Guid.NewGuid(),
             OperationNumber = $"TEST-SALE-{Guid.NewGuid():N}",
             OperationType = "WholesaleSale",
             Status = "Completed",
+            SourceLocationId = sourceLocationId,
             ClientId = merchantId,
             ClientName = merchant.BusinessName,
+            PaymentMethod = "MerchantAccount",
             CreatedBy = Guid.NewGuid(),
             CreatedAt = DateTime.UtcNow,
             ConfirmedAt = DateTime.UtcNow,
@@ -2442,7 +2524,7 @@ public sealed class StocktakeDetailContract
 
 public sealed record StocktakeListContract(Guid Id, Guid LocationId);
 
-public sealed record StocktakeLineContract(Guid Id, Guid SkuId, int PhysicalCount);
+public sealed record StocktakeLineContract(Guid Id, Guid SkuId, int PhysicalCount, int PhysicalPackCount = 0, int PhysicalPieceCount = 0);
 
 public sealed class SupplyShipmentContract
 {
@@ -2478,7 +2560,7 @@ public sealed record MerchantRecallDraftContract(Guid OperationId, string Operat
 public sealed record PaymentLogContract(
     Guid Id,
     Guid OperationId,
-    Guid MerchantId,
+    Guid? MerchantId,
     decimal TotalAmount,
     decimal AmountPaid,
     decimal RemainingAmount,
@@ -2523,6 +2605,23 @@ public sealed record PaymentOperationResolutionContract(Guid OperationId, string
 public sealed record MerchantCollectionDraftContract(Guid Id, string Status, decimal Amount);
 
 public sealed record OperationCorrectionContract(Guid Id, Guid OperationId, string Status, Guid? ReversalOperationId, Guid? ReplacementOperationId);
+
+public sealed record SourceSaleLineContract(
+    Guid SourceOperationId,
+    string SourceOperationNumber,
+    Guid SourceOperationLineId,
+    Guid SkuId,
+    string SkuCode,
+    string ProductName,
+    string EntryMode,
+    int OriginalSoldQuantity,
+    int ReturnedOrExchangedQuantity,
+    int RemainingEligibleQuantity,
+    string? LotNumber,
+    DateOnly? ExpiryDate,
+    IReadOnlyList<SourceSaleBatchContract> SourceBatches);
+
+public sealed record SourceSaleBatchContract(Guid SourceBatchId, string? LotNumber, DateOnly? ExpiryDate);
 
 public sealed record MerchantBalanceContract(
     Guid MerchantId,

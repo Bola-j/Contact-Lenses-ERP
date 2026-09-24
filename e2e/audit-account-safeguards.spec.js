@@ -37,7 +37,7 @@ test("audit and accounts: duplicate usernames explain the conflict, protected ac
 
   await gotoRoute(page, "/admin");
   const createdRow = page.locator("[data-admin-user-row]", { hasText: runId });
-  page.once("dialog", (dialog) => dialog.accept());
   await createdRow.locator("[data-admin-delete-user]").click();
+  await page.locator(".confirm-dialog [data-dialog-confirm]").click();
   await expectNotice(page, /deleted/i);
 });

@@ -19,7 +19,7 @@ public sealed class SkuCodeGeneratorTests
 
         var code = generator.Generate(product, new SkuCodeInput("-", 1.25m, "Clear", null));
 
-        Assert.Equal("LAN-PM-M125-CLEAR", code);
+        Assert.Equal("LAN-PM-M1.25-CLEAR", code);
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public sealed class SkuCodeGeneratorTests
 
         var code = generator.Generate(product, new SkuCodeInput("-", 1.25m, "Plain", "Box 3"));
 
-        Assert.Equal("LAN-PM-M125-PLAIN-BOX3", code);
+        Assert.Equal("LAN-PM-M1.25-PLAIN-BOX3", code);
     }
 
     [Fact]
@@ -84,14 +84,33 @@ public sealed class SkuCodeGeneratorTests
         var galaxyGray = generator.Generate(product, new SkuCodeInput("-", 0.50m, "Galaxy Gray", "Pack 2"));
         var selenaGray = generator.Generate(product, new SkuCodeInput("-", 0.50m, "Selena Gray", "Pack 2"));
 
-        Assert.Equal("CV-CM-M05-GALAXYGRAY-PACK2", galaxyGray);
-        Assert.Equal("CV-CM-M05-SELENAGRAY-PACK2", selenaGray);
+        Assert.Equal("CV-CM-M0.5-GALAXYGRAY-PACK2", galaxyGray);
+        Assert.Equal("CV-CM-M0.5-SELENAGRAY-PACK2", selenaGray);
     }
 
     [Theory]
-    [InlineData("1 day", "Daily", "CV-CL-M05-BLUE-PACK2-D01-DAILY")]
-    [InlineData("3 months", "Monthly", "CV-CL-M05-BLUE-PACK2-M03-MONTHLY")]
-    [InlineData("5 years", "Annual", "CV-CL-M05-BLUE-PACK2-Y05-ANNUAL")]
+    [InlineData("+", 0.50, "P0.5")]
+    [InlineData("+", 1.25, "P1.25")]
+    [InlineData("-", 2.50, "M2.5")]
+    public void Generate_PreservesDecimalPowerWithoutIntegerTruncation(string sign, decimal value, string expectedPower)
+    {
+        var generator = new SkuCodeGenerator();
+        var product = new Product
+        {
+            ProductType = CatalogValidation.Lens,
+            Brand = new Brand { Name = "Lansee" },
+            Category = new Category { Name = "Plain Medical" }
+        };
+
+        var code = generator.Generate(product, new SkuCodeInput(sign, value, "Clear", null));
+
+        Assert.Equal($"LAN-PM-{expectedPower}-CLEAR", code);
+    }
+
+    [Theory]
+    [InlineData("1 day", "Daily", "CV-CL-M0.5-BLUE-PACK2-D01-DAILY")]
+    [InlineData("3 months", "Monthly", "CV-CL-M0.5-BLUE-PACK2-M03-MONTHLY")]
+    [InlineData("5 years", "Annual", "CV-CL-M0.5-BLUE-PACK2-Y05-ANNUAL")]
     public void Generate_AppendsOpenedValidity_ForLens(string openedExpiryDuration, string openedExpiryRate, string expected)
     {
         var generator = new SkuCodeGenerator();

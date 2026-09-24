@@ -34,6 +34,7 @@ $contexts = @(
     @{ Project = "backend/Lensee.Modules.Catalog/Lensee.Modules.Catalog.csproj"; Context = "CatalogDbContext"; Migrations = "backend/Lensee.Modules.Catalog/Migrations" },
     @{ Project = "backend/Lensee.Modules.Inventory/Lensee.Modules.Inventory.csproj"; Context = "InventoryDbContext"; Migrations = "backend/Lensee.Modules.Inventory/Migrations" },
     @{ Project = "backend/Lensee.Modules.CRM/Lensee.Modules.CRM.csproj"; Context = "CrmDbContext"; Migrations = "backend/Lensee.Modules.CRM/Migrations" },
+    @{ Project = "backend/Lensee.Modules.Finance/Lensee.Modules.Finance.csproj"; Context = "FinanceDbContext"; Migrations = "backend/Lensee.Modules.Finance/Migrations" },
     @{ Project = "backend/Lensee.Modules.Operations/Lensee.Modules.Operations.csproj"; Context = "OperationsDbContext"; Migrations = "backend/Lensee.Modules.Operations/Migrations" },
     @{ Project = "backend/Lensee.Modules.Payments/Lensee.Modules.Payments.csproj"; Context = "PaymentsDbContext"; Migrations = "backend/Lensee.Modules.Payments/Migrations" },
     @{ Project = "backend/Lensee.Modules.Notifications/Lensee.Modules.Notifications.csproj"; Context = "NotificationsDbContext"; Migrations = "backend/Lensee.Modules.Notifications/Migrations" },

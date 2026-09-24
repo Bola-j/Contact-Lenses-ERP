@@ -225,7 +225,7 @@ namespace Lensee.Modules.Operations.Migrations
 
                     b.HasIndex(new[] { "OperationId" }, "uq_operation_active_correction")
                         .IsUnique()
-                        .HasFilter("(status = 'PendingApproval')");
+                        .HasFilter("(status in ('Draft','PendingReview'))");
 
                     b.ToTable("operation_correction_proposals", "operations", t =>
                         {
@@ -233,7 +233,7 @@ namespace Lensee.Modules.Operations.Migrations
 
                             t.HasCheckConstraint("chk_operation_correction_settlement", "settlement_method is null or settlement_method in ('CashRefund','MerchantCredit')");
 
-                            t.HasCheckConstraint("chk_operation_correction_status", "status in ('PendingApproval','Approved','Rejected')");
+                            t.HasCheckConstraint("chk_operation_correction_status", "status in ('Draft','PendingReview','Posted','Rejected')");
                         });
                 });
 
@@ -285,6 +285,10 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Property<Guid>("OperationId")
                         .HasColumnType("uuid")
                         .HasColumnName("operation_id");
+
+                    b.Property<int?>("PiecesPerPackSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("pieces_per_pack_snapshot");
 
                     b.Property<string>("ProductNameSnapshot")
                         .IsRequired()
@@ -382,6 +386,8 @@ namespace Lensee.Modules.Operations.Migrations
 
                             t.HasCheckConstraint("chk_operation_lines_line_total", "line_total >= 0");
 
+                            t.HasCheckConstraint("chk_operation_lines_pieces_per_pack_snapshot", "pieces_per_pack_snapshot is null or pieces_per_pack_snapshot > 0");
+
                             t.HasCheckConstraint("chk_operation_lines_quantity", "quantity >= 0");
 
                             t.HasCheckConstraint("chk_operation_lines_section", "section in ('Standard','ChangeOut','ChangeIn')");
@@ -389,6 +395,80 @@ namespace Lensee.Modules.Operations.Migrations
                             t.HasCheckConstraint("chk_operation_lines_unit_cost", "unit_cost is null or unit_cost >= 0");
 
                             t.HasCheckConstraint("chk_operation_lines_unit_price", "unit_price >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLineSourceAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EntryMode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("entry_mode");
+
+                    b.Property<DateOnly?>("ExpiryDate")
+                        .HasColumnType("date")
+                        .HasColumnName("expiry_date");
+
+                    b.Property<string>("LotNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("lot_number");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("quantity");
+
+                    b.Property<Guid>("SkuId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("sku_id");
+
+                    b.Property<Guid?>("SourceBatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_batch_id");
+
+                    b.Property<Guid?>("SourceOpenedPieceLotId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_opened_piece_lot_id");
+
+                    b.Property<Guid>("SourceOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_operation_id");
+
+                    b.Property<Guid>("SourceOperationLineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_operation_line_id");
+
+                    b.Property<Guid>("TargetOperationLineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_operation_line_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TargetOperationLineId")
+                        .IsUnique();
+
+                    b.HasIndex("SourceOperationLineId", "EntryMode");
+
+                    b.HasIndex("SourceOperationId", "SkuId", "LotNumber", "ExpiryDate");
+
+                    b.ToTable("operation_line_source_allocations", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_operation_source_allocation_entry_mode", "entry_mode in ('Packs','Pieces')");
+
+                            t.HasCheckConstraint("chk_operation_source_allocation_piece_lot", "entry_mode = 'Packs' or source_opened_piece_lot_id is not null");
+
+                            t.HasCheckConstraint("chk_operation_source_allocation_quantity", "quantity > 0");
                         });
                 });
 
@@ -473,13 +553,17 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("current_version_id");
 
-                    b.Property<DateTime?>("FinanciallyClosedAt")
+                    b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp without time zone")
-                        .HasColumnName("financially_closed_at");
+                        .HasColumnName("deleted_at");
 
-                    b.Property<Guid?>("FinanciallyClosedBy")
+                    b.Property<Guid?>("DestinationLocationId")
                         .HasColumnType("uuid")
-                        .HasColumnName("financially_closed_by");
+                        .HasColumnName("destination_location_id");
+
+                    b.Property<Guid?>("FinanceAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("finance_account_id");
 
                     b.Property<Guid?>("FinancialClosureProposalId")
                         .HasColumnType("uuid")
@@ -490,16 +574,16 @@ namespace Lensee.Modules.Operations.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)")
-                        .HasColumnName("financial_closure_status")
-                        .HasDefaultValue("Open");
+                        .HasDefaultValue("Open")
+                        .HasColumnName("financial_closure_status");
 
-                    b.Property<DateTime?>("DeletedAt")
+                    b.Property<DateTime?>("FinanciallyClosedAt")
                         .HasColumnType("timestamp without time zone")
-                        .HasColumnName("deleted_at");
+                        .HasColumnName("financially_closed_at");
 
-                    b.Property<Guid?>("DestinationLocationId")
+                    b.Property<Guid?>("FinanciallyClosedBy")
                         .HasColumnType("uuid")
-                        .HasColumnName("destination_location_id");
+                        .HasColumnName("financially_closed_by");
 
                     b.Property<bool>("IsDeleted")
                         .ValueGeneratedOnAdd()
@@ -608,9 +692,9 @@ namespace Lensee.Modules.Operations.Migrations
 
                     b.ToTable("operation_logs", "operations", t =>
                         {
-                            t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','MerchantAccount','Installment')");
-
                             t.HasCheckConstraint("chk_op_financial_closure_status", "financial_closure_status in ('Open','FinanciallyClosed')");
+
+                            t.HasCheckConstraint("chk_op_payment_method", "payment_method is null or payment_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
 
                             t.HasCheckConstraint("chk_op_status", "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
 
@@ -913,6 +997,14 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("delta");
 
+                    b.Property<int>("DeltaPackCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("delta_pack_count");
+
+                    b.Property<int>("DeltaPieceCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("delta_piece_count");
+
                     b.Property<DateOnly?>("ExpiryDate")
                         .HasColumnType("date")
                         .HasColumnName("expiry_date");
@@ -930,6 +1022,14 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("physical_count");
 
+                    b.Property<int>("PhysicalPackCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("physical_pack_count");
+
+                    b.Property<int>("PhysicalPieceCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("physical_piece_count");
+
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("session_id");
@@ -937,6 +1037,14 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Property<Guid>("SkuId")
                         .HasColumnType("uuid")
                         .HasColumnName("sku_id");
+
+                    b.Property<int>("SystemPackCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("system_pack_count");
+
+                    b.Property<int>("SystemPieceCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("system_piece_count");
 
                     b.Property<int>("SystemQtyBefore")
                         .HasColumnType("integer")
@@ -1023,6 +1131,125 @@ namespace Lensee.Modules.Operations.Migrations
                     b.ToTable("stocktake_sessions", "operations", t =>
                         {
                             t.HasCheckConstraint("chk_stocktake_status", "status in ('Draft','Confirmed')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyPayment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("category");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("ExternalReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("external_reference");
+
+                    b.Property<Guid>("FinanceAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("finance_account_id");
+
+                    b.Property<string>("MovementMethod")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("movement_method");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<Guid?>("PostedFinanceLedgerEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("posted_finance_ledger_entry_id");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<Guid?>("ReplacedByPaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaced_by_payment_id");
+
+                    b.Property<Guid?>("ReversesPaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reverses_payment_id");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by");
+
+                    b.Property<Guid>("ShipmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("shipment_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SubmittedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("submitted_at");
+
+                    b.Property<Guid?>("SubmittedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("submitted_by");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PostedFinanceLedgerEntryId")
+                        .IsUnique()
+                        .HasFilter("(posted_finance_ledger_entry_id is not null)");
+
+                    b.HasIndex("ReplacedByPaymentId")
+                        .IsUnique()
+                        .HasFilter("(replaced_by_payment_id is not null)");
+
+                    b.HasIndex("ShipmentId")
+                        .HasDatabaseName("idx_supply_payments_shipment");
+
+                    b.ToTable("supply_payments", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_payment_amount", "amount > 0");
+
+                            t.HasCheckConstraint("chk_supply_payment_category", "category in ('SupplierPurchase','Freight','Customs','Transport','OtherShipmentCost')");
+
+                            t.HasCheckConstraint("chk_supply_payment_method", "movement_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
+
+                            t.HasCheckConstraint("chk_supply_payment_status", "status in ('Draft','PendingReview','Posted','Rejected','Corrected')");
                         });
                 });
 
@@ -1363,6 +1590,17 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("Operation");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLineSourceAllocation", b =>
+                {
+                    b.HasOne("Lensee.Modules.Operations.Data.OperationLine", "TargetOperationLine")
+                        .WithMany("SourceAllocations")
+                        .HasForeignKey("TargetOperationLineId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("TargetOperationLine");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLog", b =>
                 {
                     b.HasOne("Lensee.Modules.Operations.Data.OperationVersion", "CurrentVersion")
@@ -1416,6 +1654,17 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("Session");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyPayment", b =>
+                {
+                    b.HasOne("Lensee.Modules.Operations.Data.SupplyShipment", "Shipment")
+                        .WithMany("Payments")
+                        .HasForeignKey("ShipmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Shipment");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyShipment", b =>
                 {
                     b.HasOne("Lensee.Modules.Operations.Data.OperationLog", "InventoryReceiptOperation")
@@ -1462,6 +1711,11 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("Shipment");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLine", b =>
+                {
+                    b.Navigation("SourceAllocations");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.OperationLog", b =>
                 {
                     b.Navigation("InventoryReceiptHeader");
@@ -1490,6 +1744,8 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("HistoryLogs");
 
                     b.Navigation("Lines");
+
+                    b.Navigation("Payments");
                 });
 #pragma warning restore 612, 618
         }
