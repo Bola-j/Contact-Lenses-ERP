@@ -1522,4 +1522,6 @@ export default Object.freeze({
   ,"app.confirm.finalAction": "تأكيد {action}"
   ,"app.confirm.finalActionMessage": "هل أنت متأكد من رغبتك في {action} هذا السجل؟ سيؤدي هذا الإجراء إلى تغيير حالة سير العمل الرسمية."
   ,"app.confirm.reason": "السبب (مطلوب)"
+  ,"app.inventoryAllColors": "كل الألوان"
+  ,"app.inventoryTransparent": "شفاف"
 });

@@ -1522,4 +1522,6 @@ export default Object.freeze({
   ,"app.confirm.finalAction": "Confirm {action}"
   ,"app.confirm.finalActionMessage": "Are you sure you want to {action} this record? This action changes the official workflow state."
   ,"app.confirm.reason": "Reason (required)"
+  ,"app.inventoryAllColors": "All colors"
+  ,"app.inventoryTransparent": "Transparent"
 });

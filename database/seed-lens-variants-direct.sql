@@ -30,18 +30,9 @@ set name = excluded.name;
 with lens_products as (
   select *
   from (values
-    ('Plain Transparent Lens Box - 6 Months', 'Transparent Lenses', 3, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainTransparent","packaging":"Box","duration":"monthly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"6 months"}'::jsonb),
-    ('Plain Transparent Lens Box - 1 Year', 'Transparent Lenses', 3, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainTransparent","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"1 year"}'::jsonb),
-    ('Plain Transparent Lens Box - 3 Years', 'Transparent Lenses', 3, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainTransparent","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"3 years"}'::jsonb),
-    ('Plain Transparent Lens Vial - 6 Months', 'Transparent Lenses', 1, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"monthly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"6 months"}'::jsonb),
-    ('Plain Transparent Lens Vial - 1 Year', 'Transparent Lenses', 1, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"1 year"}'::jsonb),
-    ('Plain Transparent Lens Vial - 3 Years', 'Transparent Lenses', 1, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"3 years"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 3 Months', 'Colored Lenses', 2, 'SinglePiece', '3 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"3 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"3 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 6 Months', 'Colored Lenses', 2, 'SinglePiece', '6 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"6 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"6 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 9 Months', 'Colored Lenses', 2, 'SinglePiece', '9 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"9 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"9 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 1 Day', 'Colored Lenses', 2, 'SinglePiece', '1 day', 'Daily', '{"powerRange":"coloredTransparent","duration":"1 day"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"1 day"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 5 Days', 'Colored Lenses', 2, 'SinglePiece', '5 days', 'Daily', '{"powerRange":"coloredTransparent","duration":"5 days"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"5 days"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 7 Days', 'Colored Lenses', 2, 'SinglePiece', '7 days', 'Daily', '{"powerRange":"coloredTransparent","duration":"7 days"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"7 days"}'::jsonb)
+    ('Clear Vision Transparent Lenses BOX3 6 months (monthly)', 'Transparent Lenses', 3, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainTransparent","packaging":"Box","duration":"monthly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"6 months"}'::jsonb),
+    ('Clear Vision Transparent Lenses VIAL1 ANNUALLY (1 year)', 'Transparent Lenses', 1, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"1 year"}'::jsonb),
+    ('Clear Vision Colored Lenses BOX2 9 months (monthly)', 'Colored Lenses', 2, 'SinglePiece', '9 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"9 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX2","validity":"9 months"}'::jsonb)
   ) as product(name, category_name, pieces_per_pack, sell_mode, duration, rate, clinical_params, extended_attributes)
 )
 insert into catalog.products (
@@ -117,23 +108,19 @@ where name in (
   'Clear Vision Colored Transparent Lens Pack',
   'Plain Transparent Lens Box',
   'Plain Transparent Lens Vial'
-);
+) or (extended_attributes ->> 'seed' = 'Transparent-lenses-direct-db' and name not in (
+  'Clear Vision Transparent Lenses BOX3 6 months (monthly)',
+  'Clear Vision Transparent Lenses VIAL1 ANNUALLY (1 year)',
+  'Clear Vision Colored Lenses BOX2 9 months (monthly)'
+));
 
 -- Retire old seeded clear-lens validity products that are no longer part of the catalog.
--- Current clear-lens validity set: 6 months, 1 year, and 3 years for both Box and Vial.
+-- Current clear-lens validity set: BOX3 6 months, VIAL1 1 year, and colored BOX2 9 months.
 update catalog.products
 set is_active = false,
     deleted_at = coalesce(deleted_at, current_timestamp)
 where extended_attributes ->> 'seed' = 'Transparent-lenses-direct-db'
-  and (name like 'Plain Transparent Lens Box - %' or name like 'Plain Transparent Lens Vial - %')
-  and name not in (
-    'Plain Transparent Lens Box - 6 Months',
-    'Plain Transparent Lens Box - 1 Year',
-    'Plain Transparent Lens Box - 3 Years',
-    'Plain Transparent Lens Vial - 6 Months',
-    'Plain Transparent Lens Vial - 1 Year',
-    'Plain Transparent Lens Vial - 3 Years'
-  );
+  and (name like 'Plain Transparent Lens Box - %' or name like 'Plain Transparent Lens Vial - %');
 
 update catalog.skus sku
 set is_active = false,
@@ -141,16 +128,21 @@ set is_active = false,
 from catalog.products product
 where sku.product_id = product.id
   and (
-    product.name like 'Clear Vision Colored Lens Pack - %'
+    product.extended_attributes ->> 'seed' = 'Transparent-lenses-direct-db'
+    or product.name like 'Clear Vision Colored Lens Pack - %'
     or product.name like 'Plain Transparent Lens Box - %'
     or product.name like 'Plain Transparent Lens Vial - %'
+  )
+  and product.name not in (
+    'Clear Vision Transparent Lenses BOX3 6 months (monthly)',
+    'Clear Vision Transparent Lenses VIAL1 ANNUALLY (1 year)',
+    'Clear Vision Colored Lenses BOX2 9 months (monthly)'
   );
 
 with
 -- Color availability follows the supplied Clear Vision stock sheet.
 -- Main-grid colors receive the existing colored power range (including plano).
--- Bottom-row colors are plano-only. Turquoise and Honey are fully shaded in the
--- supplied sheet, so they are intentionally not seeded.
+-- Bottom-row colors are plano-only; the supplied colored-lens list is seeded as provided.
 colors(color_name, color_code, power_mode) as (
   values
     ('Sunset', 'SUNSET', 'Powered'),
@@ -172,7 +164,8 @@ colors(color_name, color_code, power_mode) as (
     ('Emma Gray', 'EMMAGRAY', 'PlanoOnly'),
     ('Selena Gray', 'SELENAGRAY', 'PlanoOnly'),
     ('Rachel Gray', 'RACHELGRAY', 'PlanoOnly'),
-    ('Misty Gray', 'MISTYGRAY', 'PlanoOnly')
+    ('Misty Gray', 'MISTYGRAY', 'PlanoOnly'),
+    ('Honey', 'HONEY', 'Powered')
 ),
 plain_powers as (
   select '-' as power_sign, value::numeric(5,2) as power_value
@@ -213,7 +206,7 @@ sku_rows as (
     concat(
       'CV-', product.category_code, '-',
       case when power.power_sign = '-' then 'M' else 'P' end,
-      power.power_value::text,
+      to_char(power.power_value, 'FM999990.00'),
       '-PLAIN-', replace(upper(product.size), ' ', ''),
       '-', product.duration_code,
       '-', product.rate_code
@@ -233,16 +226,15 @@ sku_rows as (
         else regexp_replace(upper(coalesce(opened_expiry_duration, 'NA')), '[^A-Z0-9]', '', 'g')
       end as duration_code,
       regexp_replace(upper(coalesce(opened_expiry_rate, 'NA')), '[^A-Z0-9]', '', 'g') as rate_code,
-      case when name like '%Box%' then 'Box 3' else 'Vial 1' end as size,
+      case when name like '%BOX3%' then 'Box 3' else 'Vial 1' end as size,
       case
-        when name like '%6 Months%' then 1
-        when name like '%1 Year%' then 2
-        when name like '%3 Years%' then 3
+        when name like '%BOX3%' then 1
+        when name like '%VIAL1%' then 2
         else 99
       end as sort_order
     from catalog.products
-    where name like 'Plain Transparent Lens Box - %'
-       or name like 'Plain Transparent Lens Vial - %'
+    where name like 'Clear Vision Transparent Lenses BOX3 %'
+       or name like 'Clear Vision Transparent Lenses VIAL1 %'
   ) product
   cross join plain_powers power
 
@@ -254,7 +246,7 @@ sku_rows as (
     concat(
       'CV-CL-',
       case when power.power_sign = '-' then 'M' else 'P' end,
-      power.power_value::text,
+      to_char(power.power_value, 'FM999990.00'),
       '-', color.color_code,
       '-PACK2',
       '-', product.duration_code,
@@ -275,16 +267,11 @@ sku_rows as (
       end as duration_code,
       regexp_replace(upper(coalesce(opened_expiry_rate, 'NA')), '[^A-Z0-9]', '', 'g') as rate_code,
       case
-        when name like '%3 Months%' then 1
-        when name like '%6 Months%' then 2
-        when name like '%9 Months%' then 3
-        when name like '%1 Day%' then 4
-        when name like '%5 Days%' then 5
-        when name like '%7 Days%' then 6
+        when name like '%9 months%' then 1
         else 99
       end as sort_order
     from catalog.products
-    where name like 'Clear Vision Colored Lens Pack - %'
+    where name like 'Clear Vision Colored Lenses BOX2 %'
   ) product
   cross join colors color
   join colored_powers power
@@ -333,7 +320,7 @@ set product_id = excluded.product_id,
     deleted_at = null;
 
 select
-  count(*) filter (where product_type = 'Lens' and is_active and name like 'Clear Vision Colored Lens Pack - %') as active_colored_validity_products,
-  count(*) filter (where product_type = 'Lens' and is_active and (name like 'Plain Transparent Lens Box - %' or name like 'Plain Transparent Lens Vial - %')) as active_Transparent_validity_products,
+  count(*) filter (where product_type = 'Lens' and is_active and name like 'Clear Vision Colored Lenses BOX2 %') as active_colored_validity_products,
+  count(*) filter (where product_type = 'Lens' and is_active and (name like 'Clear Vision Transparent Lenses BOX3 %' or name like 'Clear Vision Transparent Lenses VIAL1 %')) as active_Transparent_validity_products,
   count(*) filter (where product_type = 'Lens' and is_active and name in ('Clear Vision Colored Transparent Lens Pack', 'Plain Transparent Lens Box', 'Plain Transparent Lens Vial')) as active_generic_lens_products
 from catalog.products;

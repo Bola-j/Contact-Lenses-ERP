@@ -51,7 +51,7 @@ public sealed class SkuCodeGeneratorTests
 
         var code = generator.Generate(product, new SkuCodeInput("+", 0m, "Honey", null));
 
-        Assert.Equal("CV-CM-P0-HONEY", code);
+        Assert.Equal("CV-CM-P0.00-HONEY", code);
     }
 
     [Fact]
@@ -84,14 +84,15 @@ public sealed class SkuCodeGeneratorTests
         var galaxyGray = generator.Generate(product, new SkuCodeInput("-", 0.50m, "Galaxy Gray", "Pack 2"));
         var selenaGray = generator.Generate(product, new SkuCodeInput("-", 0.50m, "Selena Gray", "Pack 2"));
 
-        Assert.Equal("CV-CM-M0.5-GALAXYGRAY-PACK2", galaxyGray);
-        Assert.Equal("CV-CM-M0.5-SELENAGRAY-PACK2", selenaGray);
+        Assert.Equal("CV-CM-M0.50-GALAXYGRAY-PACK2", galaxyGray);
+        Assert.Equal("CV-CM-M0.50-SELENAGRAY-PACK2", selenaGray);
     }
 
     [Theory]
-    [InlineData("+", 0.50, "P0.5")]
+    [InlineData("+", 0.50, "P0.50")]
     [InlineData("+", 1.25, "P1.25")]
-    [InlineData("-", 2.50, "M2.5")]
+    [InlineData("-", 2.50, "M2.50")]
+    [InlineData("+", 0.00, "P0.00")]
     public void Generate_PreservesDecimalPowerWithoutIntegerTruncation(string sign, decimal value, string expectedPower)
     {
         var generator = new SkuCodeGenerator();
@@ -108,9 +109,9 @@ public sealed class SkuCodeGeneratorTests
     }
 
     [Theory]
-    [InlineData("1 day", "Daily", "CV-CL-M0.5-BLUE-PACK2-D01-DAILY")]
-    [InlineData("3 months", "Monthly", "CV-CL-M0.5-BLUE-PACK2-M03-MONTHLY")]
-    [InlineData("5 years", "Annual", "CV-CL-M0.5-BLUE-PACK2-Y05-ANNUAL")]
+    [InlineData("1 day", "Daily", "CV-CL-M0.50-BLUE-PACK2-D01-DAILY")]
+    [InlineData("3 months", "Monthly", "CV-CL-M0.50-BLUE-PACK2-M03-MONTHLY")]
+    [InlineData("5 years", "Annual", "CV-CL-M0.50-BLUE-PACK2-Y05-ANNUAL")]
     public void Generate_AppendsOpenedValidity_ForLens(string openedExpiryDuration, string openedExpiryRate, string expected)
     {
         var generator = new SkuCodeGenerator();

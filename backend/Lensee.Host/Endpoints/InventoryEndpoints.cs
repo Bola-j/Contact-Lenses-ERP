@@ -28,6 +28,7 @@ public static class InventoryEndpoints
         group.MapGet("/locations", ListLocationsAsync).RequireAuthorization("inventory.read");
         group.MapPost("/locations", CreateLocationAsync).RequireAuthorization("primary-admin");
         group.MapGet("/stock-balances", ListStockBalancesAsync).RequireAuthorization("inventory.read");
+        group.MapGet("/stock-colors", ListStockColorsAsync).RequireAuthorization("inventory.read");
         group.MapGet("/product-totals", ListProductTotalsAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-balances/{locationId:guid}/{skuId:guid}", GetStockBalanceAsync).RequireAuthorization("inventory.read");
         group.MapGet("/stock-balances/{id:guid}", GetStockBalanceByIdAsync).RequireAuthorization("inventory.read");
@@ -150,6 +151,7 @@ public static class InventoryEndpoints
     private static async Task<IResult> ListStockBalancesAsync(
         Guid? locationId,
         Guid? skuId,
+        string? colorName,
         bool? includeZeroStock,
         int? page,
         int? pageSize,
@@ -175,6 +177,13 @@ public static class InventoryEndpoints
         if (skuId.HasValue)
         {
             query = query.Where(balance => balance.SkuId == skuId.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(colorName))
+        {
+            query = query.Where(balance => catalogDbContext.Skus.Any(sku => sku.Id == balance.SkuId &&
+                (string.Equals(colorName, "__transparent__", StringComparison.Ordinal)
+                    ? string.IsNullOrWhiteSpace(sku.ColorName)
+                    : sku.ColorName == colorName)));
         }
 
         if (includeZeroStock != true)
@@ -207,6 +216,12 @@ public static class InventoryEndpoints
         if (skuId.HasValue)
         {
             skuQuery = skuQuery.Where(sku => sku.Id == skuId.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(colorName))
+        {
+            skuQuery = skuQuery.Where(sku => string.Equals(colorName, "__transparent__", StringComparison.Ordinal)
+                ? string.IsNullOrWhiteSpace(sku.ColorName)
+                : sku.ColorName == colorName);
         }
         var skuCount = await skuQuery.CountAsync(cancellationToken);
         var totalCount = checked(locations.Count * skuCount);
@@ -241,6 +256,28 @@ public static class InventoryEndpoints
                 : ToZeroStockResponse(value.Location, value.Sku)).ToList();
 
         return Results.Ok(new PagedResult<StockBalanceResponse>(pageItems, request.Page, request.PageSize, totalCount));
+    }
+
+    private static async Task<IResult> ListStockColorsAsync(
+        Guid? locationId,
+        Guid? skuId,
+        InventoryDbContext inventoryDbContext,
+        CatalogDbContext catalogDbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (!TryResolveLocationScope(currentUser, locationId, out var scopedLocationId, out var forbidden))
+        {
+            return forbidden;
+        }
+
+        var skus = catalogDbContext.Skus.AsNoTracking()
+            .Where(sku => sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null);
+        if (skuId.HasValue) skus = skus.Where(sku => sku.Id == skuId.Value);
+        var colors = await skus.Select(sku => sku.ColorName).Distinct().ToListAsync(cancellationToken);
+        var hasTransparent = colors.Any(string.IsNullOrWhiteSpace);
+        var namedColors = colors.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!).OrderBy(value => value).ToList();
+        return Results.Ok(new StockColorOptionsResponse(namedColors, hasTransparent));
     }
 
     private static async Task<IResult> GetStockBalanceAsync(
@@ -1265,6 +1302,7 @@ public sealed record InventoryReceiptRequest(Guid LocationId, Guid SkuId, int Pa
 public sealed record InventoryReceiptResponse(Guid BatchId, Guid LocationId, Guid SkuId, int BatchPackQuantity);
 
 internal sealed record SkuLookup(Guid Id, Guid ProductId, string SkuCode, string ProductName, Guid CategoryId, string CategoryName, int? PiecesPerPack, string? SellMode, string? OpenedExpiryDuration, string? SealedExpiryDuration, string? OpenedExpiryRate, bool IsActive);
+internal sealed record StockColorOptionsResponse(IReadOnlyList<string> Colors, bool HasTransparent);
 
 internal sealed record InventoryOperationSnapshot(
     string OperationType,

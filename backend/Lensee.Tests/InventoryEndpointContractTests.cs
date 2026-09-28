@@ -132,6 +132,42 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
     }
 
     [Fact]
+    public async Task StockBalances_FilterByColorBeforePaginationAndCountAcrossLocations()
+    {
+        var seed = await _factory.SeedAsync(withBalance: true);
+        Guid transparentSkuId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            var source = await catalog.Skus.Include(sku => sku.Product).FirstAsync(sku => sku.Id == seed.SkuId);
+            transparentSkuId = Guid.NewGuid();
+            catalog.Skus.Add(new Sku
+            {
+                Id = transparentSkuId,
+                ProductId = source.ProductId,
+                SkuCode = $"LEN-TRANSPARENT-{transparentSkuId:N}",
+                ColorName = null,
+                IsActive = true
+            });
+            await catalog.SaveChangesAsync();
+        }
+
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead);
+        var hazel = await client.GetFromJsonAsync<PagedContract<StockBalanceContract>>(
+            "/api/v1/inventory/stock-balances?colorName=Hazel&page=1&pageSize=1");
+        var transparent = await client.GetFromJsonAsync<PagedContract<StockBalanceContract>>(
+            "/api/v1/inventory/stock-balances?colorName=__transparent__&includeZeroStock=true");
+
+        Assert.NotNull(hazel);
+        Assert.Equal(2, hazel!.TotalCount);
+        Assert.Single(hazel.Items);
+        Assert.All(hazel.Items, item => Assert.Equal(seed.SkuId, item.SkuId));
+        Assert.NotNull(transparent);
+        Assert.Contains(transparent!.Items, item => item.SkuId == transparentSkuId);
+    }
+
+    [Fact]
     public async Task ProductTotals_ReturnsExpandableValidityBreakdown()
     {
         var seed = await _factory.SeedProductTotalRatesAsync();

@@ -58,6 +58,10 @@ Expected downstream effect: the reviewer sees pending work; merchant balance and
 
 DO check the operation and payment amount. DON'T resubmit as a new item just because a refresh is slow; search for the original request first.
 
+### OtherPayments refund request (candidate flow; reviewer/Finance posting not yet certified)
+
+The OtherPayments collection form now includes a movement-type choice for a cash refund. Select the source operation, choose Cash refund, enter the approved refund amount, movement method, and active Finance account, then send it for review. The reviewer uses the pending cash-record action to approve or reject; approval is intended to post a Finance debit. Do not use this path for merchant refunds, which remain in the merchant adjustment/refund workflow. The request form passed a mocked browser check; real approval, Finance ledger posting, reservation concurrency, and downstream status still require QA verification.
+
 ## CLevel
 
 ### Role purpose

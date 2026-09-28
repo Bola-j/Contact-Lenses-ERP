@@ -118,10 +118,10 @@ public sealed class SkuCodeGenerator
     {
         if (powerValue is null)
         {
-            return "P0";
+            return "P0.00";
         }
 
-        var normalized = decimal.Round(powerValue.Value, 2).ToString("0.##", CultureInfo.InvariantCulture);
+        var normalized = decimal.Round(powerValue.Value, 2).ToString("0.00", CultureInfo.InvariantCulture);
         return $"{(powerSign == "-" ? "M" : "P")}{normalized}";
     }
 

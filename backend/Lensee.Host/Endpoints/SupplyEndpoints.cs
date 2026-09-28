@@ -723,9 +723,10 @@ public static class SupplyEndpoints
     private static async Task LockReceivingSessionAsync(OperationsDbContext dbContext, Guid sessionId, CancellationToken cancellationToken)
     {
         if (!dbContext.Database.IsRelational()) return;
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"select 1 from operations.supply_receiving_sessions where \"Id\" = {sessionId} for update",
-            cancellationToken);
+        _ = await dbContext.SupplyReceivingSessions
+            .FromSqlInterpolated($"select * from operations.supply_receiving_sessions where id = {sessionId} for update")
+            .AsTracking()
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     private static async Task<Dictionary<string, string[]>> ValidatePaymentRequestAsync(SupplyPaymentRequest request, FinanceDbContext financeDbContext, CancellationToken cancellationToken)

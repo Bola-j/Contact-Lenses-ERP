@@ -114,8 +114,10 @@ public sealed class AnonymousRetailPaymentCompatibilityPostgresTests : IAsyncLif
             Assert.Equal(merchantId, merchantLog.MerchantId);
             Assert.Equal("MerchantAccount", merchantLog.Scope);
 
-            Assert.Single(await payments.CashRecords.Where(value => value.OperationId == anonymousOperationId).ToListAsync());
-            Assert.Single(await payments.CashRecords.Where(value => value.OperationId == merchantOperationId).ToListAsync());
+            // Compatibility initializes payment tracks; it must not fabricate
+            // collection records for either anonymous or merchant sales.
+            Assert.DoesNotContain(await payments.CashRecords.ToListAsync(), value =>
+                value.OperationId == anonymousOperationId || value.OperationId == merchantOperationId);
             Assert.DoesNotContain(await payments.CashRecords.ToListAsync(), value => value.OperationId == anonymousTransactionOperationId);
             Assert.Equal(3, await payments.MainPaymentLogs.CountAsync());
         }

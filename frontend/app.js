@@ -2897,7 +2897,7 @@ function renderCatalogReferenceLists() {
   const categoryList = document.getElementById("category-list");
   const brandList = document.getElementById("brand-list");
   if (categoryList) {
-    categoryList.innerHTML = renderCategoryTree(categoryTree);
+    categoryList.replaceChildren(renderCategoryTree(categoryTree));
     categoryList.querySelectorAll("[data-category-toggle]").forEach((toggle) => {
       toggle.addEventListener("click", () => {
         const children = document.getElementById(toggle.dataset.categoryToggle);
@@ -2925,7 +2925,14 @@ function renderCatalogReferenceLists() {
     });
   }
   if (brandList) {
-    brandList.innerHTML = catalogBrands.map((brand) => `<button class="chip" type="button" data-brand-id="${escapeHtml(brand.id)}">Edit ${escapeHtml(brand.name)}</button>`).join("");
+    brandList.replaceChildren(...catalogBrands.map((brand) => {
+      const button = document.createElement("button");
+      button.className = "chip";
+      button.type = "button";
+      button.dataset.brandId = brand.id;
+      button.textContent = `Edit ${brand.name}`;
+      return button;
+    }));
     brandList.querySelectorAll("[data-brand-id]").forEach((button) => {
       button.addEventListener("click", () => {
         const brand = catalogBrands.find((value) => value.id === button.dataset.brandId);
@@ -2943,33 +2950,92 @@ function renderCatalogReferenceLists() {
 }
 
 function renderCategoryTree(nodes) {
-  if (nodes.length === 0) return `<p class="muted-text">${escapeHtml(foundationT("app.inline.noCategories"))}</p>`;
-  return `<ul class="category-tree" role="tree">${nodes.map((node) => renderCategoryTreeNode(node, 0)).join("")}</ul>`;
+  if (nodes.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted-text";
+    empty.textContent = foundationT("app.inline.noCategories");
+    return empty;
+  }
+  const list = document.createElement("ul");
+  list.className = "category-tree";
+  list.setAttribute("role", "tree");
+  for (const node of nodes) list.append(renderCategoryTreeNode(node, 0));
+  return list;
 }
 
 function renderCategoryTreeNode(node, depth) {
   const children = node.children || [];
   const hasChildren = children.length > 0;
   const childrenId = `category-children-${node.id}`;
-  return `
-    <li class="category-tree-node${depth > 0 ? " is-nested" : ""}" role="treeitem" aria-level="${depth + 1}" aria-expanded="${hasChildren ? "true" : "false"}">
-      <div class="category-tree-item">
-        ${hasChildren
-          ? `<button class="category-tree-toggle" type="button" data-category-toggle="${escapeHtml(childrenId)}" aria-expanded="true" aria-controls="${escapeHtml(childrenId)}"><span class="category-tree-chevron" aria-hidden="true">▾</span><span class="sr-only">${escapeHtml(foundationT("app.toggle"))} ${escapeHtml(node.name)}</span></button>`
-          : `<span class="category-tree-spacer" aria-hidden="true"></span>`}
-        <span class="category-tree-name">${escapeHtml(node.name)}</span>
-        <button class="chip category-tree-edit" type="button" data-category-id="${escapeHtml(node.id)}">${escapeHtml(foundationT("app.catalogEdit"))}</button>
-      </div>
-      ${hasChildren ? `<ul class="category-tree-children" id="${escapeHtml(childrenId)}" role="group">${children.map((child) => renderCategoryTreeNode(child, depth + 1)).join("")}</ul>` : ""}
-    </li>`;
+  const item = document.createElement("li");
+  item.className = `category-tree-node${depth > 0 ? " is-nested" : ""}`;
+  item.setAttribute("role", "treeitem");
+  item.setAttribute("aria-level", String(depth + 1));
+  item.setAttribute("aria-expanded", String(hasChildren));
+
+  const row = document.createElement("div");
+  row.className = "category-tree-item";
+  if (hasChildren) {
+    const toggle = document.createElement("button");
+    toggle.className = "category-tree-toggle";
+    toggle.type = "button";
+    toggle.dataset.categoryToggle = childrenId;
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-controls", childrenId);
+    const chevron = document.createElement("span");
+    chevron.className = "category-tree-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "▾";
+    const label = document.createElement("span");
+    label.className = "sr-only";
+    label.textContent = `${foundationT("app.toggle")} ${node.name}`;
+    toggle.append(chevron, label);
+    row.append(toggle);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.className = "category-tree-spacer";
+    spacer.setAttribute("aria-hidden", "true");
+    row.append(spacer);
+  }
+  const name = document.createElement("span");
+  name.className = "category-tree-name";
+  name.textContent = node.name;
+  const edit = document.createElement("button");
+  edit.className = "chip category-tree-edit";
+  edit.type = "button";
+  edit.dataset.categoryId = node.id;
+  edit.textContent = foundationT("app.catalogEdit");
+  row.append(name, edit);
+  item.append(row);
+
+  if (hasChildren) {
+    const childList = document.createElement("ul");
+    childList.className = "category-tree-children";
+    childList.id = childrenId;
+    childList.setAttribute("role", "group");
+    for (const child of children) childList.append(renderCategoryTreeNode(child, depth + 1));
+    item.append(childList);
+  }
+  return item;
 }
 
 function fillCategorySelect(select, includeEmpty) {
   const current = select.value;
   const options = [];
   flattenCategoryOptions(categoryTree, options);
-  select.innerHTML = includeEmpty ? `<option value="">${escapeHtml(foundationT("app.inline.none"))}</option>` : "";
-  select.innerHTML += options.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+  const optionElements = options.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label;
+    return option;
+  });
+  if (includeEmpty) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = foundationT("app.inline.none");
+    optionElements.unshift(emptyOption);
+  }
+  select.replaceChildren(...optionElements);
   if ([...select.options].some((option) => option.value === current)) {
     select.value = current;
   }
@@ -3603,6 +3669,7 @@ function renderInventory() {
             <input id="inventory-sku-search" class="input" type="search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="inventory-sku-results" placeholder="${escapeHtml(foundationT("app.inventorySearchSku"))}">
             <div id="inventory-sku-results" class="op-line-search-results" role="listbox" hidden></div>
           </div>
+          <div class="field"><label for="inventory-color">${escapeHtml(foundationT("app.inline.color"))}</label><select id="inventory-color" class="select"><option value="">${escapeHtml(foundationT("app.inventoryAllColors"))}</option></select></div>
           <label class="check-field"><input id="inventory-include-zero-stock" type="checkbox"><span>${escapeHtml(foundationT("app.inventoryShowZero"))}</span></label>
           <label class="check-field"><input id="inventory-include-empty" type="checkbox"><span>${escapeHtml(foundationT("app.inventoryShowEmpty"))}</span></label>
         </section>
@@ -3655,7 +3722,7 @@ function renderInventory() {
   document.getElementById("inventory-location").addEventListener("change", () => {
     selectedInventoryLocationId = document.getElementById("inventory-location").value;
     inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
-    refreshInventoryTables();
+    void loadInventoryColorOptions().then(refreshInventoryTables);
   });
   document.getElementById("inventory-sku-search").addEventListener("input", debounce(() => {
     const search = document.getElementById("inventory-sku-search");
@@ -3667,6 +3734,7 @@ function renderInventory() {
     }
     if (selected && search.value !== selected.label) {
       filter.value = "";
+      void loadInventoryColorOptions();
       refreshInventoryTables();
     }
     void renderInventorySkuSearchResults();
@@ -3678,6 +3746,7 @@ function renderInventory() {
     }
   });
   document.getElementById("inventory-include-zero-stock").addEventListener("change", () => { inventoryPageState.balances = 1; void loadInventoryBalances(); });
+  document.getElementById("inventory-color").addEventListener("change", () => { inventoryPageState.balances = 1; void loadInventoryBalances(); });
   document.getElementById("inventory-include-empty").addEventListener("change", () => { inventoryPageState.batches = 1; void loadInventoryBatches(); });
   document.getElementById("reserve-replenishment")?.addEventListener("click", reserveInventoryReplenishment);
   refreshInventoryWorkspace();
@@ -3688,7 +3757,27 @@ async function refreshInventoryWorkspace() {
     return;
   }
   await Promise.all([loadInventoryLocations(), loadInventorySkuOptions()]);
+  await loadInventoryColorOptions();
   await refreshInventoryTables();
+}
+
+async function loadInventoryColorOptions() {
+  const select = document.getElementById("inventory-color");
+  if (!select) return;
+  const selected = select.value;
+  try {
+    const params = inventoryParams();
+    const result = await request(`/api/v1/inventory/stock-colors?${params.toString()}`);
+    const options = [
+      `<option value="">${escapeHtml(foundationT("app.inventoryAllColors"))}</option>`,
+      ...(result.colors || []).map((color) => `<option value="${escapeHtml(color)}">${escapeHtml(color)}</option>`),
+      ...(result.hasTransparent ? [`<option value="__transparent__">${escapeHtml(foundationT("app.inventoryTransparent"))}</option>`] : [])
+    ];
+    select.innerHTML = options.join("");
+    if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  } catch {
+    select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inventoryAllColors"))}</option>`;
+  }
 }
 
 async function refreshInventoryTables() {
@@ -3901,6 +3990,7 @@ function clearInventorySkuFilter() {
   if (search) search.value = "";
   inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
   hideInventorySkuSearchResults();
+  void loadInventoryColorOptions();
   refreshInventoryTables();
 }
 
@@ -4057,6 +4147,8 @@ async function loadInventoryBalances(generation = inventoryRefreshGeneration) {
   params.set("page", String(inventoryPageState.balances));
   params.set("pageSize", "50");
   params.set("includeZeroStock", String(includeZeroStock.checked));
+  const colorName = document.getElementById("inventory-color")?.value;
+  if (colorName) params.set("colorName", colorName);
   try {
     const result = await request(`/api/v1/inventory/stock-balances?${params.toString()}`);
     if (generation !== inventoryRefreshGeneration) return;
@@ -4292,6 +4384,8 @@ function inventoryParams() {
   if (skuId) {
     params.set("skuId", skuId);
   }
+  const colorName = document.getElementById("inventory-color")?.value;
+  if (colorName) params.set("colorName", colorName);
   return params;
 }
 
@@ -4729,7 +4823,12 @@ async function renderOperations() {
       syncOperationTypeControls();
       const type = typeControl.value;
       if (["WholesaleSale", "RetailSale", "Return", "Change"].includes(type)) {
-        void hydrateOperationCrmOptions();
+        void hydrateOperationCrmOptions().then(() => {
+          if (document.getElementById("op-type")?.value === type) {
+            syncOperationTypeControls();
+            if (["Return", "Change"].includes(type)) void hydrateOperationReturnSources();
+          }
+        });
       }
     });
     document.getElementById("op-source").addEventListener("change", () => {
@@ -5405,6 +5504,7 @@ function syncOperationTypeControls() {
 
   if (type === "WarehouseTransfer") {
     setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: false });
+    setSingleFieldState(document.getElementById("op-return-source"), false);
     applyOperationEditorMode();
     return;
   }
@@ -5414,6 +5514,7 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
+    setSingleFieldState(document.getElementById("op-return-source"), false);
     primeAllOperationStockOptions();
     applyOperationEditorMode();
     return;
@@ -5425,6 +5526,7 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: true, payment: true, receipt: false });
+    setSingleFieldState(document.getElementById("op-return-source"), false);
     primeAllOperationStockOptions();
     applyOperationEditorMode();
     return;
@@ -5435,6 +5537,8 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
+    setSingleFieldState(document.getElementById("op-return-source"), true);
+    void hydrateOperationReturnSources();
     applyOperationEditorMode();
     return;
   }
@@ -5444,6 +5548,7 @@ function syncOperationTypeControls() {
     source.disabled = false;
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: false });
+    setSingleFieldState(document.getElementById("op-return-source"), false);
   }
   applyOperationEditorMode();
 }
