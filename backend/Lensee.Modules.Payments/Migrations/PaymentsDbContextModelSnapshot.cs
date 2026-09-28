@@ -671,7 +671,9 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OperationId");
+                    b.HasIndex("OperationId")
+                        .IsUnique()
+                        .HasFilter("(decision = 'Pending')");
 
                     b.HasIndex("AccountId", "Sequence")
                         .IsUnique();
@@ -780,42 +782,52 @@ namespace Lensee.Modules.Payments.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
                     b.Property<DateTime?>("DecidedAt")
-                        .HasColumnType("timestamp without time zone");
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("decided_at");
 
                     b.Property<Guid?>("DecidedBy")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by");
 
                     b.Property<string>("Decision")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
+                        .HasColumnName("decision")
                         .HasDefaultValue("Pending");
 
                     b.Property<Guid>("OperationId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
 
                     b.Property<string>("OperationNumber")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("operation_number");
 
                     b.Property<Guid>("ProposalId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("proposal_id");
 
                     b.Property<string>("RejectionReason")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
 
                     b.Property<decimal>("RemainingAmount")
                         .HasPrecision(18, 4)
-                        .HasColumnType("numeric(18,4)");
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("remaining_amount");
 
                     b.Property<decimal>("SettlementAmount")
                         .HasPrecision(18, 4)
-                        .HasColumnType("numeric(18,4)");
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("settlement_amount");
 
                     b.HasKey("Id");
 
@@ -837,41 +849,51 @@ namespace Lensee.Modules.Payments.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
                     b.Property<Guid>("AccountId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
 
                     b.Property<string>("IdempotencyKey")
                         .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
 
                     b.Property<string>("ReviewReason")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("review_reason");
 
                     b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("timestamp without time zone");
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("reviewed_at");
 
                     b.Property<Guid?>("ReviewedBy")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)")
+                        .HasColumnName("status")
                         .HasDefaultValue("PendingAdminReview");
 
                     b.Property<DateTime>("SubmittedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp without time zone")
+                        .HasColumnName("submitted_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<Guid>("SubmittedBy")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("submitted_by");
 
                     b.HasKey("Id");
 

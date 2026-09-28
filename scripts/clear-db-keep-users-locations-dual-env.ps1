@@ -254,7 +254,7 @@ CREATE TEMP TABLE reset_targets(schema_name text, table_name text) ON COMMIT DRO
 INSERT INTO reset_targets(schema_name, table_name)
 SELECT schemaname, tablename
 FROM pg_tables
-WHERE schemaname IN ('catalog', 'crm', 'inventory', 'notifications', 'operations', 'payments', 'reporting', 'shared', 'identity')
+WHERE schemaname IN ('catalog', 'crm', 'finance', 'inventory', 'notifications', 'operations', 'payments', 'reporting', 'shared', 'identity')
   AND tablename <> '__EFMigrationsHistory'
   AND NOT (schemaname = 'identity' AND tablename IN ('users', 'roles_permissions'))
   AND NOT (schemaname = 'inventory' AND tablename = 'locations')

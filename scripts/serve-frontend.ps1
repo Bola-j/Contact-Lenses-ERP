@@ -33,9 +33,8 @@ try {
         $context = $listener.GetContext()
         try {
             $requestPath = [Uri]::UnescapeDataString($context.Request.Url.AbsolutePath.TrimStart("/"))
-            if ([string]::IsNullOrWhiteSpace($requestPath)) {
-                $requestPath = "index.html"
-            }
+            $isRootNavigation = [string]::IsNullOrWhiteSpace($requestPath)
+            $isLanguageNavigation = $requestPath -match '^(?i:(ar|en))(?:/.*)?$'
 
             $fullPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedRoot $requestPath))
             if (-not $fullPath.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -45,6 +44,11 @@ try {
             }
 
             if (-not [System.IO.File]::Exists($fullPath)) {
+                if ([System.IO.Path]::HasExtension($requestPath) -or (-not $isRootNavigation -and -not $isLanguageNavigation)) {
+                    $context.Response.StatusCode = 404
+                    $context.Response.Close()
+                    continue
+                }
                 $fullPath = Join-Path $resolvedRoot "index.html"
             }
 

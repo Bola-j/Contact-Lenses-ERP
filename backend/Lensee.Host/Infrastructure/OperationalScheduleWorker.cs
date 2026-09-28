@@ -20,10 +20,10 @@ public sealed class OperationalScheduleWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RunScheduledJobsSafelyAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
-            var now = CairoNow();
+            using var clockScope = _scopeFactory.CreateScope();
+            var now = clockScope.ServiceProvider.GetRequiredService<IClock>().EgyptNow;
             var next = now.Date.AddDays(1);
             var delay = next - now;
             if (delay > TimeSpan.Zero) await Task.Delay(delay, stoppingToken);
@@ -59,13 +59,6 @@ public sealed class OperationalScheduleWorker : BackgroundService
         await alerts.RunAsync(cancellationToken);
     }
 
-    private static DateTime CairoNow()
-    {
-        TimeZoneInfo zone;
-        try { zone = TimeZoneInfo.FindSystemTimeZoneById("Africa/Cairo"); }
-        catch { zone = TimeZoneInfo.FindSystemTimeZoneById("Egypt Standard Time"); }
-        return TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone).DateTime;
-    }
 }
 
 public sealed class OperationalAlertScheduler

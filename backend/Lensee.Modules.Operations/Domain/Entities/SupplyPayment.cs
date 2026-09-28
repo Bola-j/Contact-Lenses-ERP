@@ -8,6 +8,7 @@ public sealed class SupplyPayment
 {
     public Guid Id { get; set; }
     public Guid ShipmentId { get; set; }
+    public Guid? SupplyFinanceLogId { get; set; }
     public string Category { get; set; } = null!;
     public decimal Amount { get; set; }
     public string MovementMethod { get; set; } = null!;

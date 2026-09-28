@@ -15,7 +15,7 @@ $$;
 insert into catalog.categories (id, parent_id, name)
 values
   (pg_temp.seed_uuid('category:lenses'), null, 'Lenses'),
-  (pg_temp.seed_uuid('category:lenses:medical'), pg_temp.seed_uuid('category:lenses'), 'Medical Lenses'),
+  (pg_temp.seed_uuid('category:lenses:Transparent'), pg_temp.seed_uuid('category:lenses'), 'Transparent Lenses'),
   (pg_temp.seed_uuid('category:lenses:colored'), pg_temp.seed_uuid('category:lenses'), 'Colored Lenses'),
   (pg_temp.seed_uuid('category:solution'), null, 'Solution')
 on conflict (id) do update
@@ -30,18 +30,18 @@ set name = excluded.name;
 with lens_products as (
   select *
   from (values
-    ('Plain Medical Lens Box - 6 Months', 'Medical Lenses', 3, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainMedical","packaging":"Box","duration":"monthly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"6 months"}'::jsonb),
-    ('Plain Medical Lens Box - 1 Year', 'Medical Lenses', 3, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"1 year"}'::jsonb),
-    ('Plain Medical Lens Box - 3 Years', 'Medical Lenses', 3, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"BOX3","validity":"3 years"}'::jsonb),
-    ('Plain Medical Lens Vial - 6 Months', 'Medical Lenses', 1, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainMedical","packaging":"Vial","duration":"monthly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"6 months"}'::jsonb),
-    ('Plain Medical Lens Vial - 1 Year', 'Medical Lenses', 1, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"1 year"}'::jsonb),
-    ('Plain Medical Lens Vial - 3 Years', 'Medical Lenses', 1, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainMedical","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"VIAL1","validity":"3 years"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 3 Months', 'Colored Lenses', 2, 'SinglePiece', '3 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"3 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"3 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 6 Months', 'Colored Lenses', 2, 'SinglePiece', '6 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"6 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"6 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 9 Months', 'Colored Lenses', 2, 'SinglePiece', '9 months', 'Monthly', '{"powerRange":"coloredMedical","duration":"9 months"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"9 months"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 1 Day', 'Colored Lenses', 2, 'SinglePiece', '1 day', 'Daily', '{"powerRange":"coloredMedical","duration":"1 day"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"1 day"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 5 Days', 'Colored Lenses', 2, 'SinglePiece', '5 days', 'Daily', '{"powerRange":"coloredMedical","duration":"5 days"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"5 days"}'::jsonb),
-    ('Clear Vision Colored Lens Pack - 7 Days', 'Colored Lenses', 2, 'SinglePiece', '7 days', 'Daily', '{"powerRange":"coloredMedical","duration":"7 days"}'::jsonb, '{"seed":"medical-lenses-direct-db","packageCode":"PACK2","validity":"7 days"}'::jsonb)
+    ('Plain Transparent Lens Box - 6 Months', 'Transparent Lenses', 3, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainTransparent","packaging":"Box","duration":"monthly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"6 months"}'::jsonb),
+    ('Plain Transparent Lens Box - 1 Year', 'Transparent Lenses', 3, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainTransparent","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"1 year"}'::jsonb),
+    ('Plain Transparent Lens Box - 3 Years', 'Transparent Lenses', 3, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainTransparent","packaging":"Box","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"BOX3","validity":"3 years"}'::jsonb),
+    ('Plain Transparent Lens Vial - 6 Months', 'Transparent Lenses', 1, 'SealedPackOnly', '6 months', 'Monthly', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"monthly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"6 months"}'::jsonb),
+    ('Plain Transparent Lens Vial - 1 Year', 'Transparent Lenses', 1, 'SealedPackOnly', '1 year', 'Annual', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"1 year"}'::jsonb),
+    ('Plain Transparent Lens Vial - 3 Years', 'Transparent Lenses', 1, 'SealedPackOnly', '3 years', 'Annual', '{"powerRange":"plainTransparent","packaging":"Vial","duration":"yearly"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"VIAL1","validity":"3 years"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 3 Months', 'Colored Lenses', 2, 'SinglePiece', '3 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"3 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"3 months"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 6 Months', 'Colored Lenses', 2, 'SinglePiece', '6 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"6 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"6 months"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 9 Months', 'Colored Lenses', 2, 'SinglePiece', '9 months', 'Monthly', '{"powerRange":"coloredTransparent","duration":"9 months"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"9 months"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 1 Day', 'Colored Lenses', 2, 'SinglePiece', '1 day', 'Daily', '{"powerRange":"coloredTransparent","duration":"1 day"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"1 day"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 5 Days', 'Colored Lenses', 2, 'SinglePiece', '5 days', 'Daily', '{"powerRange":"coloredTransparent","duration":"5 days"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"5 days"}'::jsonb),
+    ('Clear Vision Colored Lens Pack - 7 Days', 'Colored Lenses', 2, 'SinglePiece', '7 days', 'Daily', '{"powerRange":"coloredTransparent","duration":"7 days"}'::jsonb, '{"seed":"Transparent-lenses-direct-db","packageCode":"PACK2","validity":"7 days"}'::jsonb)
   ) as product(name, category_name, pieces_per_pack, sell_mode, duration, rate, clinical_params, extended_attributes)
 )
 insert into catalog.products (
@@ -99,9 +99,9 @@ with generic_lens_products as (
   select id
   from catalog.products
   where name in (
-    'Clear Vision Colored Medical Lens Pack',
-    'Plain Medical Lens Box',
-    'Plain Medical Lens Vial'
+    'Clear Vision Colored Transparent Lens Pack',
+    'Plain Transparent Lens Box',
+    'Plain Transparent Lens Vial'
   )
 )
 update catalog.skus sku
@@ -114,9 +114,9 @@ update catalog.products
 set is_active = false,
     deleted_at = coalesce(deleted_at, current_timestamp)
 where name in (
-  'Clear Vision Colored Medical Lens Pack',
-  'Plain Medical Lens Box',
-  'Plain Medical Lens Vial'
+  'Clear Vision Colored Transparent Lens Pack',
+  'Plain Transparent Lens Box',
+  'Plain Transparent Lens Vial'
 );
 
 -- Retire old seeded clear-lens validity products that are no longer part of the catalog.
@@ -124,15 +124,15 @@ where name in (
 update catalog.products
 set is_active = false,
     deleted_at = coalesce(deleted_at, current_timestamp)
-where extended_attributes ->> 'seed' = 'medical-lenses-direct-db'
-  and (name like 'Plain Medical Lens Box - %' or name like 'Plain Medical Lens Vial - %')
+where extended_attributes ->> 'seed' = 'Transparent-lenses-direct-db'
+  and (name like 'Plain Transparent Lens Box - %' or name like 'Plain Transparent Lens Vial - %')
   and name not in (
-    'Plain Medical Lens Box - 6 Months',
-    'Plain Medical Lens Box - 1 Year',
-    'Plain Medical Lens Box - 3 Years',
-    'Plain Medical Lens Vial - 6 Months',
-    'Plain Medical Lens Vial - 1 Year',
-    'Plain Medical Lens Vial - 3 Years'
+    'Plain Transparent Lens Box - 6 Months',
+    'Plain Transparent Lens Box - 1 Year',
+    'Plain Transparent Lens Box - 3 Years',
+    'Plain Transparent Lens Vial - 6 Months',
+    'Plain Transparent Lens Vial - 1 Year',
+    'Plain Transparent Lens Vial - 3 Years'
   );
 
 update catalog.skus sku
@@ -142,8 +142,8 @@ from catalog.products product
 where sku.product_id = product.id
   and (
     product.name like 'Clear Vision Colored Lens Pack - %'
-    or product.name like 'Plain Medical Lens Box - %'
-    or product.name like 'Plain Medical Lens Vial - %'
+    or product.name like 'Plain Transparent Lens Box - %'
+    or product.name like 'Plain Transparent Lens Vial - %'
   );
 
 with
@@ -213,7 +213,7 @@ sku_rows as (
     concat(
       'CV-', product.category_code, '-',
       case when power.power_sign = '-' then 'M' else 'P' end,
-      replace(regexp_replace(power.power_value::text, '\.0+$|(?<=\.\d)0$', '', 'g'), '.', ''),
+      power.power_value::text,
       '-PLAIN-', replace(upper(product.size), ' ', ''),
       '-', product.duration_code,
       '-', product.rate_code
@@ -241,8 +241,8 @@ sku_rows as (
         else 99
       end as sort_order
     from catalog.products
-    where name like 'Plain Medical Lens Box - %'
-       or name like 'Plain Medical Lens Vial - %'
+    where name like 'Plain Transparent Lens Box - %'
+       or name like 'Plain Transparent Lens Vial - %'
   ) product
   cross join plain_powers power
 
@@ -254,7 +254,7 @@ sku_rows as (
     concat(
       'CV-CL-',
       case when power.power_sign = '-' then 'M' else 'P' end,
-      replace(regexp_replace(power.power_value::text, '\.0+$|(?<=\.\d)0$', '', 'g'), '.', ''),
+      power.power_value::text,
       '-', color.color_code,
       '-PACK2',
       '-', product.duration_code,
@@ -334,6 +334,6 @@ set product_id = excluded.product_id,
 
 select
   count(*) filter (where product_type = 'Lens' and is_active and name like 'Clear Vision Colored Lens Pack - %') as active_colored_validity_products,
-  count(*) filter (where product_type = 'Lens' and is_active and (name like 'Plain Medical Lens Box - %' or name like 'Plain Medical Lens Vial - %')) as active_medical_validity_products,
-  count(*) filter (where product_type = 'Lens' and is_active and name in ('Clear Vision Colored Medical Lens Pack', 'Plain Medical Lens Box', 'Plain Medical Lens Vial')) as active_generic_lens_products
+  count(*) filter (where product_type = 'Lens' and is_active and (name like 'Plain Transparent Lens Box - %' or name like 'Plain Transparent Lens Vial - %')) as active_Transparent_validity_products,
+  count(*) filter (where product_type = 'Lens' and is_active and name in ('Clear Vision Colored Transparent Lens Pack', 'Plain Transparent Lens Box', 'Plain Transparent Lens Vial')) as active_generic_lens_products
 from catalog.products;

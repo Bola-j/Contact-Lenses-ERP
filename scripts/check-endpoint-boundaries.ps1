@@ -14,6 +14,10 @@ $limits = @{
     "ShopifyEndpoints.cs" = 2
     "StocktakeEndpoints.cs" = 4
     "SupplyEndpoints.cs" = 7
+    # Finance supply commands are currently split between the endpoint adapter
+    # and SupplyFinanceLogService. Keep the small existing adapter baseline
+    # explicit while the remaining correction/posting commands are extracted.
+    "SupplyFinanceEndpoints.cs" = 3
     "UserEndpoints.cs" = 9
 }
 

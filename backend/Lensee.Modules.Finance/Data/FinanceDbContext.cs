@@ -15,10 +15,72 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
     public DbSet<FinanceTransfer> FinanceTransfers => Set<FinanceTransfer>();
     public DbSet<ReconciliationImportPackage> ReconciliationImportPackages => Set<ReconciliationImportPackage>();
     public DbSet<ReconciliationImportRow> ReconciliationImportRows => Set<ReconciliationImportRow>();
+    public DbSet<SupplyFinanceLog> SupplyFinanceLogs => Set<SupplyFinanceLog>();
+    public DbSet<SupplyFinanceCostEntry> SupplyFinanceCostEntries => Set<SupplyFinanceCostEntry>();
+    public DbSet<SupplySupplierInstallment> SupplySupplierInstallments => Set<SupplySupplierInstallment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
+        modelBuilder.Entity<SupplyFinanceLog>(entity =>
+        {
+            entity.ToTable("supply_finance_logs", "finance", table =>
+            {
+                table.HasCheckConstraint("chk_supply_finance_log_status", "\"Status\" in ('Open','Closed','Cancelled')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => value.SupplyShipmentId).IsUnique();
+            entity.Property(value => value.ShipmentNumber).HasMaxLength(100).IsRequired();
+            entity.Property(value => value.SupplierName).HasMaxLength(255).IsRequired();
+            entity.Property(value => value.Status).HasMaxLength(20).IsRequired();
+            entity.Property(value => value.Notes).HasMaxLength(4000);
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone");
+            entity.Property(value => value.UpdatedAt).HasColumnType("timestamp without time zone");
+        });
+        modelBuilder.Entity<SupplyFinanceCostEntry>(entity =>
+        {
+            entity.ToTable("supply_finance_cost_entries", "finance", table =>
+            {
+                table.HasCheckConstraint("chk_supply_finance_cost_amount", "\"Amount\" > 0");
+                table.HasCheckConstraint("chk_supply_finance_cost_status", "\"Status\" in ('Active','Corrected','Voided')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => new { value.SupplyFinanceLogId, value.BusinessDate });
+            entity.HasIndex(value => value.ReplacedByCostEntryId).IsUnique().HasFilter("(\"ReplacedByCostEntryId\" is not null)");
+            entity.Property(value => value.Category).HasMaxLength(80).IsRequired();
+            entity.Property(value => value.Origin).HasMaxLength(20).IsRequired().HasDefaultValue("Finance");
+            entity.Property(value => value.Amount).HasPrecision(18, 4);
+            entity.Property(value => value.Notes).HasMaxLength(4000);
+            entity.Property(value => value.Status).HasMaxLength(20).IsRequired();
+            entity.Property(value => value.CorrectionNote).HasMaxLength(1000);
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone");
+            entity.Property(value => value.UpdatedAt).HasColumnType("timestamp without time zone");
+            entity.HasOne(value => value.SupplyFinanceLog).WithMany(value => value.CostEntries).HasForeignKey(value => value.SupplyFinanceLogId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<SupplySupplierInstallment>(entity =>
+        {
+            entity.ToTable("supply_supplier_installments", "finance", table =>
+            {
+                table.HasCheckConstraint("chk_supply_installment_amount", "\"Amount\" > 0");
+                table.HasCheckConstraint("chk_supply_installment_status", "\"Status\" in ('Draft','Posted','Corrected','Cancelled')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => new { value.SupplyFinanceLogId, value.BusinessDate });
+            entity.HasIndex(value => value.PostedFinanceLedgerEntryId).IsUnique().HasFilter("(\"PostedFinanceLedgerEntryId\" is not null)");
+            entity.HasIndex(value => value.ExternalReference).IsUnique().HasFilter("(\"ExternalReference\" is not null)");
+            entity.HasIndex(value => value.ReplacedByInstallmentId).IsUnique().HasFilter("(\"ReplacedByInstallmentId\" is not null)");
+            entity.Property(value => value.Amount).HasPrecision(18, 4);
+            entity.Property(value => value.MovementMethod).HasMaxLength(50).IsRequired();
+            entity.Property(value => value.ExternalReference).HasMaxLength(200);
+            entity.Property(value => value.Notes).HasMaxLength(4000);
+            entity.Property(value => value.Status).HasMaxLength(20).IsRequired();
+            entity.Property(value => value.CorrectionNote).HasMaxLength(1000);
+            entity.Property(value => value.CorrelationId).HasMaxLength(100);
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone");
+            entity.Property(value => value.PaidAt).HasColumnType("timestamp without time zone");
+            entity.HasOne(value => value.SupplyFinanceLog).WithMany(value => value.Installments).HasForeignKey(value => value.SupplyFinanceLogId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(value => value.FinanceAccount).WithMany().HasForeignKey(value => value.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+        });
         modelBuilder.Entity<FinanceAccount>(entity =>
         {
             entity.ToTable("finance_accounts", "finance", table =>

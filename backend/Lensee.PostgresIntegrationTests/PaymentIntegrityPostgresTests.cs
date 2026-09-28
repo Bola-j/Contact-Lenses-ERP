@@ -70,6 +70,16 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
 
     [PostgreSqlIntegrationFact]
+    public async Task EffectiveMerchantAllocations_RunAgainstMigratedPostgresSchema()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var payments = CreatePaymentsContext(connection);
+
+        Assert.False(await payments.EffectiveCreditAllocations().AnyAsync());
+    }
+
+    [PostgreSqlIntegrationFact]
     public async Task ExecutiveSummary_UsesPostedExternalMovementsWithoutInternalTransferInflation()
     {
         var actor = Guid.NewGuid();
@@ -595,6 +605,32 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     }
 
     [PostgreSqlIntegrationFact]
+    public async Task MerchantCollection_DefaultsOldestFirst_AndHonorsSelectedOperationBeforeSpilling()
+    {
+        var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        var merchantId = Guid.NewGuid();
+        var actor = Guid.NewGuid();
+        var oldestOperationId = Guid.NewGuid();
+        var selectedOperationId = Guid.NewGuid();
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var payments = CreatePaymentsContext(connection);
+        await using var shared = CreateSharedContext(connection);
+        await using var operations = CreateOperationsContext(connection);
+        var service = new MerchantAccountService(payments, shared, operations);
+        var oldest = await service.PostSaleAsync(merchantId, oldestOperationId, 100m, actor, now, null, CancellationToken.None);
+        var selected = await service.PostSaleAsync(merchantId, selectedOperationId, 100m, actor, now.AddMinutes(1), null, CancellationToken.None);
+
+        await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 25m, "CashHandToHand", null, actor, now.AddMinutes(2), null, null, CancellationToken.None);
+        await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 150m, "CashHandToHand", null, actor, now.AddMinutes(3), null, null, CancellationToken.None, selectedOperationId);
+        var selectedAllocation = await payments.EffectiveAllocations().Where(value => value.ObligationId == selected.Id).SumAsync(value => value.Amount);
+        var oldestAllocation = await payments.EffectiveAllocations().Where(value => value.ObligationId == oldest.Id).SumAsync(value => value.Amount);
+
+        Assert.Equal(100m, selectedAllocation);
+        Assert.Equal(75m, oldestAllocation);
+    }
+
+    [PostgreSqlIntegrationFact]
     public async Task OpeningCreate_SameIdempotencyKey_CreatesOneCharge()
     {
         var merchantId = Guid.NewGuid(); var actorId = Guid.NewGuid(); var key = Guid.NewGuid();
@@ -739,7 +775,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
             await new MerchantAccountService(payments, shared, operations).PostCollectionAsync(merchantId, collectionSource, 50m, "CashHandToHand", null, actor, now.AddMinutes(1), null, "Concurrent settlement", CancellationToken.None);
         }
         var correction = Correct(); var collection = Collect(); gate.SetResult();
-        await Task.WhenAll(correction.ContinueWith(_ => { }), collection.ContinueWith(_ => { }));
+        await Task.WhenAll(correction, collection);
         await using var verifyConnection = new NpgsqlConnection(_postgres.GetConnectionString()); await verifyConnection.OpenAsync(); await using var verify = CreatePaymentsContext(verifyConnection);
         if (!await verify.MerchantAccountEntries.AnyAsync(value => value.SourceId == collectionSource && value.EntryType == "Collection"))
         {
@@ -1064,6 +1100,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     public async Task CLevelWithdrawal_RepaymentRetry_PostsOneCanonicalInflow()
     {
         var primaryAdminId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
         var beneficiaryId = Guid.NewGuid();
         var accountId = Guid.NewGuid();
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
@@ -1074,6 +1111,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
             await using var finance = CreateFinanceContext(setup);
             identity.Users.AddRange(
                 new User { Id = primaryAdminId, Username = $"primary-{primaryAdminId:N}", FullName = "Primary", PasswordHash = "test", Role = LenseeRoles.Admin, IsPrimaryAdmin = true, IsActive = true, CreatedAt = now },
+                new User { Id = reviewerId, Username = $"reviewer-{reviewerId:N}", FullName = "Reviewer", PasswordHash = "test", Role = LenseeRoles.Admin, IsPrimaryAdmin = false, IsActive = true, CreatedAt = now },
                 new User { Id = beneficiaryId, Username = $"clevel-{beneficiaryId:N}", FullName = "Beneficiary", PasswordHash = "test", Role = LenseeRoles.CLevel, IsActive = true, CreatedAt = now });
             finance.FinanceAccounts.Add(new FinanceAccount { Id = accountId, Name = $"Withdrawal cash {accountId:N}", Type = FinanceLedgerService.CashOnHand, IsActive = true, CreatedBy = primaryAdminId, CreatedAt = now });
             await identity.SaveChangesAsync();
@@ -1089,7 +1127,12 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
         var withdrawal = await create.Content.ReadFromJsonAsync<CLevelWithdrawal>();
         Assert.NotNull(withdrawal);
-        Assert.Equal("Posted", withdrawal!.Status);
+        Assert.Equal("Draft", withdrawal!.Status);
+        Assert.Equal(200, (int)(await creator.PostAsync($"/api/v1/finance/withdrawals/{withdrawal.Id}/submit", null)).StatusCode);
+        using var reviewer = factory.CreateClient();
+        reviewer.AuthorizeAs(LenseeRoles.Admin, reviewerId, LenseePermissions.FinanceWithdrawalApprove, LenseePermissions.FinanceRead);
+        var approved = await reviewer.PostAsync($"/api/v1/finance/withdrawals/{withdrawal.Id}/approve", null);
+        Assert.True(approved.IsSuccessStatusCode, await approved.Content.ReadAsStringAsync());
         var requestId = Guid.NewGuid();
         var payload = new WithdrawalRepaymentRequest(requestId, accountId, 50m, "CashHandToHand", DateOnly.FromDateTime(now), "Partial payback", null);
         var results = await Task.WhenAll(

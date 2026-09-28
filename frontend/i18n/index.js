@@ -1,5 +1,5 @@
-import en from "./en.js?v=20260924-i18n-final";
-import ar from "./ar.js?v=20260924-i18n-final";
+import en from "./en.js?v=20260927-supply-receiving";
+import ar from "./ar.js?v=20260927-supply-receiving";
 
 const languageKey = "lensee.language";
 const dictionaries = Object.freeze({ en, ar });
@@ -8,15 +8,40 @@ function normalizeLanguage(language) {
   return language === "en" ? "en" : "ar";
 }
 
+function prefixLanguage() {
+  try {
+    if (typeof window === "undefined") return null;
+    const segment = window.location.pathname.split("/").filter(Boolean)[0]?.toLowerCase() || null;
+    if (segment === "ar" || segment === "en") return segment;
+  } catch { /* non-browser embedding: fall through to default */ }
+  return null;
+}
+
+function urlHelperLanguage() {
+  try {
+    return typeof window === "undefined" ? null : (window.LenseeUrlLanguage?.language || null);
+  } catch { return null; }
+}
+
 export function getLanguage() {
-  return normalizeLanguage(localStorage.getItem(languageKey));
+  // URL prefix owns the language. No stored preference is consulted so a
+  // shared /ar/ or /en/ link always renders the same presentation language.
+  return normalizeLanguage(prefixLanguage() || urlHelperLanguage() || "en");
 }
 
 export function setLanguage(language) {
+  // Language switching is a deliberate navigation between URL prefixes. It
+  // preserves query string and hash route; transient form state is not kept.
   const normalized = normalizeLanguage(language);
-  localStorage.setItem(languageKey, normalized);
-  document.documentElement.lang = normalized === "ar" ? "ar-EG" : "en";
-  document.documentElement.dir = normalized === "ar" ? "rtl" : "ltr";
+  if (typeof window === "undefined") return normalized;
+  const target = window.LenseeUrlLanguage?.toLanguage(normalized);
+  if (target) {
+    window.location.assign(target);
+    return normalized;
+  }
+  const fallback = new URL(window.location.href);
+  fallback.pathname = `/${normalized}/`;
+  window.location.assign(fallback.href);
   return normalized;
 }
 

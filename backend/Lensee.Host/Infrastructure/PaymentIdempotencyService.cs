@@ -153,9 +153,26 @@ public sealed class PaymentIdempotencyService
         {
             await idempotency.Transaction.RollbackAsync(CancellationToken.None);
         }
+        catch (ObjectDisposedException)
+        {
+            // A shared transaction may already have been rolled back and disposed by
+            // its owner. Never mask the original domain/database failure with cleanup.
+        }
+        catch (InvalidOperationException)
+        {
+            // Npgsql reports a closed/already-completed transaction this way. Cleanup
+            // is best-effort; the caller's result remains authoritative.
+        }
         finally
         {
-            await idempotency.Transaction.DisposeAsync();
+            try
+            {
+                await idempotency.Transaction.DisposeAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already disposed by SharedDbTransaction.
+            }
             idempotency.MarkFinished();
         }
 

@@ -1686,10 +1686,56 @@ tr:last-child td {
 
 .table-action {
   min-height: 36px;
-  margin-right: 6px;
+  margin-block: 2px;
+  margin-inline-end: 6px;
   padding: 5px 10px;
   font-size: 15px;
   font-weight: 850;
+}
+
+.table-action:last-child {
+  margin-inline-end: 0;
+}
+
+.inline-actions .table-action,
+.form-actions .table-action,
+.merchant-account-actions .table-action,
+.integration-event-actions .table-action,
+.report-format-actions .table-action {
+  margin: 0;
+}
+
+/* Secondary cell text (product names under SKU codes, notes under amounts)
+   renders on its own line so adjacent values never run together. */
+.muted-cell {
+  display:inline-block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+td strong + .status-pill,
+td .status-pill + strong,
+td strong + .muted-cell {
+  margin-top: 3px;
+}
+
+th,
+td {
+  line-height: 1.55;
 }
 
 .toolbar {
@@ -1765,6 +1811,37 @@ tr:last-child td {
   margin: 16px 0;
 }
 
+.closure-review-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.closure-review-card p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.closure-review-items {
+  display: grid;
+  gap: 8px;
+}
+
+.closure-review-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  line-height: 1.5;
+}
+
 .merchant-account-answer span,
 .merchant-account-answer p {
   color: var(--muted);
@@ -1779,6 +1856,62 @@ tr:last-child td {
 
 .merchant-account-answer p {
   margin: 0;
+}
+
+/* Warehouse/location filter buttons (inventory sidebar) and other
+   reference pickers: stacked label + detail lines that never collide. */
+.reference-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reference-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--ink);
+  text-align: start;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.reference-item:hover {
+  border-color: var(--focus);
+  background: #eaf1f8;
+}
+
+.reference-item strong {
+  overflow-wrap: anywhere;
+}
+
+.reference-item span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Latin technical codes inside RTL cells: isolated LTR so adjacent Arabic
+   or Latin product names cannot glue to the code. */
+.sku-code {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+td strong.sku-code + .status-pill {
+  margin-inline-start: 6px;
 }
 
 .merchant-account-actions {
@@ -1802,6 +1935,315 @@ tr:last-child td {
 
 .merchant-account-details .detail-grid {
   margin-top: 0;
+}
+
+/* Pagination bars are built as button + label + button with no separators,
+   so they own their flex spacing instead of relying on text whitespace. */
+.pagination,
+.table-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pagination .button,
+.table-pager .table-action {
+  margin: 0;
+}
+
+.pagination > span,
+.table-pager > span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* Workspace sections and panel stacks: card spacing so headings, forms,
+   and tables never collapse onto each other. */
+.workspace-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.workspace-panel h3 {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.workspace-intro {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.workspace-intro h2 {
+  margin: 0;
+}
+
+.workspace-intro p {
+  margin: 4px 0 0;
+}
+
+.split-workspace {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .split-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+.detail-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-stack p {
+  margin: 0;
+}
+
+.merchant-order-ledger,
+.merchant-financial-closure {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.supply-receiving-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.supply-receiving-panel h3,
+.supply-receiving-panel h4 {
+  margin: 0;
+}
+
+.supply-readiness-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.supply-receiving-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.supply-receiving-header h3 {
+  font-size: 20px;
+}
+
+.supply-receiving-header p {
+  margin: 4px 0 0;
+}
+
+.supply-receiving-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.supply-receiving-progress > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.supply-receiving-progress span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.supply-receiving-progress strong,
+.supply-quantity-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.supply-receiving-progress > div:last-child strong {
+  color: var(--accent);
+}
+
+.supply-receiving-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 1.15fr);
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.supply-batch-guidance,
+.supply-shared-batch-control {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.supply-batch-guidance strong,
+.supply-shared-batch-control label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.supply-batch-guidance small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.supply-batch-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.supply-batch-control .button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.supply-receiving-table-wrap {
+  max-width: 100%;
+}
+
+.supply-receiving-table {
+  min-width: 1120px;
+}
+
+.supply-receiving-table thead th {
+  white-space: nowrap;
+}
+
+.supply-receiving-table tbody th[scope="row"] {
+  min-width: 250px;
+  background: #fff;
+}
+
+.supply-receiving-sku strong,
+.supply-receiving-sku span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.supply-receiving-sku span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.supply-receiving-table td {
+  vertical-align: middle;
+}
+
+.supply-receiving-table td .input {
+  min-width: 112px;
+  min-height: 44px;
+}
+
+.supply-receiving-table td .supply-receipt-quantity {
+  min-width: 92px;
+}
+
+.supply-quantity-cell {
+  white-space: nowrap;
+}
+
+.supply-receiving-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supply-receipt-history {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .supply-receiving-tools {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .supply-receiving-panel {
+    padding: 12px;
+  }
+
+  .supply-readiness-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .supply-receiving-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .supply-receiving-header .button,
+  .supply-receiving-header .status-pill {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .supply-receiving-progress {
+    gap: 6px;
+  }
+
+  .supply-receiving-progress > div {
+    padding: 9px;
+  }
+
+  .supply-receiving-progress span {
+    font-size: 12px;
+  }
+
+  .supply-batch-control {
+    grid-template-columns: 1fr;
+  }
+
+  .supply-receiving-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+.stocktake-line-resolved {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 900px) {
@@ -3065,7 +3507,7 @@ html[dir="rtl"] .helper-list {
 
 html[dir="rtl"] .table-action {
   margin-right: 0;
-  margin-left: 6px;
+  margin-left: 0;
 }
 
 html[dir="rtl"] .password-field .input {
@@ -3331,4 +3773,18 @@ html[dir="rtl"] .op-line-search-result:hover {
   .sales-variance-dialog-table table {
     min-width: 420px;
   }
+}
+
+.finance-supply-detail[hidden] { display: none; }
+.finance-supply-detail { margin-top: 18px; padding: 18px; border: 1px solid var(--border, #d8dee8); border-radius: 14px; background: var(--surface, #fff); }
+.finance-supply-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.finance-supply-detail-head h3 { margin: 2px 0 4px; }
+.finance-supply-metrics, .finance-supply-category-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 12px; margin-block: 14px; }
+.finance-supply-category-grid .scenario-card { border-inline-start: 3px solid var(--accent, #5273a5); }
+.finance-supply-subsection { padding-top: 18px; margin-top: 18px; border-top: 1px solid var(--border, #d8dee8); }
+.finance-supply-subsection h4 { margin: 0; }
+.finance-supply-subsection .form-actions { align-self: end; }
+@media (max-width: 600px) {
+  .finance-supply-detail { padding: 12px; }
+  .finance-supply-detail-head { align-items: center; }
 }

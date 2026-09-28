@@ -15,10 +15,13 @@ namespace Lensee.Host.Endpoints;
 public static class SupplyEndpoints
 {
     private const string Draft = "Draft";
+    private const string Arrived = "Arrived";
+    private const string PartiallyReceived = "PartiallyReceived";
     private const string Received = "Received";
     private const string Cancelled = "Cancelled";
     private const string InventoryReceipt = "InventoryReceipt";
-    private static readonly string[] AllowedCostTypes = ["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"];
+    // Legacy private helpers still support historical correction data but are no
+    // longer reachable through Supply routes.
     private static readonly string[] AllowedPaymentCategories = ["SupplierPurchase", "Freight", "Customs", "Transport", "OtherShipmentCost"];
     private static readonly string[] AllowedMovementMethods = ["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -32,19 +35,15 @@ public static class SupplyEndpoints
         group.MapGet("/", ListShipmentsAsync).RequireAuthorization("supply.read").WithName("ListSupplyShipments");
         group.MapGet("/{id:guid}", GetShipmentAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipment");
         group.MapGet("/{id:guid}/lines", GetLinesAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentLines");
-        group.MapGet("/{id:guid}/costs", GetCostsAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentCosts");
         group.MapGet("/{id:guid}/editor", GetEditorAsync).RequireAuthorization("supply.write").WithName("GetSupplyShipmentEditor");
         group.MapGet("/{id:guid}/history", GetHistoryAsync).RequireAuthorization("supply.read").WithName("GetSupplyShipmentHistory");
-        group.MapGet("/{id:guid}/payments", ListPaymentsAsync).RequireAuthorization("supply.read").WithName("ListSupplyPayments");
         group.MapPost("/", CreateShipmentAsync).RequireAuthorization("supply.write").WithName("CreateSupplyShipment");
         group.MapPut("/{id:guid}", UpdateShipmentAsync).RequireAuthorization("supply.write").WithName("UpdateSupplyShipment");
         group.MapPost("/{id:guid}/confirm", ConfirmShipmentAsync).RequireAuthorization("supply.write").WithName("ConfirmSupplyShipment");
+        group.MapPost("/{id:guid}/receiving-sessions", CreateReceivingSessionAsync).RequireAuthorization("supply.receive").WithName("CreateSupplyReceivingSession");
+        group.MapPut("/{id:guid}/receiving-sessions/{sessionId:guid}/lines", SaveReceivingLinesAsync).RequireAuthorization("supply.receive").WithName("SaveSupplyReceivingLines");
+        group.MapPost("/{id:guid}/receiving-sessions/{sessionId:guid}/confirm", ConfirmReceivingSessionAsync).RequireAuthorization("supply.receive").WithName("ConfirmSupplyReceivingSession");
         group.MapPost("/{id:guid}/cancel", CancelShipmentAsync).RequireAuthorization("supply.write").WithName("CancelSupplyShipment");
-        group.MapPost("/{id:guid}/payments", CreatePaymentAsync).RequireAuthorization("supply.write").WithName("CreateSupplyPayment");
-        group.MapPost("/{id:guid}/payments/{paymentId:guid}/submit", SubmitPaymentAsync).RequireAuthorization("supply.write").WithName("SubmitSupplyPayment");
-        group.MapPost("/{id:guid}/payments/{paymentId:guid}/approve", ApprovePaymentAsync).RequireAuthorization("supply.payments.approve").WithName("ApproveSupplyPayment");
-        group.MapPost("/{id:guid}/payments/{paymentId:guid}/reject", RejectPaymentAsync).RequireAuthorization("supply.payments.approve").WithName("RejectSupplyPayment");
-        group.MapPost("/{id:guid}/payments/{paymentId:guid}/correct", CorrectPaymentAsync).RequireAuthorization("supply.write").WithName("CorrectSupplyPayment");
 
         return group;
     }
@@ -57,9 +56,15 @@ public static class SupplyEndpoints
         bool? paged,
         int? page,
         int? pageSize,
+        ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
         var query = operationsDbContext.SupplyShipments.AsNoTracking().AsQueryable();
+        if (IsWarehouseClerk(currentUser))
+        {
+            if (currentUser.LocationId is not Guid assignedLocationId) return Results.Forbid();
+            query = query.Where(value => value.DestinationLocationId == assignedLocationId);
+        }
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -95,9 +100,6 @@ public static class SupplyEndpoints
                 value.DestinationLocationId,
                 null,
                 value.Lines.Sum(line => line.Quantity),
-                value.ProductSubtotal,
-                value.CostSubtotal,
-                value.LandedTotal,
                 value.InventoryReceiptOperationId,
                 value.InventoryReceiptOperation != null ? value.InventoryReceiptOperation.OperationNumber : null,
                 value.CreatedAt))
@@ -115,7 +117,7 @@ public static class SupplyEndpoints
             : Results.Ok(rows);
     }
 
-    private static async Task<IResult> GetShipmentAsync(Guid id, bool? includeCollections, OperationsDbContext operationsDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> GetShipmentAsync(Guid id, bool? includeCollections, OperationsDbContext operationsDbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
     {
         var shipment = includeCollections == false
             ? await LoadShipmentSummaryAsync(operationsDbContext, id, cancellationToken)
@@ -124,6 +126,7 @@ public static class SupplyEndpoints
         {
             return Results.NotFound();
         }
+        if (!CanAccessShipmentLocation(currentUser, shipment.DestinationLocationId)) return Results.Forbid();
 
         var locationLookup = await LoadLocationLookupAsync(inventoryDbContext, [shipment.DestinationLocationId], cancellationToken);
         var response = ToDetailResponse(shipment, locationLookup, includeCollections != false);
@@ -131,22 +134,22 @@ public static class SupplyEndpoints
         {
             response = response with
             {
-                LineCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id, cancellationToken),
-                IncompletePriceCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id && value.UnitPrice == null, cancellationToken),
-                InvalidPriceCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id && value.UnitPrice <= 0, cancellationToken)
+                LineCount = await operationsDbContext.SupplyShipmentLines.AsNoTracking().CountAsync(value => value.ShipmentId == id, cancellationToken)
             };
         }
         return Results.Ok(response);
     }
 
-    private static async Task<IResult> GetLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> GetLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
     {
-        if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
+        var destination = await dbContext.SupplyShipments.AsNoTracking().Where(value => value.Id == id).Select(value => (Guid?)value.DestinationLocationId).SingleOrDefaultAsync(cancellationToken);
+        if (destination is null) return Results.NotFound();
+        if (!CanAccessShipmentLocation(currentUser, destination.Value)) return Results.Forbid();
         var request = new PageRequest(page ?? 1, pageSize ?? 50);
         var query = dbContext.SupplyShipmentLines.AsNoTracking().Where(value => value.ShipmentId == id);
         var total = await query.CountAsync(cancellationToken);
         var rows = await query.OrderBy(value => value.Id).Skip(request.Skip).Take(request.PageSize)
-            .Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost, line.LotNumber, line.ExpiryDate, line.Notes))
+            .Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes))
             .ToListAsync(cancellationToken);
         return Results.Ok(new PagedResult<SupplyLineResponse>(rows, request.Page, request.PageSize, total));
     }
@@ -162,22 +165,23 @@ public static class SupplyEndpoints
     private static async Task<IResult> GetEditorAsync(Guid id, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
         var shipment = await dbContext.SupplyShipments.AsNoTracking()
-            .Include(value => value.Lines).Include(value => value.Costs).Include(value => value.InventoryReceiptOperation)
+            .Include(value => value.Lines).Include(value => value.InventoryReceiptOperation)
             .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
         if (shipment is null) return Results.NotFound();
         return Results.Ok(new SupplyShipmentEditorResponse(
             shipment.Id, shipment.SupplierName, shipment.InvoiceNumber, shipment.ShipmentDate, shipment.Status,
             shipment.ConcurrencyVersion, shipment.DestinationLocationId, shipment.Notes,
-            shipment.Lines.OrderBy(value => value.Id).Select(line => new SupplyEditorLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LotNumber, line.ExpiryDate, line.Notes)).ToList(),
-            shipment.Costs.OrderBy(value => value.Id).Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToList()));
+            shipment.Lines.OrderBy(value => value.Id).Select(line => new SupplyEditorLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList()));
     }
 
-    private static async Task<IResult> GetHistoryAsync(Guid id, OperationsDbContext operationsDbContext, CancellationToken cancellationToken)
+    private static async Task<IResult> GetHistoryAsync(Guid id, OperationsDbContext operationsDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
     {
-        if (!await operationsDbContext.SupplyShipments.AnyAsync(value => value.Id == id, cancellationToken))
+        var destination = await operationsDbContext.SupplyShipments.AsNoTracking().Where(value => value.Id == id).Select(value => (Guid?)value.DestinationLocationId).SingleOrDefaultAsync(cancellationToken);
+        if (destination is null)
         {
             return Results.NotFound();
         }
+        if (!CanAccessShipmentLocation(currentUser, destination.Value)) return Results.Forbid();
 
         var history = await operationsDbContext.SupplyShipmentHistoryLogs
             .Where(value => value.ShipmentId == id)
@@ -204,10 +208,17 @@ public static class SupplyEndpoints
         if (!await dbContext.SupplyShipments.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken)) return Results.NotFound();
         var errors = await ValidatePaymentRequestAsync(request, financeDbContext, cancellationToken);
         if (errors.Count > 0) return Results.ValidationProblem(errors);
+        var supplyFinanceLogId = await financeDbContext.SupplyFinanceLogs.AsNoTracking()
+            .Where(value => value.SupplyShipmentId == id)
+            .Select(value => (Guid?)value.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (supplyFinanceLogId is null)
+            return Results.Conflict(new { code = "supply-finance-log-missing", detail = "The shipment has no Supply Finance Log." });
         var payment = new SupplyPayment
         {
             Id = Guid.NewGuid(),
             ShipmentId = id,
+            SupplyFinanceLogId = supplyFinanceLogId,
             Category = request.Category!.Trim(),
             Amount = request.Amount,
             MovementMethod = request.MovementMethod!.Trim(),
@@ -231,7 +242,18 @@ public static class SupplyEndpoints
         if (payment is null) return Results.NotFound();
         if (payment.Status != Draft) return Results.Conflict(new { code = "invalid-transition", detail = "Only draft supply payments can be submitted." });
         payment.Status = "PendingReview"; payment.SubmittedBy = currentUser.UserId ?? Guid.Empty; payment.SubmittedAt = clock.EgyptNow;
-        await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        try
+        {
+            await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-payment-submit-conflict", detail = "The supply payment was changed by another request. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-payment-submit-save-conflict", detail = "The supply payment could not be submitted in its current state." });
+        }
         return Results.Ok(ToPaymentResponse(payment));
     }
 
@@ -265,27 +287,65 @@ public static class SupplyEndpoints
             }, cancellationToken, financeDbContext);
         }
         catch (KeyNotFoundException) { return Results.NotFound(); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "supply-payment-transition-conflict", detail = "The supply payment was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "supply-payment-save-conflict", detail = "The supply payment could not be saved in its current state." }); }
         catch (InvalidOperationException) { return Results.Conflict(new { code = "supply-payment-posting-rejected", detail = "The supply payment could not be posted in its current state." }); }
         return Results.Ok(ToPaymentResponse(posted!));
     }
 
     private static async Task<IResult> RejectPaymentAsync(Guid id, Guid paymentId, SupplyPaymentRejectionRequest request, OperationsDbContext dbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A rejection reason is required."] });
+        await using var transaction = dbContext.Database.IsRelational()
+            ? await PersistenceBoundary.OpenTransactionAsync(dbContext, cancellationToken)
+            : null;
+        await LockSupplyPaymentAsync(dbContext, paymentId, cancellationToken);
         var payment = await dbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken);
         if (payment is null) return Results.NotFound();
         if (payment.Status != "PendingReview") return Results.Conflict(new { code = "invalid-transition", detail = "Only submitted supply payments can be rejected." });
-        payment.Status = "Rejected"; payment.ReviewedBy = currentUser.UserId ?? Guid.Empty; payment.ReviewedAt = clock.EgyptNow; payment.RejectionReason = TrimToNull(request.Reason) ?? "Rejected by reviewer.";
-        await PersistenceBoundary.CommitAsync(dbContext, cancellationToken); return Results.Ok(ToPaymentResponse(payment));
+        payment.Status = "Rejected"; payment.ReviewedBy = currentUser.UserId ?? Guid.Empty; payment.ReviewedAt = clock.EgyptNow; payment.RejectionReason = request.Reason.Trim();
+        try
+        {
+            await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-payment-rejection-conflict", detail = "The supply payment was changed by another request. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-payment-rejection-save-conflict", detail = "The supply payment rejection could not be saved in its current state." });
+        }
+        return Results.Ok(ToPaymentResponse(payment));
     }
 
     private static async Task<IResult> CorrectPaymentAsync(Guid id, Guid paymentId, SupplyPaymentRequest request, OperationsDbContext dbContext, FinanceDbContext financeDbContext, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
     {
+        await using var transaction = dbContext.Database.IsRelational()
+            ? await PersistenceBoundary.OpenTransactionAsync(dbContext, cancellationToken)
+            : null;
+        await LockSupplyPaymentAsync(dbContext, paymentId, cancellationToken);
         var original = await dbContext.SupplyPayments.SingleOrDefaultAsync(value => value.Id == paymentId && value.ShipmentId == id, cancellationToken);
         if (original is null) return Results.NotFound();
         if (original.Status != "Posted" || original.ReplacedByPaymentId is not null) return Results.Conflict(new { code = "supply-payment-not-correctable", detail = "Only an unreplaced posted supply payment can be corrected." });
         var errors = await ValidatePaymentRequestAsync(request, financeDbContext, cancellationToken); if (errors.Count > 0) return Results.ValidationProblem(errors);
-        var replacement = new SupplyPayment { Id = Guid.NewGuid(), ShipmentId = id, Category = request.Category!.Trim(), Amount = request.Amount, MovementMethod = request.MovementMethod!.Trim(), FinanceAccountId = request.FinanceAccountId, ExternalReference = FinanceLedgerService.NormalizeExternalReference(request.ExternalReference), Notes = TrimToNull(request.Notes), Status = Draft, CreatedBy = currentUser.UserId ?? Guid.Empty, CreatedAt = clock.EgyptNow, ReversesPaymentId = original.Id, CorrelationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString("N") : request.CorrelationId.Trim() };
-        dbContext.SupplyPayments.Add(replacement); await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+        var replacement = new SupplyPayment { Id = Guid.NewGuid(), ShipmentId = id, SupplyFinanceLogId = original.SupplyFinanceLogId, Category = request.Category!.Trim(), Amount = request.Amount, MovementMethod = request.MovementMethod!.Trim(), FinanceAccountId = request.FinanceAccountId, ExternalReference = FinanceLedgerService.NormalizeExternalReference(request.ExternalReference), Notes = TrimToNull(request.Notes), Status = Draft, CreatedBy = currentUser.UserId ?? Guid.Empty, CreatedAt = clock.EgyptNow, ReversesPaymentId = original.Id, CorrelationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString("N") : request.CorrelationId.Trim() };
+        dbContext.SupplyPayments.Add(replacement);
+        try
+        {
+            await PersistenceBoundary.CommitAsync(dbContext, cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-payment-correction-conflict", detail = "The original supply payment was changed by another request. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-payment-correction-save-conflict", detail = "The supply payment correction could not be saved." });
+        }
         return Results.Created($"/api/v1/supply/shipments/{id}/payments/{replacement.Id}", ToPaymentResponse(replacement));
     }
 
@@ -294,6 +354,8 @@ public static class SupplyEndpoints
         OperationsDbContext operationsDbContext,
         CatalogDbContext catalogDbContext,
         InventoryDbContext inventoryDbContext,
+        SupplyFinanceLogService supplyFinanceLogService,
+        FinanceDbContext financeDbContext,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken cancellationToken)
@@ -321,8 +383,12 @@ public static class SupplyEndpoints
 
         ApplyParts(shipment, built);
         operationsDbContext.SupplyShipments.Add(shipment);
-        AddHistory(operationsDbContext, shipment, "Create", currentUser.UserId ?? Guid.Empty, now, "Shipment created.");
-        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+        AddHistory(operationsDbContext, shipment, "Create", currentUser.UserId ?? Guid.Empty, now, "Shipment ordered; financial details are managed in Finance.");
+        await SharedDbTransaction.ExecuteAsync(operationsDbContext, async () =>
+        {
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+            await supplyFinanceLogService.EnsureAsync(shipment.Id, shipment.ShipmentNumber, shipment.SupplierName, shipment.Notes, currentUser.UserId ?? Guid.Empty, cancellationToken);
+        }, cancellationToken, financeDbContext);
 
         return Results.Created($"/api/v1/supply/shipments/{shipment.Id}", ToDetailResponse(shipment, built.LocationLookup));
     }
@@ -333,6 +399,8 @@ public static class SupplyEndpoints
         OperationsDbContext operationsDbContext,
         CatalogDbContext catalogDbContext,
         InventoryDbContext inventoryDbContext,
+        SupplyFinanceLogService supplyFinanceLogService,
+        FinanceDbContext financeDbContext,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken cancellationToken)
@@ -374,10 +442,7 @@ public static class SupplyEndpoints
         }
 
         var oldLines = await operationsDbContext.SupplyShipmentLines.Where(value => value.ShipmentId == shipment.Id).ToListAsync(cancellationToken);
-        var oldCosts = await operationsDbContext.SupplyShipmentCosts.Where(value => value.ShipmentId == shipment.Id).ToListAsync(cancellationToken);
         operationsDbContext.SupplyShipmentLines.RemoveRange(oldLines);
-        operationsDbContext.SupplyShipmentCosts.RemoveRange(oldCosts);
-        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
 
         var now = clock.EgyptNow;
         shipment.SupplierName = request.SupplierName!.Trim();
@@ -387,21 +452,15 @@ public static class SupplyEndpoints
         shipment.Notes = TrimToNull(request.Notes);
         shipment.UpdatedBy = currentUser.UserId ?? Guid.Empty;
         shipment.UpdatedAt = now;
-        shipment.ProductSubtotal = built.Lines.Sum(value => value.LineSubtotal);
-        shipment.CostSubtotal = built.Costs.Sum(value => value.Amount);
-        shipment.LandedTotal = shipment.ProductSubtotal + shipment.CostSubtotal;
+        shipment.ProductSubtotal = 0m;
+        shipment.CostSubtotal = 0m;
+        shipment.LandedTotal = 0m;
         foreach (var line in built.Lines)
         {
             line.ShipmentId = shipment.Id;
         }
 
-        foreach (var cost in built.Costs)
-        {
-            cost.ShipmentId = shipment.Id;
-        }
-
         operationsDbContext.SupplyShipmentLines.AddRange(built.Lines);
-        operationsDbContext.SupplyShipmentCosts.AddRange(built.Costs);
         operationsDbContext.SupplyShipmentHistoryLogs.Add(new SupplyShipmentHistory
         {
             Id = Guid.NewGuid(),
@@ -418,28 +477,20 @@ public static class SupplyEndpoints
                 shipment.ShipmentDate,
                 shipment.DestinationLocationId,
                 shipment.Status,
-                shipment.ProductSubtotal,
-                shipment.CostSubtotal,
-                shipment.LandedTotal,
-                Lines = built.Lines.Select(line => new { line.SkuId, line.SkuCodeSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost }),
-                Costs = built.Costs.Select(cost => new { cost.CostType, cost.Amount })
+                Lines = built.Lines.Select(line => new { line.SkuId, line.SkuCodeSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate })
             }, JsonOptions)
         });
-        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
-        if (transaction is not null)
+        await SharedDbTransaction.ExecuteAsync(operationsDbContext, async () =>
         {
-            await transaction.CommitAsync(cancellationToken);
-        }
-
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+            await supplyFinanceLogService.EnsureAsync(shipment.Id, shipment.ShipmentNumber, shipment.SupplierName, shipment.Notes, currentUser.UserId ?? Guid.Empty, cancellationToken);
+        }, cancellationToken, financeDbContext);
         return Results.NoContent();
     }
 
     private static async Task<IResult> ConfirmShipmentAsync(
         Guid id,
         OperationsDbContext operationsDbContext,
-        CatalogDbContext catalogDbContext,
-        InventoryDbContext inventoryDbContext,
-        StockLedgerService ledgerService,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken cancellationToken)
@@ -455,107 +506,172 @@ public static class SupplyEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(shipment.Status)] = ["Only draft supply shipments can be confirmed."] });
         }
 
-        var confirmErrors = await ValidateShipmentForConfirmationAsync(shipment, inventoryDbContext, catalogDbContext, cancellationToken);
-        if (confirmErrors.Count > 0)
-        {
-            return Results.ValidationProblem(confirmErrors);
-        }
-
         var now = clock.EgyptNow;
         var userId = currentUser.UserId ?? Guid.Empty;
-        AllocateCosts(shipment.Lines.ToList(), shipment.Costs.Sum(value => value.Amount));
-        await SharedDbTransaction.ExecuteAsync(inventoryDbContext, async () =>
+        shipment.Status = Arrived;
+        shipment.ConfirmedAt = now;
+        shipment.ConfirmedBy = userId;
+        AddHistory(operationsDbContext, shipment, "ArrivalConfirm", userId, now, "Shipment arrival confirmed; stock remains pending physical receiving.");
+        try
         {
-            var operation = new OperationLog
-            {
-                Id = Guid.NewGuid(),
-                OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}",
-                OperationType = InventoryReceipt,
-                Status = Received,
-                DestinationLocationId = shipment.DestinationLocationId,
-                Notes = $"Supply {shipment.ShipmentNumber}. {shipment.Notes}".Trim(),
-                CreatedBy = userId,
-                CreatedAt = now,
-                ConfirmedBy = userId,
-                ConfirmedAt = now
-            };
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-arrival-transition-conflict", detail = "The shipment was changed by another request. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-arrival-save-conflict", detail = "The shipment arrival could not be saved because its current state changed." });
+        }
 
-            foreach (var line in shipment.Lines)
-            {
-                operation.OperationLines.Add(new OperationLine
-                {
-                    Id = Guid.NewGuid(),
-                    OperationId = operation.Id,
-                    SkuId = line.SkuId,
-                    ProductNameSnapshot = line.ProductNameSnapshot,
-                    SkuCodeSnapshot = line.SkuCodeSnapshot,
-                    Section = "Standard",
-                    Quantity = line.Quantity,
-                    EntryMode = "Packs",
-                    BonusQuantity = 0,
-                    UnitPrice = line.UnitPrice.GetValueOrDefault(),
-                    UnitCost = line.LandedUnitCost,
-                    LineTotal = line.LineSubtotal,
-                    LotNumber = line.LotNumber,
-                    ExpiryDate = line.ExpiryDate,
-                    LineNotes = line.Notes
-                });
+        return Results.NoContent();
+    }
 
+    private static async Task<IResult> CreateReceivingSessionAsync(
+        Guid id, OperationsDbContext operations, ICurrentUser user, IClock clock, CancellationToken ct)
+    {
+        var shipment = await LoadShipmentAsync(operations, id, ct);
+        if (shipment is null) return Results.NotFound();
+        if (!CanAccessShipmentLocation(user, shipment.DestinationLocationId)) return Results.Forbid();
+        if (shipment.Status is not (Arrived or PartiallyReceived)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["shipment"] = ["Only arrived supply shipments with an outstanding quantity can be received."] });
+        var existingSession = await operations.SupplyReceivingSessions
+            .AsNoTracking()
+            .Include(value => value.Lines)
+            .SingleOrDefaultAsync(value => value.ShipmentId == id && value.Status == Draft, ct);
+        if (existingSession is not null)
+        {
+            return Results.Ok(ToReceivingSessionResponse(existingSession));
+        }
+        var now = clock.EgyptNow;
+        var session = new SupplyReceivingSession { Id = Guid.NewGuid(), ShipmentId = id, Status = Draft, Notes = $"Physical receipt for {shipment.ShipmentNumber}", CreatedBy = user.UserId ?? Guid.Empty, CreatedAt = now };
+        foreach (var manifest in shipment.Lines)
+            session.Lines.Add(new SupplyReceivingLine { Id = Guid.NewGuid(), ReceivingSessionId = session.Id, ShipmentLineId = manifest.Id, ReceivedQuantity = 0, Notes = manifest.Notes });
+        operations.SupplyReceivingSessions.Add(session);
+        AddHistory(operations, shipment, "ReceivingSessionCreate", user.UserId ?? Guid.Empty, now, $"Receiving count session {session.Id} created.");
+        try
+        {
+            await PersistenceBoundary.CommitAsync(operations, ct);
+        }
+        catch (DbUpdateException)
+        {
+            var concurrentlyCreatedSession = await operations.SupplyReceivingSessions
+                .AsNoTracking()
+                .Include(value => value.Lines)
+                .SingleOrDefaultAsync(value => value.ShipmentId == id && value.Status == Draft, ct);
+            if (concurrentlyCreatedSession is not null)
+            {
+                return Results.Ok(ToReceivingSessionResponse(concurrentlyCreatedSession));
             }
+            return Results.Conflict(new { code = "supply-receiving-session-already-open" });
+        }
+        return Results.Created($"/api/v1/supply/shipments/{id}/receiving-sessions/{session.Id}", ToReceivingSessionResponse(session));
+    }
 
-            await ledgerService.ReceiveSupplyBatchAsync(
-                shipment.DestinationLocationId,
-                shipment.Lines.Select(line => new SupplyReceiptLine(line.SkuId, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToArray(),
-                userId,
-                operation.Id,
-                cancellationToken);
+    private static async Task<IResult> SaveReceivingLinesAsync(Guid id, Guid sessionId, IReadOnlyList<SupplyReceivingLineRequest> request, OperationsDbContext operations, ICurrentUser user, CancellationToken ct)
+    {
+        await using var transaction = operations.Database.IsRelational()
+            ? await PersistenceBoundary.OpenTransactionAsync(operations, ct)
+            : null;
+        await LockReceivingSessionAsync(operations, sessionId, ct);
+        var session = await operations.SupplyReceivingSessions.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == sessionId && x.ShipmentId == id, ct);
+        if (session is null) return Results.NotFound();
+        var destination = await operations.SupplyShipments.AsNoTracking().Where(x => x.Id == id).Select(x => (Guid?)x.DestinationLocationId).SingleOrDefaultAsync(ct);
+        if (destination is null) return Results.NotFound();
+        if (!CanAccessShipmentLocation(user, destination.Value)) return Results.Forbid();
+        if (session.Status != Draft) return Results.ValidationProblem(new Dictionary<string,string[]> { ["session"] = ["Only draft receiving sessions can be changed."] });
+        if (request.GroupBy(x => x.ShipmentLineId).Any(group => group.Count() > 1) || request.Any(x => x.ReceivedQuantity < 0 || x.LotNumber?.Length > 100 || x.Notes?.Length > 1000) || request.Select(x => x.ShipmentLineId).Except(session.Lines.Select(x => x.ShipmentLineId)).Any())
+            return Results.ValidationProblem(new Dictionary<string,string[]> { ["lines"] = ["Receiving lines must be unique, belong to the shipment, and use valid non-negative values."] });
+        foreach (var item in request)
+        {
+            var line = session.Lines.Single(x => x.ShipmentLineId == item.ShipmentLineId);
+            line.ReceivedQuantity = item.ReceivedQuantity;
+            line.LotNumber = TrimToNull(item.LotNumber);
+            line.ExpiryDate = item.ExpiryDate;
+            line.Notes = TrimToNull(item.Notes);
+        }
+        try
+        {
+            await PersistenceBoundary.CommitAsync(operations, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-receiving-lines-transition-conflict", detail = "The receiving session changed while saving its lines. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-receiving-lines-save-conflict", detail = "The receiving lines could not be saved." });
+        }
+        return Results.NoContent();
+    }
 
-            operation.InventoryReceiptHeader = new InventoryReceiptHeader
+    private static async Task<IResult> ConfirmReceivingSessionAsync(Guid id, Guid sessionId, OperationsDbContext operations, InventoryDbContext inventory, CatalogDbContext catalog, StockLedgerService ledgerService, ICurrentUser user, IClock clock, CancellationToken ct)
+    {
+        var now = clock.EgyptNow; var actor = user.UserId ?? Guid.Empty;
+        try { await SharedDbTransaction.ExecuteAsync(inventory, async () =>
+        {
+            await LockShipmentAsync(operations, id, ct);
+            var shipment = await operations.SupplyShipments.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
+            if (!CanAccessShipmentLocation(user, shipment.DestinationLocationId)) throw new UnauthorizedAccessException();
+            var session = await operations.SupplyReceivingSessions.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == sessionId && x.ShipmentId == id, ct) ?? throw new KeyNotFoundException();
+            if (shipment.Status is not (Arrived or PartiallyReceived) || session.Status != Draft) throw new InvalidOperationException("Receiving session is no longer confirmable.");
+            var lines = session.Lines.Where(x => x.ReceivedQuantity > 0).ToArray();
+            if (lines.Length == 0) throw new ArgumentException("Enter at least one received quantity.");
+            var manifestById = shipment.Lines.ToDictionary(x => x.Id);
+            if (lines.Any(x => !manifestById.ContainsKey(x.ShipmentLineId))) throw new ArgumentException("Receiving line is not in the shipment manifest.");
+            var priorRows = await operations.SupplyReceivingLines
+                .Where(x => x.ReceivingSession.ShipmentId == id && x.ReceivingSession.Status == "Confirmed")
+                .GroupBy(x => x.ShipmentLineId)
+                .Select(group => new { ShipmentLineId = group.Key, ReceivedQuantity = group.Sum(line => line.ReceivedQuantity) })
+                .ToListAsync(ct);
+            var prior = priorRows.ToDictionary(row => row.ShipmentLineId, row => row.ReceivedQuantity);
+            if (lines.Any(x => x.ReceivedQuantity + prior.GetValueOrDefault(x.ShipmentLineId) > manifestById[x.ShipmentLineId].Quantity)) throw new ArgumentException("A receiving quantity exceeds the outstanding manifest quantity.");
+            var skuIds = lines.Select(x => manifestById[x.ShipmentLineId].SkuId).Distinct().ToArray();
+            if (await catalog.Skus.CountAsync(x => skuIds.Contains(x.Id) && x.IsActive && x.Product.IsActive && x.Product.DeletedAt == null, ct) != skuIds.Length) throw new ArgumentException("A received SKU or product is inactive or unavailable.");
+            var operation = new OperationLog { Id = Guid.NewGuid(), OperationNumber = $"OP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}", OperationType = InventoryReceipt, Status = Received, DestinationLocationId = shipment.DestinationLocationId, Notes = $"Supply receipt {shipment.ShipmentNumber}. {session.Notes}".Trim(), CreatedBy = actor, CreatedAt = now, ConfirmedBy = actor, ConfirmedAt = now };
+            foreach (var count in lines)
             {
-                Id = Guid.NewGuid(),
-                OperationId = operation.Id,
-                SupplierName = shipment.SupplierName,
-                InvoiceNumber = shipment.InvoiceNumber,
-                ReceiptDate = now
-            };
-
-            var version = new OperationVersion
-            {
-                Id = Guid.NewGuid(),
-                OperationId = operation.Id,
-                VersionNumber = 1,
-                SnapshotData = JsonSerializer.Serialize(new { operation.OperationType, operation.Status, operation.DestinationLocationId, Lines = operation.OperationLines.Select(ToOperationLineSnapshot) }, JsonOptions),
-                Reason = "Supply received",
-                EditedBy = userId,
-                EditedAt = now
-            };
-            operation.OperationVersions.Add(version);
-
-            operationsDbContext.OperationLogs.Add(operation);
-            // Persist the operation and its initial version before linking the operation
-            // back to that version.  Setting CurrentVersionId before this insert makes
-            // OperationLog and OperationVersion depend on each other in one SaveChanges.
-            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
-
-            operation.CurrentVersionId = version.Id;
-            shipment.Status = Received;
-            shipment.ConfirmedAt = now;
-            shipment.ConfirmedBy = userId;
-            shipment.InventoryReceiptOperationId = operation.Id;
-            AddHistory(operationsDbContext, shipment, "Confirm", userId, now, $"Shipment received through operation {operation.OperationNumber}.");
-            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
-        }, cancellationToken, operationsDbContext);
-
+                var manifest = manifestById[count.ShipmentLineId];
+                var lot = count.LotNumber ?? manifest.LotNumber;
+                var expiry = count.ExpiryDate ?? manifest.ExpiryDate;
+                if (string.IsNullOrWhiteSpace(lot) || expiry is null) throw new ArgumentException("Each received SKU requires a batch number and expiry date.");
+                operation.OperationLines.Add(new OperationLine { Id = Guid.NewGuid(), OperationId = operation.Id, SkuId = manifest.SkuId, ProductNameSnapshot = manifest.ProductNameSnapshot, SkuCodeSnapshot = manifest.SkuCodeSnapshot, Section = "Standard", Quantity = count.ReceivedQuantity, EntryMode = "Pieces", BonusQuantity = 0, UnitPrice = 0m, UnitCost = null, LineTotal = 0m, LotNumber = lot, ExpiryDate = expiry, LineNotes = count.Notes ?? manifest.Notes });
+            }
+            await ledgerService.ReceiveSupplyBatchAsync(shipment.DestinationLocationId, lines.Select(x => { var m = manifestById[x.ShipmentLineId]; return new SupplyReceiptLine(m.SkuId, x.ReceivedQuantity, x.LotNumber ?? m.LotNumber!, x.ExpiryDate ?? m.ExpiryDate!.Value, x.Notes ?? m.Notes); }).ToArray(), actor, operation.Id, ct);
+            operation.InventoryReceiptHeader = new InventoryReceiptHeader { Id = Guid.NewGuid(), OperationId = operation.Id, SupplierName = shipment.SupplierName, InvoiceNumber = shipment.InvoiceNumber, ReceiptDate = now, SupplyShipmentId = shipment.Id, SupplyReceivingSessionId = session.Id };
+            var version = new OperationVersion { Id = Guid.NewGuid(), OperationId = operation.Id, VersionNumber = 1, SnapshotData = JsonSerializer.Serialize(new { operation.OperationType, operation.Status, operation.DestinationLocationId, Lines = operation.OperationLines.Select(ToOperationLineSnapshot) }, JsonOptions), Reason = "Supply physical receipt", EditedBy = actor, EditedAt = now };
+            operation.OperationVersions.Add(version); operations.OperationLogs.Add(operation); await PersistenceBoundary.CommitAsync(operations, ct); operation.CurrentVersionId = version.Id;
+            session.Status = "Confirmed"; session.ConfirmedAt = now; session.ConfirmedBy = actor; session.InventoryReceiptOperationId = operation.Id;
+            foreach (var line in lines) prior[line.ShipmentLineId] = prior.GetValueOrDefault(line.ShipmentLineId) + line.ReceivedQuantity;
+            shipment.Status = shipment.Lines.All(x => prior.GetValueOrDefault(x.Id) == x.Quantity) ? Received : PartiallyReceived; shipment.ConfirmedAt = now; shipment.ConfirmedBy = actor;
+            AddHistory(operations, shipment, "ReceivingSessionConfirm", actor, now, $"Physical receipt {operation.OperationNumber} posted from receiving count {session.Id}.");
+            await PersistenceBoundary.CommitAsync(operations, ct);
+        }, ct, operations); }
+        catch (KeyNotFoundException) { return Results.NotFound(); }
+        catch (UnauthorizedAccessException) { return Results.Forbid(); }
+        catch (ArgumentException ex) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["lines"] = [ex.Message] }); }
+        catch (InvalidOperationException ex) when (!string.Equals(ex.Message, "Receiving session is no longer confirmable.", StringComparison.Ordinal)) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["lines"] = [ex.Message] }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "supply-receiving-not-confirmable", detail = ex.Message }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "supply-receiving-concurrency-conflict" }); }
         return Results.NoContent();
     }
 
     private static async Task<IResult> CancelShipmentAsync(
         Guid id,
+        SupplyShipmentCancellationRequest request,
         OperationsDbContext operationsDbContext,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A cancellation reason is required."] });
+
+        await using var transaction = operationsDbContext.Database.IsRelational()
+            ? await PersistenceBoundary.OpenTransactionAsync(operationsDbContext, cancellationToken)
+            : null;
+        await LockShipmentAsync(operationsDbContext, id, cancellationToken);
         var shipment = await LoadShipmentAsync(operationsDbContext, id, cancellationToken);
         if (shipment is null)
         {
@@ -571,8 +687,21 @@ public static class SupplyEndpoints
         shipment.Status = Cancelled;
         shipment.CancelledAt = now;
         shipment.CancelledBy = currentUser.UserId ?? Guid.Empty;
-        AddHistory(operationsDbContext, shipment, "Cancel", currentUser.UserId ?? Guid.Empty, now, "Draft shipment cancelled.");
-        await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+        AddHistory(operationsDbContext, shipment, "Cancel", currentUser.UserId ?? Guid.Empty, now, $"Draft shipment cancelled. Reason: {request.Reason.Trim()}");
+        try
+        {
+            await PersistenceBoundary.CommitAsync(operationsDbContext, cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "supply-cancellation-transition-conflict", detail = "The shipment was changed by another request. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "supply-cancellation-save-conflict", detail = "The shipment cancellation could not be saved because its current state changed." });
+        }
         return Results.NoContent();
     }
 
@@ -591,6 +720,14 @@ public static class SupplyEndpoints
             $"select 1 from operations.supply_payments where id = {paymentId} for update", cancellationToken);
     }
 
+    private static async Task LockReceivingSessionAsync(OperationsDbContext dbContext, Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsRelational()) return;
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"select 1 from operations.supply_receiving_sessions where \"Id\" = {sessionId} for update",
+            cancellationToken);
+    }
+
     private static async Task<Dictionary<string, string[]>> ValidatePaymentRequestAsync(SupplyPaymentRequest request, FinanceDbContext financeDbContext, CancellationToken cancellationToken)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
@@ -606,13 +743,12 @@ public static class SupplyEndpoints
         return errors;
     }
 
-    private static SupplyPaymentResponse ToPaymentResponse(SupplyPayment value) => new(value.Id, value.ShipmentId, value.Category, value.Amount, value.MovementMethod, value.FinanceAccountId, value.ExternalReference, value.Status, value.Notes, value.CreatedBy, value.CreatedAt, value.SubmittedBy, value.SubmittedAt, value.ReviewedBy, value.ReviewedAt, value.RejectionReason, value.PostedFinanceLedgerEntryId, value.ReversesPaymentId, value.ReplacedByPaymentId, value.CorrelationId);
+    private static SupplyPaymentResponse ToPaymentResponse(SupplyPayment value) => new(value.Id, value.ShipmentId, value.SupplyFinanceLogId, value.Category, value.Amount, value.MovementMethod, value.FinanceAccountId, value.ExternalReference, value.Status, value.Notes, value.CreatedBy, value.CreatedAt, value.SubmittedBy, value.SubmittedAt, value.ReviewedBy, value.ReviewedAt, value.RejectionReason, value.PostedFinanceLedgerEntryId, value.ReversesPaymentId, value.ReplacedByPaymentId, value.CorrelationId);
 
     private static async Task<SupplyBuildResult> BuildShipmentPartsAsync(SupplyShipmentRequest request, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
         var lines = request.Lines ?? [];
-        var costs = request.Costs ?? [];
 
         if (string.IsNullOrWhiteSpace(request.SupplierName))
         {
@@ -672,11 +808,6 @@ public static class SupplyEndpoints
                 errors[$"{nameof(request.Lines)}[{index}].{nameof(line.Quantity)}"] = ["Quantity must be greater than zero."];
             }
 
-            if (line.UnitPrice.HasValue && line.UnitPrice.Value <= 0)
-            {
-                errors[$"{nameof(request.Lines)}[{index}].{nameof(line.UnitPrice)}"] = ["Unit price must be greater than zero when provided."];
-            }
-
             if (line.LotNumber is { Length: > 100 })
             {
                 errors[$"{nameof(request.Lines)}[{index}].{nameof(line.LotNumber)}"] = ["Lot number cannot exceed 100 characters."];
@@ -694,7 +825,6 @@ public static class SupplyEndpoints
             }
 
             var quantity = Math.Max(0, line.Quantity);
-            var unitPrice = line.UnitPrice.HasValue ? Math.Max(0, line.UnitPrice.Value) : (decimal?)null;
             lineDrafts.Add(new SupplyShipmentLine
             {
                 Id = Guid.NewGuid(),
@@ -702,53 +832,16 @@ public static class SupplyEndpoints
                 ProductNameSnapshot = sku.Product.Name,
                 SkuCodeSnapshot = sku.SkuCode,
                 Quantity = quantity,
-                UnitPrice = unitPrice,
-                LineSubtotal = quantity * (unitPrice ?? 0),
+                UnitPrice = null,
+                LineSubtotal = 0m,
                 LotNumber = TrimToNull(line.LotNumber),
                 ExpiryDate = line.ExpiryDate,
                 Notes = TrimToNull(line.Notes)
             });
         }
 
-        var costDrafts = new List<SupplyShipmentCost>();
-        for (var index = 0; index < costs.Count; index++)
-        {
-            var cost = costs[index];
-            if (string.IsNullOrWhiteSpace(cost.CostType))
-            {
-                errors[$"{nameof(request.Costs)}[{index}].{nameof(cost.CostType)}"] = ["Cost type is required."];
-            }
-            else if (NormalizeCostType(cost.CostType) is null)
-            {
-                errors[$"{nameof(request.Costs)}[{index}].{nameof(cost.CostType)}"] = ["Cost type must be Customs, Freight, Clearance, Handling, Insurance, or Other."];
-            }
-
-            if (cost.Amount < 0)
-            {
-                errors[$"{nameof(request.Costs)}[{index}].{nameof(cost.Amount)}"] = ["Cost amount cannot be negative."];
-            }
-
-            if (cost.Description is { Length: > 255 })
-            {
-                errors[$"{nameof(request.Costs)}[{index}].{nameof(cost.Description)}"] = ["Cost description cannot exceed 255 characters."];
-            }
-
-            costDrafts.Add(new SupplyShipmentCost
-            {
-                Id = Guid.NewGuid(),
-                CostType = NormalizeCostType(cost.CostType) ?? "Other",
-                Description = TrimToNull(cost.Description),
-                Amount = Math.Max(0, cost.Amount)
-            });
-        }
-
-        if (lineDrafts.All(value => value.UnitPrice.HasValue))
-        {
-            AllocateCosts(lineDrafts, costDrafts.Sum(value => value.Amount));
-        }
-
         var locationLookup = location is null ? new Dictionary<Guid, Location>() : new Dictionary<Guid, Location> { [location.Id] = location };
-        return new SupplyBuildResult(errors, lineDrafts, costDrafts, locationLookup);
+        return new SupplyBuildResult(errors, lineDrafts, locationLookup);
     }
 
     private static async Task<Dictionary<string, string[]>> ValidateShipmentForConfirmationAsync(
@@ -768,10 +861,6 @@ public static class SupplyEndpoints
             errors[nameof(shipment.Lines)] = ["Every SKU line quantity must be greater than zero."];
         }
 
-        if (shipment.Lines.Any(line => line.UnitPrice is null or <= 0))
-        {
-            errors[nameof(shipment.Lines)] = ["Every SKU line needs a unit price greater than zero before confirmation."];
-        }
 
         if (!await inventoryDbContext.Locations.AsNoTracking().AnyAsync(value => value.Id == shipment.DestinationLocationId && value.IsActive, cancellationToken))
         {
@@ -797,10 +886,9 @@ public static class SupplyEndpoints
     private static void ApplyParts(SupplyShipment shipment, SupplyBuildResult built)
     {
         shipment.Lines = built.Lines;
-        shipment.Costs = built.Costs;
-        shipment.ProductSubtotal = built.Lines.Sum(value => value.LineSubtotal);
-        shipment.CostSubtotal = built.Costs.Sum(value => value.Amount);
-        shipment.LandedTotal = shipment.ProductSubtotal + shipment.CostSubtotal;
+        shipment.ProductSubtotal = 0m;
+        shipment.CostSubtotal = 0m;
+        shipment.LandedTotal = 0m;
     }
 
     private static void AllocateCosts(List<SupplyShipmentLine> lines, decimal costTotal)
@@ -830,12 +918,38 @@ public static class SupplyEndpoints
             .Include(value => value.Costs)
             .Include(value => value.HistoryLogs)
             .Include(value => value.InventoryReceiptOperation)
+            .Include(value => value.ReceivingSessions)
+                .ThenInclude(session => session.Lines)
             .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
 
     private static async Task<SupplyShipment?> LoadShipmentSummaryAsync(OperationsDbContext dbContext, Guid id, CancellationToken cancellationToken) =>
         await dbContext.SupplyShipments.AsNoTracking()
+            .Include(value => value.Lines)
+            .Include(value => value.ReceivingSessions)
+                .ThenInclude(session => session.Lines)
             .Include(value => value.InventoryReceiptOperation)
             .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+
+    private static object ToReceivingSessionResponse(SupplyReceivingSession session) => new
+    {
+        session.Id,
+        session.Status,
+        session.CreatedAt,
+        session.ConfirmedAt,
+        session.InventoryReceiptOperationId,
+        lines = session.Lines.Select(line => new
+        {
+            line.ShipmentLineId,
+            line.ReceivedQuantity,
+            line.LotNumber,
+            line.ExpiryDate,
+            line.Notes
+        })
+    };
+
+    private static bool IsWarehouseClerk(ICurrentUser user) => string.Equals(user.Role, Lensee.SharedKernel.Security.LenseeRoles.WarehouseClerk, StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanAccessShipmentLocation(ICurrentUser user, Guid locationId) => !IsWarehouseClerk(user) || user.LocationId == locationId;
 
     private static async Task<IReadOnlyDictionary<Guid, Location>> LoadLocationLookupAsync(InventoryDbContext dbContext, IEnumerable<Guid> locationIds, CancellationToken cancellationToken)
     {
@@ -874,15 +988,22 @@ public static class SupplyEndpoints
             shipment.DestinationLocationId,
             locationLookup.TryGetValue(shipment.DestinationLocationId, out var location) ? location.Name : null,
             shipment.Lines.Sum(value => value.Quantity),
-            shipment.ProductSubtotal,
-            shipment.CostSubtotal,
-            shipment.LandedTotal,
             shipment.InventoryReceiptOperationId,
             shipment.InventoryReceiptOperation?.OperationNumber,
             shipment.CreatedAt);
 
-    private static SupplyShipmentDetailResponse ToDetailResponse(SupplyShipment shipment, IReadOnlyDictionary<Guid, Location> locationLookup, bool includeCollections = true) =>
-        new(
+    private static SupplyShipmentDetailResponse ToDetailResponse(SupplyShipment shipment, IReadOnlyDictionary<Guid, Location> locationLookup, bool includeCollections = true)
+    {
+        var receivedByLine = shipment.ReceivingSessions
+            .Where(session => session.Status == "Confirmed")
+            .SelectMany(session => session.Lines)
+            .GroupBy(line => line.ShipmentLineId)
+            .ToDictionary(group => group.Key, group => group.Sum(line => line.ReceivedQuantity));
+        var receiving = new SupplyReceivingSummaryResponse(
+            shipment.Lines.Select(line => new SupplyReceivingQuantityResponse(line.Id, receivedByLine.GetValueOrDefault(line.Id), line.Quantity - receivedByLine.GetValueOrDefault(line.Id))).ToList(),
+            shipment.ReceivingSessions.Where(session => session.Status == Draft).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList(),
+            shipment.ReceivingSessions.Where(session => session.Status == "Confirmed").OrderByDescending(session => session.ConfirmedAt).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Where(line => line.ReceivedQuantity > 0).Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList());
+        return new(
             shipment.Id,
             shipment.ShipmentNumber,
             shipment.SupplierName,
@@ -893,9 +1014,6 @@ public static class SupplyEndpoints
             shipment.DestinationLocationId,
             locationLookup.TryGetValue(shipment.DestinationLocationId, out var location) ? location.Name : null,
             shipment.Notes,
-            shipment.ProductSubtotal,
-            shipment.CostSubtotal,
-            shipment.LandedTotal,
             shipment.InventoryReceiptOperationId,
             shipment.InventoryReceiptOperation?.OperationNumber,
             shipment.CreatedBy,
@@ -905,11 +1023,10 @@ public static class SupplyEndpoints
             shipment.CancelledBy,
             shipment.CancelledAt,
             shipment.Lines.Count,
-            shipment.Lines.Count(line => line.UnitPrice == null),
-            shipment.Lines.Count(line => line.UnitPrice <= 0),
-            includeCollections ? shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost, line.LotNumber, line.ExpiryDate, line.Notes)).ToList() : [],
-            includeCollections ? shipment.Costs.Select(cost => new SupplyCostResponse(cost.Id, cost.CostType, cost.Description, cost.Amount)).ToList() : [],
-            includeCollections ? shipment.HistoryLogs.OrderByDescending(value => value.CreatedAt).Select(value => new SupplyHistoryResponse(value.Id, value.Action, value.ActorUserId, value.CreatedAt, value.Summary)).ToList() : []);
+            includeCollections ? shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList() : [],
+            includeCollections ? shipment.HistoryLogs.OrderByDescending(value => value.CreatedAt).Select(value => new SupplyHistoryResponse(value.Id, value.Action, value.ActorUserId, value.CreatedAt, value.Summary)).ToList() : [],
+            receiving);
+    }
 
     private static object ToSnapshot(SupplyShipment shipment) => new
     {
@@ -919,11 +1036,7 @@ public static class SupplyEndpoints
         shipment.ShipmentDate,
         shipment.DestinationLocationId,
         shipment.Status,
-        shipment.ProductSubtotal,
-        shipment.CostSubtotal,
-        shipment.LandedTotal,
-        Lines = shipment.Lines.Select(line => new { line.SkuId, line.SkuCodeSnapshot, line.Quantity, line.UnitPrice, line.LineSubtotal, line.AllocatedCost, line.LandedUnitCost }),
-        Costs = shipment.Costs.Select(cost => new { cost.CostType, cost.Amount })
+        Lines = shipment.Lines.Select(line => new { line.SkuId, line.SkuCodeSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate })
     };
 
     private static object ToOperationLineSnapshot(OperationLine line) => new
@@ -941,17 +1054,18 @@ public static class SupplyEndpoints
     };
 
     private static string NormalizeStatus(string value) =>
+        string.Equals(value, Arrived, StringComparison.OrdinalIgnoreCase) ? Arrived :
+        string.Equals(value, PartiallyReceived, StringComparison.OrdinalIgnoreCase) ? PartiallyReceived :
         string.Equals(value, Received, StringComparison.OrdinalIgnoreCase) ? Received :
         string.Equals(value, Cancelled, StringComparison.OrdinalIgnoreCase) ? Cancelled :
         Draft;
 
-    private static string? NormalizeCostType(string? value) =>
-        AllowedCostTypes.FirstOrDefault(costType => string.Equals(costType, value?.Trim(), StringComparison.OrdinalIgnoreCase));
-
     private static string? TrimToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private sealed record SupplyBuildResult(Dictionary<string, string[]> Errors, List<SupplyShipmentLine> Lines, List<SupplyShipmentCost> Costs, IReadOnlyDictionary<Guid, Location> LocationLookup);
+    private sealed record SupplyBuildResult(Dictionary<string, string[]> Errors, List<SupplyShipmentLine> Lines, IReadOnlyDictionary<Guid, Location> LocationLookup);
 }
+
+public sealed record SupplyShipmentCancellationRequest(string? Reason);
 
 public sealed record SupplyShipmentRequest(
     string? SupplierName,
@@ -960,18 +1074,19 @@ public sealed record SupplyShipmentRequest(
     Guid DestinationLocationId,
     string? Notes,
     IReadOnlyList<SupplyShipmentLineRequest>? Lines,
-    IReadOnlyList<SupplyShipmentCostRequest>? Costs,
     uint? ExpectedVersion = null);
 
-public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, decimal? UnitPrice, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyShipmentCostRequest(string? CostType, string? Description, decimal Amount);
+
+public sealed record SupplyReceivingLineRequest(Guid ShipmentLineId, int ReceivedQuantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyPaymentRequest(string? Category, decimal Amount, string? MovementMethod, Guid FinanceAccountId, string? ExternalReference, string? Notes, string? CorrelationId = null);
 
 public sealed record SupplyPaymentRejectionRequest(string? Reason);
 
-public sealed record SupplyPaymentResponse(Guid Id, Guid ShipmentId, string Category, decimal Amount, string MovementMethod, Guid FinanceAccountId, string? ExternalReference, string Status, string? Notes, Guid CreatedBy, DateTime CreatedAt, Guid? SubmittedBy, DateTime? SubmittedAt, Guid? ReviewedBy, DateTime? ReviewedAt, string? RejectionReason, Guid? PostedFinanceLedgerEntryId, Guid? ReversesPaymentId, Guid? ReplacedByPaymentId, string CorrelationId);
+public sealed record SupplyPaymentResponse(Guid Id, Guid ShipmentId, Guid? SupplyFinanceLogId, string Category, decimal Amount, string MovementMethod, Guid FinanceAccountId, string? ExternalReference, string Status, string? Notes, Guid CreatedBy, DateTime CreatedAt, Guid? SubmittedBy, DateTime? SubmittedAt, Guid? ReviewedBy, DateTime? ReviewedAt, string? RejectionReason, Guid? PostedFinanceLedgerEntryId, Guid? ReversesPaymentId, Guid? ReplacedByPaymentId, string CorrelationId);
 
 public sealed record SupplyPaymentSummaryResponse(IReadOnlyList<SupplyPaymentResponse> Payments, decimal PostedAmount, string SettlementStatus);
 
@@ -986,9 +1101,6 @@ public sealed record SupplyShipmentListResponse(
     Guid DestinationLocationId,
     string? DestinationLocationName,
     int Quantity,
-    decimal ProductSubtotal,
-    decimal CostSubtotal,
-    decimal LandedTotal,
     Guid? InventoryReceiptOperationId,
     string? InventoryReceiptOperationNumber,
     DateTime CreatedAt);
@@ -1004,9 +1116,6 @@ public sealed record SupplyShipmentDetailResponse(
     Guid DestinationLocationId,
     string? DestinationLocationName,
     string? Notes,
-    decimal ProductSubtotal,
-    decimal CostSubtotal,
-    decimal LandedTotal,
     Guid? InventoryReceiptOperationId,
     string? InventoryReceiptOperationNumber,
     Guid CreatedBy,
@@ -1016,18 +1125,20 @@ public sealed record SupplyShipmentDetailResponse(
     Guid? CancelledBy,
     DateTime? CancelledAt,
     int LineCount,
-    int IncompletePriceCount,
-    int InvalidPriceCount,
     IReadOnlyList<SupplyLineResponse> Lines,
-    IReadOnlyList<SupplyCostResponse> Costs,
-    IReadOnlyList<SupplyHistoryResponse> History);
+    IReadOnlyList<SupplyHistoryResponse> History,
+    SupplyReceivingSummaryResponse Receiving);
 
-public sealed record SupplyLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, decimal? UnitPrice, decimal LineSubtotal, decimal AllocatedCost, decimal LandedUnitCost, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
-public sealed record SupplyShipmentEditorResponse(Guid Id, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, uint ConcurrencyVersion, Guid DestinationLocationId, string? Notes, IReadOnlyList<SupplyEditorLineResponse> Lines, IReadOnlyList<SupplyCostResponse> Costs);
+public sealed record SupplyShipmentEditorResponse(Guid Id, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, uint ConcurrencyVersion, Guid DestinationLocationId, string? Notes, IReadOnlyList<SupplyEditorLineResponse> Lines);
 
-public sealed record SupplyEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, decimal? UnitPrice, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyCostResponse(Guid Id, string CostType, string? Description, decimal Amount);
 
 public sealed record SupplyHistoryResponse(Guid Id, string Action, Guid ActorUserId, DateTime CreatedAt, string? Summary);
+public sealed record SupplyReceivingSummaryResponse(IReadOnlyList<SupplyReceivingQuantityResponse> Quantities, IReadOnlyList<SupplyReceivingSessionResponse> OpenSessions, IReadOnlyList<SupplyReceivingSessionResponse> History);
+public sealed record SupplyReceivingQuantityResponse(Guid ShipmentLineId, int CumulativeReceived, int OutstandingQuantity);
+public sealed record SupplyReceivingSessionResponse(Guid Id, string Status, DateTime CreatedAt, DateTime? ConfirmedAt, Guid? InventoryReceiptOperationId, IReadOnlyList<SupplyReceivingLineResponse> Lines);
+public sealed record SupplyReceivingLineResponse(Guid ShipmentLineId, int ReceivedQuantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);

@@ -71,6 +71,25 @@ public sealed class PaymentFinancialCapacityTests
     }
 
     [Fact]
+    public void PaymentBalance_ReservesPendingNonMerchantRefundsAgainstRefundDue()
+    {
+        var paymentLog = PaymentLog();
+        paymentLog.MerchantId = null;
+        paymentLog.TotalAmount = 100m;
+        paymentLog.InstallmentSubLogs =
+        [
+            new InstallmentSubLog { MainLogId = paymentLog.Id, Amount = 150m, SubLogStatus = "Confirmed" }
+        ];
+        var pendingRefund = CashRecord(paymentLog, "CashRefund", 30m);
+        pendingRefund.Status = "PendingAdminReview";
+
+        var balance = PaymentBalanceCalculator.Calculate(paymentLog, [], [pendingRefund]);
+
+        Assert.Equal(50m, balance.RefundDue);
+        Assert.Equal(0m, balance.RemainingAmount);
+    }
+
+    [Fact]
     public async Task BalanceReductionCapacity_CompletedLinkedCashRefundReopensReceivable()
     {
         await using var context = CreateContext();

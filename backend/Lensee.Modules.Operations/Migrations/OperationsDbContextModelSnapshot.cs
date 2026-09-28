@@ -47,19 +47,45 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("timestamp without time zone")
                         .HasColumnName("receipt_date");
 
+                    b.Property<Guid?>("StocktakeSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("stocktake_session_id");
+
                     b.Property<string>("SupplierName")
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("supplier_name");
 
+                    b.Property<Guid?>("SupplyFinanceLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_finance_log_id");
+
+                    b.Property<Guid?>("SupplyReceivingSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_receiving_session_id");
+
+                    b.Property<Guid?>("SupplyShipmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_shipment_id");
+
                     b.HasKey("Id")
                         .HasName("inventory_receipt_headers_pkey");
 
                     b.HasIndex(new[] { "OperationId" }, "idx_receipt_headers_operation");
 
+                    b.HasIndex(new[] { "SupplyShipmentId" }, "idx_receipt_headers_supply_shipment");
+
                     b.HasIndex(new[] { "OperationId" }, "inventory_receipt_headers_operation_id_key")
                         .IsUnique();
+
+                    b.HasIndex(new[] { "StocktakeSessionId" }, "ux_receipt_headers_stocktake_session")
+                        .IsUnique()
+                        .HasFilter("(stocktake_session_id is not null)");
+
+                    b.HasIndex(new[] { "SupplyReceivingSessionId" }, "ux_receipt_headers_supply_receiving_session")
+                        .IsUnique()
+                        .HasFilter("(supply_receiving_session_id is not null)");
 
                     b.ToTable("inventory_receipt_headers", "operations");
                 });
@@ -1089,6 +1115,10 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid?>("InventoryReceiptOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("inventory_receipt_operation_id");
+
                     b.Property<Guid>("LocationId")
                         .HasColumnType("uuid")
                         .HasColumnName("location_id");
@@ -1105,6 +1135,14 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("products_counted");
 
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("CycleCount")
+                        .HasColumnName("purpose");
+
                     b.Property<DateTime>("SessionDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp without time zone")
@@ -1119,6 +1157,14 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnName("status")
                         .HasDefaultValueSql("'Draft'::character varying");
 
+                    b.Property<Guid?>("SupplyFinanceLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_finance_log_id");
+
+                    b.Property<Guid?>("SupplyShipmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_shipment_id");
+
                     b.Property<int?>("TotalDiscrepancyUnits")
                         .HasColumnType("integer")
                         .HasColumnName("total_discrepancy_units");
@@ -1128,8 +1174,12 @@ namespace Lensee.Modules.Operations.Migrations
 
                     b.HasIndex(new[] { "LocationId" }, "idx_stocktake_location");
 
+                    b.HasIndex(new[] { "SupplyShipmentId" }, "idx_stocktake_supply_shipment");
+
                     b.ToTable("stocktake_sessions", "operations", t =>
                         {
+                            t.HasCheckConstraint("chk_stocktake_purpose", "purpose in ('CycleCount','SupplyReceiving')");
+
                             t.HasCheckConstraint("chk_stocktake_status", "status in ('Draft','Confirmed')");
                         });
                 });
@@ -1228,6 +1278,10 @@ namespace Lensee.Modules.Operations.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("submitted_by");
 
+                    b.Property<Guid?>("SupplyFinanceLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supply_finance_log_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("PostedFinanceLedgerEntryId")
@@ -1241,6 +1295,9 @@ namespace Lensee.Modules.Operations.Migrations
                     b.HasIndex("ShipmentId")
                         .HasDatabaseName("idx_supply_payments_shipment");
 
+                    b.HasIndex("SupplyFinanceLogId")
+                        .HasDatabaseName("idx_supply_payments_finance_log");
+
                     b.ToTable("supply_payments", "operations", t =>
                         {
                             t.HasCheckConstraint("chk_supply_payment_amount", "amount > 0");
@@ -1250,6 +1307,116 @@ namespace Lensee.Modules.Operations.Migrations
                             t.HasCheckConstraint("chk_supply_payment_method", "movement_method in ('CashHandToHand','CashTransaction','BankTransfer','Wallet')");
 
                             t.HasCheckConstraint("chk_supply_payment_status", "status in ('Draft','PendingReview','Posted','Rejected','Corrected')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyReceivingLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateOnly?>("ExpiryDate")
+                        .HasColumnType("date")
+                        .HasColumnName("expiry_date");
+
+                    b.Property<string>("LotNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("lot_number");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("notes");
+
+                    b.Property<int>("ReceivedQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("received_quantity");
+
+                    b.Property<Guid>("ReceivingSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("receiving_session_id");
+
+                    b.Property<Guid>("ShipmentLineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("shipment_line_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShipmentLineId");
+
+                    b.HasIndex("ReceivingSessionId", "ShipmentLineId")
+                        .IsUnique();
+
+                    b.ToTable("supply_receiving_lines", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_receiving_line_quantity", "received_quantity >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyReceivingSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime?>("ConfirmedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid?>("ConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_by");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<Guid?>("InventoryReceiptOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("inventory_receipt_operation_id");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("notes");
+
+                    b.Property<Guid>("ShipmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("shipment_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Draft")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex(new[] { "ShipmentId", "Status" }, "idx_supply_receiving_shipment_status");
+
+                    b.HasIndex(new[] { "ShipmentId" }, "ux_supply_receiving_open_session")
+                        .IsUnique()
+                        .HasFilter("(status = 'Draft')");
+
+                    b.HasIndex(new[] { "InventoryReceiptOperationId" }, "ux_supply_receiving_operation")
+                        .IsUnique()
+                        .HasFilter("(inventory_receipt_operation_id is not null)");
+
+                    b.ToTable("supply_receiving_sessions", "operations", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_receiving_status", "status in ('Draft','Confirmed')");
                         });
                 });
 
@@ -1382,7 +1549,7 @@ namespace Lensee.Modules.Operations.Migrations
 
                             t.HasCheckConstraint("chk_supply_shipments_product_subtotal", "product_subtotal >= 0");
 
-                            t.HasCheckConstraint("chk_supply_shipments_status", "status in ('Draft','Received','Cancelled')");
+                            t.HasCheckConstraint("chk_supply_shipments_status", "status in ('Draft','Arrived','PartiallyReceived','Received','Cancelled')");
                         });
                 });
 
@@ -1665,6 +1832,36 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("Shipment");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyReceivingLine", b =>
+                {
+                    b.HasOne("Lensee.Modules.Operations.Data.SupplyReceivingSession", "ReceivingSession")
+                        .WithMany("Lines")
+                        .HasForeignKey("ReceivingSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Lensee.Modules.Operations.Data.SupplyShipmentLine", "ShipmentLine")
+                        .WithMany()
+                        .HasForeignKey("ShipmentLineId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("ReceivingSession");
+
+                    b.Navigation("ShipmentLine");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyReceivingSession", b =>
+                {
+                    b.HasOne("Lensee.Modules.Operations.Data.SupplyShipment", "Shipment")
+                        .WithMany("ReceivingSessions")
+                        .HasForeignKey("ShipmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Shipment");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyShipment", b =>
                 {
                     b.HasOne("Lensee.Modules.Operations.Data.OperationLog", "InventoryReceiptOperation")
@@ -1737,6 +1934,11 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("StocktakeAdjustmentLines");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyReceivingSession", b =>
+                {
+                    b.Navigation("Lines");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Operations.Data.SupplyShipment", b =>
                 {
                     b.Navigation("Costs");
@@ -1746,6 +1948,8 @@ namespace Lensee.Modules.Operations.Migrations
                     b.Navigation("Lines");
 
                     b.Navigation("Payments");
+
+                    b.Navigation("ReceivingSessions");
                 });
 #pragma warning restore 612, 618
         }

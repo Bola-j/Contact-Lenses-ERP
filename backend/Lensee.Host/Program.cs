@@ -273,6 +273,7 @@ builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<CatalogMutationTransaction>();
 builder.Services.AddScoped<FinanceLedgerService>();
+builder.Services.AddScoped<SupplyFinanceLogService>();
 builder.Services.AddScoped<ReconciliationImportService>();
 if (builder.Environment.IsEnvironment("Testing"))
 {
@@ -457,6 +458,10 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("payments.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.PaymentsRead));
 
+    options.AddPolicy("payments.kpis.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.PaymentsRead));
+
     options.AddPolicy("payments.write", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.PaymentsWrite));
@@ -503,17 +508,34 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("reports.read", policy =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
 
+    options.AddPolicy("reports.financial.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.ReportsRead));
+
     options.AddPolicy("audit.read", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.AuditRead));
 
-    options.AddPolicy("supply.read", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel)
-            .RequireClaim("permission", LenseePermissions.SupplyRead));
+      options.AddPolicy("supply.read", policy =>
+          policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.ERPAdmin, LenseeRoles.WarehouseClerk)
+              .RequireClaim("permission", LenseePermissions.SupplyRead));
+
+      options.AddPolicy("supply.costs.read", policy =>
+          policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
+              .RequireClaim("permission", LenseePermissions.SupplyRead));
 
     options.AddPolicy("supply.write", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.SupplyWrite));
+
+    options.AddPolicy("supply.receive", policy =>
+        policy.RequireAssertion(context =>
+        {
+            var role = context.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+            var hasReceive = context.User.HasClaim("permission", LenseePermissions.SupplyReceive);
+            var legacySupplyWriter = (role == LenseeRoles.Admin || role == LenseeRoles.ERPAdmin) && context.User.HasClaim("permission", LenseePermissions.SupplyWrite);
+            return (role == LenseeRoles.Admin || role == LenseeRoles.ERPAdmin || role == LenseeRoles.WarehouseClerk) && (hasReceive || legacySupplyWriter);
+        }));
 
     options.AddPolicy("supply.payments.approve", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
@@ -681,6 +703,7 @@ app.MapInventoryEndpoints();
 app.MapOperationsEndpoints();
 app.MapPaymentsEndpoints();
 app.MapFinanceEndpoints();
+app.MapSupplyFinanceEndpoints();
 app.MapReconciliationImportEndpoints();
 app.MapOutboxEndpoints();
 app.MapShopifyEndpoints();

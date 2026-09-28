@@ -324,9 +324,15 @@ public static partial class FinanceEndpoints
         if (entity.Status is "Paid" or "Posted") return Results.Ok(ToExpenseResponse(entity));
         if (entity.Status is not ("Pending" or "PendingReview" or "Draft")) return Results.Conflict(new { code = "expense-not-payable" });
         if (actor == Guid.Empty) return Results.Unauthorized();
-        if (entity.ReversesExpenseId is Guid originalId) { var original = await finance.FinanceExpenses.SingleAsync(value => value.Id == originalId, ct); if (original.PostedFinanceLedgerEntryId is not Guid originalEntry) return Results.Conflict(new { code = "expense-reversal-source-missing" }); var entry = await finance.FinanceLedgerEntries.SingleAsync(value => value.Id == originalEntry, ct); await ledger.ReverseMovementAsync(entry, "FinanceExpenseReversal", entity.Id, actor, entity.CorrelationId, ct); }
-        var posted = await ledger.PostMovementAsync("FinanceExpense", entity.Id, "Finance", entity.MovementMethod, entity.Amount, entity.FinanceAccountId, entity.ExternalReference, "OperatingExpense", FinanceLedgerService.Debit, actor, entity.BusinessDate, entity.CorrelationId, ct);
-        entity.Status = "Paid"; entity.ApprovedByUserId = actor; entity.ApprovedAt = clock.EgyptNow; entity.PostedFinanceLedgerEntryId = posted.Id; await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct); return Results.Ok(ToExpenseResponse(entity));
+        try
+        {
+            if (entity.ReversesExpenseId is Guid originalId) { var original = await finance.FinanceExpenses.SingleAsync(value => value.Id == originalId, ct); if (original.PostedFinanceLedgerEntryId is not Guid originalEntry) return Results.Conflict(new { code = "expense-reversal-source-missing" }); var entry = await finance.FinanceLedgerEntries.SingleAsync(value => value.Id == originalEntry, ct); await ledger.ReverseMovementAsync(entry, "FinanceExpenseReversal", entity.Id, actor, entity.CorrelationId, ct); }
+            var posted = await ledger.PostMovementAsync("FinanceExpense", entity.Id, "Finance", entity.MovementMethod, entity.Amount, entity.FinanceAccountId, entity.ExternalReference, "OperatingExpense", FinanceLedgerService.Debit, actor, entity.BusinessDate, entity.CorrelationId, ct);
+            entity.Status = "Paid"; entity.ApprovedByUserId = actor; entity.ApprovedAt = clock.EgyptNow; entity.PostedFinanceLedgerEntryId = posted.Id; await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct); return Results.Ok(ToExpenseResponse(entity));
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "expense-approval-transition-conflict", detail = "The expense was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "expense-approval-save-conflict", detail = "The expense approval could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "expense-approval-rejected", detail = ex.Message }); }
     }
 
     private static async Task<IResult> CorrectExpenseAsync(Guid id, FinanceExpenseCorrectionRequest request, FinanceDbContext finance, FinanceLedgerService ledger, ICurrentUser user, IClock clock, CancellationToken ct)
@@ -347,14 +353,26 @@ public static partial class FinanceEndpoints
         var errors = ValidateExpense(new FinanceExpenseRequest(replacement.FinanceAccountId, replacement.Amount, replacement.Category, replacement.MovementMethod, replacement.BusinessDate, replacement.Description, replacement.ExternalReference, replacement.CorrelationId)); if (errors.Count > 0) return Results.ValidationProblem(errors);
         if (original.PostedFinanceLedgerEntryId is not Guid originalEntryId) return Results.Conflict(new { code = "expense-ledger-source-missing" });
         var originalEntry = await finance.FinanceLedgerEntries.SingleAsync(value => value.Id == originalEntryId, ct);
-        await ledger.ReverseMovementAsync(originalEntry, "FinanceExpenseReversal", replacement.Id, user.UserId ?? Guid.Empty, replacement.CorrelationId, ct);
-        var posted = await ledger.PostMovementAsync("FinanceExpense", replacement.Id, "Finance", replacement.MovementMethod, replacement.Amount,
-            replacement.FinanceAccountId, replacement.ExternalReference, "OperatingExpense", FinanceLedgerService.Debit,
-            user.UserId ?? Guid.Empty, replacement.BusinessDate, replacement.CorrelationId, ct);
+        FinanceLedgerEntry posted;
+        try
+        {
+            await ledger.ReverseMovementAsync(originalEntry, "FinanceExpenseReversal", replacement.Id, user.UserId ?? Guid.Empty, replacement.CorrelationId, ct);
+            posted = await ledger.PostMovementAsync("FinanceExpense", replacement.Id, "Finance", replacement.MovementMethod, replacement.Amount,
+                replacement.FinanceAccountId, replacement.ExternalReference, "OperatingExpense", FinanceLedgerService.Debit,
+                user.UserId ?? Guid.Empty, replacement.BusinessDate, replacement.CorrelationId, ct);
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "expense-correction-transition-conflict", detail = "The original expense ledger changed during correction. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "expense-correction-ledger-save-conflict", detail = "The expense correction ledger entries could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "expense-correction-rejected", detail = ex.Message }); }
         replacement.Status = "Paid"; replacement.ApprovedByUserId = user.UserId; replacement.ApprovedAt = clock.EgyptNow;
         replacement.PostedFinanceLedgerEntryId = posted.Id;
         original.ReplacedByExpenseId = replacement.Id; original.Status = "Corrected"; finance.FinanceExpenses.Add(replacement);
-        await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct);
+        try
+        {
+            await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "expense-correction-transition-conflict", detail = "The original expense was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "expense-correction-save-conflict", detail = "The expense correction could not be saved." }); }
         return Results.Created($"/api/v1/finance/expenses/{replacement.Id}", ToExpenseResponse(replacement));
     }
 
@@ -381,7 +399,7 @@ public static partial class FinanceEndpoints
         return Results.Ok(new { page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize), items = items.Select(value => new { withdrawal = value, assignedToName = users.GetValueOrDefault(value.AssignedToCLevelUserId) }) });
     }
 
-    private static async Task<IResult> CreateWithdrawalAsync(CLevelWithdrawalRequest request, FinanceDbContext finance, IdentityDbContext identity, FinanceLedgerService ledger, ICurrentUser currentUser, IClock clock, CancellationToken ct)
+    private static async Task<IResult> CreateWithdrawalAsync(CLevelWithdrawalRequest request, FinanceDbContext finance, IdentityDbContext identity, ICurrentUser currentUser, IClock clock, CancellationToken ct)
     {
         var actor = currentUser.UserId ?? Guid.Empty;
         if (!await IsPrimaryAdminAsync(identity, actor, ct)) return Results.Forbid();
@@ -397,15 +415,11 @@ public static partial class FinanceEndpoints
             if (category is null) return Results.BadRequest(new { code = "invalid-withdrawal-category" });
         }
         else category = await finance.FinanceCategories.SingleOrDefaultAsync(value => value.Kind == "Withdrawal" && value.Code == "CLevelWithdrawal" && value.IsActive, ct);
-        var entity = new CLevelWithdrawal { Id = Guid.NewGuid(), AssignedToCLevelUserId = request.AssignedToCLevelUserId, AssignedByUserId = actor, FinanceAccountId = request.FinanceAccountId, Amount = request.Amount, MovementMethod = request.MovementMethod, BusinessDate = request.BusinessDate, Reason = request.Reason.Trim(), CategoryId = category?.Id, Status = "Posted", CreatedByUserId = actor, CreatedAt = clock.EgyptNow, ApprovedByUserId = actor, ApprovedAt = clock.EgyptNow, ExternalReference = Clean(request.ExternalReference), CorrelationId = Clean(request.CorrelationId) };
-        await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
-        var posted = await ledger.PostMovementAsync("CLevelWithdrawal", entity.Id, "Finance", entity.MovementMethod, entity.Amount,
-            entity.FinanceAccountId, entity.ExternalReference, "CLevelWithdrawal", FinanceLedgerService.Debit,
-            actor, entity.BusinessDate, entity.CorrelationId, ct);
-        entity.PostedFinanceLedgerEntryId = posted.Id;
+        // Creation is a non-posting workflow step. Treasury must not move until a
+        // separate eligible reviewer approves the PendingReview withdrawal.
+        var entity = new CLevelWithdrawal { Id = Guid.NewGuid(), AssignedToCLevelUserId = request.AssignedToCLevelUserId, AssignedByUserId = actor, FinanceAccountId = request.FinanceAccountId, Amount = request.Amount, MovementMethod = request.MovementMethod, BusinessDate = request.BusinessDate, Reason = request.Reason.Trim(), CategoryId = category?.Id, Status = "Draft", CreatedByUserId = actor, CreatedAt = clock.EgyptNow, ExternalReference = Clean(request.ExternalReference), CorrelationId = Clean(request.CorrelationId) };
         finance.CLevelWithdrawals.Add(entity);
         await PersistenceBoundary.CommitAsync(finance, ct);
-        if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Created($"/api/v1/finance/withdrawals/{entity.Id}", ToWithdrawalResponse(entity));
     }
 
@@ -418,7 +432,9 @@ public static partial class FinanceEndpoints
         if (entity.Status != "Draft") return Results.Conflict(new { code = "withdrawal-not-submittable" });
         if (currentUser.UserId is not Guid actor || actor != entity.CreatedByUserId) return Results.Forbid();
         entity.Status = "PendingReview";
-        await PersistenceBoundary.CommitAsync(finance, ct);
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-submit-transition-conflict", detail = "The withdrawal was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-submit-save-conflict", detail = "The withdrawal could not be submitted." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Ok(ToWithdrawalResponse(entity));
     }
@@ -431,21 +447,29 @@ public static partial class FinanceEndpoints
         if (entity is null) return Results.NotFound();
         if (entity.Status == "Posted") return Results.Ok(ToWithdrawalResponse(entity));
         if (entity.Status != "PendingReview") return Results.Conflict(new { code = "withdrawal-not-reviewable" });
-        if (actor == Guid.Empty || actor == entity.AssignedToCLevelUserId)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["The beneficiary cannot post this withdrawal."] });
+        if (actor == Guid.Empty || actor == entity.AssignedToCLevelUserId || actor == entity.CreatedByUserId)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["The creator and beneficiary cannot post this withdrawal."] });
 
-        var posted = await ledger.PostMovementAsync("CLevelWithdrawal", entity.Id, "Finance", entity.MovementMethod, entity.Amount, entity.FinanceAccountId, entity.ExternalReference, "CLevelWithdrawal", FinanceLedgerService.Debit, actor, entity.BusinessDate, entity.CorrelationId, ct);
-        entity.Status = "Posted";
-        entity.ApprovedByUserId = actor;
-        entity.ApprovedAt = clock.EgyptNow;
-        entity.PostedFinanceLedgerEntryId = posted.Id;
-        await PersistenceBoundary.CommitAsync(finance, ct);
-        if (transaction is not null) await transaction.CommitAsync(ct);
-        return Results.Ok(ToWithdrawalResponse(entity));
+        try
+        {
+            var posted = await ledger.PostMovementAsync("CLevelWithdrawal", entity.Id, "Finance", entity.MovementMethod, entity.Amount, entity.FinanceAccountId, entity.ExternalReference, "CLevelWithdrawal", FinanceLedgerService.Debit, actor, entity.BusinessDate, entity.CorrelationId, ct);
+            entity.Status = "Posted";
+            entity.ApprovedByUserId = actor;
+            entity.ApprovedAt = clock.EgyptNow;
+            entity.PostedFinanceLedgerEntryId = posted.Id;
+            await PersistenceBoundary.CommitAsync(finance, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return Results.Ok(ToWithdrawalResponse(entity));
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-approval-transition-conflict", detail = "The withdrawal was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-approval-save-conflict", detail = "The withdrawal approval could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "withdrawal-posting-rejected", detail = ex.Message }); }
     }
 
-    private static async Task<IResult> RejectWithdrawalAsync(Guid id, FinanceDbContext finance, ICurrentUser currentUser, CancellationToken ct)
+    private static async Task<IResult> RejectWithdrawalAsync(Guid id, FinanceReviewRequest request, FinanceDbContext finance, ICurrentUser currentUser, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A rejection note is required."] });
         var actor = currentUser.UserId ?? Guid.Empty;
         await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
         var entity = await LoadWithdrawalForUpdateAsync(id, finance, ct);
@@ -455,7 +479,10 @@ public static partial class FinanceEndpoints
         if (actor == Guid.Empty || actor == entity.CreatedByUserId || actor == entity.AssignedToCLevelUserId)
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["The creator and beneficiary cannot reject this protected withdrawal."] });
         entity.Status = "Rejected";
-        await PersistenceBoundary.CommitAsync(finance, ct);
+        entity.CorrectionNote = request.Reason.Trim();
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-rejection-transition-conflict", detail = "The withdrawal was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-rejection-save-conflict", detail = "The withdrawal rejection could not be saved." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Ok(ToWithdrawalResponse(entity));
     }
@@ -478,25 +505,41 @@ public static partial class FinanceEndpoints
         var replacement = new CLevelWithdrawal { Id = Guid.NewGuid(), AssignedToCLevelUserId = assignee, AssignedByUserId = actor, FinanceAccountId = replacementAccountId, Amount = request.Amount, MovementMethod = replacementMethod, BusinessDate = request.BusinessDate ?? original.BusinessDate, Reason = original.Reason, CategoryId = original.CategoryId, CorrectionNote = request.Reason.Trim(), CreatedByUserId = actor, CreatedAt = clock.EgyptNow, ReversesWithdrawalId = original.Id, ExternalReference = Clean(request.ExternalReference), CorrelationId = Clean(request.CorrelationId) };
         var errors = ValidateWithdrawal(new CLevelWithdrawalRequest(replacement.AssignedToCLevelUserId, replacement.FinanceAccountId, replacement.Amount, replacement.MovementMethod, replacement.BusinessDate, replacement.Reason, replacement.ExternalReference, replacement.CorrelationId)); if (errors.Count > 0) return Results.ValidationProblem(errors);
         if (original.PostedFinanceLedgerEntryId is not Guid originalEntryId) return Results.Conflict(new { code = "withdrawal-ledger-source-missing" });
-        var originalEntry = await finance.FinanceLedgerEntries.SingleAsync(value => value.Id == originalEntryId, ct);
-        await ledger.ReverseMovementAsync(originalEntry, "CLevelWithdrawalReversal", replacement.Id, actor, replacement.CorrelationId, ct);
-        var posted = await ledger.PostMovementAsync("CLevelWithdrawal", replacement.Id, "Finance", replacement.MovementMethod,
-            replacement.Amount, replacement.FinanceAccountId, replacement.ExternalReference, "CLevelWithdrawal",
-            FinanceLedgerService.Debit, actor, replacement.BusinessDate, replacement.CorrelationId, ct);
-        replacement.Status = "Posted"; replacement.PostedFinanceLedgerEntryId = posted.Id;
-        replacement.ApprovedByUserId = actor; replacement.ApprovedAt = clock.EgyptNow;
-        original.ReplacedByWithdrawalId = replacement.Id; original.Status = "Corrected"; finance.CLevelWithdrawals.Add(replacement);
-        await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct);
-        return Results.Created($"/api/v1/finance/withdrawals/{replacement.Id}", ToWithdrawalResponse(replacement));
+        try
+        {
+            var originalEntry = await finance.FinanceLedgerEntries.SingleAsync(value => value.Id == originalEntryId, ct);
+            await ledger.ReverseMovementAsync(originalEntry, "CLevelWithdrawalReversal", replacement.Id, actor, replacement.CorrelationId, ct);
+            var posted = await ledger.PostMovementAsync("CLevelWithdrawal", replacement.Id, "Finance", replacement.MovementMethod,
+                replacement.Amount, replacement.FinanceAccountId, replacement.ExternalReference, "CLevelWithdrawal",
+                FinanceLedgerService.Debit, actor, replacement.BusinessDate, replacement.CorrelationId, ct);
+            replacement.Status = "Posted"; replacement.PostedFinanceLedgerEntryId = posted.Id;
+            replacement.ApprovedByUserId = actor; replacement.ApprovedAt = clock.EgyptNow;
+            original.ReplacedByWithdrawalId = replacement.Id; original.Status = "Corrected"; finance.CLevelWithdrawals.Add(replacement);
+            await PersistenceBoundary.CommitAsync(finance, ct); if (transaction is not null) await transaction.CommitAsync(ct);
+            return Results.Created($"/api/v1/finance/withdrawals/{replacement.Id}", ToWithdrawalResponse(replacement));
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-correction-transition-conflict", detail = "The withdrawal was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-correction-save-conflict", detail = "The withdrawal correction could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "withdrawal-correction-rejected", detail = ex.Message }); }
     }
 
     private static async Task<IResult> SubmitExpenseAsync(Guid id, FinanceDbContext finance, CancellationToken ct)
     {
-        var entity = await finance.FinanceExpenses.SingleOrDefaultAsync(value => value.Id == id, ct); if (entity is null) return Results.NotFound(); if (entity.Status == "PendingReview") return Results.Ok(ToExpenseResponse(entity)); if (entity.Status != "Draft") return Results.Conflict(new { code = "expense-not-submittable" }); entity.Status = "PendingReview"; await PersistenceBoundary.CommitAsync(finance, ct); return Results.Ok(ToExpenseResponse(entity));
+        var entity = await finance.FinanceExpenses.SingleOrDefaultAsync(value => value.Id == id, ct); if (entity is null) return Results.NotFound(); if (entity.Status == "PendingReview") return Results.Ok(ToExpenseResponse(entity)); if (entity.Status != "Draft") return Results.Conflict(new { code = "expense-not-submittable" }); entity.Status = "PendingReview";
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "expense-submit-transition-conflict", detail = "The expense was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "expense-submit-save-conflict", detail = "The expense could not be submitted." }); }
+        return Results.Ok(ToExpenseResponse(entity));
     }
-    private static async Task<IResult> RejectExpenseAsync(Guid id, FinanceDbContext finance, CancellationToken ct)
+    private static async Task<IResult> RejectExpenseAsync(Guid id, FinanceReviewRequest request, FinanceDbContext finance, CancellationToken ct)
     {
-        var entity = await finance.FinanceExpenses.SingleOrDefaultAsync(value => value.Id == id, ct); if (entity is null) return Results.NotFound(); if (entity.Status != "PendingReview") return Results.Conflict(new { code = "expense-not-reviewable" }); entity.Status = "Rejected"; await PersistenceBoundary.CommitAsync(finance, ct); return Results.Ok(ToExpenseResponse(entity));
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A rejection note is required."] });
+        var entity = await finance.FinanceExpenses.SingleOrDefaultAsync(value => value.Id == id, ct); if (entity is null) return Results.NotFound(); if (entity.Status != "PendingReview") return Results.Conflict(new { code = "expense-not-reviewable" }); entity.Status = "Rejected"; entity.CorrectionNote = request.Reason.Trim();
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "expense-rejection-transition-conflict", detail = "The expense was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "expense-rejection-save-conflict", detail = "The expense rejection could not be saved." }); }
+        return Results.Ok(ToExpenseResponse(entity));
     }
     private static async Task<FinanceAccount?> GetActiveAccountAsync(FinanceDbContext finance, Guid id, CancellationToken ct) => id != Guid.Empty ? await finance.FinanceAccounts.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id && value.IsActive, ct) : null;
     private static async Task<FinanceExpense?> LoadExpenseForUpdateAsync(Guid id, FinanceDbContext finance, CancellationToken ct)
@@ -576,7 +619,9 @@ public static partial class FinanceEndpoints
         if (balance.Status != "Draft") return Results.Conflict(new { code = "opening-balance-not-submittable" });
         balance.Status = "PendingReview";
         balance.ReviewedAt = null;
-        await PersistenceBoundary.CommitAsync(finance, ct);
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "opening-balance-submit-transition-conflict", detail = "The opening balance was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "opening-balance-submit-save-conflict", detail = "The opening balance could not be submitted." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Ok(ToOpeningBalanceResponse(balance));
     }
@@ -589,6 +634,8 @@ public static partial class FinanceEndpoints
         IClock clock,
         CancellationToken ct)
     {
+        try
+        {
         await using var transaction = finance.Database.IsRelational()
             ? await PersistenceBoundary.OpenTransactionAsync(finance, ct)
             : null;
@@ -603,7 +650,6 @@ public static partial class FinanceEndpoints
         balance.Status = "Posted";
         balance.ReviewedBy = actorId;
         balance.ReviewedAt = clock.EgyptNow;
-        await PersistenceBoundary.CommitAsync(finance, ct);
         if (balance.ReversesOpeningBalanceId is Guid originalId)
         {
             var original = await finance.FinanceOpeningBalances.SingleAsync(value => value.Id == originalId, ct);
@@ -632,6 +678,19 @@ public static partial class FinanceEndpoints
         if (transaction is not null)
             await transaction.CommitAsync(ct);
         return Results.Ok(ToOpeningBalanceResponse(balance));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "opening-balance-approval-concurrency-conflict", detail = "The opening balance changed during approval. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "opening-balance-approval-save-conflict", detail = "The opening balance approval could not be saved." });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Results.Conflict(new { code = "opening-balance-approval-rejected", detail = exception.Message });
+        }
     }
 
     private static async Task<IResult> RejectOpeningBalanceAsync(
@@ -653,7 +712,9 @@ public static partial class FinanceEndpoints
         balance.ReviewedAt = clock.EgyptNow;
         balance.Description = $"{balance.Description}\nRejected: {request.Reason.Trim()}";
         original.ReplacedByOpeningBalanceId = null;
-        await PersistenceBoundary.CommitAsync(finance, ct);
+        try { await PersistenceBoundary.CommitAsync(finance, ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "opening-balance-rejection-transition-conflict", detail = "The opening balance was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "opening-balance-rejection-save-conflict", detail = "The opening-balance rejection could not be saved." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Ok(ToOpeningBalanceResponse(balance));
     }
@@ -696,23 +757,29 @@ public static partial class FinanceEndpoints
             ReversesOpeningBalanceId = original.Id,
             CorrelationId = request.CorrelationId
         };
-        if (currentUser.Role == LenseeRoles.Admin)
+        try
         {
-            // Replacement credit is posted first so the final corrected balance,
-            // rather than a temporary reversal, determines sufficiency.
-            var entry = await ledger.PostMovementAsync("FinanceOpeningBalance", replacement.Id, "Finance", "FinanceOpeningBalance", replacement.Amount,
-                replacement.FinanceAccountId, null, "TreasuryOpeningBalance", replacement.Direction, actorId, replacement.AsOfDate, replacement.CorrelationId, ct);
-            await ledger.PostMovementAsync("FinanceOpeningBalanceReversal", replacement.Id, "Finance", "FinanceOpeningBalance", original.Amount,
-                original.FinanceAccountId, null, "TreasuryOpeningBalanceReversal", FinanceLedgerService.Debit, actorId, original.AsOfDate, replacement.CorrelationId, ct);
-            replacement.Status = "Posted"; replacement.PostedEntryId = entry.Id; replacement.ReviewedBy = actorId; replacement.ReviewedAt = clock.EgyptNow;
+            if (currentUser.Role == LenseeRoles.Admin)
+            {
+                // Replacement credit is posted first so the final corrected balance,
+                // rather than a temporary reversal, determines sufficiency.
+                var entry = await ledger.PostMovementAsync("FinanceOpeningBalance", replacement.Id, "Finance", "FinanceOpeningBalance", replacement.Amount,
+                    replacement.FinanceAccountId, null, "TreasuryOpeningBalance", replacement.Direction, actorId, replacement.AsOfDate, replacement.CorrelationId, ct);
+                await ledger.PostMovementAsync("FinanceOpeningBalanceReversal", replacement.Id, "Finance", "FinanceOpeningBalance", original.Amount,
+                    original.FinanceAccountId, null, "TreasuryOpeningBalanceReversal", FinanceLedgerService.Debit, actorId, original.AsOfDate, replacement.CorrelationId, ct);
+                replacement.Status = "Posted"; replacement.PostedEntryId = entry.Id; replacement.ReviewedBy = actorId; replacement.ReviewedAt = clock.EgyptNow;
+            }
+            else replacement.Status = "PendingReview";
+            original.ReplacedByOpeningBalanceId = replacement.Id;
+            if (currentUser.Role == LenseeRoles.Admin) original.Status = "Corrected";
+            finance.FinanceOpeningBalances.Add(replacement);
+            await PersistenceBoundary.CommitAsync(finance, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return Results.Created($"/api/v1/finance/opening-balances/{replacement.Id}", ToOpeningBalanceResponse(replacement));
         }
-        else replacement.Status = "PendingReview";
-        original.ReplacedByOpeningBalanceId = replacement.Id;
-        if (currentUser.Role == LenseeRoles.Admin) original.Status = "Corrected";
-        finance.FinanceOpeningBalances.Add(replacement);
-        await PersistenceBoundary.CommitAsync(finance, ct);
-        if (transaction is not null) await transaction.CommitAsync(ct);
-        return Results.Created($"/api/v1/finance/opening-balances/{replacement.Id}", ToOpeningBalanceResponse(replacement));
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "opening-balance-correction-transition-conflict", detail = "The opening balance was changed by another request. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "opening-balance-correction-save-conflict", detail = "The opening-balance correction could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "opening-balance-correction-rejected", detail = ex.Message }); }
     }
 
     private static object ToOpeningBalanceResponse(FinanceOpeningBalance balance) => new

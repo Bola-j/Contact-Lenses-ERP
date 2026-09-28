@@ -55,5 +55,7 @@ public partial class SupplyShipment
 
     public virtual ICollection<SupplyShipmentLine> Lines { get; set; } = new List<SupplyShipmentLine>();
 
+    public virtual ICollection<SupplyReceivingSession> ReceivingSessions { get; set; } = new List<SupplyReceivingSession>();
+
     public virtual ICollection<SupplyPayment> Payments { get; set; } = new List<SupplyPayment>();
 }

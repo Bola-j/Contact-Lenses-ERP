@@ -1,0 +1,161 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="262cd1d2-c48a-438c-bd35-43d8bd5c5b48" name="Bola_Gerges@BOLA 2026-09-27 20:59:35" runUser="Bola\Bola_Gerges" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-09-27T20:59:35.8503651+03:00" queuing="2026-09-27T20:59:35.8503658+03:00" start="2026-09-27T20:59:16.2764230+03:00" finish="2026-09-27T21:00:01.3214152+03:00" />
+  <TestSettings name="default" id="5d22f62b-2663-45fd-acd4-b14d4352372a">
+    <Deployment runDeploymentRoot="Bola_Gerges_BOLA_2026-09-27_20_59_35" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="73e7b532-c754-4806-99a3-4910608980b7" testId="97488b6d-e9b4-ef5e-5cf1-516c7529b4d1" testName="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.FinanceLatest_RollsBackOneMigrationAndMigratesForwardAgain" computerName="BOLA" duration="00:00:05.6213404" startTime="2026-09-27T20:59:51.9790179+03:00" endTime="2026-09-27T20:59:51.9790182+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="73e7b532-c754-4806-99a3-4910608980b7" />
+    <UnitTestResult executionId="291b2b66-c10c-4664-92f3-44930bdaaf88" testId="69601fce-d000-a52b-6560-7c09bcd1694f" testName="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.EmptyDatabase_ReachesLatestForEveryDbContext_UsingMigrationsOnly" computerName="BOLA" duration="00:00:09.0050095" startTime="2026-09-27T20:59:36.7540011+03:00" endTime="2026-09-27T20:59:36.7540014+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="291b2b66-c10c-4664-92f3-44930bdaaf88" />
+    <UnitTestResult executionId="38272c7a-26ba-46d7-8320-4bfbe97e977b" testId="41015f80-1263-bf3d-19a3-9b1f3f4cb0ad" testName="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests.MerchantCollectionReviewLock_UsesMigrationCreatedQuotedIdentifier" computerName="BOLA" duration="00:00:00.3517698" startTime="2026-09-27T20:59:50.7971892+03:00" endTime="2026-09-27T20:59:50.7971896+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="38272c7a-26ba-46d7-8320-4bfbe97e977b" />
+    <UnitTestResult executionId="99eefa8c-8ae0-433d-9cac-de5655490fcc" testId="0a2a5bad-4720-be75-af86-7e13771d874e" testName="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.InitialHistoricalCheckpoint_UpgradesEveryDbContextToLatest" computerName="BOLA" duration="00:00:04.3799130" startTime="2026-09-27T21:00:01.1981058+03:00" endTime="2026-09-27T21:00:01.1981061+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="99eefa8c-8ae0-433d-9cac-de5655490fcc" />
+    <UnitTestResult executionId="d05b6094-2681-478b-851f-f65d53a3e905" testId="6269915f-c648-f53a-45b5-d5f8027c848c" testName="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests.UpgradeFromPriorReleaseSchema_AppliesAllModuleHardeningMigrations" computerName="BOLA" duration="00:00:04.0637774" startTime="2026-09-27T20:59:49.8025630+03:00" endTime="2026-09-27T20:59:49.8025636+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d05b6094-2681-478b-851f-f65d53a3e905" />
+    <UnitTestResult executionId="9bbc3e97-eae7-45bf-820e-fbcf4d2c84cb" testId="fb7490f7-5f4f-5bed-c1a5-954719e511dd" testName="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests.HardeningMigrations_AreAppliedToAFreshDatabase" computerName="BOLA" duration="00:00:00.2721404" startTime="2026-09-27T20:59:35.8029746+03:00" endTime="2026-09-27T20:59:35.8029981+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="9bbc3e97-eae7-45bf-820e-fbcf4d2c84cb" />
+    <UnitTestResult executionId="f56b3ba8-f695-45ff-a04f-1805e1bc31c6" testId="7e502901-aaa8-54c5-c21b-93961adacd00" testName="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests.PaymentsUpgrade_WithHistoricalDeferredPaymentLabelsAndAggregateDrift_AllowsLabelCleanup" computerName="BOLA" duration="00:00:07.9540534" startTime="2026-09-27T20:59:35.9504876+03:00" endTime="2026-09-27T20:59:35.9504879+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f56b3ba8-f695-45ff-a04f-1805e1bc31c6" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests.UpgradeFromPriorReleaseSchema_AppliesAllModuleHardeningMigrations" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="6269915f-c648-f53a-45b5-d5f8027c848c">
+      <Execution id="d05b6094-2681-478b-851f-f65d53a3e905" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests" name="UpgradeFromPriorReleaseSchema_AppliesAllModuleHardeningMigrations" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests.MerchantCollectionReviewLock_UsesMigrationCreatedQuotedIdentifier" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="41015f80-1263-bf3d-19a3-9b1f3f4cb0ad">
+      <Execution id="38272c7a-26ba-46d7-8320-4bfbe97e977b" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests" name="MerchantCollectionReviewLock_UsesMigrationCreatedQuotedIdentifier" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.EmptyDatabase_ReachesLatestForEveryDbContext_UsingMigrationsOnly" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="69601fce-d000-a52b-6560-7c09bcd1694f">
+      <Execution id="291b2b66-c10c-4664-92f3-44930bdaaf88" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests" name="EmptyDatabase_ReachesLatestForEveryDbContext_UsingMigrationsOnly" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.InitialHistoricalCheckpoint_UpgradesEveryDbContextToLatest" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="0a2a5bad-4720-be75-af86-7e13771d874e">
+      <Execution id="99eefa8c-8ae0-433d-9cac-de5655490fcc" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests" name="InitialHistoricalCheckpoint_UpgradesEveryDbContextToLatest" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests.HardeningMigrations_AreAppliedToAFreshDatabase" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="fb7490f7-5f4f-5bed-c1a5-954719e511dd">
+      <Execution id="9bbc3e97-eae7-45bf-820e-fbcf4d2c84cb" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.PaymentIntegrityPostgresTests" name="HardeningMigrations_AreAppliedToAFreshDatabase" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests.FinanceLatest_RollsBackOneMigrationAndMigratesForwardAgain" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="97488b6d-e9b4-ef5e-5cf1-516c7529b4d1">
+      <Execution id="73e7b532-c754-4806-99a3-4910608980b7" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.MigrationIntegrityPostgresTests" name="FinanceLatest_RollsBackOneMigrationAndMigratesForwardAgain" />
+    </UnitTest>
+    <UnitTest name="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests.PaymentsUpgrade_WithHistoricalDeferredPaymentLabelsAndAggregateDrift_AllowsLabelCleanup" storage="d:\lenseeproduction\backend\lensee.postgresintegrationtests\bin\debug\net8.0\lensee.postgresintegrationtests.dll" id="7e502901-aaa8-54c5-c21b-93961adacd00">
+      <Execution id="f56b3ba8-f695-45ff-a04f-1805e1bc31c6" />
+      <TestMethod codeBase="D:\LenseeProduction\backend\Lensee.PostgresIntegrationTests\bin\Debug\net8.0\Lensee.PostgresIntegrationTests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="Lensee.PostgresIntegrationTests.MigrationUpgradePostgresTests" name="PaymentsUpgrade_WithHistoricalDeferredPaymentLabelsAndAggregateDrift_AllowsLabelCleanup" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="97488b6d-e9b4-ef5e-5cf1-516c7529b4d1" executionId="73e7b532-c754-4806-99a3-4910608980b7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="69601fce-d000-a52b-6560-7c09bcd1694f" executionId="291b2b66-c10c-4664-92f3-44930bdaaf88" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="41015f80-1263-bf3d-19a3-9b1f3f4cb0ad" executionId="38272c7a-26ba-46d7-8320-4bfbe97e977b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0a2a5bad-4720-be75-af86-7e13771d874e" executionId="99eefa8c-8ae0-433d-9cac-de5655490fcc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="6269915f-c648-f53a-45b5-d5f8027c848c" executionId="d05b6094-2681-478b-851f-f65d53a3e905" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="fb7490f7-5f4f-5bed-c1a5-954719e511dd" executionId="9bbc3e97-eae7-45bf-820e-fbcf4d2c84cb" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7e502901-aaa8-54c5-c21b-93961adacd00" executionId="f56b3ba8-f695-45ff-a04f-1805e1bc31c6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="7" executed="7" passed="7" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 8.0.27)&#xD;
+[xUnit.net 00:00:00.14]   Discovering: Lensee.PostgresIntegrationTests&#xD;
+[xUnit.net 00:00:00.18]   Discovered:  Lensee.PostgresIntegrationTests&#xD;
+[xUnit.net 00:00:00.19]   Starting:    Lensee.PostgresIntegrationTests&#xD;
+[testcontainers.org 00:00:00.18] Connected to Docker:&#xD;
+  Host: npipe://./pipe/docker_engine&#xD;
+  Server Version: 29.4.0&#xD;
+  Kernel Version: 6.18.33.2-microsoft-standard-WSL2&#xD;
+  API Version: 1.54&#xD;
+  Operating System: Docker Desktop&#xD;
+  Total Memory: 3.83 GB&#xD;
+  Labels: &#xD;
+    com.docker.desktop.address=npipe://\\.\pipe\docker_cli&#xD;
+[testcontainers.org 00:00:00.59] Docker container 526dac80c6ce created&#xD;
+[testcontainers.org 00:00:00.65] Start Docker container 526dac80c6ce&#xD;
+[testcontainers.org 00:00:01.08] Wait for Docker container 526dac80c6ce to complete readiness checks&#xD;
+[testcontainers.org 00:00:02.15] Docker container 526dac80c6ce ready&#xD;
+[testcontainers.org 00:00:02.74] Docker container 6af58130a282 created&#xD;
+[testcontainers.org 00:00:02.77] Start Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:02.77] Docker container 9c2879729bd4 created&#xD;
+[testcontainers.org 00:00:02.78] Docker container 7572b6d6f184 created&#xD;
+[testcontainers.org 00:00:02.83] Start Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:02.85] Start Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:03.38] Wait for Docker container 6af58130a282 to complete readiness checks&#xD;
+[testcontainers.org 00:00:03.40] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:03.63] Wait for Docker container 7572b6d6f184 to complete readiness checks&#xD;
+[testcontainers.org 00:00:03.65] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:03.78] Wait for Docker container 9c2879729bd4 to complete readiness checks&#xD;
+[testcontainers.org 00:00:03.80] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:05.02] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:05.02] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:05.17] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:06.20] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:06.31] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:06.43] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:07.41] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:07.54] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:07.58] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:08.53] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:08.65] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:08.70] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:09.64] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:09.77] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:09.77] Docker container 7572b6d6f184 ready&#xD;
+[testcontainers.org 00:00:09.81] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:09.94] Docker container 6af58130a282 ready&#xD;
+[testcontainers.org 00:00:10.02] Docker container 9c2879729bd4 ready&#xD;
+[testcontainers.org 00:00:17.61] Delete Docker container 6af58130a282&#xD;
+[testcontainers.org 00:00:17.74] Delete Docker container 9c2879729bd4&#xD;
+[testcontainers.org 00:00:18.54] Delete Docker container 7572b6d6f184&#xD;
+[testcontainers.org 00:00:19.02] Docker container fce49e1d5c52 created&#xD;
+[testcontainers.org 00:00:19.04] Start Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:19.15] Docker container 1d3eba57ec07 created&#xD;
+[testcontainers.org 00:00:19.18] Start Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:19.71] Wait for Docker container fce49e1d5c52 to complete readiness checks&#xD;
+[testcontainers.org 00:00:19.74] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:19.85] Wait for Docker container 1d3eba57ec07 to complete readiness checks&#xD;
+[testcontainers.org 00:00:19.87] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:20.25] Docker container 4d86a5e35434 created&#xD;
+[testcontainers.org 00:00:20.28] Start Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:20.89] Wait for Docker container 4d86a5e35434 to complete readiness checks&#xD;
+[testcontainers.org 00:00:20.91] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:21.14] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:21.24] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:22.09] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:22.39] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:22.47] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:23.60] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:23.75] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:23.78] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:24.85] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:24.93] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:25.00] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:25.99] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:26.10] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:26.15] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:27.10] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:27.21] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:27.27] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:27.38] Docker container fce49e1d5c52 ready&#xD;
+[testcontainers.org 00:00:27.42] Docker container 1d3eba57ec07 ready&#xD;
+[testcontainers.org 00:00:28.23] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:28.40] Docker container 4d86a5e35434 ready&#xD;
+[testcontainers.org 00:00:31.50] Delete Docker container 1d3eba57ec07&#xD;
+[testcontainers.org 00:00:32.56] Delete Docker container fce49e1d5c52&#xD;
+[testcontainers.org 00:00:34.03] Delete Docker container 4d86a5e35434&#xD;
+[testcontainers.org 00:00:34.85] Docker container 360c1cee4ab3 created&#xD;
+[testcontainers.org 00:00:34.86] Start Docker container 360c1cee4ab3&#xD;
+[testcontainers.org 00:00:35.35] Wait for Docker container 360c1cee4ab3 to complete readiness checks&#xD;
+[testcontainers.org 00:00:35.37] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 360c1cee4ab3&#xD;
+[testcontainers.org 00:00:36.49] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 360c1cee4ab3&#xD;
+[testcontainers.org 00:00:37.63] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 360c1cee4ab3&#xD;
+[testcontainers.org 00:00:38.72] Execute "pg_isready --host localhost --dbname lensee --username lensee_user" at Docker container 360c1cee4ab3&#xD;
+[testcontainers.org 00:00:38.85] Docker container 360c1cee4ab3 ready&#xD;
+[testcontainers.org 00:00:43.23] Delete Docker container 360c1cee4ab3&#xD;
+[xUnit.net 00:00:44.22]   Finished:    Lensee.PostgresIntegrationTests&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

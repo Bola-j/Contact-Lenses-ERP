@@ -35,6 +35,11 @@ public static class SharedDbTransaction
         {
             foreach (var context in contexts)
             {
+                if (context.Database.CurrentTransaction is { } currentTransaction &&
+                    ReferenceEquals(currentTransaction.GetDbTransaction(), dbTransaction))
+                {
+                    continue;
+                }
                 await context.Database.UseTransactionAsync(dbTransaction, cancellationToken);
                 associatedContexts.Add(context);
             }

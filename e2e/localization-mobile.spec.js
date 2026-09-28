@@ -1,8 +1,7 @@
 const { test, expect } = require("@playwright/test");
 
 test("mobile: Arabic login is RTL, localized, and free of horizontal overflow", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/login", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/login", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("html")).toHaveAttribute("lang", "ar-EG");
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");

@@ -25,6 +25,12 @@ public partial class StocktakeSession
 
     public string Status { get; set; } = null!;
 
+    /// <summary>CycleCount is the historical workflow; SupplyReceiving creates an inventory receipt only.</summary>
+    public string Purpose { get; set; } = "CycleCount";
+    public Guid? SupplyShipmentId { get; set; }
+    public Guid? SupplyFinanceLogId { get; set; }
+    public Guid? InventoryReceiptOperationId { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime? ConfirmedAt { get; set; }

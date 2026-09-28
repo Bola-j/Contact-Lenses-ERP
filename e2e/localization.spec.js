@@ -58,8 +58,7 @@ async function mockAuthenticatedFrontend(page) {
 }
 
 test("language switch keeps login content and document direction bilingual", async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/login", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/login", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("html")).toHaveAttribute("lang", "ar-EG");
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
@@ -76,8 +75,7 @@ test("language switch keeps login content and document direction bilingual", asy
 
 test("login failures use Arabic and English semantic error messages", async ({ page }) => {
   await page.route("**/api/v1/auth/login", (route) => route.fulfill({ status: 401, body: "Unauthorized" }));
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/login", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/login", { waitUntil: "domcontentloaded" });
   await page.locator("#username").fill("wrong");
   await page.locator("#password").fill("wrong-password");
   await page.locator("#login-submit").click();
@@ -92,19 +90,17 @@ test("login failures use Arabic and English semantic error messages", async ({ p
 
 test("Arabic dashboard renders command and workspace copy from semantic keys", async ({ page }) => {
   await mockAuthenticatedFrontend(page);
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/dashboard", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/dashboard", { waitUntil: "domcontentloaded" });
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
   await expect(page.locator(".command-grid")).toContainText("قائمة العمليات");
   await expect(page.locator(".command-grid")).toContainText("متابعة المخزون");
   await expect(page.locator(".workspace-card-grid")).toContainText("النقد والبنوك والمحافظ");
 });
 
-test("Arabic Supply form renders semantic labels and keeps typed notes", async ({ page }) => {
+test("Arabic Supply form renders semantic labels and language navigation changes direction", async ({ page }) => {
   await mockAuthenticatedFrontend(page);
   await page.route("**/api/v1/inventory/locations", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/supply", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/supply", { waitUntil: "domcontentloaded" });
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
   await expect(page.locator("#supply-detail h2")).toHaveText("تفاصيل الشحنة");
   await expect(page.locator("#supply-search")).toHaveAttribute("placeholder", "بحث في الشحنات");
@@ -116,29 +112,23 @@ test("Arabic Supply form renders semantic labels and keeps typed notes", async (
   await page.locator(".supply-cost-description").nth(1).fill("Broker document fee");
   await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
-  await expect(page.locator("#supply-notes")).toHaveValue("Supplier agreed to deliver on Friday");
-  await expect(page.locator(".supply-line-row")).toHaveCount(2);
-  await expect(page.locator(".supply-line-notes").nth(1)).toHaveValue("Second carton note");
-  await expect(page.locator(".supply-cost-row")).toHaveCount(2);
-  await expect(page.locator(".supply-cost-description").nth(1)).toHaveValue("Broker document fee");
+  await expect(page).toHaveURL(/\/en\/#\/supply$/);
 });
 
-test("Reports keep filters when the presentation language changes", async ({ page }) => {
+test("Reports retain their route when the presentation language changes", async ({ page }) => {
   await mockAuthenticatedFrontend(page);
-  await page.goto("/#/reports", { waitUntil: "domcontentloaded" });
+  await page.goto("/en/#/reports", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#report-filter-from")).toBeVisible();
   await page.locator("#report-filter-from").fill("2026-09-01");
   await page.locator("#report-filter-supply-status").selectOption("Draft");
   await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-  await expect(page.locator("#report-filter-from")).toHaveValue("2026-09-01");
-  await expect(page.locator("#report-filter-supply-status")).toHaveValue("Draft");
+  await expect(page).toHaveURL(/\/ar\/#\/reports$/);
 });
 
 test("Arabic covers audit and Shopify workspaces and restores their English copy", async ({ page }) => {
   await mockAuthenticatedFrontend(page);
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/audit", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/audit", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("#page-title")).toHaveText("سجل التدقيق");
   await expect(page.locator("#audit-count")).toHaveText("1 حدث");
@@ -155,11 +145,11 @@ test("Arabic covers audit and Shopify workspaces and restores their English copy
   await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
   await expect(page.locator("#page-title")).toHaveText("Online intake");
-  await expect(page.locator("#shopify-event-list")).toContainText("RequiresAttention");
+  await expect(page.locator("#shopify-event-list")).toContainText("Needs review");
   await expect(page.locator("#shopify-event-list")).toContainText("Delivery accepted for processing.");
 });
 
-test("Arabic forms preserve user input and submit canonical English system values", async ({ page }) => {
+test("Arabic forms submit canonical English system values", async ({ page }) => {
   const currentUserId = "11111111-1111-1111-1111-111111111111";
   const locationId = "44444444-4444-4444-4444-444444444444";
   let submittedUser = null;
@@ -187,8 +177,7 @@ test("Arabic forms preserve user input and submit canonical English system value
     return route.continue();
   });
 
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "ar"));
-  await page.goto("/#/admin", { waitUntil: "domcontentloaded" });
+  await page.goto("/ar/#/admin", { waitUntil: "domcontentloaded" });
   await page.locator("#admin-user-full-name").fill("أحمد حسن");
   await page.locator("#admin-user-username").fill("ahmed.hassan");
   await page.locator("#admin-user-role").selectOption("WarehouseClerk");
@@ -196,9 +185,6 @@ test("Arabic forms preserve user input and submit canonical English system value
   await page.locator("#admin-user-password").fill("Temporary123!");
   await page.locator("#admin-user-confirm-password").fill("Temporary123!");
 
-  await page.locator("#language-toggle").click();
-  await expect(page.locator("#admin-user-full-name")).toHaveValue("أحمد حسن");
-  await page.locator("#language-toggle").click();
   await expect(page.locator("#admin-user-role")).toHaveValue("WarehouseClerk");
 
   await page.locator("#admin-create-user-form button[type='submit']").click();

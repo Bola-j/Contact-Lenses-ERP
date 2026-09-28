@@ -41,7 +41,7 @@ public static class StocktakeEndpoints
         }
 
         var request = new PageRequest(page ?? 1, pageSize ?? 25);
-        var query = operationsDbContext.StocktakeSessions.AsQueryable();
+        var query = operationsDbContext.StocktakeSessions.Where(session => session.Purpose == "CycleCount");
         if (locationId.HasValue)
         {
             query = query.Where(session => session.LocationId == locationId.Value);
@@ -77,7 +77,7 @@ public static class StocktakeEndpoints
 
         var query = operationsDbContext.StocktakeSessions
             .Include(value => value.StocktakeAdjustmentLines)
-            .Where(value => value.Id == id);
+            .Where(value => value.Id == id && value.Purpose == "CycleCount");
         if (locationId.HasValue)
         {
             query = query.Where(value => value.LocationId == locationId.Value);
@@ -136,7 +136,7 @@ public static class StocktakeEndpoints
     {
         var session = await operationsDbContext.StocktakeSessions
             .Include(value => value.StocktakeAdjustmentLines)
-            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+            .FirstOrDefaultAsync(value => value.Id == id && value.Purpose == "CycleCount", cancellationToken);
         if (session is null)
         {
             return Results.NotFound();
@@ -301,7 +301,7 @@ public static class StocktakeEndpoints
     {
         var session = await operationsDbContext.StocktakeSessions
             .Include(value => value.StocktakeAdjustmentLines)
-            .FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+            .FirstOrDefaultAsync(value => value.Id == id && value.Purpose == "CycleCount", cancellationToken);
         if (session is null)
         {
             return Results.NotFound();
@@ -326,7 +326,7 @@ public static class StocktakeEndpoints
                     operationsDbContext.Entry(session).State = EntityState.Detached;
                     session = await operationsDbContext.StocktakeSessions
                         .Include(value => value.StocktakeAdjustmentLines)
-                        .SingleAsync(value => value.Id == id, cancellationToken);
+                        .SingleAsync(value => value.Id == id && value.Purpose == "CycleCount", cancellationToken);
                     if (session.Status != Draft)
                     {
                         throw new StocktakeConflictException("The stocktake was already confirmed.");
@@ -367,6 +367,14 @@ public static class StocktakeEndpoints
         catch (StocktakeConflictException conflict)
         {
             return Results.Conflict(new { code = "stale-stocktake-baseline", detail = conflict.Message });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "stocktake-confirmation-concurrency-conflict", detail = "The stocktake or inventory changed during confirmation. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "stocktake-confirmation-save-conflict", detail = "The stocktake confirmation could not be saved." });
         }
 
         return Results.Ok(ToDetailResponse(session));

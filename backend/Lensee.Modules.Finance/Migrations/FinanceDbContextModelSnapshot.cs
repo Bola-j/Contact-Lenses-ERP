@@ -13,6 +13,9 @@ namespace Lensee.Modules.Finance.Migrations
     [DbContext(typeof(FinanceDbContext))]
     partial class FinanceDbContextModelSnapshot : ModelSnapshot
     {
+        internal static void BuildCurrentModel(ModelBuilder modelBuilder)
+            => new FinanceDbContextModelSnapshot().BuildModel(modelBuilder);
+
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -1006,6 +1009,224 @@ namespace Lensee.Modules.Finance.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplyFinanceCostEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<DateOnly>("BusinessDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("CorrectionNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Finance");
+
+                    b.Property<Guid?>("ReplacedByCostEntryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ReversesCostEntryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("SupplyFinanceLogId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReplacedByCostEntryId")
+                        .IsUnique()
+                        .HasFilter("(\"ReplacedByCostEntryId\" is not null)");
+
+                    b.HasIndex("SupplyFinanceLogId", "BusinessDate");
+
+                    b.ToTable("supply_finance_cost_entries", "finance", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_finance_cost_amount", "\"Amount\" > 0");
+
+                            t.HasCheckConstraint("chk_supply_finance_cost_status", "\"Status\" in ('Active','Corrected','Voided')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplyFinanceLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("ShipmentNumber")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("SupplierName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid>("SupplyShipmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SupplyShipmentId")
+                        .IsUnique();
+
+                    b.ToTable("supply_finance_logs", "finance", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_finance_log_status", "\"Status\" in ('Open','Closed','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplySupplierInstallment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<DateOnly>("BusinessDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("CorrectionNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ExternalReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid>("FinanceAccountId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MovementMethod")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTime?>("PaidAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<Guid?>("PaidByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("PostedFinanceLedgerEntryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ReplacedByInstallmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ReversesInstallmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("SupplyFinanceLogId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExternalReference")
+                        .IsUnique()
+                        .HasFilter("(\"ExternalReference\" is not null)");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("PostedFinanceLedgerEntryId")
+                        .IsUnique()
+                        .HasFilter("(\"PostedFinanceLedgerEntryId\" is not null)");
+
+                    b.HasIndex("ReplacedByInstallmentId")
+                        .IsUnique()
+                        .HasFilter("(\"ReplacedByInstallmentId\" is not null)");
+
+                    b.HasIndex("SupplyFinanceLogId", "BusinessDate");
+
+                    b.ToTable("supply_supplier_installments", "finance", t =>
+                        {
+                            t.HasCheckConstraint("chk_supply_installment_amount", "\"Amount\" > 0");
+
+                            t.HasCheckConstraint("chk_supply_installment_status", "\"Status\" in ('Draft','Posted','Corrected','Cancelled')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Finance.Data.CLevelWithdrawal", b =>
                 {
                     b.HasOne("Lensee.Modules.Finance.Data.FinanceCategory", null)
@@ -1114,6 +1335,36 @@ namespace Lensee.Modules.Finance.Migrations
                     b.Navigation("Package");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplyFinanceCostEntry", b =>
+                {
+                    b.HasOne("Lensee.Modules.Finance.Data.SupplyFinanceLog", "SupplyFinanceLog")
+                        .WithMany("CostEntries")
+                        .HasForeignKey("SupplyFinanceLogId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("SupplyFinanceLog");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplySupplierInstallment", b =>
+                {
+                    b.HasOne("Lensee.Modules.Finance.Data.FinanceAccount", "FinanceAccount")
+                        .WithMany()
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Lensee.Modules.Finance.Data.SupplyFinanceLog", "SupplyFinanceLog")
+                        .WithMany("Installments")
+                        .HasForeignKey("SupplyFinanceLogId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("FinanceAccount");
+
+                    b.Navigation("SupplyFinanceLog");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Finance.Data.FinanceAccount", b =>
                 {
                     b.Navigation("Entries");
@@ -1122,6 +1373,13 @@ namespace Lensee.Modules.Finance.Migrations
             modelBuilder.Entity("Lensee.Modules.Finance.Data.ReconciliationImportPackage", b =>
                 {
                     b.Navigation("Rows");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Finance.Data.SupplyFinanceLog", b =>
+                {
+                    b.Navigation("CostEntries");
+
+                    b.Navigation("Installments");
                 });
 #pragma warning restore 612, 618
         }

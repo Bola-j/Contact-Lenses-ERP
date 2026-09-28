@@ -38,12 +38,11 @@ function makeRunData(prefix = "E2E") {
 }
 
 async function installApiBase(page) {
-  await page.addInitScript((value) => {
-    window.localStorage.setItem("lensee.apiBase", value);
+  await page.addInitScript(() => {
     if (!window.localStorage.getItem("lensee.language")) {
       window.localStorage.setItem("lensee.language", "en");
     }
-  }, apiBaseUrl);
+  });
   page.on("pageerror", (error) => {
     throw error;
   });
@@ -149,10 +148,9 @@ async function createCatalogFixture(page, data) {
   await page.locator("#brand-form button[type='submit']").click();
   await expectNotice(page, /Brand saved/i);
 
-  // Rehydrate the catalog lookup lists after creating the brand. The SPA's
-  // current route can otherwise retain the pre-mutation option snapshot while
-  // the product form is already available.
-  await page.reload({ waitUntil: "domcontentloaded" });
+  // Rehydrate the catalog lookup lists without a full document reload. A
+  // reload can race the cookie-based session rotation while the SPA is still
+  // processing the mutation response; route navigation is sufficient here.
   await gotoRoute(page, "/catalog");
 
   await page.locator("#product-name").fill(data.product);
@@ -283,7 +281,6 @@ async function createSupplyReceipt(page, options) {
   const row = page.locator(".supply-line-row").first();
   await selectSupplyLineSku(row, options.skuText);
   await row.locator(".supply-line-qty").fill(options.quantity || "1");
-  if (options.price) await row.locator(".supply-line-price").fill(options.price);
   if (options.lot) await row.locator(".supply-line-lot").fill(options.lot);
   if (options.expiry) await row.locator(".supply-line-expiry").fill(options.expiry);
   const [createResponse] = await Promise.all([
@@ -298,7 +295,16 @@ async function createSupplyReceipt(page, options) {
   await page.locator("#supply-rows tr", { hasText: shipment.shipmentNumber }).first().click();
   await expect(page.locator("#supply-detail")).toContainText(shipment.shipmentNumber);
   await page.locator("#supply-confirm").click();
-  await expect(page.locator("#notification-area")).toContainText(/received into inventory/i);
+  await page.locator('[role="alertdialog"] [data-dialog-confirm]').click();
+  await expect(page.locator("#supply-detail")).toContainText(/Arrived/i);
+  await page.locator("#supply-start-receiving").click();
+  const receivingRow = page.locator("[data-supply-receiving-lines] tr").first();
+  await receivingRow.locator("[data-supply-receipt-lot]").fill(options.lot || "E2E-LOT");
+  await receivingRow.locator("[data-supply-receipt-expiry]").fill(options.expiry || "2031-06-01");
+  await receivingRow.locator("[data-supply-receipt-quantity]").fill(options.quantity || "1");
+  await page.locator("#supply-confirm-receiving").click();
+  await page.locator('[role="alertdialog"] [data-dialog-confirm]').click();
+  await expect(page.locator("#notification-area")).toContainText(/posted|received/i);
   await expect(page.locator("#supply-detail")).toContainText(/Received/i);
   return shipment;
 }
@@ -349,7 +355,6 @@ async function fillOperationDraftForm(page, options) {
     await selectOptionByTextIfEnabled(representative, options.representativeText);
   }
   await selectValueIfEnabled(page.locator("#op-payment"), options.paymentMethod);
-  await selectValueIfEnabled(page.locator("#op-finance-account"), options.financeAccountId);
   await fillIfEnabled(page.locator("#op-buyer"), options.buyerName);
   if (options.supplier) await page.locator("#op-supplier").fill(options.supplier);
   if (options.invoice) await page.locator("#op-invoice").fill(options.invoice);
@@ -497,6 +502,8 @@ async function runLatestOperationAction(page, operationType, labelRegex) {
     response.url().includes(`/api/v1/operations/${operationId}/${action}`) &&
     response.request().method() === "POST", { timeout: 30_000 });
   await row.getByRole("button", { name: labelRegex }).click();
+  const confirm = page.locator('[role="alertdialog"] [data-dialog-confirm]').last();
+  if (await confirm.isVisible().catch(() => false)) await confirm.click();
   await responsePromise;
 }
 
@@ -642,6 +649,10 @@ async function runOperationActionByNumber(page, operationNumber, labelRegex) {
     response.url().includes(`/api/v1/operations/${operationId}/${action}`) &&
     response.request().method() === "POST", { timeout: 30_000 });
   await button.click();
+  const confirm = page.locator('[role="alertdialog"] [data-dialog-confirm]').last();
+  if (await confirm.isVisible().catch(() => false)) {
+    await confirm.click();
+  }
   const response = await responsePromise;
   if (!response.ok()) {
     throw new Error(`Operation ${operationNumber} action ${action} failed with HTTP ${response.status()}: ${await response.text()}`);

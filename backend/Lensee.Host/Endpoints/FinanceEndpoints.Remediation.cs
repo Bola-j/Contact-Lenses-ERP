@@ -62,7 +62,18 @@ public static partial class FinanceEndpoints
             CreatedAt = clock.EgyptNow
         };
         finance.FinanceCategories.Add(category);
-        await finance.SaveChangesAsync(ct);
+        try
+        {
+            await finance.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "finance-category-create-transition-conflict", detail = "The finance category changed while it was being created. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "finance-category-create-save-conflict", detail = "The finance category could not be saved." });
+        }
         return Results.Created($"/api/v1/finance/categories/{category.Id}", category);
     }
 
@@ -77,7 +88,18 @@ public static partial class FinanceEndpoints
         category.SortOrder = request.SortOrder;
         category.IsActive = request.IsActive;
         category.UpdatedAt = clock.EgyptNow;
-        await finance.SaveChangesAsync(ct);
+        try
+        {
+            await finance.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new { code = "finance-category-update-transition-conflict", detail = "The finance category changed while it was being updated. Refresh and try again." });
+        }
+        catch (DbUpdateException)
+        {
+            return Results.Conflict(new { code = "finance-category-update-save-conflict", detail = "The finance category could not be saved." });
+        }
         return Results.Ok(category);
     }
 
@@ -157,10 +179,18 @@ public static partial class FinanceEndpoints
             CreatedAt = clock.EgyptNow
         };
         // The external reference belongs to the transfer envelope. Ledger legs have independent source identities.
-        var debit = await ledger.PostMovementAsync("FinanceTransferOut", transfer.Id, "Finance", AccountMethod(source), request.Amount, source.Id,
-            null, "InternalTransfer", FinanceLedgerService.Debit, actor, request.BusinessDate, null, ct);
-        var credit = await ledger.PostMovementAsync("FinanceTransferIn", transfer.Id, "Finance", AccountMethod(destination), request.Amount, destination.Id,
-            null, "InternalTransfer", FinanceLedgerService.Credit, actor, request.BusinessDate, null, ct);
+        FinanceLedgerEntry debit;
+        FinanceLedgerEntry credit;
+        try
+        {
+            debit = await ledger.PostMovementAsync("FinanceTransferOut", transfer.Id, "Finance", AccountMethod(source), request.Amount, source.Id,
+                null, "InternalTransfer", FinanceLedgerService.Debit, actor, request.BusinessDate, null, ct);
+            credit = await ledger.PostMovementAsync("FinanceTransferIn", transfer.Id, "Finance", AccountMethod(destination), request.Amount, destination.Id,
+                null, "InternalTransfer", FinanceLedgerService.Credit, actor, request.BusinessDate, null, ct);
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "finance-transfer-ledger-concurrency-conflict", detail = "The finance account changed during the transfer. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "finance-transfer-ledger-save-conflict", detail = "The transfer ledger entries could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "finance-transfer-rejected", detail = ex.Message }); }
         transfer.SourceEntryId = debit.Id; transfer.DestinationEntryId = credit.Id;
         if (request.FeeAmount > 0)
         {
@@ -185,13 +215,22 @@ public static partial class FinanceEndpoints
                 ApprovedAt = clock.EgyptNow
             };
             finance.FinanceExpenses.Add(fee);
-            var feeEntry = await ledger.PostMovementAsync("FinanceExpense", fee.Id, "Finance", fee.MovementMethod, fee.Amount, fee.FinanceAccountId,
-                null, "OperatingExpense", FinanceLedgerService.Debit, actor, request.BusinessDate, null, ct);
+            FinanceLedgerEntry feeEntry;
+            try
+            {
+                feeEntry = await ledger.PostMovementAsync("FinanceExpense", fee.Id, "Finance", fee.MovementMethod, fee.Amount, fee.FinanceAccountId,
+                    null, "OperatingExpense", FinanceLedgerService.Debit, actor, request.BusinessDate, null, ct);
+            }
+            catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "finance-transfer-fee-concurrency-conflict", detail = "The transfer fee account changed during posting. Refresh and try again." }); }
+            catch (DbUpdateException) { return Results.Conflict(new { code = "finance-transfer-fee-save-conflict", detail = "The transfer fee ledger entry could not be saved." }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { code = "finance-transfer-fee-rejected", detail = ex.Message }); }
             fee.PostedFinanceLedgerEntryId = feeEntry.Id;
             transfer.FeeExpenseId = fee.Id;
         }
         finance.FinanceTransfers.Add(transfer);
-        await finance.SaveChangesAsync(ct);
+        try { await finance.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "finance-transfer-save-concurrency-conflict", detail = "The transfer changed while it was being saved. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "finance-transfer-save-conflict", detail = "The transfer could not be saved." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Created($"/api/v1/finance/transfers/{transfer.Id}", transfer);
     }
@@ -260,12 +299,21 @@ public static partial class FinanceEndpoints
             CreatedBy = actor,
             CreatedAt = clock.EgyptNow
         };
-        var entry = await ledger.PostMovementAsync("CLevelWithdrawalRepayment", repayment.Id, "Finance", repayment.MovementMethod,
-            repayment.Amount, repayment.FinanceAccountId, reference, "CLevelWithdrawalRepayment", FinanceLedgerService.Credit,
-            actor, request.BusinessDate, null, ct);
+        FinanceLedgerEntry entry;
+        try
+        {
+            entry = await ledger.PostMovementAsync("CLevelWithdrawalRepayment", repayment.Id, "Finance", repayment.MovementMethod,
+                repayment.Amount, repayment.FinanceAccountId, reference, "CLevelWithdrawalRepayment", FinanceLedgerService.Credit,
+                actor, request.BusinessDate, null, ct);
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-repayment-ledger-concurrency-conflict", detail = "The repayment account changed during posting. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-repayment-ledger-save-conflict", detail = "The repayment ledger entry could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "withdrawal-repayment-rejected", detail = ex.Message }); }
         repayment.PostedEntryId = entry.Id;
         finance.CLevelWithdrawalRepayments.Add(repayment);
-        await finance.SaveChangesAsync(ct);
+        try { await finance.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-repayment-save-concurrency-conflict", detail = "The repayment changed while it was being saved. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-repayment-save-conflict", detail = "The repayment could not be saved." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Created($"/api/v1/finance/withdrawals/{id}/repayments/{repayment.Id}", repayment);
     }
@@ -328,14 +376,23 @@ public static partial class FinanceEndpoints
             CreatedAt = clock.EgyptNow,
             ReversesRepaymentId = original.Id
         };
-        await ledger.ReverseMovementAsync(originalEntry, "CLevelWithdrawalRepaymentReversal", replacement.Id, actor, null, ct);
-        var posted = await ledger.PostMovementAsync("CLevelWithdrawalRepayment", replacement.Id, "Finance", replacement.MovementMethod,
-            replacement.Amount, replacement.FinanceAccountId, reference, "CLevelWithdrawalRepayment", FinanceLedgerService.Credit,
-            actor, replacement.BusinessDate, null, ct);
+        FinanceLedgerEntry posted;
+        try
+        {
+            await ledger.ReverseMovementAsync(originalEntry, "CLevelWithdrawalRepaymentReversal", replacement.Id, actor, null, ct);
+            posted = await ledger.PostMovementAsync("CLevelWithdrawalRepayment", replacement.Id, "Finance", replacement.MovementMethod,
+                replacement.Amount, replacement.FinanceAccountId, reference, "CLevelWithdrawalRepayment", FinanceLedgerService.Credit,
+                actor, replacement.BusinessDate, null, ct);
+        }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-repayment-correction-ledger-concurrency-conflict", detail = "The repayment ledger changed during correction. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-repayment-correction-ledger-save-conflict", detail = "The repayment correction ledger entries could not be saved." }); }
+        catch (InvalidOperationException ex) { return Results.Conflict(new { code = "withdrawal-repayment-correction-rejected", detail = ex.Message }); }
         replacement.PostedEntryId = posted.Id;
         original.ReplacedByRepaymentId = replacement.Id;
         finance.CLevelWithdrawalRepayments.Add(replacement);
-        await finance.SaveChangesAsync(ct);
+        try { await finance.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { code = "withdrawal-repayment-correction-save-concurrency-conflict", detail = "The repayment changed while its correction was being saved. Refresh and try again." }); }
+        catch (DbUpdateException) { return Results.Conflict(new { code = "withdrawal-repayment-correction-save-conflict", detail = "The repayment correction could not be saved." }); }
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Results.Created($"/api/v1/finance/withdrawals/{id}/repayments/{replacement.Id}", replacement);
     }

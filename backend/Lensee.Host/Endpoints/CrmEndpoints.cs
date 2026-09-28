@@ -154,6 +154,7 @@ public static class CrmEndpoints
                 operation.OperationNumber,
                 operation.OperationType,
                 operation.Status,
+                operation.FinancialClosureStatus,
                 operation.PaymentMethod,
                 operation.CreatedAt,
                 operation.ConfirmedAt,
@@ -503,7 +504,7 @@ public sealed record MerchantSummaryResponse(int OperationCount, int SoldPacks, 
     public decimal BalancePlaceholder => Balance;
 }
 
-public sealed record MerchantOperationResponse(Guid Id, string OperationNumber, string OperationType, string Status, string? PaymentMethod, DateTime CreatedAt, DateTime? ConfirmedAt, int Quantity, int BonusQuantity, decimal Total);
+public sealed record MerchantOperationResponse(Guid Id, string OperationNumber, string OperationType, string Status, string FinancialClosureStatus, string? PaymentMethod, DateTime CreatedAt, DateTime? ConfirmedAt, int Quantity, int BonusQuantity, decimal Total);
 
 public sealed record MerchantNoteResponse(Guid Id, string Note, Guid AddedBy, DateTime CreatedAt);
 

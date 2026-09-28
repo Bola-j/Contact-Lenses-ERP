@@ -29,12 +29,30 @@ public static partial class ReportsEndpoints
     private const string CashReceived = "CashReceived";
     private static readonly HashSet<string> OperationTypes = new(StringComparer.Ordinal)
     {
-        "InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff", "StocktakeAdjustment", "Change", "Return"
+        "InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "WriteOff", "StocktakeAdjustment", "Return"
     };
     private static readonly HashSet<string> SupplyStatuses = new(StringComparer.Ordinal)
     {
         "Draft", "Received", "Cancelled"
     };
+
+    private static bool CanAccessReport(string? role, string key)
+    {
+        var normalizedRole = LenseeRoles.Normalize(role);
+        var normalizedKey = key.ToLowerInvariant();
+
+        if (normalizedRole == LenseeRoles.WarehouseClerk)
+        {
+            return normalizedKey is "stock" or "operation-bill" or "payment-receipt" or "cash-receipt" or "stocktake-summary";
+        }
+
+        if (normalizedRole is LenseeRoles.ERPAdmin or LenseeRoles.Accountant)
+        {
+            return normalizedKey is not "supply" and not "supply-landed-cost";
+        }
+
+        return true;
+    }
 
     private static readonly HashSet<string> ExportReportTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -88,19 +106,19 @@ public static partial class ReportsEndpoints
         group.MapGet("/{key}/export", ExportReportAsync).RequireAuthorization("reports.read");
         group.MapGet("/stock", GetStockReportAsync).RequireAuthorization("reports.read");
         group.MapGet("/stock.csv", GetStockCsvAsync).RequireAuthorization("reports.read");
-        group.MapGet("/operations", GetOperationsReportAsync).RequireAuthorization("reports.read");
-        group.MapGet("/operations.csv", GetOperationsCsvAsync).RequireAuthorization("reports.read");
-        group.MapGet("/operations/{id:guid}/bill.pdf", GetOperationBillPdfAsync).RequireAuthorization("reports.read");
-        group.MapGet("/payments", GetPaymentsReportAsync).RequireAuthorization("reports.read");
-        group.MapGet("/payments.csv", GetPaymentsCsvAsync).RequireAuthorization("reports.read");
-        group.MapGet("/payments/{id:guid}/receipt.pdf", GetPaymentReceiptPdfAsync).RequireAuthorization("reports.read");
-        group.MapGet("/payments/{id:guid}/cash-receipt.pdf", GetPaymentReceiptPdfAsync).RequireAuthorization("reports.read");
-        group.MapGet("/supply", GetSupplyLandedCostReportAsync).RequireAuthorization("reports.read");
-        group.MapGet("/supply.csv", GetSupplyLandedCostCsvAsync).RequireAuthorization("reports.read");
-        group.MapGet("/supply/{id:guid}/landed-cost.pdf", GetSupplyLandedCostPdfAsync).RequireAuthorization("reports.read");
-        group.MapGet("/merchant-balances", GetMerchantBalancesReportAsync).RequireAuthorization("reports.read");
-        group.MapGet("/merchant-balances.csv", GetMerchantBalancesCsvAsync).RequireAuthorization("reports.read");
-        group.MapGet("/merchants/{merchantId:guid}/statement.pdf", GetMerchantStatementPdfAsync).RequireAuthorization("reports.read");
+        group.MapGet("/operations", GetOperationsReportAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/operations.csv", GetOperationsCsvAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/operations/{id:guid}/bill.pdf", GetOperationBillPdfAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/payments", GetPaymentsReportAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/payments.csv", GetPaymentsCsvAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/payments/{id:guid}/receipt.pdf", GetPaymentReceiptPdfAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/payments/{id:guid}/cash-receipt.pdf", GetPaymentReceiptPdfAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/supply", GetSupplyLandedCostReportAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/supply.csv", GetSupplyLandedCostCsvAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/supply/{id:guid}/landed-cost.pdf", GetSupplyLandedCostPdfAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/merchant-balances", GetMerchantBalancesReportAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/merchant-balances.csv", GetMerchantBalancesCsvAsync).RequireAuthorization("reports.financial.read");
+        group.MapGet("/merchants/{merchantId:guid}/statement.pdf", GetMerchantStatementPdfAsync).RequireAuthorization("reports.financial.read");
         group.MapGet("/stocktakes/{id:guid}/summary.pdf", GetStocktakeSummaryPdfAsync).RequireAuthorization("reports.read");
         group.MapGet("/exports", ListExportLogsAsync).RequireAuthorization("reports.read");
         group.MapPost("/exports", CreateExportLogAsync).RequireAuthorization("reports.read");
@@ -110,7 +128,9 @@ public static partial class ReportsEndpoints
         return group;
     }
 
-    private static IResult GetReportCatalog(IReportCatalog catalog) => Results.Ok(catalog.All.Select(descriptor => new
+    private static IResult GetReportCatalog(IReportCatalog catalog, ICurrentUser currentUser) => Results.Ok(catalog.All
+        .Where(descriptor => CanAccessReport(currentUser.Role, descriptor.Key))
+        .Select(descriptor => new
     {
         descriptor.Key,
         template = descriptor.Template.ToString().ToLowerInvariant(),
@@ -120,7 +140,7 @@ public static partial class ReportsEndpoints
         descriptor.AuthorizationPolicy,
         descriptor.LocationScoped,
         descriptor.IsDocument
-    }));
+        }));
 
     private static async Task<IResult> ExportReportAsync(
         string key,
@@ -150,8 +170,7 @@ public static partial class ReportsEndpoints
         {
             return Results.NotFound();
         }
-        if (string.Equals(key, "financial-summary", StringComparison.OrdinalIgnoreCase) &&
-            currentUser.Role is not (LenseeRoles.Admin or LenseeRoles.CLevel))
+        if (!CanAccessReport(currentUser.Role, key))
             return Results.Forbid();
         if (!ReportingServiceCollectionExtensions.TryParseFormat(format, out var exportFormat) || !descriptor.Formats.Contains(exportFormat))
         {
@@ -224,6 +243,10 @@ public static partial class ReportsEndpoints
         {
             return Results.NotFound();
         }
+        if (!CanAccessReport(currentUser.Role, key))
+        {
+            return Results.Forbid();
+        }
         if (!ReportingServiceCollectionExtensions.TryParseFormat(format, out var requestedFormat) || !descriptor.Formats.Contains(requestedFormat))
         {
             return InvalidExportFormat();
@@ -253,17 +276,14 @@ public static partial class ReportsEndpoints
         var operationEffects = await operationsDbContext.OperationLogs.AsNoTracking()
             .Where(operation => !operation.IsDeleted &&
                 ((operation.OperationType == "WholesaleSale" || operation.OperationType == "RetailSale") && operation.Status == Completed ||
-                 (operation.OperationType == "Return" || operation.OperationType == "Change") && operation.Status == "Confirmed"))
+                 operation.OperationType == "Return" && operation.Status == "Confirmed"))
             .Select(operation => new
             {
                 operation.Id,
                 Effect = (operation.RecordKind == "Reversal" ? -1m : 1m) *
                     (operation.OperationType == "Return"
                         ? -(operation.OperationLines.Sum(line => (decimal?)line.LineTotal) ?? 0m)
-                        : operation.OperationType == "Change"
-                            ? (operation.OperationLines.Where(line => line.Section == "ChangeIn").Sum(line => (decimal?)line.LineTotal) ?? 0m)
-                                - (operation.OperationLines.Where(line => line.Section == "ChangeOut").Sum(line => (decimal?)line.LineTotal) ?? 0m)
-                            : operation.OperationLines.Sum(line => (decimal?)line.LineTotal) ?? 0m)
+                        : operation.OperationLines.Sum(line => (decimal?)line.LineTotal) ?? 0m)
             })
             .ToListAsync(cancellationToken);
         var effectiveOperationIds = operationEffects.Where(value => value.Effect != 0m).Select(value => value.Id).ToArray();
@@ -431,7 +451,7 @@ public static partial class ReportsEndpoints
         var query = operationsDbContext.OperationLogs
             .AsNoTracking()
             .Include(operation => operation.OperationLines)
-            .Where(operation => !operation.IsDeleted)
+            .Where(operation => !operation.IsDeleted && operation.OperationType != "Change" && operation.OperationType != "Reserve")
             .AsQueryable();
 
         if (from.HasValue)

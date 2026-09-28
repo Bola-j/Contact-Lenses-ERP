@@ -53,8 +53,8 @@ public static partial class ReportsEndpoints
 
         var operationRows = await operations.OperationLogs.AsNoTracking().Include(value => value.OperationLines)
             .Where(value => !value.IsDeleted && value.ConfirmedAt >= startTime && value.ConfirmedAt < endTime &&
-                (((value.OperationType == "WholesaleSale" || value.OperationType == "RetailSale") && value.Status == "Completed") ||
-                 ((value.OperationType == "Return" || value.OperationType == "Change") && value.Status == "Confirmed")))
+                 (((value.OperationType == "WholesaleSale" || value.OperationType == "RetailSale") && value.Status == "Completed") ||
+                 (value.OperationType == "Return" && value.Status == "Confirmed")))
             .ToListAsync(ct);
         var operationIds = operationRows.Select(operation => operation.Id).ToArray();
         var paidSaleIds = await payments.MainPaymentLogs.AsNoTracking()
@@ -95,14 +95,6 @@ public static partial class ReportsEndpoints
                 netSales -= sign * operation.OperationLines.Sum(value => value.LineTotal);
                 paidUnits -= sign * operation.OperationLines.Where(value => value.BonusQuantity == 0).Sum(value => Pieces(value, value.Quantity));
                 bonusUnits -= sign * operation.OperationLines.Where(value => value.BonusQuantity > 0).Sum(value => Pieces(value, value.BonusQuantity));
-            }
-            else
-            {
-                var incoming = operation.OperationLines.Where(value => value.Section == "ChangeIn").ToArray();
-                var outgoing = operation.OperationLines.Where(value => value.Section == "ChangeOut").ToArray();
-                netSales += sign * (incoming.Sum(value => value.LineTotal) - outgoing.Sum(value => value.LineTotal));
-                paidUnits += sign * (incoming.Where(value => value.BonusQuantity == 0).Sum(value => Pieces(value, value.Quantity)) -
-                                     outgoing.Where(value => value.BonusQuantity == 0).Sum(value => Pieces(value, value.Quantity)));
             }
         }
 

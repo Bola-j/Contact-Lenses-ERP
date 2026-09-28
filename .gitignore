@@ -44,6 +44,8 @@ postman/results/
 testsprite_tests/tmp/config.json
 docs/*
 !docs/SHOPIFY_INTEGRATION_CONFIGURATION.md
+!docs/manual/
+!docs/manual/COMPLETE_USER_MANUAL.md
 output/pdf/lensee-user-manual.pdf
 tmp/manual-module-gallery-preview.png
 
@@ -78,3 +80,8 @@ backend/Lensee.Modules.Operations/tmp/*
 backend/Lensee.Modules.Payments/tmp/*
 backend/Lensee.Modules.Reporting/tmp/*
 FINANCE_REMEDIATION_IMPLEMENTATION.md
+MANUAL_ERP_CERTIFICATION_TEST_PLAN.md
+sample-supply-order.csv
+artifacts/*
+e2e/*
+

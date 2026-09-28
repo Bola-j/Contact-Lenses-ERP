@@ -17,7 +17,7 @@ public sealed class PermissionTests
     }
 
     [Fact]
-    public void ErpAdmin_MatchesAdminExceptSupplyAndPasswords()
+    public void ErpAdmin_CanManageSupplyWithoutFinanceAccessOrPasswords()
     {
         var permissions = LenseePermissions.ForRole(LenseeRoles.ERPAdmin);
 
@@ -29,8 +29,9 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.OperationsCorrectionsRequest, permissions);
         Assert.Contains(LenseePermissions.OperationsCorrectionsApprove, permissions);
         Assert.DoesNotContain(LenseePermissions.UsersPasswordWrite, permissions);
-        Assert.DoesNotContain(LenseePermissions.SupplyRead, permissions);
-        Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
+        Assert.Contains(LenseePermissions.SupplyRead, permissions);
+        Assert.Contains(LenseePermissions.SupplyWrite, permissions);
+        Assert.Contains(LenseePermissions.SupplyReceive, permissions);
     }
 
     [Fact]

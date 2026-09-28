@@ -220,7 +220,7 @@ public static class AuthEndpoints
         new()
         {
             HttpOnly = true,
-            Secure = !environment.IsDevelopment() && !environment.IsEnvironment("Testing"),
+            Secure = UseSecureCookies(environment),
             SameSite = SameSiteMode.Lax,
             Path = "/api/v1/auth",
             Expires = new DateTimeOffset(expiresAt)
@@ -230,11 +230,16 @@ public static class AuthEndpoints
         new()
         {
             HttpOnly = true,
-            Secure = !environment.IsDevelopment() && !environment.IsEnvironment("Testing"),
+            Secure = UseSecureCookies(environment),
             SameSite = SameSiteMode.Lax,
             Path = "/",
             Expires = new DateTimeOffset(expiresAt)
         };
+
+    private static bool UseSecureCookies(IWebHostEnvironment environment) =>
+        !environment.IsDevelopment() &&
+        !environment.IsEnvironment("Testing") &&
+        !environment.IsEnvironment("E2E");
 
     private static async Task<AuthResponse> CreateAuthResponseAsync(User user, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
     {

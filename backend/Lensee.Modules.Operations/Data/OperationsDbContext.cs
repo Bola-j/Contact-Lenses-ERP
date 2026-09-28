@@ -41,6 +41,10 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<SupplyPayment> SupplyPayments { get; set; }
 
+    public virtual DbSet<SupplyReceivingSession> SupplyReceivingSessions { get; set; }
+
+    public virtual DbSet<SupplyReceivingLine> SupplyReceivingLines { get; set; }
+
     public virtual DbSet<ShopifyOrderLink> ShopifyOrderLinks { get; set; }
 
     public virtual DbSet<ShopifyWebhookEvent> ShopifyWebhookEvents { get; set; }
@@ -72,6 +76,13 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.SupplierName)
                 .HasMaxLength(255)
                 .HasColumnName("supplier_name");
+            entity.Property(e => e.SupplyShipmentId).HasColumnName("supply_shipment_id");
+            entity.Property(e => e.SupplyFinanceLogId).HasColumnName("supply_finance_log_id");
+            entity.Property(e => e.StocktakeSessionId).HasColumnName("stocktake_session_id");
+            entity.Property(e => e.SupplyReceivingSessionId).HasColumnName("supply_receiving_session_id");
+            entity.HasIndex(e => e.SupplyShipmentId, "idx_receipt_headers_supply_shipment");
+            entity.HasIndex(e => e.StocktakeSessionId, "ux_receipt_headers_stocktake_session").IsUnique().HasFilter("(stocktake_session_id is not null)");
+            entity.HasIndex(e => e.SupplyReceivingSessionId, "ux_receipt_headers_supply_receiving_session").IsUnique().HasFilter("(supply_receiving_session_id is not null)");
 
             entity.HasOne(d => d.Operation).WithOne(p => p.InventoryReceiptHeader)
                 .HasForeignKey<InventoryReceiptHeader>(d => d.OperationId)
@@ -494,6 +505,7 @@ public partial class OperationsDbContext : DbContext
             entity.ToTable("stocktake_sessions", "operations", table =>
             {
                 table.HasCheckConstraint("chk_stocktake_status", "status in ('Draft','Confirmed')");
+                table.HasCheckConstraint("chk_stocktake_purpose", "purpose in ('CycleCount','SupplyReceiving')");
             });
 
             entity.HasIndex(e => e.LocationId, "idx_stocktake_location");
@@ -511,6 +523,11 @@ public partial class OperationsDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.LocationId).HasColumnName("location_id");
             entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.Purpose).HasMaxLength(30).HasDefaultValue("CycleCount").HasColumnName("purpose");
+            entity.Property(e => e.SupplyShipmentId).HasColumnName("supply_shipment_id");
+            entity.Property(e => e.SupplyFinanceLogId).HasColumnName("supply_finance_log_id");
+            entity.Property(e => e.InventoryReceiptOperationId).HasColumnName("inventory_receipt_operation_id");
+            entity.HasIndex(e => e.SupplyShipmentId, "idx_stocktake_supply_shipment");
             entity.Property(e => e.PerformedBy).HasColumnName("performed_by");
             entity.Property(e => e.ProductsCounted).HasColumnName("products_counted");
             entity.Property(e => e.SessionDate)
@@ -531,7 +548,7 @@ public partial class OperationsDbContext : DbContext
 
             entity.ToTable("supply_shipments", "operations", table =>
             {
-                table.HasCheckConstraint("chk_supply_shipments_status", "status in ('Draft','Received','Cancelled')");
+                table.HasCheckConstraint("chk_supply_shipments_status", "status in ('Draft','Arrived','PartiallyReceived','Received','Cancelled')");
                 table.HasCheckConstraint("chk_supply_shipments_product_subtotal", "product_subtotal >= 0");
                 table.HasCheckConstraint("chk_supply_shipments_cost_subtotal", "cost_subtotal >= 0");
                 table.HasCheckConstraint("chk_supply_shipments_landed_total", "landed_total >= 0");
@@ -607,6 +624,46 @@ public partial class OperationsDbContext : DbContext
                 .HasConstraintName("supply_shipment_lines_shipment_id_fkey");
         });
 
+        modelBuilder.Entity<SupplyReceivingSession>(entity =>
+        {
+            entity.ToTable("supply_receiving_sessions", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_supply_receiving_status", "status in ('Draft','Confirmed')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => new { value.ShipmentId, value.Status }, "idx_supply_receiving_shipment_status");
+            entity.HasIndex(value => value.ShipmentId, "ux_supply_receiving_open_session")
+                .IsUnique()
+                .HasFilter("(status = 'Draft')");
+            entity.HasIndex(value => value.InventoryReceiptOperationId, "ux_supply_receiving_operation").IsUnique().HasFilter("(inventory_receipt_operation_id is not null)");
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.ShipmentId).HasColumnName("shipment_id");
+            entity.Property(value => value.Status).HasColumnName("status").HasMaxLength(20).HasDefaultValue("Draft");
+            entity.Property(value => value.Notes).HasColumnName("notes").HasMaxLength(4000);
+            entity.Property(value => value.CreatedBy).HasColumnName("created_by");
+            entity.Property(value => value.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.ConfirmedBy).HasColumnName("confirmed_by");
+            entity.Property(value => value.ConfirmedAt).HasColumnName("confirmed_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.InventoryReceiptOperationId).HasColumnName("inventory_receipt_operation_id");
+            entity.HasOne(value => value.Shipment).WithMany(value => value.ReceivingSessions).HasForeignKey(value => value.ShipmentId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SupplyReceivingLine>(entity =>
+        {
+            entity.ToTable("supply_receiving_lines", "operations", table => table.HasCheckConstraint("chk_supply_receiving_line_quantity", "received_quantity >= 0"));
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => new { value.ReceivingSessionId, value.ShipmentLineId }).IsUnique();
+            entity.Property(value => value.LotNumber).HasMaxLength(100).HasColumnName("lot_number");
+            entity.Property(value => value.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.ReceivingSessionId).HasColumnName("receiving_session_id");
+            entity.Property(value => value.ShipmentLineId).HasColumnName("shipment_line_id");
+            entity.Property(value => value.ReceivedQuantity).HasColumnName("received_quantity");
+            entity.Property(value => value.Notes).HasColumnName("notes").HasMaxLength(4000);
+            entity.HasOne(value => value.ReceivingSession).WithMany(value => value.Lines).HasForeignKey(value => value.ReceivingSessionId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(value => value.ShipmentLine).WithMany().HasForeignKey(value => value.ShipmentLineId).OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<SupplyShipmentCost>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("supply_shipment_costs_pkey");
@@ -641,10 +698,12 @@ public partial class OperationsDbContext : DbContext
             });
             entity.HasKey(value => value.Id);
             entity.HasIndex(value => value.ShipmentId).HasDatabaseName("idx_supply_payments_shipment");
+            entity.HasIndex(value => value.SupplyFinanceLogId).HasDatabaseName("idx_supply_payments_finance_log");
             entity.HasIndex(value => value.PostedFinanceLedgerEntryId).IsUnique().HasFilter("(posted_finance_ledger_entry_id is not null)");
             entity.HasIndex(value => value.ReplacedByPaymentId).IsUnique().HasFilter("(replaced_by_payment_id is not null)");
             entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
             entity.Property(value => value.ShipmentId).HasColumnName("shipment_id");
+            entity.Property(value => value.SupplyFinanceLogId).HasColumnName("supply_finance_log_id");
             entity.Property(value => value.Category).HasColumnName("category").HasMaxLength(40);
             entity.Property(value => value.Amount).HasColumnName("amount").HasPrecision(18, 4);
             entity.Property(value => value.MovementMethod).HasColumnName("movement_method").HasMaxLength(50);

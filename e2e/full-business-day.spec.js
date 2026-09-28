@@ -121,6 +121,12 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   if (!approval.response.ok()) throw new Error(`Collection approval failed with ${approval.response.status()}: ${JSON.stringify(approval.data)}`);
 
   await gotoRoute(page, "/operations");
+  await page.locator("#op-type").selectOption("Return");
+  await expect(page.locator("#op-return-source")).toBeVisible();
+  await expect(page.locator("#op-return-source")).toHaveAttribute("required", "");
+  await selectOptionByText(page.locator("#op-merchant"), data.merchant);
+  await expect(page.locator("#op-return-source")).toHaveJSProperty("required", false);
+  await page.locator("#operation-editor-reset").click();
   const correctionSale = await createOperationDraft(page, {
     type: "WholesaleSale", skuText: data.product, quantity: "2", price: "125",
     stockText: data.mainLot, merchantText: data.merchant, sourceText: /Roxy|Main/i,
@@ -137,15 +143,11 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
     type: "Return",
     skuText: data.product,
     quantity: "1",
-    lot: data.mainLot,
-    expiry: data.expiry,
+    lot: data.secondLot,
+    expiry: data.secondExpiry,
     merchantText: data.merchant,
     sourceText: /Roxy|Main/i,
-    paymentMethod: "MerchantAccount",
-    sourceOperationId: correctionSale.id,
-    sourceOperationLineId: correctionSale.lines?.[0]?.id,
-    sourceBatchId: correctionBatchId,
-    sourceMerchantId: correctionSale.clientId
+    paymentMethod: "MerchantAccount"
   });
   await runLatestOperationAction(page, "Return", /Confirm/i);
   await createChangeDraft(page, data, { id: correctionSale.id, lineId: correctionSale.lines?.[0]?.id, batchId: correctionBatchId, merchantId: correctionSale.clientId });
@@ -187,6 +189,7 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   ]);
   await expect(page.locator("#stocktake-detail")).toContainText(data.mainLot);
   await page.locator("#stocktake-confirm").click();
+  await page.locator('[role="alertdialog"] [data-dialog-confirm]').click();
   await expect(page.locator("#notification-area")).toContainText(/Stocktake confirmed/i);
   await expect(page.locator("#stocktake-detail")).toContainText(/Confirmed|confirmed/i);
 

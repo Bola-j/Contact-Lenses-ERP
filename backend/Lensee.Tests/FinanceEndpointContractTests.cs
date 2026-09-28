@@ -138,16 +138,20 @@ public sealed class FinanceEndpointContractTests : IClassFixture<OperationsEndpo
         Assert.Equal(HttpStatusCode.Created, draftResponse.StatusCode);
         var draft = await draftResponse.Content.ReadFromJsonAsync<CLevelWithdrawal>();
         Assert.NotNull(draft);
-        Assert.Equal("Posted", draft!.Status);
-        await AssertLedgerCountAsync(draft.Id, 1);
+        Assert.Equal("Draft", draft!.Status);
+        await AssertLedgerCountAsync(draft.Id, 0);
+
+        var submitted = await primaryAdmin.PostAsync($"/api/v1/finance/withdrawals/{draft.Id}/submit", null);
+        Assert.Equal(HttpStatusCode.OK, submitted.StatusCode);
 
         using var beneficiary = _factory.CreateClient();
         beneficiary.AuthorizeAs(LenseeRoles.CLevel, beneficiaryId, LenseePermissions.FinanceRead);
         Assert.Equal(HttpStatusCode.Forbidden, (await beneficiary.PostAsync($"/api/v1/finance/withdrawals/{draft.Id}/approve", null)).StatusCode);
 
         using var reviewer = _factory.CreateClient();
-        reviewer.AuthorizeAs(LenseeRoles.ERPAdmin, reviewerId, LenseePermissions.FinanceRead, LenseePermissions.FinanceWithdrawalApprove);
-        Assert.Equal(HttpStatusCode.Forbidden, (await reviewer.PostAsync($"/api/v1/finance/withdrawals/{draft.Id}/approve", null)).StatusCode);
+        reviewer.AuthorizeAs(LenseeRoles.Admin, reviewerId, LenseePermissions.FinanceRead, LenseePermissions.FinanceWithdrawalApprove);
+        var approved = await reviewer.PostAsync($"/api/v1/finance/withdrawals/{draft.Id}/approve", null);
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
         await AssertLedgerCountAsync(draft.Id, 1);
     }
 

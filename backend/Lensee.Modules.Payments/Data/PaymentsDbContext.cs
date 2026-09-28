@@ -55,11 +55,16 @@ public partial class PaymentsDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.AccountId, x.Status });
             entity.HasIndex(x => new { x.AccountId, x.IdempotencyKey }).IsUnique().HasFilter("(idempotency_key IS NOT NULL)");
-            entity.Property(x => x.Id).HasDefaultValueSql("uuid_generate_v4()");
-            entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("PendingAdminReview");
-            entity.Property(x => x.SubmittedAt).HasColumnType("timestamp without time zone").HasDefaultValueSql("CURRENT_TIMESTAMP");
-            entity.Property(x => x.ReviewedAt).HasColumnType("timestamp without time zone");
-            entity.Property(x => x.IdempotencyKey).HasMaxLength(200);
+            entity.Property(x => x.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(x => x.AccountId).HasColumnName("account_id");
+            entity.Property(x => x.Status).HasColumnName("status").HasMaxLength(40).HasDefaultValue("PendingAdminReview");
+            entity.Property(x => x.SubmittedBy).HasColumnName("submitted_by");
+            entity.Property(x => x.SubmittedAt).HasColumnName("submitted_at").HasColumnType("timestamp without time zone").HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(x => x.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(x => x.ReviewedAt).HasColumnName("reviewed_at").HasColumnType("timestamp without time zone");
+            entity.Property(x => x.ReviewReason).HasColumnName("review_reason");
+            entity.Property(x => x.Notes).HasColumnName("notes");
+            entity.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
             entity.HasMany(x => x.Items).WithOne(x => x.Proposal).HasForeignKey(x => x.ProposalId).OnDelete(DeleteBehavior.Cascade);
         });
         modelBuilder.Entity<MerchantFinancialClosureItem>(entity =>
@@ -71,13 +76,17 @@ public partial class PaymentsDbContext : DbContext
             });
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.ProposalId, x.OperationId }).IsUnique();
-            entity.HasIndex(x => x.OperationId);
-            entity.Property(x => x.Id).HasDefaultValueSql("uuid_generate_v4()");
-            entity.Property(x => x.OperationNumber).HasMaxLength(50).IsRequired();
-            entity.Property(x => x.SettlementAmount).HasPrecision(18, 4);
-            entity.Property(x => x.RemainingAmount).HasPrecision(18, 4);
-            entity.Property(x => x.Decision).HasMaxLength(20).HasDefaultValue("Pending");
-            entity.Property(x => x.DecidedAt).HasColumnType("timestamp without time zone");
+            entity.HasIndex(x => x.OperationId).IsUnique().HasFilter("(decision = 'Pending')");
+            entity.Property(x => x.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(x => x.ProposalId).HasColumnName("proposal_id");
+            entity.Property(x => x.OperationId).HasColumnName("operation_id");
+            entity.Property(x => x.OperationNumber).HasColumnName("operation_number").HasMaxLength(50).IsRequired();
+            entity.Property(x => x.SettlementAmount).HasColumnName("settlement_amount").HasPrecision(18, 4);
+            entity.Property(x => x.RemainingAmount).HasColumnName("remaining_amount").HasPrecision(18, 4);
+            entity.Property(x => x.Decision).HasColumnName("decision").HasMaxLength(20).HasDefaultValue("Pending");
+            entity.Property(x => x.RejectionReason).HasColumnName("rejection_reason");
+            entity.Property(x => x.DecidedBy).HasColumnName("decided_by");
+            entity.Property(x => x.DecidedAt).HasColumnName("decided_at").HasColumnType("timestamp without time zone");
         });
 
         modelBuilder.Entity<CashRecord>(entity =>
@@ -129,7 +138,6 @@ public partial class PaymentsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasColumnName("sub_type");
             entity.Property(e => e.TransactionReference).HasMaxLength(200).HasColumnName("transaction_reference");
-            entity.Property(e => e.FinanceAccountId).HasColumnName("finance_account_id");
         });
 
         modelBuilder.Entity<InstallmentSubLog>(entity =>
@@ -507,6 +515,7 @@ public partial class PaymentsDbContext : DbContext
             entity.HasKey(value => value.Id);
             entity.ToTable("merchant_entry_allocations", "payments", table => table.HasCheckConstraint("chk_merchant_entry_allocation_amount", "amount > 0"));
             entity.HasIndex(value => new { value.EntryId, value.ObligationId }).IsUnique();
+            entity.Property(value => value.Id).HasColumnName("id");
             entity.Property(value => value.EntryId).HasColumnName("entry_id");
             entity.Property(value => value.ObligationId).HasColumnName("obligation_id");
             entity.Property(value => value.Amount).HasPrecision(18, 4).HasColumnName("amount");

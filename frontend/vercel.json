@@ -38,10 +38,9 @@
       ]
     }
   ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/", "dest": "/index.html" },
+    { "src": "/(?:[aA][rR]|[eE][nN])(?:/[^.]*)?", "dest": "/index.html" }
   ]
 }

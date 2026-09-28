@@ -4,9 +4,9 @@ import {
   contextualReference,
   findVisibleUuidLeaks,
   sanitizeVisibleText
-} from "./localization.js?v=20260913-perf1";
-import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20260924-i18n-final";
-import enMessages from "./i18n/en.js?v=20260924-i18n-final";
+} from "./localization.js?v=20260927-supply-receiving";
+import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20260927-supply-receiving";
+import enMessages from "./i18n/en.js?v=20260927-supply-receiving";
 
 // Keep API calls same-origin. Deployment-specific routing belongs to the reverse proxy.
 let apiBase = "";
@@ -39,6 +39,7 @@ const loadedInventoryPanels = new Set();
 let operationLocations = [];
 let operationSkuOptions = [];
 let operationProductOptions = [];
+let operationReturnSourceLines = [];
 let operationAvailableSkuIds = null;
 let operationSkuLoadPromise = null;
 const loadedOperationProductIds = new Set();
@@ -56,14 +57,15 @@ let routeRefreshCooldownUntil = 0;
 let selectedSupplyShipmentId = null;
 let supplyShipments = [];
 let supplyCurrentDetail = null;
+const supplyReceivingDrafts = new Map();
+const startingSupplyReceivings = new Set();
+let supplyReceivingSharedBatch = "";
 let supplySkuLoadPromise = null;
 let supplySkuSearchIndex = [];
 let supplyEditorLines = [];
 let supplyEditorLineById = new Map();
 let supplyEditorPage = 1;
 const supplyEditorPageSize = 50;
-let supplyEditorStats = { productTotal: 0, incompletePrices: 0, invalidPrices: 0 };
-let supplyEditorStatsDirty = true;
 let supplyListPage = 1;
 let supplyDetailLinePage = 1;
 let operationsUiState = {
@@ -78,6 +80,7 @@ let operationsUiState = {
 let operationListPage = 1;
 let paymentMerchants = [];
 let paymentAccountants = [];
+let paymentFinanceAccounts = [];
 let paymentHistoryRows = [];
 let paymentPageState = { merchant: 1, other: 1, history: 1, audit: 1 };
 const loadedPaymentPanels = new Set();
@@ -110,7 +113,6 @@ const refreshLockStorageKey = "lensee.refresh.lock";
 const refreshLockLeaseMs = 30000;
 const refreshLockWaitMs = 35000;
 
-const languageKey = "lensee.language";
 let currentLanguage = getFoundationLanguage();
 let applyingLanguage = false;
 
@@ -323,6 +325,15 @@ const arabicTranslations = Object.freeze({
   "Amount": "المبلغ",
   "Assign": "إسناد",
   "Approve": "اعتماد",
+  "Approve cash receipt": "اعتماد إيصال النقدية",
+  "Approve financial adjustment": "اعتماد التسوية المالية",
+  "Approve opening balance": "اعتماد الرصيد الافتتاحي",
+  "Approve payment": "اعتماد المدفوعات",
+  "Record refund payout": "تسجيل صرف الاسترداد",
+  "Are you sure you want to approve and post this payment?": "هل أنت متأكد من اعتماد وترحيل هذه المدفوعة؟",
+  "Are you sure you want to approve and post this cash receipt?": "هل أنت متأكد من اعتماد وترحيل إيصال النقدية؟",
+  "Are you sure you want to approve and apply this financial adjustment?": "هل أنت متأكد من اعتماد وتطبيق هذه التسوية المالية؟",
+  "Record this cash refund payout?": "هل تريد تسجيل صرف هذا الاسترداد النقدي؟",
   "Reject": "رفض",
   "Load remaining": "تحميل المتبقي",
   "Reports and exports": "التقارير والتصدير",
@@ -793,6 +804,13 @@ const arabicTranslations = Object.freeze({
   "Change requires a merchant.": "الاستبدال يتطلب اختيار تاجر.",
   "Change needs at least one returned line and one replacement line.": "يجب أن يحتوي الاستبدال على بند مرتجع واحد وبند بديل واحد على الأقل.",
   "Returned change lines must include batch expiry.": "يجب إدخال تاريخ انتهاء الدفعة في البنود المرتجعة ضمن الاستبدال.",
+  "Original sale": "عملية البيع الأصلية",
+  "Select original sale": "اختر عملية البيع الأصلية",
+  "Select original sale line": "اختر بند البيع الأصلي",
+  "Select a merchant before choosing the original sale.": "اختر التاجر قبل اختيار عملية البيع الأصلية.",
+  "No eligible sales found for this merchant.": "لا توجد عمليات بيع مؤهلة لهذا التاجر.",
+  "No eligible quantity remains for this sale line.": "لا توجد كمية مؤهلة متبقية لهذا البند.",
+  "Eligible": "المتاح للإرجاع",
   "Standard": "عادي",
   "Paid": "مدفوع",
   "Revise": "مراجعة",
@@ -1010,6 +1028,7 @@ const arabicTranslations = Object.freeze({
   "Open stocktakes": "فتح الجرد",
   "Open CRM": "فتح إدارة العلاقات التجارية",
   "Open reports": "فتح التقارير",
+  "Finance": "المالية",
   "Open related page": "فتح الصفحة المرتبطة",
   "Payment workflow": "سير عمل المدفوعات",
   "Operation status": "حالة العملية",
@@ -1435,7 +1454,9 @@ function uiText(english) {
   const value = String(english ?? "");
   const foundationKey = foundationKeyByEnglish[value];
   if (foundationKey) return foundationT(foundationKey).trim();
-  const language = document.documentElement.dir === "rtl" ? "ar" : getFoundationLanguage();
+  // URL prefix owns the presentation language; never sniff DOM direction here
+  // because direction is itself derived from the URL-owned language.
+  const language = getFoundationLanguage();
   return (language === "ar" ? (arabicTranslations[value] || value) : value).trim();
 }
 
@@ -1482,47 +1503,21 @@ function applyLanguage(root = document.body) {
 }
 
 function setLanguage(language) {
-  const preservedFormState = captureLanguageSwitchState();
+  // URL prefix owns the language: switching is a deliberate navigation that
+  // preserves query string and hash route. Transient form state is not kept
+  // because the prefix change reloads the SPA at the new canonical URL.
+  const target = window.LenseeUrlLanguage?.toLanguage(language);
+  if (target) {
+    if (currentPath() === "/crm" && selectedMerchantId) {
+      sessionStorage.setItem("lensee.crm.selectedMerchantId", selectedMerchantId);
+    }
+    window.location.assign(target);
+    return;
+  }
+  // Bootstrap always provides the helper for supported application URLs. This
+  // fallback is retained only for an unexpected embedding environment.
   currentLanguage = setFoundationLanguage(language);
-  localStorage.setItem(languageKey, currentLanguage);
   applyLanguage();
-  if (getAuth()) renderNav(getAuth());
-  const localizedWorkspaceRoutes = new Set(["/dashboard", "/catalog", "/crm", "/operations", "/inventory", "/supply", "/payments", "/notifications", "/reports", "/stocktake", "/admin", "/audit", "/integrations"]);
-  const path = currentPath();
-  if (path === "/login") {
-    void routes[path].render().then(() => applyLanguage());
-    return;
-  }
-  if (path === "/crm" && getAuth()) {
-    if (preservedFormState.selectedMerchantId) void showMerchantDetail(preservedFormState.selectedMerchantId);
-    applyLanguage();
-    return;
-  }
-  if (path === "/admin" && getAuth()) {
-    // Keep unsaved account-management fields in place while switching the
-    // presentation language; the form's canonical option values are already
-    // independent of their visible labels.
-    applyLanguage();
-    return;
-  }
-  if (localizedWorkspaceRoutes.has(path) && getAuth()) {
-    Promise.resolve(routes[path].render())
-      .then(() => {
-        restoreLanguageSwitchState(preservedFormState, true);
-        if (path === "/supply" && preservedFormState.selectedSupplyShipmentId)
-          void showSupplyDetail(preservedFormState.selectedSupplyShipmentId);
-        // Async route hydration (notably Admin locations and user lists) can
-        // repopulate controls after the route promise resolves. Reapply the
-        // captured values once more on the next task so a language switch
-        // cannot erase unsaved form work.
-        window.setTimeout(() => restoreLanguageSwitchState(preservedFormState, false), 50);
-        if (path === "/crm" && preservedFormState.selectedMerchantId) {
-          void showMerchantDetail(preservedFormState.selectedMerchantId);
-        }
-        applyLanguage();
-      })
-      .catch((exception) => notice(getFriendlyWorkspaceError(exception), "error"));
-  }
 }
 
 function applyStaticShellLanguage() {
@@ -1545,129 +1540,6 @@ function applyStaticShellLanguage() {
   if (brand) brand.setAttribute("aria-label", foundationT("navigation.dashboard"));
 }
 
-function captureLanguageSwitchState() {
-  const operationForm = document.getElementById("operation-form");
-  if (operationForm) syncCurrentOperationPage();
-  const operationEditor = operationForm ? {
-    lines: operationEditorLines.map((line) => ({ ...line })),
-    page: operationEditorPage,
-    uiState: { ...operationsUiState, openDetailIds: [...operationsUiState.openDetailIds] }
-  } : null;
-  const supplyForm = document.getElementById("supply-form");
-  if (supplyForm) syncCurrentSupplyPage();
-  const supplyEditor = supplyForm ? {
-    lines: supplyEditorLines.map((line) => ({ ...line })),
-    page: supplyEditorPage,
-    costs: [...document.querySelectorAll(".supply-cost-row")].map((row) => ({
-      costType: row.querySelector(".supply-cost-type")?.value || "Other",
-      description: row.querySelector(".supply-cost-description")?.value || "",
-      amount: row.querySelector(".supply-cost-amount")?.value || "0"
-    }))
-  } : null;
-  const values = [];
-  const stocktakeForm = document.getElementById("stocktake-lines-form");
-  const stocktakeEditor = stocktakeForm ? {
-    sessionId: document.getElementById("stocktake-detail")?.dataset.sessionId || null,
-    lines: [...document.querySelectorAll(".stocktake-line-row")].map((row) => ({
-      skuId: row.querySelector(".stocktake-line-sku")?.value || "",
-      search: row.querySelector(".stocktake-line-search")?.value || "",
-      lotNumber: row.querySelector(".stocktake-line-lot")?.value || "",
-      expiryDate: row.querySelector(".stocktake-line-expiry")?.value || "",
-      physicalPackCount: row.querySelector(".stocktake-line-pack-count")?.value || "0",
-      physicalPieceCount: row.querySelector(".stocktake-line-piece-count")?.value || "0",
-      lineNote: row.querySelector(".stocktake-line-note")?.value || ""
-    }))
-  } : null;
-  document.querySelectorAll("#view input, #view select, #view textarea").forEach((element, index) => {
-    const key = element.id || `${element.name || element.tagName}:${index}`;
-    values.push({ key, value: element.value, checked: element.checked, selectedIndex: element.selectedIndex });
-  });
-  return { values, hash: window.location.hash, path: currentPath(), scrollY: window.scrollY, selectedMerchantId,
-    expenseEditId: document.getElementById("finance-expense-form")?.dataset.editId || null,
-    repaymentEditId: document.getElementById("finance-repayment-form")?.dataset.correctId || null,
-    operationEditor, operationListPage, reportPageState: { ...reportPageState },
-    supplyEditor, supplyListPage, selectedSupplyShipmentId, stocktakeEditor };
-}
-
-function restoreLanguageSwitchState(state, reload = false) {
-  if (!state) return;
-  if (state.operationEditor && document.getElementById("operation-form")) {
-    operationsUiState = { ...state.operationEditor.uiState, openDetailIds: [...state.operationEditor.uiState.openDetailIds] };
-    operationEditorLines = state.operationEditor.lines.map((line) => ({ ...line }));
-    operationEditorLineById = new Map(operationEditorLines.map((line) => [line._clientId, line]));
-    operationEditorPage = state.operationEditor.page;
-    renderOperationEditorPage();
-    applyOperationEditorMode();
-  }
-  if (state.reportPageState) reportPageState = { ...state.reportPageState };
-  if (state.operationListPage) operationListPage = state.operationListPage;
-  if (state.supplyListPage) supplyListPage = state.supplyListPage;
-  if (state.supplyEditor && document.getElementById("supply-form")) {
-    supplyEditorLines = state.supplyEditor.lines.map((line) => ({ ...line }));
-    supplyEditorLineById = new Map(supplyEditorLines.map((line) => [line._clientId, line]));
-    supplyEditorPage = state.supplyEditor.page;
-    supplyEditorStatsDirty = true;
-    renderSupplyEditorPage();
-    document.getElementById("supply-costs")?.replaceChildren();
-    state.supplyEditor.costs.forEach((cost) => addSupplyCost(cost));
-  }
-  if (state.stocktakeEditor?.sessionId && document.getElementById("stocktake-detail")) {
-    void showStocktakeDetail(state.stocktakeEditor.sessionId).then(() => {
-      const rows = [...document.querySelectorAll(".stocktake-line-row")];
-      state.stocktakeEditor.lines.forEach((line, index) => {
-        const row = rows[index];
-        if (!row) return;
-        row.querySelector(".stocktake-line-search").value = line.search;
-        row.querySelector(".stocktake-line-lot").value = line.lotNumber;
-        row.querySelector(".stocktake-line-expiry").value = line.expiryDate;
-        row.querySelector(".stocktake-line-pack-count").value = line.physicalPackCount;
-        row.querySelector(".stocktake-line-piece-count").value = line.physicalPieceCount;
-        row.querySelector(".stocktake-line-note").value = line.lineNote;
-        if (line.skuId) seedStocktakeLineSkuSelection(row, line.skuId);
-      });
-    });
-  }
-  const expenseForm = document.getElementById("finance-expense-form");
-  if (expenseForm && state.expenseEditId) {
-    expenseForm.dataset.editId = state.expenseEditId;
-    const submit = expenseForm.querySelector('button[type="submit"]');
-    if (submit) submit.textContent = financeT("expenses.savePending");
-  }
-  const repaymentForm = document.getElementById("finance-repayment-form");
-  if (repaymentForm && state.repaymentEditId) {
-    repaymentForm.dataset.correctId = state.repaymentEditId;
-    const note = document.getElementById("finance-repayment-correction-note");
-    if (note) { note.closest("label").hidden = false; note.required = true; }
-    const submit = repaymentForm.querySelector('button[type="submit"]');
-    if (submit) submit.textContent = financeT("repayments.saveCorrection");
-  }
-  state.values.forEach(({ key, value, checked, selectedIndex }) => {
-    const element = document.getElementById(key) || [...document.querySelectorAll("#view input, #view select, #view textarea")]
-      .find((candidate, index) => `${candidate.name || candidate.tagName}:${index}` === key);
-    if (!element) return;
-    if (element.tagName === "SELECT") {
-      element.value = value;
-      if (element.value !== value) element.selectedIndex = selectedIndex;
-    }
-    else {
-      element.value = value;
-      if (typeof checked === "boolean") element.checked = checked;
-    }
-    const isListFilter = (state.path === "/reports" && element.id.startsWith("report-filter-")) ||
-      (state.path === "/operations" && element.id.startsWith("operations-")) ||
-      (state.path === "/supply" && ["supply-search", "supply-status"].includes(element.id));
-    if (!isListFilter) element.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  if (state.reportPageState) reportPageState = { ...state.reportPageState };
-  if (state.operationListPage) operationListPage = state.operationListPage;
-  if (state.supplyListPage) supplyListPage = state.supplyListPage;
-  if (reload && state.path === "/reports") void loadReports();
-  if (reload && state.path === "/operations") void loadOperations();
-  if (reload && state.path === "/supply") void loadSupplyShipments();
-  if (state.hash && window.location.hash !== state.hash) window.location.hash = state.hash;
-  window.scrollTo({ top: state.scrollY, behavior: "auto" });
-}
-
 function canonicalSystemValue(value, domain, options) {
   return readCanonicalSystemValue(value, domain, options);
 }
@@ -1681,14 +1553,15 @@ const routes = {
   "/dashboard": { title: "Overview", label: "Dashboard", i18nTitle: "routes.dashboard.title", i18nLabel: "routes.dashboard.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderDashboard },
   "/catalog": { title: "Catalog", label: "Catalog", i18nTitle: "routes.catalog.title", i18nLabel: "routes.catalog.label", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderCatalog },
   "/inventory": { title: "Inventory", label: "Inventory", i18nTitle: "routes.inventory.title", i18nLabel: "routes.inventory.label", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderInventory },
-  "/supply": { title: "Supply", label: "Supply", i18nTitle: "routes.supply.title", i18nLabel: "routes.supply.label", roles: ["CLevel", "Admin"], render: renderSupply },
+  "/supply": { title: "Supply", label: "Supply", i18nTitle: "routes.supply.title", i18nLabel: "routes.supply.label", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderSupply },
   "/crm": { title: "CRM", label: "CRM", i18nTitle: "routes.crm.title", i18nLabel: "routes.crm.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderCrm },
   "/operations": { title: "Operations", label: "Operations", i18nTitle: "routes.operations.title", i18nLabel: "routes.operations.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderOperations },
   "/payments": { title: "Payments", label: "Payments", i18nTitle: "routes.payments.title", i18nLabel: "routes.payments.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderPayments },
+  "/finance": { title: "Finance", label: "Finance", i18nTitle: "routes.finance.title", i18nLabel: "routes.finance.label", roles: ["CLevel", "Admin", "Accountant"], render: renderFinance },
   "/notifications": { title: "Notifications", label: "Notifications", i18nTitle: "routes.notifications.title", i18nLabel: "routes.notifications.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderNotifications },
   "/integrations": { title: "Online intake", label: "Online intake", i18nTitle: "routes.integrations.title", i18nLabel: "routes.integrations.label", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderShopifyIntegration },
-  "/reports": { title: "Reports", label: "Reports", i18nTitle: "routes.reports.title", i18nLabel: "routes.reports.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant"], render: renderReports },
-  "/stocktakes": { title: "Stocktake", label: "Stocktake", i18nTitle: "routes.stocktakes.title", i18nLabel: "routes.stocktakes.label", roles: ["CLevel", "Admin", "ERPAdmin"], render: renderStocktakes },
+  "/reports": { title: "Reports", label: "Reports", i18nTitle: "routes.reports.title", i18nLabel: "routes.reports.label", roles: ["CLevel", "Admin", "ERPAdmin", "Accountant", "WarehouseClerk"], render: renderReports },
+  "/stocktakes": { title: "Stocktake", label: "Stocktake", i18nTitle: "routes.stocktakes.title", i18nLabel: "routes.stocktakes.label", roles: ["CLevel", "Admin", "ERPAdmin", "WarehouseClerk"], render: renderStocktakes },
   "/audit": { title: "Audit history", label: "Audit history", i18nTitle: "routes.audit.title", i18nLabel: "routes.audit.label", roles: ["Admin", "ERPAdmin"], render: renderAudit },
   "/admin": { title: "Administration", label: "Admin", i18nTitle: "routes.admin.title", i18nLabel: "routes.admin.label", roles: ["Admin", "ERPAdmin"], render: renderAdmin }
 };
@@ -1701,6 +1574,7 @@ const navItems = [
   ["/crm", "CRM"],
   ["/operations", "Operations"],
   ["/payments", "Payments"],
+  ["/finance", "Accounts"],
   ["/notifications", "Notifications"],
   ["/integrations", "Online intake"],
   ["/reports", "Reports"],
@@ -1719,7 +1593,7 @@ const navGroupTranslationKeys = new Map([
 
 const navGroups = [
   { label: "Daily work", items: ["/dashboard", "/operations", "/notifications"] },
-  { label: "Money", items: ["/payments", "/reports"] },
+  { label: "Money", items: ["/payments", "/finance", "/reports"] },
   { label: "Stock", items: ["/inventory", "/supply", "/catalog", "/stocktakes"] },
   { label: "Oversight", items: ["/crm", "/integrations", "/audit", "/admin"] }
 ];
@@ -1960,7 +1834,33 @@ function drainHeavyRequestQueue() {
 
 async function executeRequest(path, options = {}) {
   const requestOptions = withPaymentIdempotency(path, options);
-  const response = await fetchWithAuth(path, requestOptions);
+  let response;
+  try {
+    response = await fetchWithAuth(path, requestOptions);
+  } catch (firstError) {
+    const method = (requestOptions.method || "GET").toUpperCase();
+    const idempotencyKey = requestOptions.headers instanceof Headers
+      ? requestOptions.headers.get("Idempotency-Key")
+      : requestOptions.headers?.["Idempotency-Key"];
+    if (method === "GET" || !path.startsWith("/api/v1/payments/") || !idempotencyKey) throw firstError;
+    try {
+      // A dropped response is ambiguous. Replay with the original key and body;
+      // the server either runs the command once or returns its saved response.
+      response = await fetchWithAuth(path, requestOptions);
+    } catch (replayError) {
+      try {
+        const resolvedResponse = await fetchWithAuth(`/api/v1/payments/collections/resolve?key=${encodeURIComponent(idempotencyKey)}`);
+        if (resolvedResponse.ok) {
+          const resolvedPayload = await resolvedResponse.json();
+          if (resolvedPayload && (resolvedPayload.id || resolvedPayload.reference || resolvedPayload.status === "Completed")) return resolvedPayload;
+        }
+      } catch {
+        // The original mutation error is the actionable result when resolution
+        // is unavailable too.
+      }
+      throw replayError || firstError;
+    }
+  }
 
   if (!response.ok) {
     const body = await response.text();
@@ -2178,6 +2078,33 @@ async function renderRoute() {
     location.hash = "/dashboard";
     return;
   }
+  if (auth && path === "/operations" && currentRouteQuery().get("new") === "InventoryReceipt") {
+    if (!routes["/operations"].roles.includes(auth.user.role)) {
+      renderForbidden();
+      return;
+    }
+    document.body.classList.remove("auth-page");
+    document.getElementById("page-title").textContent = foundationT("navigation.inventoryReceipt");
+    document.getElementById("route-label").textContent = foundationT("routes.operations.label");
+    renderNav(auth);
+    renderSession(auth);
+    updateNotificationBadge();
+    await routes["/operations"].render();
+    if (renderGeneration !== routeRenderGeneration || path !== currentPath()) return;
+    const receiptType = document.getElementById("op-type");
+    if (receiptType) {
+      operationsUiState.operationType = "InventoryReceipt";
+      receiptType.value = "InventoryReceipt";
+      receiptType.dispatchEvent(new Event("change", { bubbles: true }));
+      resetOperationEditorMode();
+      await hydrateOperationSkus();
+      renderOperationEditorPage();
+    }
+    const operationForm = document.getElementById("operation-form");
+    if (operationForm) operationForm.scrollIntoView({ behavior: "smooth", block: "start" });
+    applyLanguage(document.body);
+    return;
+  }
   if (route.roles.length > 0 && auth && !route.roles.includes(auth.user.role)) {
     renderForbidden();
     return;
@@ -2308,6 +2235,7 @@ function renderNav(auth) {
 
     nav.appendChild(groupNode);
   }
+
 }
 
 function renderSession(auth) {
@@ -2473,10 +2401,11 @@ function applyApiHeaders(headers) {
 
 function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel = "Cancel", tone = "default", bodyHtml = "", translateMessage = true, translateTitle = true }) {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
     const overlay = document.createElement("div");
     overlay.className = "dialog-overlay";
     overlay.innerHTML = `
-      <section class="dialog-card confirm-dialog ${tone === "warning" ? "confirm-dialog-warning" : ""}" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+      <section class="dialog-card confirm-dialog ${tone === "warning" ? "confirm-dialog-warning" : ""}" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
         <div class="section-head tight-head">
           <div>
             <h2 id="confirm-dialog-title">${escapeHtml(translateTitle ? uiText(title) : String(title ?? ""))}</h2>
@@ -2491,8 +2420,16 @@ function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel =
       </section>`;
     document.body.appendChild(overlay);
     const close = (value) => {
+      document.removeEventListener("keydown", onKeyDown);
       overlay.remove();
+      if (previousFocus && typeof previousFocus.focus === "function" && previousFocus.isConnected) previousFocus.focus();
       resolve(value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close(false);
+      }
     };
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) {
@@ -2501,8 +2438,33 @@ function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel =
     });
     overlay.querySelector("[data-dialog-cancel]").addEventListener("click", () => close(false));
     overlay.querySelector("[data-dialog-confirm]").addEventListener("click", () => close(true));
+    document.addEventListener("keydown", onKeyDown);
     overlay.querySelector("[data-dialog-confirm]").focus();
   });
+}
+
+async function confirmFinalAction({ action, title, message, confirmLabel = "Confirm", reasonLabel, control = null, key, execute }) {
+  const needsReason = action === "reject" || action === "cancel";
+  const resolvedTitle = title || foundationT("app.confirm.finalAction", { action });
+  const resolvedMessage = message || foundationT("app.confirm.finalActionMessage", { action });
+  if (action === "reject") {
+    const reason = await promptDialog({ title: resolvedTitle, label: reasonLabel || foundationT("app.confirm.reason"), multiline: true, required: true });
+    if (!reason) return null;
+    return withMutationGuard(key || `final-action:${action}`, control, () => execute(reason));
+  }
+  const approved = await confirmDialog({
+    title: resolvedTitle,
+    message: resolvedMessage,
+    confirmLabel: foundationT("common.confirm"),
+    cancelLabel: foundationT("common.cancel"),
+    tone: "warning"
+  });
+  if (!approved) return null;
+  const reason = needsReason
+    ? await promptDialog({ title: resolvedTitle, label: reasonLabel || foundationT("app.confirm.reason"), multiline: true, required: true })
+    : null;
+  if (needsReason && !reason) return null;
+  return withMutationGuard(key || `final-action:${action}`, control, () => execute(reason));
 }
 
 function scheduleRouteRefresh(path) {
@@ -2549,7 +2511,7 @@ async function refreshActiveView({ reason = "manual" } = {}) {
         await loadOperations();
         break;
       case "/payments":
-        await Promise.all([loadPayments(), loadPaymentHistory()]);
+        await refreshPaymentsWorkspace();
         break;
       case "/notifications":
         // renderNotifications already performs the initial notification load.
@@ -2597,6 +2559,22 @@ async function updateNotificationBadge() {
   } finally {
     notificationBadgeInFlight = false;
   }
+}
+
+async function refreshPaymentsWorkspace() {
+  const tasks = [loadPayments()];
+  const isVisible = (id) => {
+    const element = document.getElementById(id);
+    return Boolean(element && !element.hidden);
+  };
+  if (isVisible("merchant-payment-section")) {
+    tasks.push(loadMerchantBalance());
+    tasks.push(loadFinancialAdjustmentInbox());
+  }
+  if (isVisible("payment-ledger-section")) tasks.push(loadPaymentHistory());
+  if (isVisible("payment-review-section")) tasks.push(loadCollectionWorkInbox());
+  if (isVisible("payment-audit-section")) tasks.push(loadPaymentAudit());
+  await Promise.allSettled(tasks);
 }
 
 function renderLogin() {
@@ -2708,18 +2686,6 @@ function renderDashboard() {
     .join("");
 
   document.getElementById("view").innerHTML = `
-    ${pageIntro({
-      eyebrow: foundationT("dashboard.overview"),
-      title: foundationT("dashboard.title"),
-      body: foundationT("dashboard.intro", { role: dashboardPrimaryResponsibility(currentRole) }),
-      metrics: `
-        ${scenarioCard("Open work", "Loading", "status-muted", "dashboard-open-work")}
-        ${scenarioCard("Open confirmations", "Loading", "status-muted", "dashboard-open-confirmations")}
-        ${scenarioCard("Unread alerts", "Loading", "status-muted", "dashboard-unread-alerts")}
-        ${["Admin", "CLevel"].includes(currentRole) ? `${scenarioCard("Total sales", "Loading", "status-muted", "dashboard-total-sales")}${scenarioCard("Actual total I have", "Loading", "status-muted", "dashboard-actual-collected")}${scenarioCard("Remaining", "Loading", "status-muted", "dashboard-remaining-receivable")}` : ""}
-      `
-    })}
-    
     ${["Admin", "CLevel"].includes(currentRole) ? `<section class="workspace-panel"><div class="section-head"><h3>${financeT("executive.title")}</h3><div class="form-grid compact-form"><label>${financeT("executive.period")}<select id="finance-summary-period" class="select"><option value="daily">${financeT("executive.daily")}</option><option value="monthly">${financeT("executive.monthly")}</option></select></label><label>${financeT("businessDate")}<input id="finance-summary-date" class="input" type="date"></label></div></div><div id="finance-executive-summary">${foundationT("common.loading")}</div></section>` : ""}
     <section class="command-grid">
       <a class="command-tile command-tile-daily" href="#/operations">
@@ -2750,31 +2716,9 @@ function renderDashboard() {
     </section>`;
 
   if (["Admin", "CLevel"].includes(currentRole)) {
-    loadDashboardFinancialSummary();
     loadFinanceExecutiveSummary();
     document.getElementById("finance-summary-period")?.addEventListener("change", loadFinanceExecutiveSummary);
     document.getElementById("finance-summary-date")?.addEventListener("change", loadFinanceExecutiveSummary);
-  }
-  loadDashboardOperationalSummary();
-}
-
-async function loadDashboardFinancialSummary() {
-  const sales = document.getElementById("dashboard-total-sales");
-  const actual = document.getElementById("dashboard-actual-collected");
-  const remaining = document.getElementById("dashboard-remaining-receivable");
-  if (!sales || !actual || !remaining) return;
-  try {
-    const summary = await request("/api/v1/reports/financial-summary");
-    sales.textContent = formatMoney(summary.totalSales);
-    actual.textContent = formatMoney(summary.actualCollected);
-    remaining.textContent = formatMoney(summary.remainingReceivable);
-    sales.className = "status-ok";
-    actual.className = "status-ok";
-    remaining.className = Number(summary.remainingReceivable || 0) > 0 ? "status-warn" : "status-ok";
-  } catch {
-    sales.textContent = foundationT("app.message.unavailable");
-    actual.textContent = foundationT("app.message.unavailable");
-    remaining.textContent = foundationT("app.message.unavailable");
   }
 }
 
@@ -2827,45 +2771,6 @@ function renderCatalog() {
   refreshCatalogWorkspace();
 }
 
-async function loadDashboardOperationalSummary() {
-  const openWork = document.getElementById("dashboard-open-work");
-  const openConfirmations = document.getElementById("dashboard-open-confirmations");
-  const unreadAlerts = document.getElementById("dashboard-unread-alerts");
-  if (!openWork || !openConfirmations || !unreadAlerts) return;
-
-  const setUnavailable = () => {
-    openWork.textContent = foundationT("app.message.unavailable");
-    openConfirmations.textContent = foundationT("app.message.unavailable");
-    unreadAlerts.textContent = foundationT("app.message.unavailable");
-  };
-
-  try {
-    const [operations, payments, notifications] = await Promise.all([
-      request("/api/v1/operations?pageSize=50").catch(() => null),
-      request("/api/v1/payments?pageSize=50").catch(() => null),
-      request("/api/v1/notifications?page=1&pageSize=50").catch(() => null)
-    ]);
-
-    const operationRows = operations?.items || [];
-    const paymentRows = payments?.items || [];
-    const notificationRows = notifications?.items || notifications || [];
-    const activeOperations = operationRows.filter((operation) => !["Completed", "Received", "Cancelled"].includes(operation.status)).length;
-    const queuePayments = paymentRows.filter((log) =>
-      ["MerchantAccount", "CashHandToHand", "CashTransaction"].includes(log.paymentMethod) &&
-      ["PendingAdmin", "PendingAccountant", "PendingAdminReview"].includes(log.status)).length;
-    const unreadCount = notificationRows.filter((notification) => notification.isRead === false || notification.readAt == null).length;
-
-    openWork.textContent = String(activeOperations);
-    openConfirmations.textContent = String(queuePayments);
-    unreadAlerts.textContent = String(unreadCount);
-    openWork.className = activeOperations > 0 ? "status-warn" : "status-ok";
-    openConfirmations.className = queuePayments > 0 ? "status-warn" : "status-ok";
-    unreadAlerts.className = unreadCount > 0 ? "status-warn" : "status-ok";
-  } catch {
-    setUnavailable();
-  }
-}
-
 function scenarioCard(title, value, tone, valueId = null) {
   const idAttribute = valueId ? ` id="${escapeHtml(valueId)}"` : "";
   return `<div class="scenario-card"><span>${escapeHtml(uiText(title))}</span><strong${idAttribute} class="${escapeHtml(tone)}">${escapeHtml(uiText(value))}</strong></div>`;
@@ -2880,16 +2785,6 @@ function workspaceTone(href) {
   if (["/payments", "/reports"].includes(href)) return "money";
   if (["/inventory", "/catalog", "/stocktakes"].includes(href)) return "stock";
   return "oversight";
-}
-
-function dashboardPrimaryResponsibility(role) {
-  return {
-    Admin: foundationT("dashboard.role.admin"),
-    ERPAdmin: foundationT("dashboard.role.admin"),
-    CLevel: foundationT("dashboard.role.executive"),
-    Accountant: foundationT("dashboard.role.accountant"),
-    WarehouseClerk: foundationT("dashboard.role.warehouse")
-  }[role] || foundationT("dashboard.role.default");
 }
 
 function isSystemAdminRole(role) {
@@ -3849,8 +3744,9 @@ async function loadInventoryLocations() {
       ? `<span class="muted-text">${escapeHtml(foundationT("app.inventoryNoLocations"))}</span>`
       : inventoryLocations.map((location) => `<button class="reference-item" type="button" data-location-id="${escapeHtml(location.id)}"><strong>${escapeHtml(location.name)}</strong><span>${escapeHtml(uiText(location.locationType))} ${escapeHtml(uiText(location.isActive ? "Active" : "Inactive"))}</span></button>`).join("");
     list.querySelectorAll("[data-location-id]").forEach((button) => button.addEventListener("click", () => {
-      selectedInventoryLocationId = button.dataset.locationId;
+      selectedInventoryLocationId = (button.dataset.locationId || "").trim();
       select.value = selectedInventoryLocationId;
+      inventoryPageState = { balances: 1, batches: 1, transactions: 1, blocked: 1, replenishment: 1 };
       refreshInventoryTables();
     }));
   } catch (exception) {
@@ -3929,7 +3825,7 @@ function merchantSalesVarianceDialog(gate) {
     overlay.className = "dialog-overlay";
     const warningRows = (gate.warnings || []).map((warning) => `
       <tr>
-        <td><strong>${escapeHtml(warning.skuCode || "SKU")}</strong><div class="muted-cell">${escapeHtml(warning.productName || "-")}</div></td>
+        <td><strong class="sku-code">${escapeHtml(warning.skuCode || "SKU")}</strong><div class="muted-cell">${escapeHtml(warning.productName || "-")}</div></td>
         <td>${escapeHtml(warning.lotNumber || "-")}</td>
         <td>${escapeHtml(warning.expiryDate || "-")}</td>
         <td>${escapeHtml(String(warning.soldQuantity ?? 0))}</td>
@@ -4170,7 +4066,7 @@ async function loadInventoryBalances(generation = inventoryRefreshGeneration) {
       : result.items.map((balance) => `
         <tr>
           <td>${escapeHtml(balance.locationName)}</td>
-          <td><strong>${escapeHtml(balance.skuCode || uiText("Unknown SKU"))}</strong>${skuStatusBadge(balance.skuIsActive)}<span class="muted-cell">${escapeHtml(balance.productName || shortId(balance.skuId, "SKU"))}</span></td>
+          <td><strong class="sku-code">${escapeHtml(balance.skuCode || uiText("Unknown SKU"))}</strong>${skuStatusBadge(balance.skuIsActive)}<span class="muted-cell">${escapeHtml(balance.productName || shortId(balance.skuId, "SKU"))}</span></td>
           <td>${quantityStack(balance.availablePacks, balance.availablePieces, balance.locationType)}</td>
           <td>${quantityStack(balance.reservedInWarehousePacks + balance.reservedWithRepPacks, addNullable(balance.reservedInWarehousePieces, balance.reservedWithRepPieces), balance.locationType)}</td>
           <td>${quantityStack(balance.targetPacks, balance.targetPieces, balance.locationType)}</td>
@@ -4209,7 +4105,7 @@ async function loadInventoryReplenishment(generation = inventoryRefreshGeneratio
       : rows.map((row) => `
         <tr>
           <td>${escapeHtml(row.destinationLocationName)}</td>
-          <td><strong>${escapeHtml(row.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(row.productName || shortId(row.skuId, "SKU"))}</span></td>
+          <td><strong class="sku-code">${escapeHtml(row.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(row.productName || shortId(row.skuId, "SKU"))}</span></td>
           <td>${quantityStack(row.availablePacks, row.availablePieces, row.destinationLocationType)}</td>
           <td>${quantityStack(row.incomingPacks, row.incomingPieces, row.destinationLocationType)}</td>
           <td>${quantityStack(row.targetPacks, row.targetPieces, row.destinationLocationType)}</td>
@@ -4240,7 +4136,7 @@ async function loadInventoryBatches(generation = inventoryRefreshGeneration) {
         <tr>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
           <td>${escapeHtml(batch.locationName)}</td>
-          <td><strong>${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
+          <td><strong class="sku-code">${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
           <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
           <td>${escapeHtml(batch.notes || "-")}</td>
@@ -4273,7 +4169,7 @@ async function loadTransferBlockedBatches(generation = inventoryRefreshGeneratio
       : rows.map((batch) => `
         <tr>
           <td>${escapeHtml(batch.locationName)}</td>
-          <td><strong>${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
+          <td><strong class="sku-code">${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
           <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
@@ -4302,7 +4198,7 @@ async function loadInventoryTransactions(generation = inventoryRefreshGeneration
         <tr>
           <td>${escapeHtml(uiText(transaction.transactionType))}</td>
           <td>${escapeHtml(transaction.locationName)}</td>
-          <td><strong>${escapeHtml(transaction.skuCode || "Unknown SKU")}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || shortId(transaction.skuId, "SKU"))}</span></td>
+          <td><strong class="sku-code">${escapeHtml(transaction.skuCode || foundationT("supply.unknownSKU"))}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || shortId(transaction.skuId, "SKU"))}</span></td>
           <td>${quantityStack(transaction.packChange, transaction.pieceChange, transaction.locationType)}</td>
           <td>${escapeHtml(formatDateTime(transaction.createdAt))}</td>
         </tr>`).join("");
@@ -4459,6 +4355,8 @@ async function reserveInventoryReplenishment() {
 async function renderCrm() {
   const auth = getAuth();
   const canWrite = isSystemAdminRole(auth?.user.role);
+  const preservedMerchantId = sessionStorage.getItem("lensee.crm.selectedMerchantId");
+  sessionStorage.removeItem("lensee.crm.selectedMerchantId");
   selectedMerchantId = null;
   document.getElementById("view").innerHTML = `
     <section class="catalog-hero">
@@ -4504,6 +4402,7 @@ async function renderCrm() {
     document.getElementById("merchant-reset-button").addEventListener("click", resetMerchantForm);
   }
   await loadMerchants();
+  if (preservedMerchantId) await showMerchantDetail(preservedMerchantId);
 }
 
 async function loadMerchants(search = "") {
@@ -4676,7 +4575,7 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
         : operations.map((operation) => `<tr>
             <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
             <td>${escapeHtml(uiText(operation.operationType))}</td>
-            <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(uiText(operation.status))}</span></td>
+            <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(uiText(operation.status))}</span>${operation.financialClosureStatus === "FinanciallyClosed" ? `<div><span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span></div>` : ""}</td>
             <td>${escapeHtml(movementMethodLabel(operation.paymentMethod))}</td>
             <td>${escapeHtml(operation.quantity || 0)}</td>
             <td>${escapeHtml(operation.bonusQuantity || 0)}</td>
@@ -4715,7 +4614,7 @@ function renderMerchantBatchHistoryTable(rows) {
   return `<div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.product"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.batchExpiry"))}</th><th>${escapeHtml(foundationT("app.sold"))}</th><th>${escapeHtml(foundationT("app.returned"))}</th><th>${escapeHtml(foundationT("app.expiryStatus"))}</th></tr></thead><tbody>${rows.length === 0
     ? `<tr><td colspan="7">${escapeHtml(foundationT("app.noMerchantSalesReturns"))}</td></tr>`
     : rows.map((row) => `<tr>
-          <td><strong>${escapeHtml(row.skuCode || shortId(row.skuId, "SKU"))}</strong></td>
+          <td><strong class="sku-code">${escapeHtml(row.skuCode || shortId(row.skuId, "SKU"))}</strong></td>
           <td>${escapeHtml(row.productName || "-")}</td>
           <td>${escapeHtml(row.lotNumber || "-")}</td>
           <td>${row.expiryDate ? expiryBadge(row.expiryDate) : `<span class="status-pill status-muted">-</span>`}</td>
@@ -4748,7 +4647,7 @@ async function addMerchantNote(merchantId) {
 async function renderOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
-  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "Return", "Change", "WriteOff"];
+  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "WriteOff"];
   operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : "WarehouseTransfer";
   document.getElementById("view").innerHTML = `
     ${pageIntro({
@@ -4772,14 +4671,14 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">${escapeHtml(foundationT("app.inline.create"))}</span>
             </div>
-          <div class="field"><label for="op-type">${escapeHtml(foundationT("payments.type"))}</label><select id="op-type" class="select"><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("app.inline.retailOnlineSale"))}</option><option value="Reserve">${escapeHtml(foundationT("app.inline.representativeReserve"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="Change">${escapeHtml(foundationT("app.inline.change"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></div>
+          <div class="field"><label for="op-type">${escapeHtml(foundationT("payments.type"))}</label><select id="op-type" class="select"><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("app.inline.retailOnlineSale"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></div>
             <div class="field"><label for="op-source">${escapeHtml(foundationT("app.inline.sourceLocation"))}</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">${escapeHtml(foundationT("app.inline.destinationLocation"))}</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">${escapeHtml(foundationT("customer.merchant"))}</label><select id="op-merchant" class="select"></select></div>
+            <div class="field op-return-source-field" hidden><label for="op-return-source">${escapeHtml(foundationT("app.inline.originalSale"))}</label><select id="op-return-source" class="select"></select></div>
             <div class="field op-buyer-field"><label for="op-buyer">${escapeHtml(foundationT("customer.buyerName"))}</label><input id="op-buyer" class="input" autocomplete="off"></div>
             <div class="field op-buyer-field"><label for="op-buyer-phone">${escapeHtml(foundationT("customer.buyerPhone"))}</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
-            <div class="field op-payment-field"><label for="op-payment">${escapeHtml(foundationT("payments.paymentMethod"))} <span aria-hidden="true">*</span></label><select id="op-payment" class="select"><option value="">${escapeHtml(foundationT("app.inline.chooseMethod"))}</option><option value="CashHandToHand">${escapeHtml(foundationT("payments.cashInHand"))}</option><option value="CashTransaction">${escapeHtml(foundationT("payments.cashTransaction"))}</option><option value="BankTransfer">${escapeHtml(foundationT("payments.bankTransfer"))}</option><option value="Wallet">${escapeHtml(foundationT("payments.wallet"))}</option></select></div>
-            <div class="field op-payment-field"><label for="op-finance-account">${escapeHtml(foundationT("app.inline.receivingAccount"))}</label><select id="op-finance-account" class="select"><option value="">${paymentT("chooseFinanceAccount")}</option></select></div>
+            <div class="field op-payment-field"><label for="op-payment">${escapeHtml(foundationT("payments.paymentMethod"))} <span aria-hidden="true">*</span></label><select id="op-payment" class="select"><option value="">${escapeHtml(foundationT("app.inline.chooseMethod"))}</option><option value="CashHandToHand">${escapeHtml(foundationT("payments.cashInHand"))}</option><option value="CashTransaction">${escapeHtml(foundationT("payments.cashTransaction"))}</option><option value="BankTransfer">${escapeHtml(foundationT("payments.bankTransfer"))}</option><option value="Wallet">${escapeHtml(foundationT("payments.wallet"))}</option><option value="MerchantAccount">${escapeHtml(paymentT("merchantAccount"))}</option></select></div>
             <div class="field"><label for="op-supplier">${escapeHtml(foundationT("supply.supplier"))}</label><input id="op-supplier" class="input" autocomplete="off" placeholder="${escapeHtml(foundationT("app.attribute.receiptOnly"))}"></div>
             <div class="field"><label for="op-invoice">${escapeHtml(foundationT("app.inline.invoice"))}</label><input id="op-invoice" class="input" autocomplete="off" placeholder="${escapeHtml(foundationT("app.attribute.usedForReceiptFlows"))}"></div>
             <div class="field"><label for="op-notes">${escapeHtml(foundationT("payments.notes"))}</label><input id="op-notes" class="input" autocomplete="off"></div>
@@ -4802,7 +4701,7 @@ async function renderOperations() {
       </div>
       <div class="toolbar">
         <label class="field"><span>${escapeHtml(foundationT("app.catalogSearch"))}</span><input id="operations-search" class="input" type="search" placeholder="${escapeHtml(foundationT("app.attribute.operationMerchantBuyerSKUOrPaymentReference"))}"></label>
-        <label class="field"><span>${escapeHtml(foundationT("payments.type"))}</span><select id="operations-type" class="select"><option value="">${escapeHtml(foundationT("reports.allTypes"))}</option><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("payments.retailSale"))}</option><option value="Reserve">${escapeHtml(foundationT("app.inline.representativeReserve"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="Change">${escapeHtml(foundationT("payments.exchange"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></label>
+        <label class="field"><span>${escapeHtml(foundationT("payments.type"))}</span><select id="operations-type" class="select"><option value="">${escapeHtml(foundationT("reports.allTypes"))}</option><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("payments.retailSale"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.status"))}</span><select id="operations-status" class="select"><option value="">${escapeHtml(foundationT("reports.allStatuses"))}</option><option value="Draft">${escapeHtml(foundationT("payments.draft"))}</option><option value="Confirmed">${escapeHtml(foundationT("payments.confirmed"))}</option><option value="Reserved">${escapeHtml(foundationT("app.inline.reserved"))}</option><option value="Shipped">${escapeHtml(foundationT("app.inline.shipped"))}</option><option value="Received">${escapeHtml(foundationT("reports.received"))}</option><option value="Completed">${escapeHtml(foundationT("payments.completed"))}</option><option value="Cancelled">${escapeHtml(foundationT("payments.cancelled"))}</option></select></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.from"))}</span><input id="operations-from" class="input" type="date"></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.to"))}</span><input id="operations-to" class="input" type="date"></label>
@@ -4813,20 +4712,19 @@ async function renderOperations() {
         <table><thead><tr><th>${escapeHtml(foundationT("app.inline.no"))}</th><th>${escapeHtml(foundationT("payments.type"))}</th><th>${escapeHtml(foundationT("payments.status"))}</th><th>${escapeHtml(foundationT("app.inline.route"))}</th><th>${escapeHtml(foundationT("app.created"))}</th><th>${escapeHtml(foundationT("payments.action"))}</th></tr></thead><tbody id="operation-rows"></tbody></table>
       </div>
       <div id="operation-list-pagination" class="pagination"></div>
-    </section>`;
+    </section>
+    `;
 
   if (canWrite) {
     // The queue is useful before an operator starts a new document.  Keep
     // editor-only catalog and CRM data out of this first paint.
     await hydrateOperationLocations();
-    const operationFinanceAccounts = await loadFinanceAccounts();
-    const operationFinanceSelect = document.getElementById("op-finance-account");
-    if (operationFinanceSelect) operationFinanceSelect.innerHTML = `<option value="">${paymentT("chooseFinanceAccount")}</option>${operationFinanceAccounts.map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)} (${escapeHtml(financeValueLabel("accountType", account.type))})</option>`).join("")}`;
     const typeControl = document.getElementById("op-type");
     if (!typeControl) {
       return;
     }
     typeControl.value = operationsUiState.operationType;
+    if (["Return", "Change"].includes(typeControl.value)) await hydrateOperationCrmOptions();
     typeControl.addEventListener("change", () => {
       syncOperationTypeControls();
       const type = typeControl.value;
@@ -4843,7 +4741,15 @@ async function renderOperations() {
       lockOperationRouteIfSelected();
       primeAllOperationStockOptions();
     });
-    document.getElementById("op-merchant").addEventListener("change", primeAllOperationStockOptions);
+    document.getElementById("op-merchant").addEventListener("change", () => {
+      primeAllOperationStockOptions();
+      const sourceSelect = document.getElementById("op-return-source");
+      if (sourceSelect) sourceSelect.value = "";
+      operationReturnSourceLines = [];
+      operationEditorLines.forEach((line) => { line.sourceOperationId = null; line.sourceOperationLineId = null; line.sourceBatchId = null; });
+      void hydrateOperationReturnSources();
+    });
+    document.getElementById("op-return-source")?.addEventListener("change", () => void hydrateOperationReturnSourceLines());
     document.getElementById("op-add-line").addEventListener("click", async () => {
       await hydrateOperationSkus();
       addOperationLine();
@@ -4939,10 +4845,70 @@ async function hydrateOperationCrmOptions() {
     operationMerchantOptions = (merchants.items || []).filter((merchant) => merchant.status === "Active");
     const merchantSelect = document.getElementById("op-merchant");
     if (merchantSelect) {
+      const selectedMerchantId = merchantSelect.value;
       merchantSelect.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectMerchant"))}</option>${operationMerchantOptions.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}`;
+      merchantSelect.value = operationMerchantOptions.some((merchant) => merchant.id === selectedMerchantId) ? selectedMerchantId : "";
     }
+    await hydrateOperationReturnSources();
   } catch {
     operationMerchantOptions = [];
+  }
+}
+
+async function hydrateOperationReturnSources() {
+  const select = document.getElementById("op-return-source");
+  const field = select?.closest(".field");
+  if (!select || !field) return;
+  const type = document.getElementById("op-type")?.value;
+  const isReturnFlow = type === "Return" || type === "Change";
+  field.hidden = !isReturnFlow;
+  if (!isReturnFlow) return;
+  const merchantId = document.getElementById("op-merchant")?.value;
+  select.required = !merchantId;
+  const sourceLabel = document.querySelector('label[for="op-return-source"]');
+  if (sourceLabel) sourceLabel.textContent = merchantId
+    ? `${foundationT("app.inline.originalSale")} (${foundationT("app.inline.optionalSaleLink")})`
+    : foundationT("app.inline.originalSale");
+  const preferredSourceOperationId = select.value || operationEditorLines.find((line) => line.sourceOperationId)?.sourceOperationId || "";
+  select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSale"))}</option>`;
+  operationReturnSourceLines = [];
+  renderOperationEditorPage();
+  try {
+    const sales = [];
+    const sourceTypes = merchantId ? ["WholesaleSale", "RetailSale"] : ["RetailSale"];
+    for (const operationType of sourceTypes) {
+      let page = 1;
+      let result;
+      do {
+        // eslint-disable-next-line no-await-in-loop
+        result = await request(`/api/v1/operations?operationType=${operationType}&includeCompleted=true&page=${page}&pageSize=250`);
+        sales.push(...(result.items || []).filter((operation) =>
+          (merchantId ? operation.clientId === merchantId : !operation.clientId) &&
+          ["Confirmed", "Completed", "Received"].includes(operation.status)));
+        page += 1;
+      } while (page <= (result.totalPages || 1));
+    }
+    select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSale"))}</option>${sales.map((sale) => `<option value="${escapeHtml(sale.id)}">${escapeHtml(sale.operationNumber)} / ${escapeHtml(formatDateTime(sale.createdAt))}</option>`).join("")}`;
+    select.value = sales.some((sale) => sale.id === preferredSourceOperationId) ? preferredSourceOperationId : "";
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+  await hydrateOperationReturnSourceLines();
+}
+
+async function hydrateOperationReturnSourceLines() {
+  const sourceId = document.getElementById("op-return-source")?.value;
+  operationReturnSourceLines = [];
+  if (!sourceId) {
+    operationEditorLines.forEach((line) => { line.sourceOperationId = null; line.sourceOperationLineId = null; line.sourceBatchId = null; });
+    renderOperationEditorPage();
+    return;
+  }
+  try {
+    operationReturnSourceLines = await request(`/api/v1/operations/source-sales/${encodeURIComponent(sourceId)}/lines`);
+    renderOperationEditorPage();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
   }
 }
 
@@ -4965,6 +4931,11 @@ function addOperationLine(line = {}, target = null) {
     lotNumber: line.lotNumber || null,
     expiryDate: line.expiryDate || null,
     notes: line.notes || null,
+    sourceOperationId: line.sourceOperationId || null,
+    sourceOperationLineId: line.sourceOperationLineId || null,
+    sourceBatchId: line.sourceBatchId || null,
+    sourceOpenedPieceLotId: line.sourceOpenedPieceLotId || null,
+    remainingEligibleQuantity: line.remainingEligibleQuantity ?? null,
     skuCode: line.skuCode || null,
     productName: line.productName || null
   };
@@ -4989,6 +4960,7 @@ function addOperationLine(line = {}, target = null) {
     <div class="field"><label>${escapeHtml(foundationT("app.inline.color"))}</label><select class="select op-line-color" required><option value="">${escapeHtml(foundationT("app.inline.color"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("app.inline.package"))}</label><select class="select op-line-size"><option value="">${escapeHtml(foundationT("app.inline.package"))}</option></select></div>
     <div class="op-line-resolved full-span"><span class="muted-text">${escapeHtml(foundationT("app.inline.selectProductAttributesToResolveSKU"))}</span></div>
+    <div class="field op-line-source-line-field" hidden><label>${escapeHtml(foundationT("app.inline.originalSaleLine"))}</label><select class="select op-line-source-line"><option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option></select></div>
     <div class="field op-line-section-field"><label>${escapeHtml(foundationT("app.inline.side"))}</label><select class="select op-line-section"><option value="ChangeOut">${escapeHtml(foundationT("app.returned"))}</option><option value="ChangeIn">${escapeHtml(foundationT("app.inline.replacement"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("app.inline.mode"))}</label><select class="select op-line-entry-mode"><option value="Packs">${escapeHtml(foundationT("app.inline.packs"))}</option><option value="Pieces">${escapeHtml(foundationT("app.inline.pieces"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("reports.sortQuantity"))}</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.packQuantity || line.pieceQuantity || 1)}" required></div>
@@ -5000,6 +4972,7 @@ function addOperationLine(line = {}, target = null) {
     <button class="icon-button op-remove-line" type="button" title="${escapeHtml(foundationT("supply.removeLine"))}">x</button>`;
   populateOperationProductOptions(row);
   row.querySelector(".op-line-section").value = line.section || "ChangeOut";
+  row.querySelector(".op-line-source-line").value = line.sourceOperationLineId || "";
   row.querySelector(".op-line-entry-mode").value = line.entryMode || "Packs";
   (target || container).appendChild(row);
   if (line.skuId) {
@@ -5011,6 +4984,7 @@ function addOperationLine(line = {}, target = null) {
   if (!operationEditorRendering) {
     syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType || "WarehouseTransfer");
   }
+  refreshOperationSourceLineOptions(row);
   if (line.lotNumber !== undefined || line.expiryDate !== undefined) {
     row.querySelector(".op-line-lot").value = line.lotNumber || "";
     row.querySelector(".op-line-expiry").value = line.expiryDate || "";
@@ -5019,17 +4993,30 @@ function addOperationLine(line = {}, target = null) {
 }
 
 function isOperationStockConsumingType(type) {
-  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff"].includes(type);
+  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "WriteOff"].includes(type);
 }
 
 function isOperationBatchSelectionType(type) {
-  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "WriteOff"].includes(type);
+  return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "WriteOff"].includes(type);
 }
 
 function readOperationLineRow(row) {
   const mode = row.querySelector(".op-line-entry-mode").value;
   const skuId = row.querySelector(".op-line-sku").value;
   const existing = operationEditorLineById.get(row.dataset.operationLineKey);
+  const sourceSaleLine = operationReturnSourceLines.find((source) => source.sourceOperationLineId === row.querySelector(".op-line-source-line")?.value);
+  const selectedStock = row.querySelector(".op-line-stock-option")?.value;
+  let selectedSourceBatchId = sourceSaleLine?.sourceBatches?.[0]?.sourceBatchId || null;
+  if (sourceSaleLine && selectedStock) {
+    try {
+      const selected = JSON.parse(decodeURIComponent(selectedStock));
+      selectedSourceBatchId = sourceSaleLine.sourceBatches.find((batch) =>
+        (batch.lotNumber || null) === (selected.lotNumber || null) &&
+        (batch.expiryDate || null) === (selected.expiryDate || null))?.sourceBatchId || selectedSourceBatchId;
+    } catch {
+      // Keep the source batch supplied by the source line when the option is not JSON.
+    }
+  }
   const selectedSku = operationSkuOptions.find((value) => value.id === skuId);
   return {
     operationLineId: row.dataset.operationLineId || null,
@@ -5043,9 +5030,48 @@ function readOperationLineRow(row) {
     lotNumber: row.querySelector(".op-line-lot").value.trim() || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null,
     notes: existing?.notes || null,
+    sourceOperationId: sourceSaleLine?.sourceOperationId || null,
+    sourceOperationLineId: sourceSaleLine?.sourceOperationLineId || null,
+    sourceBatchId: selectedSourceBatchId,
+    sourceOpenedPieceLotId: null,
+    remainingEligibleQuantity: sourceSaleLine?.remainingEligibleQuantity ?? null,
     skuCode: selectedSku?.skuCode || (existing?.skuId === skuId ? existing?.skuCode : null),
     productName: selectedSku?.productName || (existing?.skuId === skuId ? existing?.productName : null)
   };
+}
+
+function refreshOperationSourceLineOptions(row) {
+  const type = document.getElementById("op-type")?.value;
+  const section = row.querySelector(".op-line-section")?.value;
+  const field = row.querySelector(".op-line-source-line-field");
+  const select = row.querySelector(".op-line-source-line");
+  if (!field || !select) return;
+  const isReturnedLine = type === "Return" || (type === "Change" && section === "ChangeOut");
+  const hasMerchant = Boolean(document.getElementById("op-merchant")?.value);
+  const hasSelectedSale = Boolean(document.getElementById("op-return-source")?.value);
+  const showSourceLine = isReturnedLine && (!hasMerchant || hasSelectedSale);
+  field.hidden = !showSourceLine;
+  select.required = isReturnedLine && !hasMerchant;
+  if (!showSourceLine) return;
+  const current = select.value || operationEditorLineById.get(row.dataset.operationLineKey)?.sourceOperationLineId || "";
+  const candidates = operationReturnSourceLines.filter((line) => line.remainingEligibleQuantity > 0);
+  select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option>${candidates.map((line) => `<option value="${escapeHtml(line.sourceOperationLineId)}">${escapeHtml(line.skuCode)} / ${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")} / ${escapeHtml(foundationT("app.inline.eligibleQuantity", { count: line.remainingEligibleQuantity }))}</option>`).join("")}`;
+  select.value = candidates.some((line) => line.sourceOperationLineId === current) ? current : "";
+}
+
+function applyOperationSourceLine(row) {
+  const sourceLineId = row.querySelector(".op-line-source-line")?.value;
+  const source = operationReturnSourceLines.find((line) => line.sourceOperationLineId === sourceLineId);
+  const model = operationEditorLineById.get(row.dataset.operationLineKey);
+  if (!source || !model) return;
+  model.sourceOperationId = source.sourceOperationId;
+  model.sourceOperationLineId = source.sourceOperationLineId;
+  model.sourceBatchId = source.sourceBatches?.[0]?.sourceBatchId || null;
+  model.sourceOpenedPieceLotId = null;
+  model.remainingEligibleQuantity = source.remainingEligibleQuantity;
+  if (row.querySelector(".op-line-sku").value !== source.skuId) seedOperationLineSkuSelection(row, source.skuId);
+  void refreshOperationStockOptions(row);
+  syncCurrentOperationPage();
 }
 
 function syncCurrentOperationPage() {
@@ -5261,6 +5287,7 @@ function resolveOperationLineSku(row, options = {}) {
   hidden.value = sku.id;
   resolved.innerHTML = `<span class="status-pill status-ok">${escapeHtml(foundationT("app.inline.resolvedSKU"))}</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`;
   void refreshOperationStockOptions(row);
+  refreshOperationSourceLineOptions(row);
   return sku;
 }
 
@@ -5287,6 +5314,7 @@ function seedOperationLineSkuSelection(row, skuId) {
   });
   row.querySelector(".op-line-sku").value = sku.id;
   row.querySelector(".op-line-resolved").innerHTML = `<span class="status-pill status-ok">${escapeHtml(foundationT("app.inline.resolvedSKU"))}</span><strong>${escapeHtml(sku.skuCode)}</strong><span class="muted-cell">${escapeHtml(sku.productName)}</span>`;
+  refreshOperationSourceLineOptions(row);
 }
 
 async function renderOperationSkuSearchResults(row) {
@@ -5398,15 +5426,6 @@ function syncOperationTypeControls() {
     destination.disabled = true;
     setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: true, payment: true, receipt: false });
     primeAllOperationStockOptions();
-    applyOperationEditorMode();
-    return;
-  }
-  if (type === "Reserve") {
-    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
-    setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
-    source.disabled = false;
-    destination.disabled = true;
-    setOperationFieldGroupVisibility({ merchant: false, rep: true, buyer: false, payment: false, receipt: false });
     applyOperationEditorMode();
     return;
   }
@@ -5763,10 +5782,8 @@ function seedOperationEditor(detail, mode) {
     buyerPhone.value = detail.buyerPhone || "";
   }
   if (payment) {
-    payment.value = detail.paymentMethod || "";
+    payment.value = detail.paymentMethod || (detail.clientId && ["WholesaleSale", "RetailSale", "Return", "Change"].includes(detail.operationType) ? "MerchantAccount" : "");
   }
-  const financeAccount = document.getElementById("op-finance-account");
-  if (financeAccount) financeAccount.value = detail.financeAccountId || "";
   if (notes) {
     notes.value = detail.notes || "";
   }
@@ -5792,6 +5809,10 @@ function seedOperationEditor(detail, mode) {
     expiryDate: line.expiryDate,
     section: line.section,
     notes: line.notes,
+    sourceOperationId: line.sourceOperationId || null,
+    sourceOperationLineId: line.sourceOperationLineId || null,
+    sourceBatchId: line.sourceBatchId || null,
+    sourceOpenedPieceLotId: line.sourceOpenedPieceLotId || null,
     skuCode: line.skuCode,
     productName: line.productName,
     lineTotal: line.lineTotal,
@@ -5826,7 +5847,19 @@ function getOperationLinePrefillQuantity(line) {
 async function startOperationEditorMode(operationId, mode) {
   try {
     const detail = await request(`/api/v1/operations/${operationId}/editor`);
+    if (detail.operationType === "Return" || detail.operationType === "Change") {
+      const allocations = await request(`/api/v1/operations/${operationId}/source-allocations`);
+      for (const line of detail.lines || []) {
+        const allocation = allocations.find((value) => value.targetOperationLineId === line.id);
+        if (!allocation) continue;
+        line.sourceOperationId = allocation.sourceOperationId;
+        line.sourceOperationLineId = allocation.sourceOperationLineId;
+        line.sourceBatchId = allocation.sourceBatchId;
+        line.sourceOpenedPieceLotId = allocation.sourceOpenedPieceLotId;
+      }
+    }
     seedOperationEditor(detail, mode);
+    if (detail.operationType === "Return" || detail.operationType === "Change") await hydrateOperationReturnSources();
     notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
@@ -5846,15 +5879,16 @@ async function refreshOperationStockOptions(row) {
     : document.getElementById("op-source")?.value;
   const merchantId = document.getElementById("op-merchant")?.value;
   const skuId = row.querySelector(".op-line-sku")?.value;
+  const sourceLineId = row.querySelector(".op-line-source-line")?.value || "";
   const entryMode = type === "RetailSale" ? row.querySelector(".op-line-entry-mode").value : "Packs";
   const current = encodeStockOption({
     lotNumber: row.querySelector(".op-line-lot").value || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null
   });
-  const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}`;
+  const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}|${sourceLineId}`;
   if (select.dataset.lookupKey === lookupKey && select.options.length > 1) return;
 
-  if (!skuId || (batchSource === "merchant-inbound" ? !merchantId : !locationId)) {
+  if (!skuId || !locationId || (batchSource === "merchant-inbound" && !merchantId)) {
     select.innerHTML = `<option value="">${escapeHtml(foundationT(batchSource === "merchant-inbound" ? "app.inline.selectMerchantAndSKU" : "app.inline.selectLocationAndSKU"))}</option>`;
     syncOperationBatchEntryFields(row);
     return;
@@ -5874,14 +5908,34 @@ async function refreshOperationStockOptions(row) {
   };
   try {
     let options;
-    if (batchSource === "merchant-inbound") {
-      const history = await loadCached(() => request(`/api/v1/operations/batch-options/merchant?merchantId=${encodeURIComponent(merchantId)}&skuId=${encodeURIComponent(skuId)}&locationId=${encodeURIComponent(locationId || "")}`, { signal }));
-      options = history
-        .map((option) => ({
-          lotNumber: option.lotNumber,
-          expiryDate: option.expiryDate,
-          label: `${option.expiryDate} / ${option.lotNumber} / ${foundationT("app.inline.recordedBalance", { count: option.recordedBalanceQuantity || 0 })}`
-        }));
+    const sourceSaleLine = operationReturnSourceLines.find((line) => line.sourceOperationLineId === sourceLineId);
+    if (batchSource === "merchant-inbound" && sourceSaleLine) {
+      // Linked returns/ChangeOut lines must offer the same source batches as the
+      // selected sale. This preserves batch lineage and keeps Return and Change
+      // on one consistent source-selection path.
+      options = sourceSaleLine.sourceBatches.map((batch) => ({
+        lotNumber: batch.lotNumber,
+        expiryDate: batch.expiryDate,
+        label: `${batch.expiryDate || "-"} / ${batch.lotNumber || "-"}`
+      }));
+    } else if (batchSource === "merchant-inbound") {
+      const result = await loadCached(async () => {
+        const batches = [];
+        let page = 1;
+        let batchPage;
+        do {
+          // eslint-disable-next-line no-await-in-loop
+          batchPage = await request(`/api/v1/inventory/batches?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&includeEmpty=false&page=${page}&pageSize=100`, { signal });
+          batches.push(...(batchPage.items || []));
+          page += 1;
+        } while (page <= (batchPage.totalPages || 1));
+        return batches;
+      });
+      options = result.filter((option) => option.lotNumber && option.expiryDate).map((option) => ({
+        lotNumber: option.lotNumber,
+        expiryDate: option.expiryDate,
+        label: `${option.expiryDate} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
+      }));
     } else if (batchSource === "inventory-inbound") {
       const result = await loadCached(() => request(`/api/v1/inventory/batches?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&includeEmpty=true&pageSize=100`, { signal }));
       options = (result.items || [])
@@ -5996,7 +6050,7 @@ async function loadOperations() {
     count.textContent = foundationT(showCompleted ? "app.count.operations" : "app.count.activeOperations", { count: result.totalCount });
     tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inline.noActiveOperations"))}</td></tr>` : items.map((operation) => `
       <tr data-operation-id="${escapeHtml(operation.id)}" data-operation-number="${escapeHtml(operation.operationNumber)}" data-operation-type="${escapeHtml(operation.operationType)}" data-operation-status="${escapeHtml(operation.status)}">
-        <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.allocationPending"))}</span>` : ""}</td>
+        <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.financialClosureStatus === "FinanciallyClosed" ? `<span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span>` : ""}${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.allocationPending"))}</span>` : ""}</td>
         <td>${escapeHtml(uiText(operation.operationType))}</td>
         <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(uiText(operation.status))}</span></td>
         <td>${escapeHtml(formatOperationRoute(operation))}</td>
@@ -6061,6 +6115,10 @@ async function submitOperationEditor(event) {
   }
   const payloadLines = lines.map(({ stockOptionSelected, ...line }) => line);
 
+  const selectedPaymentMethod = ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type)
+    ? canonicalSelectValue("op-payment", "paymentMethod", { allowEmpty: true }) || null
+    : null;
+  const isMerchantAccountPayment = selectedPaymentMethod === "MerchantAccount";
   const body = {
     operationType: type,
     sourceLocationId: document.getElementById("op-source").value || null,
@@ -6069,8 +6127,7 @@ async function submitOperationEditor(event) {
     representativeId: null,
     buyerName: type === "RetailSale" ? document.getElementById("op-buyer").value || null : null,
     buyerPhone: type === "RetailSale" ? document.getElementById("op-buyer-phone").value || null : null,
-    paymentMethod: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? canonicalSelectValue("op-payment", "paymentMethod", { allowEmpty: true }) || null : null,
-    financeAccountId: ["WholesaleSale", "RetailSale"].includes(type) ? document.getElementById("op-finance-account")?.value || null : null,
+    paymentMethod: selectedPaymentMethod,
     notes: document.getElementById("op-notes").value || null,
     receipt: type === "InventoryReceipt" ? { supplierName: document.getElementById("op-supplier").value || "Supplier", invoiceNumber: document.getElementById("op-invoice").value || null } : null,
     lines: payloadLines,
@@ -6149,7 +6206,12 @@ function readOperationLines(type) {
     stockOptionSelected: Boolean(line.lotNumber || line.expiryDate),
     expiryDate: line.expiryDate || null,
     lotNumber: line.lotNumber || null,
-    notes: line.notes || null
+    notes: line.notes || null,
+    sourceOperationId: line.sourceOperationId || null,
+    sourceOperationLineId: line.sourceOperationLineId || null,
+    sourceBatchId: line.sourceBatchId || null,
+    sourceOpenedPieceLotId: line.sourceOpenedPieceLotId || null,
+    remainingEligibleQuantity: line.remainingEligibleQuantity ?? null
   }));
 }
 
@@ -6191,16 +6253,25 @@ function validateOperationForm(type, lines) {
   if (type === "WholesaleSale" && !document.getElementById("op-merchant").value) {
     return "Wholesale sale requires a merchant.";
   }
+  const paymentMethod = document.getElementById("op-payment")?.value;
   if (["WholesaleSale", "RetailSale"].includes(type) && lines.some((line) => !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0))) {
     return "Sale line unit price must be greater than zero unless the line is marked as bonus.";
   }
-  if (type === "Return" && !document.getElementById("op-merchant").value) {
-    return "Return requires a merchant.";
+  const hasMerchant = Boolean(document.getElementById("op-merchant")?.value);
+  const sourceSaleId = document.getElementById("op-return-source")?.value;
+  const returnedLines = type === "Return" ? lines : type === "Change" ? lines.filter((line) => line.section === "ChangeOut") : [];
+  if (returnedLines.length > 0 && !hasMerchant && !sourceSaleId) {
+    return foundationT("app.message.selectOriginalSaleForNonMerchantReturn");
+  }
+  const linkedReturnedLines = returnedLines.filter((line) => line.sourceOperationId || line.sourceOperationLineId || line.sourceBatchId || line.sourceOpenedPieceLotId);
+  if ((!hasMerchant && returnedLines.some((line) => !line.sourceOperationId || !line.sourceOperationLineId || !line.sourceBatchId)) ||
+      linkedReturnedLines.some((line) => !line.sourceOperationId || !line.sourceOperationLineId || !line.sourceBatchId)) {
+    return foundationT("app.message.selectOriginalSaleLineEveryReturnedLine");
+  }
+  if (linkedReturnedLines.some((line) => Number(line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity) > Number(line.remainingEligibleQuantity ?? 0))) {
+    return foundationT("app.message.returnQuantityExceedsEligible");
   }
   if (type === "Change") {
-    if (!document.getElementById("op-merchant").value) {
-      return "Change requires a merchant.";
-    }
     if (!lines.some((line) => line.section === "ChangeOut") || !lines.some((line) => line.section === "ChangeIn")) {
       return "Change needs at least one returned line and one replacement line.";
     }
@@ -6221,13 +6292,18 @@ function renderOperationActions(operation, canWrite) {
   if (!canWrite) {
     return `${detailButton} ${printButton}`;
   }
+  // Legacy Change and representative-reserve rows remain inspectable, but
+  // their workflow actions are retired and must not be offered again.
+  if (["Change", "Reserve"].includes(operation.operationType)) {
+    return `${detailButton} ${printButton}`;
+  }
   const actions = [];
   if (operation.status === "Draft") {
     actions.push(["edit-draft", "Edit"]);
   } else if (getAuth()?.user?.role === "Admin" && operation.status !== "Cancelled" && operation.salesChannel !== "Shopify") {
     actions.push(["revise", "Revise"]);
   }
-  const shippingOperationTypes = ["WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve"];
+  const shippingOperationTypes = ["WarehouseTransfer", "WholesaleSale", "RetailSale"];
   if (operation.status === "Draft") {
     actions.push(["confirm", "Confirm"], ["cancel", "Cancel"]);
   } else if (shippingOperationTypes.includes(operation.operationType) && operation.status === "Reserved") {
@@ -6309,6 +6385,7 @@ function renderOperationDetail(detail) {
     <div class="operation-detail-grid">
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.operationCode"))}</span><strong>${escapeHtml(detail.operationNumber)}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.status"))}</span><strong>${escapeHtml(uiText(detail.status))}</strong></div>
+      <div class="metric"><span>${escapeHtml(paymentT("financialClosure"))}</span><strong>${escapeHtml(detail.financialClosureStatus === "FinanciallyClosed" ? paymentT("financiallyClosed") : paymentT("financiallyOpen"))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.type"))}</span><strong>${escapeHtml(uiText(detail.operationType))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("app.created"))}</span><strong>${escapeHtml(formatDateTime(detail.createdAt))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.confirmed"))}</span><strong>${escapeHtml(formatDateTime(detail.confirmedAt) || "-")}</strong></div>
@@ -6345,7 +6422,7 @@ function renderOperationDetail(detail) {
     <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.inline.allocatedSKU"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.batchExpiry"))}</th></tr></thead><tbody>${allocations.length === 0
       ? `<tr><td colspan="4">${escapeHtml(foundationT("app.inline.noBatchAllocationSnapshot"))}</td></tr>`
       : allocations.map((allocation) => `<tr>
-          <td><strong>${escapeHtml(allocation.skuCode || shortId(allocation.skuId, "SKU"))}</strong>${allocation.productName ? `<span class="muted-cell"> / ${escapeHtml(allocation.productName)}</span>` : ""}</td>
+          <td><strong class="sku-code">${escapeHtml(allocation.skuCode || shortId(allocation.skuId, "SKU"))}</strong>${allocation.productName ? `<span class="muted-cell">${escapeHtml(allocation.productName)}</span>` : ""}</td>
           <td>${escapeHtml(foundationT("app.inline.packCount", { count: allocation.quantity }))}</td>
           <td>${escapeHtml(allocation.lotNumber || "-")}</td>
           <td>${allocation.expiryDate ? expiryBadge(allocation.expiryDate) : `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.noExpiry"))}</span>`}</td>
@@ -6415,7 +6492,15 @@ function formatOperationRoute(operation) {
 }
 
 async function runOperationAction(action, operationId, button, options = {}) {
-  return withMutationGuard(`operation:${operationId}:${action}`, button, async () => {
+  return confirmFinalAction({
+    action: action === "cancel" ? "cancel" : "confirm",
+    title: `Operation ${action}`,
+    message: `Are you sure you want to ${action} this operation?`,
+    confirmLabel: action === "cancel" ? "Cancel operation" : action,
+    reasonLabel: foundationT("app.confirm.reason"),
+    control: button,
+    key: `operation:${operationId}:${action}`,
+    execute: async (reason) => {
     const previousLabel = button?.textContent;
     if (button) {
       button.textContent = foundationT("app.message.working");
@@ -6426,7 +6511,7 @@ async function runOperationAction(action, operationId, button, options = {}) {
       try {
         await request(path, {
           method: "POST",
-          body: options.body ? JSON.stringify(options.body) : undefined
+          body: JSON.stringify({ ...(options.body || {}), ...(reason ? { reason } : {}) })
         });
       } catch (exception) {
         const gate = action === "confirm" ? parseMerchantSalesVarianceGate(exception) : null;
@@ -6451,6 +6536,7 @@ async function runOperationAction(action, operationId, button, options = {}) {
         button.textContent = previousLabel;
       }
     }
+    }
   });
 }
 
@@ -6462,12 +6548,23 @@ async function renderPayments() {
   const auth = getAuth();
   const isAdmin = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
-  const merchants = await loadPaymentMerchants();
+  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
+  const merchantResult = await loadPaymentMerchants({ includeStatus: true });
+  const merchants = merchantResult.items;
   paymentMerchants = merchants;
-  paymentAccountants = isAdmin ? await loadPaymentAccountants() : [];
-  const financeAccounts = canDraft ? await loadFinanceAccounts() : [];
+  const accountantResult = isAdmin ? await loadPaymentAccountants({ includeStatus: true }) : { items: [], error: null };
+  paymentAccountants = accountantResult.items;
+  const financeAccountResult = canDraft || canApproveAdjustments ? await loadPaymentFinanceAccounts({ includeStatus: true }) : { items: [], error: null };
+  const financeAccounts = financeAccountResult.items;
+  paymentFinanceAccounts = financeAccounts;
   const accountantOptions = paymentAccountants.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName || user.username)} (${escapeHtml(user.username)})</option>`).join("");
-  const financeAccountOptions = financeAccounts.map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)} (${escapeHtml(financeValueLabel("accountType", account.type))})</option>`).join("");
+  const financeAccountOptions = financeAccounts.map((account) => `<option value="${escapeHtml(account.id)}" data-account-type="${escapeHtml(account.type)}">${escapeHtml(account.name)} (${escapeHtml(financeValueLabel("accountType", account.type))})</option>`).join("");
+  const dependencyMessage = (result, emptyKey) => result.error
+    ? result.error.status === 403 ? paymentT("dependencyForbidden") : `${paymentT("dependencyLoadFailed")} ${getFriendlyWorkspaceError(result.error)}`
+    : result.items.length ? "" : paymentT(emptyKey);
+  const merchantDependencyMessage = dependencyMessage(merchantResult, "noMerchantsAvailable");
+  const accountantDependencyMessage = dependencyMessage(accountantResult, "noAccountantsAvailable");
+  const financeDependencyMessage = dependencyMessage(financeAccountResult, "noFinanceAccountsAvailable");
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: paymentT("eyebrow"),
@@ -6501,13 +6598,22 @@ async function renderPayments() {
       <div class="toolbar">
         <button id="payments-refresh" class="button secondary" type="button">${foundationT("common.refresh")}</button>
         ${canDraft ? `<button id="other-collection-toggle" class="button" type="button">${paymentT("recordCollection")}</button>` : ""}
-        ${isAdmin ? `<select id="payment-accountant" class="select"><option value="">${paymentT("assignTo")}...</option>${accountantOptions}</select>` : ""}
+        ${isAdmin ? `<div><select id="payment-accountant" class="select"><option value="">${paymentT("assignTo")}...</option>${accountantOptions}</select><p id="payment-accountant-load-status" class="muted-text" role="status" ${accountantDependencyMessage ? "" : "hidden"}>${escapeHtml(accountantDependencyMessage)}</p></div>` : ""}
       </div>
       <div class="table-wrap"><table><thead><tr><th>${paymentT("payment")}</th><th>${paymentT("buyer")}</th><th>${paymentT("operation")}</th><th>${paymentT("method")}</th><th>${paymentT("total")}</th><th>${paymentT("paid")}</th><th>${paymentT("remaining")}</th><th>${paymentT("status")}</th><th>${paymentT("actions")}</th></tr></thead><tbody id="payment-rows"><tr><td colspan="9">${paymentT("loadingPayments")}</td></tr></tbody></table></div><div id="payment-pagination" class="pagination" hidden></div>
     </section>
     <section id="payment-review-section" data-payment-panel="review" class="band payment-queue-band payment-scope-band">
       <div class="section-head"><div><h2>${paymentT("approvalInbox")}</h2><p>${paymentT("assignedWork")}</p></div><button id="payment-review-refresh" class="button secondary" type="button">${paymentT("refreshInbox")}</button></div>
       <div class="table-wrap"><table><thead><tr><th>${paymentT("scope")}</th><th>${paymentT("reference")}</th><th>${paymentT("source")}</th><th>${paymentT("assignedTo")}</th><th>${paymentT("amount")}</th><th>${paymentT("method")}</th><th>${paymentT("status")}</th><th>${paymentT("action")}</th></tr></thead><tbody id="payment-review-rows"><tr><td colspan="8">${paymentT("loadingApprovalWork")}</td></tr></tbody></table></div>
+      ${canApproveAdjustments ? `<section class="band payment-tool-card" id="financial-adjustment-inbox">
+        <div class="section-head"><div><h2>${paymentT("financialAdjustment")}</h2><p>${paymentT("adjustmentHelp")}</p></div><button id="financial-adjustment-refresh" class="button secondary" type="button">${paymentT("refreshInbox")}</button></div>
+        <div class="toolbar" id="refund-payout-options">
+          <label class="inline-field"><span>${paymentT("receivedMethod")}</span><select id="adjustment-refund-payment-method" class="select"><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="CashTransaction">${paymentT("cashTransaction")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></label>
+          <label class="inline-field"><span>${paymentT("financeAccount")}</span><select id="adjustment-refund-finance-account" class="select"><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select></label>
+          <label class="inline-field"><span>${paymentT("transactionReference")}</span><input id="adjustment-refund-reference" class="input" placeholder="${paymentT("electronicReferenceRequired")}"></label>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>${paymentT("operationNumber")}</th><th>${paymentT("type")}</th><th>${paymentT("amount")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody id="financial-adjustment-rows"><tr><td colspan="7">${paymentT("loading")}</td></tr></tbody></table></div>
+      </section>` : ""}
     </section>
     <section id="payment-ledger-section" data-payment-panel="other ledger" class="band payment-ledger-band payment-scope-band">
       <div class="section-head">
@@ -6522,12 +6628,13 @@ async function renderPayments() {
         <form id="unified-collection-form" class="form grid-form" novalidate>
           <div class="form-error full-span" id="unified-collection-error" hidden></div>
           <div class="field"><label for="collection-source-kind">${paymentT("collectToward")}</label><select id="collection-source-kind" class="select" required><option value="OtherPayments">${paymentT("operationPayment")}</option><option value="MerchantAccount">${paymentT("merchantAccount")}</option></select></div>
+          <div class="field" id="collection-payment-type-field" hidden><label for="collection-payment-type">${paymentT("movementType")}</label><select id="collection-payment-type" class="select"><option value="CashReceived">${paymentT("cashReceipt")}</option><option value="CashRefund">${paymentT("cashRefund")}</option></select></div>
           <div class="field" id="collection-source-reference-field"><label for="collection-source-reference">${paymentT("operationReference")}</label><input id="collection-source-reference" class="input" placeholder="${paymentT("referencePlaceholder")}"></div>
           <input id="collection-source-operation-id" type="hidden">
           <div class="field" id="collection-merchant-field" hidden><label for="collection-merchant">${paymentT("merchant")} *</label><select id="collection-merchant" class="select"><option value="">${paymentT("chooseMerchant")}</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="collection-amount">${paymentT("amountReceived")}</label><input id="collection-amount" class="input" type="number" min="0.01" step="0.01" required></div>
           <div class="field"><label for="collection-method">${paymentT("receivedMethod")}</label><select id="collection-method" class="select" required><option value="">${paymentT("chooseMethod")}</option><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="CashTransaction">${paymentT("cashTransaction")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></div>
-          <div class="field"><label for="collection-finance-account">${paymentT("financeAccount")} *</label><select id="collection-finance-account" class="select" required><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select></div>
+          <div class="field"><label for="collection-finance-account">${paymentT("financeAccount")} *</label><select id="collection-finance-account" class="select" required><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select><p id="payment-finance-account-load-status" class="muted-text" role="status" ${financeDependencyMessage ? "" : "hidden"}>${escapeHtml(financeDependencyMessage)}</p></div>
           <div class="field"><label for="collection-transaction-reference">${paymentT("transactionReference")}</label><input id="collection-transaction-reference" class="input" placeholder="${paymentT("electronicReferenceRequired")}"></div>
           <div class="field"><label for="collection-date">${paymentT("dateReceived")}</label><input id="collection-date" class="input" type="date"></div>
           <div class="field full-span"><label for="collection-notes">${paymentT("notes")}</label><input id="collection-notes" class="input"></div>
@@ -6550,7 +6657,7 @@ async function renderPayments() {
       </section>` : ""}
     <section data-payment-panel="merchant" class="band compact-band payment-tool-card merchant-tool-card">
       <div class="section-head"><div><h2>${paymentT("merchantAccount")}</h2><p>${paymentT("accountSummary")}</p></div><span id="merchant-balance-status" class="muted-text">${paymentT("selectMerchant")}</span></div>
-      <div class="toolbar merchant-account-picker"><input id="payment-merchant-search" class="input" type="search" placeholder="${paymentT("searchMerchants")}" aria-label="${paymentT("searchMerchants")}"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><label class="inline-field"><span>${paymentT("from")}</span><input id="merchant-statement-from" class="input" type="date"></label><label class="inline-field"><span>${paymentT("to")}</span><input id="merchant-statement-to" class="input" type="date"></label><button id="load-merchant-balance" class="button secondary" type="button">${paymentT("showAccount")}</button></div>
+      <div class="toolbar merchant-account-picker"><input id="payment-merchant-search" class="input" type="search" placeholder="${paymentT("searchMerchants")}" aria-label="${paymentT("searchMerchants")}"><select id="payment-merchant" class="select">${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select><label class="inline-field"><span>${paymentT("from")}</span><input id="merchant-statement-from" class="input" type="date"></label><label class="inline-field"><span>${paymentT("to")}</span><input id="merchant-statement-to" class="input" type="date"></label><button id="load-merchant-balance" class="button secondary" type="button">${paymentT("showAccount")}</button></div><p id="payment-merchant-load-status" class="muted-text" role="status" ${merchantDependencyMessage ? "" : "hidden"}>${escapeHtml(merchantDependencyMessage)}</p>
       <div id="merchant-balance-panel" class="merchant-account-summary"><p class="muted-text">${paymentT("chooseMerchantAccount")}</p></div>
       <section class="workspace-panel"><div class="section-head"><h3>${foundationT("payments.merchantOpening.title")}</h3>${canDraft ? `<button id="merchant-opening-create" class="button secondary" type="button">${foundationT("payments.merchantOpening.add")}</button>` : ""}</div><div id="merchant-opening-history" class="table-wrap compact-table"></div></section>
       <div class="merchant-account-actions">
@@ -6621,21 +6728,29 @@ async function renderPayments() {
     if (details) details.hidden = !details.hidden;
   });
   document.getElementById("unified-collection-form")?.addEventListener("submit", recordUnifiedCollection);
+  document.getElementById("collection-method")?.addEventListener("change", syncCollectionFinanceAccounts);
+  syncCollectionFinanceAccounts();
   document.getElementById("financial-adjustment-form")?.addEventListener("submit", createFinancialAdjustment);
   document.getElementById("adjustment-operation-id")?.addEventListener("change", resolveAdjustmentOperation);
   document.getElementById("adjustment-operation-id")?.addEventListener("blur", resolveAdjustmentOperation);
   document.getElementById("payment-merchant")?.addEventListener("change", () => {
     void loadMerchantBalance();
+    void loadFinancialAdjustmentInbox();
   });
+  document.getElementById("financial-adjustment-refresh")?.addEventListener("click", loadFinancialAdjustmentInbox);
+  document.getElementById("adjustment-refund-payment-method")?.addEventListener("change", syncRefundPayoutFields);
+  syncRefundPayoutFields();
   document.getElementById("load-merchant-balance").addEventListener("click", loadMerchantBalance);
   document.getElementById("payment-audit-refresh")?.addEventListener("click", loadPaymentAudit);
   document.getElementById("payment-review-refresh")?.addEventListener("click", loadCollectionWorkInbox);
   loadedPaymentPanels.clear();
   void loadPaymentKpis();
+  if (canDraft || canApproveAdjustments) void loadFinancialAdjustmentInbox();
   await loadPaymentViewPanel("merchant");
 }
 
 async function loadPaymentKpis() {
+  if (getAuth()?.user?.role === "ERPAdmin") return;
   try {
     const kpis = await request("/api/v1/payments/kpis");
     const total = Number(kpis?.totalActivity?.erpSales || 0) + Number(kpis?.totalActivity?.openingReceivable || 0);
@@ -6652,9 +6767,72 @@ async function loadPaymentKpis() {
   }
 }
 
+async function loadFinancialAdjustmentInbox() {
+  const rows = document.getElementById("financial-adjustment-rows");
+  if (!rows) return;
+  try {
+    const canApprove = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user?.role);
+    const merchantId = document.getElementById("payment-merchant")?.value || "";
+    const query = canApprove
+      ? "?pendingOnly=true"
+      : merchantId ? `?merchantId=${encodeURIComponent(merchantId)}` : "";
+    const result = await request(`/api/v1/payments/adjustments${query}`);
+    const items = Array.isArray(result) ? result : [];
+    rows.replaceChildren(...(items.length ? items.map((item) => {
+      const row = document.createElement("tr");
+      const operation = item.operationNumber || (item.operationId ? shortId(item.operationId, "OP") : paymentT("merchantAccount"));
+      const actionMarkup = canApprove && item.status === "PendingApproval"
+        ? `<button class="button secondary table-action" type="button" data-inbox-adjustment-approve="${escapeHtml(item.id)}">${paymentT("approve")}</button><button class="button secondary table-action" type="button" data-inbox-adjustment-reject="${escapeHtml(item.id)}">${paymentT("reject")}</button>`
+        : canApprove && item.adjustmentType === "CashRefund" && item.status === "Approved"
+          ? `<button class="button secondary table-action" type="button" data-inbox-adjustment-payout="${escapeHtml(item.id)}">${paymentT("recordPayout")}</button>`
+          : "-";
+      row.innerHTML = `<td>${escapeHtml(operation)}</td><td>${escapeHtml(paymentStageLabel(item.adjustmentType))}</td><td>${escapeHtml(formatMoney(item.amount))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(item.status))}</td><td>${escapeHtml(item.createdByName || "-")}</td><td>${escapeHtml([item.notes, item.rejectionReason ? `${paymentT("rejectionReason")}: ${item.rejectionReason}` : null, item.reviewedByName ? `${paymentT("reviewedBy")}: ${item.reviewedByName}` : null].filter(Boolean).join(" · ") || "-")}</td><td>${actionMarkup}</td>`;
+      row.querySelector("[data-inbox-adjustment-approve]")?.addEventListener("click", () => approveAdjustment(item.id));
+      row.querySelector("[data-inbox-adjustment-reject]")?.addEventListener("click", () => rejectAdjustment(item.id));
+      row.querySelector("[data-inbox-adjustment-payout]")?.addEventListener("click", () => payoutCashRefund(item.id));
+      return row;
+    }) : [paymentEmptyTableRow(7, paymentT("noAdjustments"))]));
+  } catch (exception) {
+    rows.replaceChildren(paymentEmptyTableRow(7, getFriendlyWorkspaceError(exception)));
+  }
+}
+
+function syncRefundPayoutFields() {
+  const method = canonicalSelectValue("adjustment-refund-payment-method", "movementMethod", { allowEmpty: true });
+  const accountSelect = document.getElementById("adjustment-refund-finance-account");
+  const reference = document.getElementById("adjustment-refund-reference");
+  const requiredAccountType = method === "BankTransfer" ? "BankAccount" : method === "Wallet" ? "Wallet" : "CashOnHand";
+  if (accountSelect) {
+    const previous = accountSelect.value;
+    const options = [...accountSelect.options];
+    for (const option of options) {
+      if (!option.value) continue;
+      const account = paymentFinanceAccounts.find(value => value.id === option.value);
+      option.hidden = !account || account.type !== requiredAccountType;
+    }
+    if (previous && accountSelect.selectedOptions[0]?.hidden) accountSelect.value = "";
+  }
+  if (reference) {
+    const requiresReference = ["CashTransaction", "BankTransfer", "Wallet"].includes(method);
+    reference.required = requiresReference;
+    reference.disabled = !requiresReference;
+    if (!requiresReference) reference.value = "";
+  }
+}
+
+function syncCollectionFinanceAccounts() {
+  const method = canonicalSelectValue("collection-method", "movementMethod", { allowEmpty: true });
+  const select = document.getElementById("collection-finance-account");
+  if (!select) return;
+  const requiredType = method === "BankTransfer" ? "BankAccount" : method === "Wallet" ? "Wallet" : "CashOnHand";
+  for (const option of select.options) {
+    if (option.value) option.hidden = Boolean(method && option.dataset.accountType !== requiredType);
+  }
+  if (select.selectedOptions[0]?.hidden) select.value = "";
+}
+
 async function loadPaymentViewPanel(view) {
-  if (!document.getElementById("merchant-payment-rows") || loadedPaymentPanels.has(view)) return;
-  loadedPaymentPanels.add(view);
+  if (!document.getElementById("merchant-payment-rows")) return;
   try {
     if (view === "merchant") await loadPayments("merchant");
     else if (view === "other") await loadPayments("other");
@@ -6662,7 +6840,7 @@ async function loadPaymentViewPanel(view) {
     else if (view === "review") await loadCollectionWorkInbox();
     else if (view === "audit") await loadPaymentAudit();
   } catch {
-    loadedPaymentPanels.delete(view);
+    // The panel renderer owns the visible error state.
   }
 }
 
@@ -6674,21 +6852,23 @@ function renderPaymentPager(elementId, result, onPage) {
   setPagerContents(pager, foundationT("pagination.previous"), foundationT("payments.pageOf", { page: result.page, pages: totalPages }), foundationT("pagination.next"), result.page <= 1, result.page >= totalPages, (delta) => onPage(result.page + delta));
 }
 
-async function loadPaymentMerchants() {
+async function loadPaymentMerchants({ includeStatus = false } = {}) {
   try {
     const merchants = await request("/api/v1/crm/merchants?includeInactive=true&pageSize=200");
-    return merchants.items || [];
-  } catch {
-    return [];
+    const items = merchants.items || [];
+    return includeStatus ? { items, error: null } : items;
+  } catch (error) {
+    return includeStatus ? { items: [], error } : [];
   }
 }
 
-async function loadPaymentAccountants() {
+async function loadPaymentAccountants({ includeStatus = false } = {}) {
   try {
     const users = await request("/api/v1/users");
-    return users.filter((user) => user.role === "Accountant" && user.isActive);
-  } catch {
-    return [];
+    const items = users.filter((user) => user.role === "Accountant" && user.isActive);
+    return includeStatus ? { items, error: null } : items;
+  } catch (error) {
+    return includeStatus ? { items: [], error } : [];
   }
 }
 
@@ -6797,7 +6977,7 @@ function movementMethodLabel(method) {
 }
 
 function operationTypeLabel(type) {
-  const keys = { WholesaleSale: "wholesaleSale", RetailSale: "retailSale", Return: "return", Change: "exchange", InventoryReceipt: "inventoryReceipt", WarehouseTransfer: "warehouseTransfer", Reserve: "reserve", WriteOff: "writeOff" };
+  const keys = { WholesaleSale: "wholesaleSale", RetailSale: "retailSale", Return: "return", Change: "exchange", InventoryReceipt: "inventoryReceipt", WarehouseTransfer: "warehouseTransfer", WriteOff: "writeOff" };
   return keys[type] ? paymentT(keys[type]) : type || "-";
 }
 
@@ -6916,7 +7096,7 @@ function renderPaymentDetail(detail) {
         <td>${escapeHtml(formatDateTime(record.paymentDate))}</td>
         <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(paymentWorkflowStatusLabel(record.status))}</span></td>
         <td>${escapeHtml(record.createdByName || "-")}</td>
-        <td>${escapeHtml(record.notes || "-")}</td>
+        <td>${escapeHtml(record.notes || "-")}${!record.financeAccountId && ["PendingAccountant", "PendingAdminReview"].includes(record.status) ? `<div class="status-danger">${escapeHtml(paymentT("legacyReceiptMissingAccount"))}</div>` : ""}</td>
         <td>${isAdmin && ["PendingAccountant", "PendingAdminReview"].includes(record.status)
           ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-approve="${escapeHtml(record.id)}">${paymentT("approve")}</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">${paymentT("reject")}</button>`
           : "-"}</td>
@@ -6929,7 +7109,7 @@ function renderPaymentDetail(detail) {
         <td>${escapeHtml(formatDateTime(adjustment.createdAt))}</td>
         <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(paymentWorkflowStatusLabel(adjustment.status))}</span></td>
         <td>${escapeHtml(adjustment.createdByName || "-")}</td>
-        <td>${escapeHtml(adjustment.notes || "-")}</td>
+        <td>${escapeHtml([adjustment.notes, adjustment.rejectionReason ? `${paymentT("rejectionReason")}: ${adjustment.rejectionReason}` : null, adjustment.reviewedByName ? `${paymentT("reviewedBy")}: ${adjustment.reviewedByName}` : null].filter(Boolean).join(" · ") || "-")}</td>
         <td>${canApproveAdjustments && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">${paymentT("approve")}</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">${paymentT("reject")}</button>` : canApproveAdjustments && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">${paymentT("recordPayout")}</button>` : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
   </div>`;
@@ -6972,6 +7152,8 @@ function openUnifiedCollectionForm(scope = "OtherPayments", merchantId = "", ope
 
 function syncUnifiedCollectionSource() {
   const isMerchantAccount = document.getElementById("collection-source-kind")?.value === "MerchantAccount";
+  const paymentTypeField = document.getElementById("collection-payment-type-field");
+  if (paymentTypeField) paymentTypeField.hidden = isMerchantAccount;
   const referenceField = document.getElementById("collection-source-reference-field");
   const merchantField = document.getElementById("collection-merchant-field");
   const reference = document.getElementById("collection-source-reference");
@@ -6998,10 +7180,17 @@ function resolveCollectionPaymentLog(reference) {
 
 async function recordUnifiedCollection(event) {
   event.preventDefault();
+  const form = event.currentTarget;
+  const submitButton = event.submitter || form?.querySelector('button[type="submit"]');
+  return withMutationGuard("payments:unified-collection", submitButton, () => recordUnifiedCollectionCore(form));
+}
+
+async function recordUnifiedCollectionCore(form) {
   clearFormError("unified-collection-error");
     // Collection form always creates and submits its draft in one action.
     const submitForReview = true;
   const sourceKind = document.getElementById("collection-source-kind")?.value;
+  const paymentType = sourceKind === "OtherPayments" ? (document.getElementById("collection-payment-type")?.value || "CashReceived") : "CashReceived";
   const method = canonicalSelectValue("collection-method", "movementMethod", { allowEmpty: true });
   const transactionReference = document.getElementById("collection-transaction-reference")?.value.trim() || null;
   const amount = Number(document.getElementById("collection-amount")?.value);
@@ -7020,7 +7209,24 @@ async function recordUnifiedCollection(event) {
     return;
   }
 
-  const idempotencyKey = createUuid();
+  const requestFingerprint = JSON.stringify({
+    sourceKind,
+    paymentType,
+    merchantId: document.getElementById("collection-merchant")?.value || null,
+    sourceOperationId: document.getElementById("collection-source-operation-id")?.value || null,
+    sourceReference: document.getElementById("collection-source-reference")?.value.trim() || null,
+    amount,
+    method,
+    transactionReference,
+    financeAccountId,
+    dateReceived: document.getElementById("collection-date")?.value || null,
+    notes
+  });
+  if (form.dataset.paymentRequestFingerprint !== requestFingerprint) {
+    form.dataset.paymentRequestFingerprint = requestFingerprint;
+    form.dataset.paymentIdempotencyKey = createUuid();
+  }
+  const idempotencyKey = form.dataset.paymentIdempotencyKey;
   const mutationOptions = { headers: { "Idempotency-Key": idempotencyKey }, notify: false };
   const submit = async (path, body) => {
     const options = { ...mutationOptions, method: "POST", body: JSON.stringify(body) };
@@ -7029,7 +7235,7 @@ async function recordUnifiedCollection(event) {
     } catch (firstError) {
       // A response can be lost after the server commits. Replaying the same
       // key is safe and returns the original result instead of duplicating it.
-      if (sourceKind !== "MerchantAccount") throw firstError;
+      if (firstError?.status && firstError.status < 500) throw firstError;
       try {
         return await request(path, options);
       } catch (secondError) {
@@ -7048,12 +7254,25 @@ async function recordUnifiedCollection(event) {
       await submit(`/api/v1/payments/merchant-accounts/${encodeURIComponent(merchantId)}/collections`, { sourceOperationId: document.getElementById("collection-source-operation-id")?.value || null, amount, paymentMethod: method, transactionReference, financeAccountId, notes, submitForReview });
     } else {
       const reference = document.getElementById("collection-source-reference")?.value.trim();
-      const operationId = document.getElementById("collection-source-operation-id")?.value || null;
-      const payment = operationId ? null : resolveCollectionPaymentLog(reference);
-      if (!operationId && !payment) throw new Error(foundationT("payments.errors.collectionPaymentNotFound"));
-      await submit("/api/v1/payments/collections", {
+      let operationId = document.getElementById("collection-source-operation-id")?.value || null;
+      if (!operationId && reference) {
+        const resolvedOperation = await request(`/api/v1/payments/operations/resolve?reference=${encodeURIComponent(reference)}`);
+        operationId = resolvedOperation?.operationId || null;
+      }
+      if (!operationId) throw new Error(foundationT("payments.errors.collectionPaymentNotFound"));
+      if (paymentType === "CashRefund") {
+        await submit("/api/v1/payments/cash-records", {
+          operationId,
+          paymentType,
+          amount,
+          paymentMethod: method,
+          transactionReference,
+          financeAccountId,
+          notes
+        });
+      } else await submit("/api/v1/payments/collections", {
           scope: "OtherPayments",
-          operationId: operationId || payment.operationId,
+          operationId,
           amount,
           paymentMethod: method,
           transactionReference,
@@ -7070,7 +7289,9 @@ async function recordUnifiedCollection(event) {
 
   notice(paymentT("collectionSubmittedNoChange"), "success");
   try {
-    event.currentTarget.reset();
+    form.reset();
+    delete form.dataset.paymentRequestFingerprint;
+    delete form.dataset.paymentIdempotencyKey;
     syncUnifiedCollectionSource();
   } catch (exception) {
     console.warn("Collection form cleanup failed after successful submit.", exception);
@@ -7087,6 +7308,7 @@ async function recordUnifiedCollection(event) {
 }
 
 async function approveSubLog(id, paymentLogId = null) {
+  return confirmFinalAction({ action: "approve", title: "Approve payment", message: "Approve and post this payment?", control: document.querySelector(`[data-sublog-approve="${CSS.escape(id)}"]`), key: `payment:sublog:${id}:approve`, execute: async () => {
   try {
     await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/approve`, { method: "POST" });
     notice(paymentT("paymentApproved"), "success");
@@ -7095,6 +7317,8 @@ async function approveSubLog(id, paymentLogId = null) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function submitSubLog(id, paymentLogId = null) {
@@ -7109,6 +7333,7 @@ async function submitSubLog(id, paymentLogId = null) {
 }
 
 async function approveCashReceipt(id) {
+  return confirmFinalAction({ action: "approve", title: "Approve cash receipt", message: "Approve and post this cash receipt?", control: document.querySelector(`[data-cash-detail-approve="${CSS.escape(id)}"]`), key: `payment:cash:${id}:approve`, execute: async () => {
   try {
     await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/approve`, { method: "POST" });
     notice(paymentT("cashReceiptApprovedNotice"), "success");
@@ -7116,16 +7341,12 @@ async function approveCashReceipt(id) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function rejectCashReceipt(id) {
-  const reason = await promptDialog({
-    title: foundationT("app.prompt.rejectCashReceipt"),
-    label: foundationT("app.prompt.rejectCashReceiptHelp"),
-    multiline: true,
-    required: true
-  });
-  if (!reason) return;
+  return confirmFinalAction({ action: "reject", title: foundationT("app.prompt.rejectCashReceipt"), message: foundationT("app.prompt.rejectCashReceiptHelp"), reasonLabel: foundationT("app.prompt.rejectCashReceiptHelp"), control: document.querySelector(`[data-cash-detail-reject="${CSS.escape(id)}"]`), key: `payment:cash:${id}:reject`, execute: async (reason) => {
   try {
     await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/reject`, {
       method: "POST",
@@ -7137,18 +7358,12 @@ async function rejectCashReceipt(id) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function rejectSubLog(id, paymentLogId = null) {
-  const reason = await promptDialog({
-    title: foundationT("app.prompt.rejectPaymentEntry"),
-    label: foundationT("app.prompt.rejectPaymentEntryHelp"),
-    multiline: true,
-    required: true
-  });
-  if (!reason) {
-    return;
-  }
+  return confirmFinalAction({ action: "reject", title: foundationT("app.prompt.rejectPaymentEntry"), message: foundationT("app.prompt.rejectPaymentEntryHelp"), reasonLabel: foundationT("app.prompt.rejectPaymentEntryHelp"), control: document.querySelector(`[data-sublog-reject="${CSS.escape(id)}"]`), key: `payment:sublog:${id}:reject`, execute: async (reason) => {
   try {
     await request(`/api/v1/payments/collections/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
     notice(paymentT("paymentRejectedNotice"), "success");
@@ -7157,17 +7372,22 @@ async function rejectSubLog(id, paymentLogId = null) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function approveAdjustment(id, paymentLogId = null) {
+  return confirmFinalAction({ action: "approve", title: "Approve financial adjustment", message: "Approve and apply this financial adjustment?", control: document.querySelector(`[data-adjustment-approve="${CSS.escape(id)}"]`), key: `payment:adjustment:${id}:approve`, execute: async () => {
   try {
     await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/approve`, { method: "POST" });
     notice(paymentT("adjustmentApprovedNotice"), "success");
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await Promise.all([loadPayments(), loadPaymentHistory(), loadFinancialAdjustmentInbox(), loadMerchantBalance()]);
     await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 function syncOperationBatchEntryFields(row) {
@@ -7263,38 +7483,45 @@ async function payoutCashRefund(id, paymentLogId = null) {
   });
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) return;
+  const paymentMethod = canonicalSelectValue("adjustment-refund-payment-method", "movementMethod", { allowEmpty: true });
+  const financeAccountId = document.getElementById("adjustment-refund-finance-account")?.value || "";
+  const transactionReference = document.getElementById("adjustment-refund-reference")?.value.trim() || null;
+  if (!paymentMethod || !financeAccountId) {
+    notice(paymentT("errors.collectionAccount"), "error");
+    return;
+  }
+  if (["CashTransaction", "BankTransfer", "Wallet"].includes(paymentMethod) && !transactionReference) {
+    notice(paymentT("errors.collectionReference"), "error");
+    return;
+  }
+  return confirmFinalAction({ action: "payout", title: "Record refund payout", message: "Record this cash refund payout?", control: document.querySelector(`[data-adjustment-payout="${CSS.escape(id)}"]`), key: `payment:adjustment:${id}:payout`, execute: async () => {
   try {
     await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/payout`, {
       method: "POST",
-      body: JSON.stringify({ amount: value })
+      body: JSON.stringify({ amount: value, paymentMethod, transactionReference, financeAccountId })
     });
     notice(paymentT("refundPayoutRecordedNotice"), "success");
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await Promise.all([loadPayments(), loadPaymentHistory(), loadFinancialAdjustmentInbox(), loadMerchantBalance()]);
     await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function rejectAdjustment(id, paymentLogId = null) {
-  const reason = await promptDialog({
-    title: foundationT("app.prompt.rejectFinancialAdjustment"),
-    label: foundationT("app.prompt.rejectFinancialAdjustmentHelp"),
-    multiline: true,
-    required: true
-  });
-  if (!reason) {
-    return;
-  }
-
+  return confirmFinalAction({ action: "reject", title: foundationT("app.prompt.rejectFinancialAdjustment"), message: foundationT("app.prompt.rejectFinancialAdjustmentHelp"), reasonLabel: foundationT("app.prompt.rejectFinancialAdjustmentHelp"), control: document.querySelector(`[data-adjustment-reject="${CSS.escape(id)}"]`), key: `payment:adjustment:${id}:reject`, execute: async (reason) => {
   try {
     await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
     notice(paymentT("adjustmentRejectedNotice"), "success");
-    await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await Promise.all([loadPayments(), loadPaymentHistory(), loadFinancialAdjustmentInbox(), loadMerchantBalance()]);
     await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function reopenPaymentDetail(paymentLogId) {
@@ -7309,6 +7536,11 @@ async function reopenPaymentDetail(paymentLogId) {
 }
 
 async function assignPaymentLog(id) {
+  const button = document.querySelector(`[data-payment-assign="${CSS.escape(id)}"]`);
+  return withMutationGuard(`payment:assign:${id}`, button, () => assignPaymentLogCore(id));
+}
+
+async function assignPaymentLogCore(id) {
   const accountantId = document.getElementById("payment-accountant")?.value || "";
   if (!accountantId) {
     notice(paymentT("chooseAccountant"), "error");
@@ -7325,6 +7557,12 @@ async function assignPaymentLog(id) {
 
 async function createFinancialAdjustment(event) {
   event.preventDefault();
+  const form = event.currentTarget;
+  const submitButton = event.submitter || form?.querySelector('button[type="submit"]');
+  return withMutationGuard("payments:financial-adjustment", submitButton, () => createFinancialAdjustmentCore(form));
+}
+
+async function createFinancialAdjustmentCore(form) {
   clearFormError("financial-adjustment-error");
   const adjustmentType = canonicalSelectValue("adjustment-type", "adjustmentType");
   const operationId = document.getElementById("adjustment-operation-id").value.trim();
@@ -7340,20 +7578,29 @@ async function createFinancialAdjustment(event) {
     showFormError("financial-adjustment-error", foundationT("payments.errors.additionalChargeReason"));
     return;
   }
+  const body = {
+    merchantId: document.getElementById("adjustment-merchant").value,
+    operationId: operationId || null,
+    adjustmentType,
+    amount,
+    notes: document.getElementById("adjustment-notes").value || null
+  };
+  const fingerprint = JSON.stringify(body);
+  if (form.dataset.paymentRequestFingerprint !== fingerprint) {
+    form.dataset.paymentRequestFingerprint = fingerprint;
+    form.dataset.paymentIdempotencyKey = createUuid();
+  }
   try {
     await request("/api/v1/payments/adjustments", {
       method: "POST",
-      body: JSON.stringify({
-        merchantId: document.getElementById("adjustment-merchant").value,
-        operationId: operationId || null,
-        adjustmentType,
-        amount,
-        notes: document.getElementById("adjustment-notes").value || null
-      })
+      headers: { "Idempotency-Key": form.dataset.paymentIdempotencyKey },
+      body: JSON.stringify(body)
     });
     notice(paymentT("adjustmentRequestedNotice"), "success");
-    event.target.reset();
-    await Promise.allSettled([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+    delete form.dataset.paymentRequestFingerprint;
+    delete form.dataset.paymentIdempotencyKey;
+    form.reset();
+    await Promise.allSettled([loadPayments(), loadPaymentHistory(), loadPaymentAudit(), loadFinancialAdjustmentInbox()]);
     if (document.getElementById("payment-merchant")?.value) await loadMerchantBalance();
   } catch (exception) {
     showFormError("financial-adjustment-error", getFriendlyWorkspaceError(exception));
@@ -7406,7 +7653,7 @@ async function loadMerchantBalance() {
     const statementQuery = new URLSearchParams({ take: "200" });
     if (from) statementQuery.set("from", from);
     if (to) statementQuery.set("to", to);
-    const [account, statement, collections, orders, openingHistory] = await Promise.all([
+    const [account, statement, collections, orders, openingHistoryResponse] = await Promise.all([
       request(`/api/v1/payments/merchant-accounts/${merchantId}`),
       request(`/api/v1/payments/merchant-accounts/${merchantId}/statement?${statementQuery.toString()}&includeSummary=true`),
       request(`/api/v1/payments/collection-work?scope=MerchantAccount&merchantId=${encodeURIComponent(merchantId)}`),
@@ -7414,6 +7661,9 @@ async function loadMerchantBalance() {
       request(`/api/v1/payments/merchant-accounts/${merchantId}/opening-balances`)
     ]);
     if (document.getElementById("payment-merchant")?.value !== merchantId) return;
+    const openingHistory = Array.isArray(openingHistoryResponse)
+      ? openingHistoryResponse
+      : (Array.isArray(openingHistoryResponse?.items) ? openingHistoryResponse.items : []);
     const balance = account.balance || {};
     const statementRows = Array.isArray(statement) ? statement : (statement.items || []);
     const breakdown = account.breakdown || {};
@@ -7501,6 +7751,16 @@ async function loadFinanceAccounts() {
   }
 }
 
+async function loadPaymentFinanceAccounts({ includeStatus = false } = {}) {
+  try {
+    const result = await request("/api/v1/payments/finance-account-options");
+    const items = Array.isArray(result) ? result : [];
+    return includeStatus ? { items, error: null } : items;
+  } catch (error) {
+    return includeStatus ? { items: [], error } : [];
+  }
+}
+
 async function createMerchantOpening(merchantId) {
   const amount = await promptDialog({ title: foundationT("payments.merchantOpening.add"), label: foundationT("payments.merchantOpening.amount"), inputType: "number", required: true });
   if (amount === null) return;
@@ -7515,10 +7775,13 @@ async function createMerchantOpening(merchantId) {
 }
 
 async function approveMerchantOpening(id) {
+  return confirmFinalAction({ action: "approve", title: "Approve opening balance", message: "Approve and post this merchant opening balance?", key: `payment:opening:${id}:approve`, execute: async () => {
   try {
     await request(`/api/v1/payments/opening-balances/${id}/approve`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() } });
     notice(foundationT("payments.merchantOpening.posted"), "success"); await loadMerchantBalance();
   } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); }
+  }
+  });
 }
 
 async function correctMerchantOpening(opening) {
@@ -7558,32 +7821,54 @@ async function loadMerchantFinancialClosure(merchantId) {
           const proposals = await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`);
           const pending = (Array.isArray(proposals) ? proposals : []).filter((proposal) => proposal.status === "PendingAdminReview");
           review.innerHTML = pending.length ? `<h4>${paymentT("closureRequests")}</h4>${pending.map((proposal) => {
-            const itemMarkup = (proposal.items || []).map((item) => `<label><input type="checkbox" data-review-operation="${escapeHtml(item.operationId)}" checked> ${escapeHtml(item.operationNumber)} — ${escapeHtml(formatMoney(item.settlementAmount))}</label>`).join(" ");
-            return `<div class="closure-review-card" data-closure-proposal="${escapeHtml(proposal.id)}"><p>${escapeHtml(paymentT("requestedAt", { date: formatDateTime(proposal.submittedAt) }))}</p>${proposal.notes ? `<p class="muted-text">${escapeHtml(proposal.notes)}</p>` : ""}<div>${itemMarkup}</div><button class="button secondary" type="button" data-review-closure="${escapeHtml(proposal.id)}">${paymentT("approveSelectionRejectRest")}</button></div>`;
+            const itemMarkup = (proposal.items || []).map((item) => `<label class="closure-review-item"><input type="checkbox" data-review-operation="${escapeHtml(item.operationId)}" checked><span><strong>${escapeHtml(item.operationNumber)}</strong><span class="muted-cell">${escapeHtml(formatMoney(item.settlementAmount))}</span></span></label>`).join("");
+            return `<div class="closure-review-card" data-closure-proposal="${escapeHtml(proposal.id)}"><p>${escapeHtml(paymentT("requestedAt", { date: formatDateTime(proposal.submittedAt) }))}</p>${proposal.notes ? `<p class="muted-text">${escapeHtml(proposal.notes)}</p>` : ""}<div class="closure-review-items">${itemMarkup}</div><button class="button secondary" type="button" data-review-closure="${escapeHtml(proposal.id)}">${paymentT("approveSelectionRejectRest")}</button></div>`;
           }).join("")}` : "";
           review.querySelectorAll("[data-review-closure]").forEach((button) => button.addEventListener("click", async () => {
             const card = button.closest("[data-closure-proposal]");
             const approvedOperationIds = [...card.querySelectorAll("[data-review-operation]:checked")].map((input) => input.dataset.reviewOperation);
-            try {
-              await request(`/api/v1/payments/financial-closure/proposals/${button.dataset.reviewClosure}/review`, { method: "POST", body: JSON.stringify({ approvedOperationIds, rejectionReason: paymentT("rejectedByAdminSelection") }) });
-              notice(paymentT("selectionApproved"), "success");
-              await loadMerchantFinancialClosure(merchantId);
-            } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
+            await confirmFinalAction({
+              action: "reject",
+              title: paymentT("approveSelectionRejectRest"),
+              message: paymentT("approveSelectionRejectRest"),
+              reasonLabel: paymentT("reason"),
+              key: `payment:closure-review:${button.dataset.reviewClosure}`,
+              execute: async (reason) => {
+                try {
+                  await request(`/api/v1/payments/financial-closure/proposals/${button.dataset.reviewClosure}/review`, { method: "POST", body: JSON.stringify({ approvedOperationIds, rejectionReason: reason || paymentT("rejectedByAdminSelection") }) });
+                  notice(paymentT("selectionApproved"), "success");
+                  // Review changes operation closure state; refresh the order
+                  // ledger as well as the proposal panel so operation numbers
+                  // immediately show their new financial state.
+                  await loadMerchantBalance();
+                } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
+              }
+            });
           }));
         } catch (exception) { review.textContent = getFriendlyWorkspaceError(exception); }
       }
     }
-    submit.onclick = async () => {
+    submit.onclick = async () => withMutationGuard(`payment:closure-submit:${merchantId}`, submit, async () => {
       const operationIds = [...document.querySelectorAll("[data-closure-operation]:checked")].map((node) => node.dataset.closureOperation);
       if (!operationIds.length) { notice(paymentT("selectAtLeastOne"), "error"); return; }
+      const body = { operationIds, notes: null };
+      const fingerprint = JSON.stringify(body);
+      if (submit.dataset.requestFingerprint !== fingerprint) {
+        submit.dataset.requestFingerprint = fingerprint;
+        submit.dataset.idempotencyKey = createUuid();
+      }
       try {
-        await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ operationIds, notes: null }) });
+        await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`, { method: "POST", headers: { "Idempotency-Key": submit.dataset.idempotencyKey }, body: JSON.stringify(body) });
         notice(paymentT("submittedForClosure"), "success");
+        delete submit.dataset.requestFingerprint;
+        delete submit.dataset.idempotencyKey;
         await loadMerchantFinancialClosure(merchantId);
       } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
-    };
+    });
   } catch (exception) {
-    section.hidden = true;
+    section.hidden = false;
+    rows.replaceChildren(paymentEmptyTableRow(5, getFriendlyWorkspaceError(exception)));
+    submit.hidden = true;
   }
 }
 
@@ -7615,23 +7900,25 @@ function shortId(value, prefix = "REF") {
 }
 
 async function reviewMerchantAccountCollection(id, approved) {
-  const reason = approved ? null : await promptDialog({
-    title: paymentT("rejectCollectionTitle"),
-    label: paymentT("rejectCollectionLabel"),
-    multiline: true,
-    required: true
+  return confirmFinalAction({
+    action: approved ? "approve" : "reject",
+    title: approved ? paymentT("approveCollection") : paymentT("rejectCollectionTitle"),
+    message: approved ? paymentT("approveCollection") : paymentT("rejectCollectionLabel"),
+    reasonLabel: approved ? null : paymentT("rejectCollectionLabel"),
+    key: `payment:merchant-collection:${id}:${approved ? "approve" : "reject"}`,
+    execute: async (reason) => {
+      try {
+        await request(`/api/v1/payments/collections/${id}/${approved ? "approve" : "reject"}`, {
+          method: "POST",
+          body: approved ? undefined : JSON.stringify({ reason })
+        });
+        notice(approved ? paymentT("collectionApprovedPosted") : paymentT("collectionRejected"), "success");
+        await Promise.all([loadMerchantBalance(), loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
+      } catch (exception) {
+        notice(getFriendlyWorkspaceError(exception), "error");
+      }
+    }
   });
-  if (!approved && !reason) return;
-  try {
-    await request(`/api/v1/payments/collections/${id}/${approved ? "approve" : "reject"}`, {
-      method: "POST",
-      body: approved ? undefined : JSON.stringify({ reason })
-    });
-    notice(approved ? paymentT("collectionApprovedPosted") : paymentT("collectionRejected"), "success");
-    await Promise.all([loadMerchantBalance(), loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
-  } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
-  }
 }
 
 async function loadPaymentAudit() {
@@ -7666,14 +7953,16 @@ async function loadCollectionWorkInbox() {
     const items = Array.isArray(result) ? result : (result.items || []);
     const canReview = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
     const rendered = items.map((item) => {
+      const allocationSummary = (item.allocationDetails || []).map((allocation) =>
+        `${allocation.operationNumber || paymentT("openingBalance")} · ${formatMoney(allocation.amount)}`).join(", ");
       const row = paymentTableRow([
         item.scope === "MerchantAccount" ? paymentT("merchantAccount") : paymentT("otherPayments"),
         item.reference || shortId(item.id, "COL"),
         item.operationNumber || item.source || "-",
-        item.assignedToName || "Shared Admin queue",
+        item.assignedToName || paymentT("sharedAdminQueue"),
         formatMoney(item.amount || 0),
         movementMethodLabel(item.movementMethod || item.paymentMethod),
-        [item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status), item.notes].filter(Boolean).join(" · ")
+        [item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status), item.notes, allocationSummary ? `${paymentT("allocation")}: ${allocationSummary}` : null].filter(Boolean).join(" · ")
       ]);
       const action = document.createElement("td");
       if (canReview && item.status === "PendingAdminReview") {
@@ -7754,8 +8043,8 @@ function togglePaymentAuditDetails(row, item) {
     [paymentT("transactionReferenceLabel"), item.transactionReference || "-"],
     [paymentT("status"), `${paymentWorkflowStatusLabel(item.previousStatus)} → ${paymentWorkflowStatusLabel(item.newStatus)}`],
     [foundationT("common.notes"), item.reason || "-"],
-    [paymentT("correlation"), item.correlationId || "-"],
-    [paymentT("idempotency"), item.idempotencyKey || "-"],
+    [paymentT("correlation"), item.correlationId ? shortId(item.correlationId, "REF") : "-"],
+    [paymentT("idempotency"), item.idempotencyKey ? shortId(item.idempotencyKey, "REF") : "-"],
     [paymentT("recordedDetails"), item.dataJson ? displaySafeText(item.dataJson, "AUD") : "-" ]
   ];
   cell.innerHTML = `<div class="detail-grid audit-payment-detail">${fields.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
@@ -7767,6 +8056,9 @@ function paymentAuditActionLabel(action) {
   const keys = {
     PaymentLogOpened: "paymentLogOpened", PaymentLogInitialized: "paymentLogInitialized", PaymentAssigned: "paymentAssigned", PaymentReassigned: "paymentReassigned", CollectionReassigned: "collectionReassigned", InstallmentDrafted: "collectionDrafted", InstallmentApproved: "collectionApproved", InstallmentRejected: "collectionRejected", PaymentSubLogSubmittedForApproval: "paymentSubLogSubmitted", PaymentSubLogApproved: "paymentSubLogApproved", PaymentSubLogRejected: "paymentSubLogRejected", CashReceiptRecorded: "cashReceiptRecorded", CashReceiptSubmittedForApproval: "cashReceiptSubmitted", CashReceiptApproved: "cashReceiptApproved", CashReceiptRejected: "cashReceiptRejected", MerchantAccountCollectionDrafted: "merchantCollectionDrafted", MerchantAccountCollectionSubmitted: "merchantCollectionSubmitted", MerchantAccountCollectionApproved: "merchantCollectionApproved", MerchantAccountCollectionRejected: "merchantCollectionRejected", FinancialAdjustmentRequested: "adjustmentRequested", FinancialAdjustmentApproved: "adjustmentApproved", FinancialAdjustmentRejected: "adjustmentRejected", CashRefundPaidOut: "refundPaid", ReconciliationCompleted: "reconciliationCompleted"
   };
+  keys.CashRefundSubmittedForApproval = "cashRefundSubmitted";
+  keys.CashRefundApproved = "cashRefundApproved";
+  keys.CashRefundRejected = "cashRefundRejected";
   return keys[action] ? paymentT(keys[action]) : action || "-";
 }
 
@@ -7776,7 +8068,12 @@ function paymentWorkflowStatusLabel(status) {
 }
 
 function paymentCollectionDraftRow(item, canReview) {
-  const status = item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status);
+  const allocationDetails = Array.isArray(item.allocationDetails) ? item.allocationDetails : [];
+  const allocationSummary = allocationDetails.map((allocation) =>
+    `${allocation.operationNumber || paymentT("openingBalance")} · ${formatMoney(allocation.amount)}`).join(", ");
+  const statusParts = [item.rejectionReason ? `${paymentWorkflowStatusLabel(item.status)}: ${item.rejectionReason}` : paymentWorkflowStatusLabel(item.status)];
+  if (allocationSummary) statusParts.push(`${paymentT("allocation")}: ${allocationSummary}`);
+  const status = statusParts.join(" · ");
   const row = paymentTableRow([
     formatDateTime(item.draftedAt) || "-",
     item.reference || shortId(item.id, "COL"),
@@ -7903,6 +8200,11 @@ function financeT(key, params = {}) {
   return foundationT(`finance.${key}`, params);
 }
 
+function financeBusinessDateInputValue() {
+  const values = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function reportsT(key, params = {}) {
   return foundationT(`reports.${key}`, params);
 }
@@ -7913,6 +8215,7 @@ function financeValueLabel(kind, value) {
   const labels = {
     accountType: { CashOnHand: "accountTypes.cash", BankAccount: "accountTypes.bank", Wallet: "accountTypes.wallet" },
     direction: { Credit: "directions.inflow", Debit: "directions.outflow" },
+    method: { CashHandToHand: "methods.cash", CashTransaction: "methods.cashTransaction", BankTransfer: "methods.bank", Wallet: "methods.wallet" },
     status: { Draft: "statuses.draft", PendingReview: "statuses.pendingReview", Pending: "statuses.pending", Paid: "statuses.paid", Posted: "statuses.posted", Rejected: "statuses.rejected", Corrected: "statuses.corrected" },
     category: { MerchantCollection: "categories.merchantCollection", InstallmentCollection: "categories.installmentCollection", OtherPayment: "categories.otherPayment", OperatingExpense: "categories.operatingExpense", CLevelWithdrawal: "categories.cLevelWithdrawal", FinanceOpeningBalance: "categories.openingBalance", TreasuryOpeningBalance: "categories.openingBalance", RefundPayout: "categories.refundPayout", SupplyPayment: "categories.supplyPayment" }
   };
@@ -7943,15 +8246,25 @@ async function renderFinance() {
       <div class="section-head tight-head"><div><p class="ledger-kicker">${financeT("openingBalances.kicker")}</p><h3>${financeT("openingBalances.title")}</h3></div></div>
       ${canCreateOpening ? `<form id="finance-opening-form" class="form-grid compact-form"><div class="field"><label for="finance-opening-account">${financeT("account")}</label><select id="finance-opening-account" class="select" required></select></div><div class="field"><label for="finance-opening-amount">${financeT("amount")}</label><input id="finance-opening-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-opening-date">${financeT("openingBalances.asOfDate")}</label><input id="finance-opening-date" class="input" type="date" required></div><div class="field full-span"><label for="finance-opening-description">${financeT("openingBalances.description")}</label><input id="finance-opening-description" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("openingBalances.create")}</button></div></form>` : ""}
       <div id="finance-opening-balances" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
+     ${["Admin", "CLevel", "Accountant"].includes(role) ? `<section class="workspace-panel finance-supply-panel"><div class="section-head"><div><p class="ledger-kicker">${foundationT("supply.title")}</p><h3>${financeT("supply.title")}</h3><p class="muted-text">${financeT("supply.help")}</p></div></div><div class="form-grid compact-form"><label>${foundationT("supply.searchHelp")}<input id="finance-supply-search" class="input"></label><button id="finance-supply-search-button" class="button secondary" type="button">${foundationT("common.refresh")}</button></div><div id="finance-supply-logs" class="table-wrap compact-table">${foundationT("common.loading")}</div><div id="finance-supply-detail" class="finance-supply-detail" hidden></div></section>` : ""}
      <div class="scenario-grid finance-metrics"><article class="scenario-card"><span>${financeT("expectedCash")}</span><strong id="finance-cash">—</strong></article><article class="scenario-card"><span>${financeT("expectedBank")}</span><strong id="finance-bank">—</strong></article><article class="scenario-card"><span>${financeT("expectedWallet")}</span><strong id="finance-wallet">—</strong></article><article class="scenario-card"><span>${financeT("totalLiquidFunds")}</span><strong id="finance-total">—</strong></article><article class="scenario-card" hidden><span>${financeT("executive.merchantReceivables")}</span><strong id="finance-receivables">—</strong></article></div>
-     <div class="split-workspace finance-ledger-layout" hidden>
+     <div class="split-workspace finance-ledger-layout">
       <section class="workspace-panel"><div class="section-head"><div><p class="ledger-kicker">${financeT("expenses.kicker")}</p><h3>${financeT("expenses.title")}</h3></div></div>
         ${canCreateExpense ? `<form id="finance-expense-form" class="form-grid compact-form"><div class="field"><label for="finance-expense-category">${financeT("expenses.category")}</label><select id="finance-expense-category" class="select"><option value="Salary">${financeT("expenses.salary")}</option><option value="Rent">${financeT("expenses.rent")}</option><option value="SocialMedia">${financeT("expenses.socialMedia")}</option><option value="SoftwareAndTechnologySubscriptions">${financeT("expenses.softwareTechnology")}</option><option value="Other">${financeT("expenses.other")}</option></select></div><div class="field"><label for="finance-expense-account">${financeT("account")}</label><select id="finance-expense-account" class="select" required></select></div><div class="field"><label for="finance-expense-method">${financeT("method")}</label><select id="finance-expense-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-expense-amount">${financeT("amount")}</label><input id="finance-expense-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-expense-date">${financeT("businessDate")}</label><input id="finance-expense-date" class="input" type="date" required></div><div class="field"><label for="finance-expense-description">${financeT("description")}</label><input id="finance-expense-description" class="input" maxlength="1000"></div><div class="form-actions"><button class="button primary" type="submit">${financeT("expenses.create")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
         <div id="finance-expenses" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
       <section class="workspace-panel"><div class="section-head"><div><p class="ledger-kicker">${financeT("withdrawals.kicker")}</p><h3>${financeT("withdrawals.title")}</h3></div></div>
-        ${canAssignWithdrawal ? `<form id="finance-withdrawal-form" class="form-grid compact-form"><div class="field"><label for="finance-withdrawal-user">${financeT("withdrawals.assignedTo")}</label><select id="finance-withdrawal-user" class="select" required></select></div><div class="field"><label for="finance-withdrawal-account">${financeT("account")}</label><select id="finance-withdrawal-account" class="select" required></select></div><div class="field"><label for="finance-withdrawal-method">${financeT("method")}</label><select id="finance-withdrawal-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-withdrawal-amount">${financeT("amount")}</label><input id="finance-withdrawal-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-withdrawal-date">${financeT("businessDate")}</label><input id="finance-withdrawal-date" class="input" type="date" required></div><div class="field"><label for="finance-withdrawal-reason">${financeT("withdrawals.reason")}</label><input id="finance-withdrawal-reason" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("withdrawals.create")}</button></div></form>` : `<p class="muted-text">${canApprove ? financeT("withdrawals.reviewOnly") : financeT("readOnly")}</p>`}
+        ${canAssignWithdrawal ? `<div class="warning-panel finance-withdrawal-warning" role="note"><div><strong>${financeT("withdrawals.immediatePostTitle")}</strong><span>${financeT("withdrawals.immediatePostHelp")}</span></div></div><form id="finance-withdrawal-form" class="form-grid compact-form"><div class="field"><label for="finance-withdrawal-user">${financeT("withdrawals.assignedTo")}</label><select id="finance-withdrawal-user" class="select" required></select></div><div class="field"><label for="finance-withdrawal-account">${financeT("account")}</label><select id="finance-withdrawal-account" class="select" required></select></div><div class="field"><label for="finance-withdrawal-method">${financeT("method")}</label><select id="finance-withdrawal-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-withdrawal-amount">${financeT("amount")}</label><input id="finance-withdrawal-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-withdrawal-date">${financeT("businessDate")}</label><input id="finance-withdrawal-date" class="input" type="date" required></div><div class="field"><label for="finance-withdrawal-reason">${financeT("withdrawals.reason")}</label><input id="finance-withdrawal-reason" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("withdrawals.create")}</button></div></form>` : `<p class="muted-text">${canApprove ? financeT("withdrawals.reviewOnly") : financeT("readOnly")}</p>`}
         <div id="finance-withdrawals" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
      </div><section class="workspace-panel" hidden><div class="section-head"><div><p class="ledger-kicker">${financeT("ledger.kicker")}</p><h3>${financeT("ledger.title")}</h3></div></div><div id="finance-ledger" class="table-wrap compact-table">${foundationT("common.loading")}</div></section><section class="workspace-panel" hidden><div class="section-head"><div><p class="ledger-kicker">${financeT("reconciliation.kicker")}</p><h3>${financeT("reconciliation.title")}</h3><p class="muted-text">${financeT("reconciliation.help")}</p></div></div><div id="finance-reconciliation" class="table-wrap compact-table">${foundationT("common.loading")}</div></section></section>`;
+  // The Finance route is a complete workspace again.  Some panels were
+  // temporarily rendered with `hidden` while its backend continued supporting
+  // Payments; reveal only top-level panels so field-level workflow state keeps
+  // its own visibility rules.
+  view.querySelectorAll(".workspace-panel[hidden]").forEach((panel) => { panel.hidden = false; });
+  // The ledger workspace is the primary Finance surface and must not inherit
+  // a stale hidden state from a previous route render.
+  const financeLedgerLayout = view.querySelector(".finance-ledger-layout");
+  if (financeLedgerLayout) financeLedgerLayout.hidden = false;
   document.getElementById("finance-refresh")?.addEventListener("click", loadFinanceWorkspace);
   document.getElementById("finance-account-form")?.addEventListener("submit", submitFinanceAccount);
   document.getElementById("finance-opening-form")?.addEventListener("submit", submitFinanceOpeningBalance);
@@ -7959,6 +8272,8 @@ async function renderFinance() {
   document.getElementById("finance-withdrawal-form")?.addEventListener("submit", submitFinanceWithdrawal);
   document.getElementById("finance-transfer-form")?.addEventListener("submit", submitFinanceTransfer);
   document.getElementById("finance-category-form")?.addEventListener("submit", submitFinanceCategory);
+  document.getElementById("finance-supply-search-button")?.addEventListener("click", loadFinanceSupplyLogs);
+  document.getElementById("finance-supply-search")?.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void loadFinanceSupplyLogs(); } });
   const repaymentForm = document.getElementById("finance-repayment-form");
   if (repaymentForm) {
     const reasonLabel = document.createElement("label");
@@ -8002,6 +8317,7 @@ async function loadFinanceWorkspace() {
       request("/api/v1/finance/overview"), request("/api/v1/finance/accounts"), request("/api/v1/finance/expenses?pageSize=25"), request("/api/v1/finance/withdrawals?pageSize=25"), request("/api/v1/finance/ledger?pageSize=50"), request("/api/v1/finance/reconciliation?pageSize=50").catch(() => ({ items: [] })), request("/api/v1/finance/opening-balances?pageSize=25").catch(() => ({ items: [] })), getAuth()?.user?.role === "Admin" ? request("/api/v1/finance/c-level-users").catch(() => []) : Promise.resolve([])
       ,request("/api/v1/finance/categories").catch(() => []), getAuth()?.user?.role === "Admin" ? request("/api/v1/finance/transfers?pageSize=25").catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
     ]);
+    await loadFinanceSupplyLogs();
     const money = (value) => formatMoney(Number(value || 0));
     document.getElementById("finance-cash").textContent = money(overview.expectedCash); document.getElementById("finance-bank").textContent = money(overview.expectedBank); document.getElementById("finance-wallet").textContent = money(overview.expectedWallet); document.getElementById("finance-total").textContent = money(overview.totalLiquidFunds);
     const receivables = document.getElementById("finance-receivables"); if (receivables) receivables.textContent = money(overview.outstandingMerchantReceivable ?? overview.merchantReceivables ?? 0);
@@ -8027,7 +8343,8 @@ async function loadFinanceWorkspace() {
     if (withdrawalCategorySelect) withdrawalCategorySelect.innerHTML = categories.filter((item) => item.kind === "Withdrawal" && item.isActive).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(categoryName(item))}</option>`).join("");
     const categoryTable = document.getElementById("finance-categories");
     if (categoryTable) {
-      categoryTable.innerHTML = financeTable(categories, [financeT("categories.kind"), financeT("categories.code"), financeT("categories.english"), financeT("categories.arabic"), financeT("categories.order"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.kind === "Expense" ? financeT("expenses.title") : item.kind === "Withdrawal" ? financeT("withdrawals.title") : uiText(item.kind))}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.englishName)}</td><td>${escapeHtml(item.arabicName)}</td><td>${escapeHtml(item.sortOrder)}</td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" data-finance-category-id="${escapeHtml(item.id)}" type="button">${financeT("categories.edit")}</button><button class="button secondary table-action" data-finance-category-toggle="${escapeHtml(item.id)}" type="button">${item.isActive ? financeT("categories.deactivate") : financeT("categories.activate")}</button></td></tr>`);
+      const initialCategory = (item) => item.kind === "Expense" && item.createdBy === "00000000-0000-0000-0000-000000000000";
+      categoryTable.innerHTML = financeTable(categories, [financeT("categories.kind"), financeT("categories.code"), financeT("categories.english"), financeT("categories.arabic"), financeT("categories.order"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.kind === "Expense" ? financeT("expenses.title") : item.kind === "Withdrawal" ? financeT("withdrawals.title") : uiText(item.kind))}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.englishName)}</td><td>${escapeHtml(item.arabicName)}</td><td>${initialCategory(item) ? "—" : escapeHtml(item.sortOrder)}</td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" data-finance-category-id="${escapeHtml(item.id)}" type="button">${financeT("categories.edit")}</button><button class="button secondary table-action" data-finance-category-toggle="${escapeHtml(item.id)}" type="button">${item.isActive ? financeT("categories.deactivate") : financeT("categories.activate")}</button></td></tr>`);
       categoryTable.querySelectorAll("[data-finance-category-id]").forEach((button) => button.addEventListener("click", () => editFinanceCategory(categories.find((item) => item.id === button.dataset.financeCategoryId))));
       categoryTable.querySelectorAll("[data-finance-category-toggle]").forEach((button) => button.addEventListener("click", () => void toggleFinanceCategory(categories.find((item) => item.id === button.dataset.financeCategoryToggle))));
     }
@@ -8042,7 +8359,7 @@ async function loadFinanceWorkspace() {
     const canApprove = getAuth()?.user?.role === "Admin";
     document.getElementById("finance-opening-balances").innerHTML = financeTable(openingBalances.items || [], [financeT("account"), financeT("amount"), financeT("openingBalances.direction"), financeT("openingBalances.asOfDate"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(accounts.find((account) => account.id === item.financeAccountId)?.name || contextualReference({ context: item.financeAccountId, prefix: "REF", language: currentLanguage }))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(financeValueLabel("direction", item.direction))}</td><td><bdi>${escapeHtml(item.asOfDate)}</bdi></td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td><button class="button secondary table-action" type="button" data-finance-opening-note="${escapeHtml(item.id)}">${financeT("details")}</button>${canApprove && item.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="opening-balances" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("openingBalances.approve"))}</button><button class="button secondary table-action" type="button" data-finance-action="reject" data-finance-kind="opening-balances" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("openingBalances.reject"))}</button>` : ""}${["Admin", "Accountant"].includes(getAuth()?.user?.role) && item.status === "Posted" && !item.replacedByOpeningBalanceId ? `<button class="button secondary table-action" type="button" data-finance-opening-correct="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`);
     document.getElementById("finance-expenses").innerHTML = financeTable(expenses.items || [], [financeT("expenses.category"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => `<tr><td>${escapeHtml(categoryName(categories.find((category) => category.id === item.categoryId) || { englishName: item.category, arabicName: item.category }))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td><bdi>${escapeHtml(item.businessDate)}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="expense" data-finance-id="${escapeHtml(item.id)}">${financeT("details")}</button>${canApprove && item.status === "Pending" ? `<button class="button secondary table-action" type="button" data-finance-edit-expense="${escapeHtml(item.id)}">${financeT("expenses.editPending")}</button>` : ""}${canApprove && ["Pending", "PendingReview", "Draft"].includes(item.status) ? `<button class="button secondary table-action" type="button" data-finance-action="confirm" data-finance-kind="expenses" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("expenses.confirmPayment"))}</button>` : ""}${canApprove && ["Paid", "Posted"].includes(item.status) && !item.replacedByExpenseId ? `<button class="button secondary table-action" type="button" data-finance-correct-expense="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`);
-    document.getElementById("finance-withdrawals").innerHTML = financeTable(withdrawals.items || [], [financeT("withdrawals.assignedTo"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => { const withdrawal = item.withdrawal || item; return `<tr><td>${escapeHtml(item.assignedToName || withdrawal.assignedToCLevelUserId || "—")}</td><td>${escapeHtml(money(withdrawal.amount))}</td><td>${escapeHtml(financeValueLabel("status", withdrawal.status))}</td><td><bdi>${escapeHtml(withdrawal.businessDate || "")}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="withdrawal" data-finance-id="${escapeHtml(withdrawal.id)}">${financeT("details")}</button>${canApprove && withdrawal.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="withdrawals" data-finance-id="${escapeHtml(withdrawal.id)}">${escapeHtml(financeT("approve"))}</button>` : ""}${canApprove && withdrawal.status === "Posted" && !withdrawal.replacedByWithdrawalId ? `<button class="button secondary table-action" type="button" data-finance-correct-withdrawal="${escapeHtml(withdrawal.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`; });
+    document.getElementById("finance-withdrawals").innerHTML = financeTable(withdrawals.items || [], [financeT("withdrawals.assignedTo"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => { const withdrawal = item.withdrawal || item; return `<tr><td>${escapeHtml(item.assignedToName || (withdrawal.assignedToCLevelUserId ? shortId(withdrawal.assignedToCLevelUserId, "USR") : "—"))}</td><td>${escapeHtml(money(withdrawal.amount))}</td><td>${escapeHtml(financeValueLabel("status", withdrawal.status))}</td><td><bdi>${escapeHtml(withdrawal.businessDate || "")}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="withdrawal" data-finance-id="${escapeHtml(withdrawal.id)}">${financeT("details")}</button>${canApprove && withdrawal.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="withdrawals" data-finance-id="${escapeHtml(withdrawal.id)}">${escapeHtml(financeT("approve"))}</button>` : ""}${canApprove && withdrawal.status === "Posted" && !withdrawal.replacedByWithdrawalId ? `<button class="button secondary table-action" type="button" data-finance-correct-withdrawal="${escapeHtml(withdrawal.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`; });
     const accountNames = new Map(accounts.map((account) => [account.id, account.name]));
     document.getElementById("finance-ledger").innerHTML = financeTable(ledger.rows || [], [financeT("ledger.category"), financeT("ledger.direction"), financeT("amount"), financeT("account"), financeT("businessDate")], (item) => `<tr><td>${escapeHtml(financeValueLabel("category", item.category))}</td><td>${escapeHtml(financeValueLabel("direction", item.direction))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(accountNames.get(item.financeAccountId) || contextualReference({ businessReference: item.financeAccountReference, context: item.financeAccountId, prefix: "REF", language: currentLanguage }))}</td><td><bdi>${escapeHtml(item.businessDate)}</bdi></td></tr>`);
     document.getElementById("finance-reconciliation").innerHTML = financeTable(reconciliation.items || [], [financeT("reconciliation.account"), financeT("reconciliation.inflow"), financeT("reconciliation.outflow"), financeT("reconciliation.net"), financeT("reconciliation.expected"), financeT("reconciliation.entries"), financeT("reconciliation.history")], (item) => `<tr><td>${escapeHtml(item.accountName)}<span class="muted-cell">${escapeHtml(financeValueLabel("accountType", item.accountType))}</span></td><td>${escapeHtml(money(item.postedInflow))}</td><td>${escapeHtml(money(item.postedOutflow))}</td><td>${escapeHtml(money(item.netMovement))}</td><td>${escapeHtml(money(item.expectedBalance))}</td><td>${escapeHtml(item.postedEntryCount)}</td><td>${item.historicalNegativeBalance ? `${financeT("reconciliation.historicalNegative")} (${escapeHtml(money(item.minimumPostedBalance))})` : "—"}</td></tr>`);
@@ -8084,6 +8401,154 @@ async function loadFinanceWorkspace() {
 }
 
 function financeTable(rows, headers, row) { return `<table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.map(row).join("") : `<tr><td colspan="${headers.length}">${escapeHtml(financeT("empty"))}</td></tr>`}</tbody></table>`; }
+
+async function loadFinanceSupplyLogs() {
+  const target = document.getElementById("finance-supply-logs");
+  if (!target || !["Admin", "CLevel", "Accountant"].includes(getAuth()?.user?.role)) return;
+  try {
+    const search = document.getElementById("finance-supply-search")?.value.trim() || "";
+    const result = await request(`/api/v1/finance/supply-logs?pageSize=50&search=${encodeURIComponent(search)}`);
+    const rows = result.items || [];
+    if (rows.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = financeT("supply.empty");
+      target.replaceChildren(empty);
+      return;
+    }
+    target.innerHTML = financeTable(rows, [foundationT("supply.shipment"), foundationT("supply.supplier"), financeT("supply.totalCost"), foundationT("supply.amountPaid"), foundationT("supply.outstandingBalance"), foundationT("supply.details")], (item) => `<tr><td><bdi>${escapeHtml(item.shipmentNumber)}</bdi></td><td>${escapeHtml(item.supplierName)}</td><td>${escapeHtml(formatMoney(item.totalLandedCost))}</td><td>${escapeHtml(formatMoney(item.amountPaid))}</td><td>${escapeHtml(formatMoney(item.outstandingBalance))}</td><td><button class="button secondary table-action" type="button" data-finance-supply-log="${escapeHtml(item.id)}">${financeT("details")}</button></td></tr>`);
+    target.querySelectorAll("[data-finance-supply-log]").forEach((button) => button.addEventListener("click", () => void openFinanceSupplyLog(rows.find((item) => item.id === button.dataset.financeSupplyLog))));
+  } catch (error) { target.textContent = getFriendlyWorkspaceError(error); }
+}
+
+async function openFinanceSupplyLog(log) {
+  if (!log) return;
+  let current = log;
+  try { current = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`); } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); return; }
+  await renderFinanceSupplyDetail(current);
+}
+
+const financeSupplyCategories = [
+  ["ProductCost", "productCost"], ["CustomsCost", "customsCost"],
+  ["ShipmentCost", "shipmentCost"], ["Handling", "handlingCost"]
+];
+
+function financeSupplyCategoryLabel(category) {
+  const key = financeSupplyCategories.find(([value]) => value === category)?.[1];
+  return key ? financeT(`supply.categories.${key}`) : category;
+}
+
+async function renderFinanceSupplyDetail(log) {
+  const detail = document.getElementById("finance-supply-detail");
+  if (!detail) return;
+  const canManage = getAuth()?.user?.role === "Admin";
+  const accounts = await request("/api/v1/finance/accounts").catch(() => []);
+  const activeAccounts = accounts.filter((account) => account.isActive);
+  const accountOptions = `<option value="">${financeT("chooseAccount")}</option>${activeAccounts.map((account) => `<option value="${escapeHtml(account.id)}" data-account-type="${escapeHtml(account.type)}">${escapeHtml(account.name)} · ${escapeHtml(financeValueLabel("accountType", account.type))}</option>`).join("")}`;
+  const totals = log.categoryTotals || {};
+  const costs = log.costs || [];
+  const installments = log.installments || [];
+  const money = (value) => escapeHtml(formatMoney(value || 0));
+  detail.innerHTML = `<div class="finance-supply-detail-head"><div><p class="ledger-kicker">${financeT("supply.reference")}</p><h3><bdi>${escapeHtml(log.shipmentNumber)}</bdi></h3><p class="muted-text">${escapeHtml(log.supplierName)}</p><span class="status-pill status-muted">${escapeHtml(financeValueLabel("status", log.status))}</span></div><button class="button secondary" id="finance-supply-detail-close" type="button">${financeT("close")}</button></div>
+    <div class="scenario-grid finance-supply-metrics"><article class="scenario-card"><span>${financeT("supply.totalCost")}</span><strong>${money(log.totalLandedCost)}</strong></article><article class="scenario-card"><span>${foundationT("supply.amountPaid")}</span><strong>${money(log.amountPaid)}</strong></article><article class="scenario-card"><span>${foundationT("supply.outstandingBalance")}</span><strong>${money(log.outstandingBalance)}</strong></article></div>
+    <div class="finance-supply-category-grid">${financeSupplyCategories.map(([category, key]) => `<article class="scenario-card"><span>${financeT(`supply.categories.${key}`)}</span><strong>${money(totals[category])}</strong></article>`).join("")}</div>
+    <section class="finance-supply-subsection"><div class="section-head"><div><h4>${financeT("supply.costsTitle")}</h4><p class="muted-text">${financeT("supply.costsHelp")}</p></div></div>
+      ${canManage ? `<form id="finance-supply-cost-form" class="form-grid compact-form"><label>${financeT("supply.category")}<select class="select" name="category" required>${financeSupplyCategories.map(([value, key]) => `<option value="${value}">${financeT(`supply.categories.${key}`)}</option>`).join("")}</select></label><label>${financeT("amount")}<input class="input" name="amount" type="number" min="0.0001" step="0.0001" required></label><label>${financeT("businessDate")}<input class="input" name="businessDate" type="date" value="${financeBusinessDateInputValue()}" required></label><label class="full-span">${financeT("description")}<input class="input" name="notes" maxlength="1000"></label><div class="form-actions"><button class="button primary" type="submit">${financeT("supply.addCost")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
+      <div class="table-wrap compact-table">${financeTable(costs, [financeT("supply.category"), financeT("amount"), financeT("businessDate"), financeT("description"), financeT("actions")], (item) => `<tr><td>${escapeHtml(financeSupplyCategoryLabel(item.category))}${item.correctionNote ? `<small>${escapeHtml(item.correctionNote)}</small>` : ""}</td><td>${money(item.amount)}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(item.notes || "—")}</td><td>${canManage && item.status === "Active" && !item.replacedByCostEntryId ? `<button class="button secondary table-action" type="button" data-finance-supply-cost-correct="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : item.status === "Corrected" ? escapeHtml(financeT("openingBalances.corrected")) : "—"}</td></tr>`)}</div></section>
+    <section class="finance-supply-subsection"><div class="section-head"><div><h4>${financeT("supply.paymentsTitle")}</h4><p class="muted-text">${financeT("supply.paymentsHelp")}</p></div></div>
+      ${canManage && activeAccounts.length ? `<form id="finance-supply-payment-form" class="form-grid compact-form"><label>${financeT("account")}<select class="select" name="financeAccountId" required>${accountOptions}</select></label><label>${financeT("method")}<select class="select" name="movementMethod" required><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="CashTransaction">${financeT("methods.cashTransaction")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></label><label>${financeT("amount")}<input class="input" name="amount" type="number" min="0.0001" max="${escapeHtml(Math.max(0, Number(log.outstandingBalance || 0)))}" step="0.0001" required></label><label>${financeT("businessDate")}<input class="input" name="businessDate" type="date" value="${financeBusinessDateInputValue()}" required></label><label>${financeT("supply.externalReference")}<input class="input" name="externalReference" maxlength="200"></label><label>${financeT("description")}<input class="input" name="notes" maxlength="1000"></label><div class="form-actions"><button class="button primary" type="submit" ${Number(log.outstandingBalance || 0) <= 0 ? "disabled" : ""}>${financeT("supply.savePaymentDraft")}</button></div></form>` : canManage ? `<p class="warning-panel" role="note">${financeT("supply.noAccounts")}</p>` : ""}
+      <div class="table-wrap compact-table">${financeTable(installments, [financeT("amount"), financeT("account"), financeT("method"), financeT("businessDate"), financeT("status"), financeT("description"), financeT("actions")], (item) => { const account = accounts.find((value) => value.id === item.financeAccountId); return `<tr><td>${money(item.amount)}</td><td>${escapeHtml(account?.name || "—")}</td><td>${escapeHtml(financeValueLabel("method", item.movementMethod))}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td>${escapeHtml(item.notes || item.externalReference || "—")}</td><td>${canManage && item.status === "Draft" ? `<button class="button primary table-action" type="button" data-finance-supply-post="${escapeHtml(item.id)}">${financeT("supply.postPayment")}</button>` : canManage && item.status === "Posted" && !item.replacedByInstallmentId ? `<button class="button secondary table-action" type="button" data-finance-supply-correct="${escapeHtml(item.id)}">${financeT("supply.correctPayment")}</button>` : item.status === "Corrected" ? escapeHtml(financeT("openingBalances.corrected")) : "—"}</td></tr>`; })}</div></section>`;
+  detail.hidden = false;
+  detail.querySelector("#finance-supply-detail-close")?.addEventListener("click", () => { detail.hidden = true; detail.replaceChildren(); });
+  const costForm = detail.querySelector("#finance-supply-cost-form");
+  costForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = costForm.querySelector('[type="submit"]');
+    if (button.disabled) return;
+    button.disabled = true;
+    const form = new FormData(costForm);
+    try {
+      await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}/costs`, { method: "POST", body: JSON.stringify({ category: form.get("category"), amount: Number(form.get("amount")), businessDate: form.get("businessDate"), notes: String(form.get("notes") || "").trim() || null }) });
+      notice(financeT("supply.costSaved"), "success");
+      const fresh = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`);
+      await renderFinanceSupplyDetail(fresh);
+      await loadFinanceSupplyLogs();
+    } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
+  });
+  detail.querySelectorAll("[data-finance-supply-cost-correct]").forEach((button) => button.addEventListener("click", async () => {
+    const cost = costs.find((item) => item.id === button.dataset.financeSupplyCostCorrect);
+    if (!cost) return;
+    const reason = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
+    if (!reason) return;
+    const amount = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("amount"), defaultValue: String(cost.amount), inputType: "number", required: true });
+    if (amount === null || !Number.isFinite(Number(amount)) || Number(amount) <= 0) return;
+    const accepted = await confirmDialog({ title: financeT("openingBalances.correct"), message: financeT("supply.correctPaymentConfirm"), confirmLabel: financeT("openingBalances.correct"), tone: "warning", translateMessage: false, translateTitle: false });
+    if (!accepted || button.disabled) return;
+    button.disabled = true;
+    try {
+      await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}/costs/${encodeURIComponent(cost.id)}/correct`, { method: "POST", body: JSON.stringify({ category: cost.category, amount: Number(amount), businessDate: cost.businessDate, notes: cost.notes, reason }) });
+      notice(financeT("supply.costSaved"), "success");
+      const fresh = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`);
+      await renderFinanceSupplyDetail(fresh);
+      await loadFinanceSupplyLogs();
+    } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
+  }));
+  const paymentForm = detail.querySelector("#finance-supply-payment-form");
+  paymentForm?.querySelector('[name="financeAccountId"]')?.addEventListener("change", (event) => {
+    const selected = activeAccounts.find((account) => account.id === event.target.value);
+    const method = paymentForm.querySelector('[name="movementMethod"]');
+    if (!method) return;
+    const allowed = selected?.type === "CashOnHand" ? ["CashHandToHand", "CashTransaction"] : selected?.type === "Wallet" ? ["Wallet"] : selected?.type === "BankAccount" ? ["BankTransfer"] : [];
+    [...method.options].forEach((option) => { option.disabled = !allowed.includes(option.value); });
+    if (allowed.length) method.value = allowed[0];
+  });
+  paymentForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = paymentForm.querySelector('[type="submit"]');
+    if (button.disabled) return;
+    button.disabled = true;
+    const form = new FormData(paymentForm);
+    try {
+      await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}/installments`, { method: "POST", body: JSON.stringify({ financeAccountId: form.get("financeAccountId"), amount: Number(form.get("amount")), movementMethod: form.get("movementMethod"), businessDate: form.get("businessDate"), externalReference: String(form.get("externalReference") || "").trim() || null, notes: String(form.get("notes") || "").trim() || null, correlationId: createUuid() }) });
+      notice(financeT("supply.paymentDraftSaved"), "success");
+      const fresh = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`);
+      await renderFinanceSupplyDetail(fresh);
+      await loadFinanceSupplyLogs();
+    } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
+  });
+  detail.querySelectorAll("[data-finance-supply-post]").forEach((button) => button.addEventListener("click", async () => {
+    const accepted = await confirmDialog({ title: financeT("supply.postPayment"), message: financeT("supply.postPaymentConfirm"), confirmLabel: financeT("supply.postPayment"), tone: "warning", translateMessage: false, translateTitle: false });
+    if (!accepted || button.disabled) return;
+    button.disabled = true;
+    try {
+      await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}/installments/${encodeURIComponent(button.dataset.financeSupplyPost)}/post`, { method: "POST" });
+      notice(financeT("supply.paymentPosted"), "success");
+      const fresh = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`);
+      await renderFinanceSupplyDetail(fresh);
+      await loadFinanceSupplyLogs();
+      await loadFinanceWorkspace();
+    } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
+  }));
+  detail.querySelectorAll("[data-finance-supply-correct]").forEach((button) => button.addEventListener("click", async () => {
+    const installment = installments.find((item) => item.id === button.dataset.financeSupplyCorrect);
+    if (!installment) return;
+    const reason = await promptDialog({ title: financeT("supply.correctPayment"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
+    if (!reason) return;
+    const amount = await promptDialog({ title: financeT("supply.correctPayment"), label: financeT("amount"), defaultValue: String(installment.amount), inputType: "number", required: true });
+    if (amount === null || !Number.isFinite(Number(amount)) || Number(amount) <= 0 || button.disabled) return;
+    const accepted = await confirmDialog({ title: financeT("supply.correctPayment"), message: financeT("supply.correctPaymentConfirm"), confirmLabel: financeT("supply.correctPayment"), tone: "warning", translateMessage: false, translateTitle: false });
+    if (!accepted || button.disabled) return;
+    button.disabled = true;
+    try {
+      await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}/installments/${encodeURIComponent(installment.id)}/correct`, { method: "POST", body: JSON.stringify({ financeAccountId: installment.financeAccountId, amount: Number(amount), movementMethod: installment.movementMethod, businessDate: installment.businessDate, externalReference: null, notes: installment.notes, reason, correlationId: createUuid() }) });
+      notice(financeT("supply.paymentCorrected"), "success");
+      const fresh = await request(`/api/v1/finance/supply-logs/${encodeURIComponent(log.id)}`);
+      await renderFinanceSupplyDetail(fresh);
+      await loadFinanceSupplyLogs();
+      await loadFinanceWorkspace();
+    } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
+  }));
+}
 async function submitFinanceAccount(event) { event.preventDefault(); const name = document.getElementById("finance-account-name").value.trim(); if (!name) return; await request("/api/v1/finance/accounts", { method: "POST", body: JSON.stringify({ name, type: canonicalSelectValue("finance-account-type", "financeAccountType"), reference: document.getElementById("finance-account-reference").value.trim() || null, details: document.getElementById("finance-account-details").value.trim() || null }) }); notice(financeT("accounts.created"), "success"); document.getElementById("finance-account-form")?.reset(); await loadFinanceWorkspace(); }
 async function submitFinanceOpeningBalance(event) { event.preventDefault(); const payload = { financeAccountId: document.getElementById("finance-opening-account").value, amount: Number(document.getElementById("finance-opening-amount").value), direction: "Credit", asOfDate: document.getElementById("finance-opening-date").value, description: document.getElementById("finance-opening-description").value.trim() }; await request("/api/v1/finance/opening-balances", { method: "POST", body: JSON.stringify(payload) }); notice(financeT("posted"), "success"); document.getElementById("finance-opening-form")?.reset(); await loadFinanceWorkspace(); }
 async function correctFinanceOpening(opening) {
@@ -8092,6 +8557,7 @@ async function correctFinanceOpening(opening) {
   if (amountText === null) return;
   const note = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
   if (note === null) return;
+  if (!await confirmDialog({ title: financeT("openingBalances.correct"), message: financeT("openingBalances.correctionNote"), confirmLabel: financeT("openingBalances.correct"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
     await request(`/api/v1/finance/opening-balances/${opening.id}/correct`, { method: "POST", body: JSON.stringify({ amount: Number(amountText), description: note }) });
     notice(financeT(getAuth()?.user?.role === "Admin" ? "posted" : "statuses.pendingReview"), "success");
@@ -8105,6 +8571,7 @@ async function correctFinanceExpense(expense) {
   if (amountText === null) return;
   const note = await promptDialog({ title: financeT("expenses.correct"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
   if (note === null) return;
+  if (!await confirmDialog({ title: financeT("expenses.correct"), message: financeT("openingBalances.correctionNote"), confirmLabel: financeT("expenses.correct"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
     await request(`/api/v1/finance/expenses/${expense.id}/correct`, { method: "POST", body: JSON.stringify({
       financeAccountId: expense.financeAccountId, amount: Number(amountText), category: expense.category,
@@ -8120,6 +8587,7 @@ async function correctFinanceWithdrawal(withdrawal) {
   if (amountText === null) return;
   const note = await promptDialog({ title: financeT("withdrawals.correct"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
   if (note === null) return;
+  if (!await confirmDialog({ title: financeT("withdrawals.correct"), message: financeT("openingBalances.correctionNote"), confirmLabel: financeT("withdrawals.correct"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
     await request(`/api/v1/finance/withdrawals/${withdrawal.id}/correct`, { method: "POST", body: JSON.stringify({
       assignedToCLevelUserId: withdrawal.assignedToCLevelUserId, financeAccountId: withdrawal.financeAccountId,
@@ -8129,8 +8597,67 @@ async function correctFinanceWithdrawal(withdrawal) {
   } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); }
 }
 async function submitFinanceExpense(event) { event.preventDefault(); const category = document.getElementById("finance-expense-category").value; const description = document.getElementById("finance-expense-description").value.trim(); if (category === "Other" && !description) { notice(financeT("expenses.otherDescriptionRequired"), "error"); return; } const payload = { financeAccountId: document.getElementById("finance-expense-account").value, amount: Number(document.getElementById("finance-expense-amount").value), category, movementMethod: canonicalSelectValue("finance-expense-method", "movementMethod"), businessDate: document.getElementById("finance-expense-date").value, description }; const form = document.getElementById("finance-expense-form"); const editId = form?.dataset.editId; await request(editId ? `/api/v1/finance/expenses/${editId}` : "/api/v1/finance/expenses", { method: editId ? "PUT" : "POST", body: JSON.stringify(payload) }); notice(financeT("statuses.pending"), "success"); await loadFinanceWorkspace(); }
-async function submitFinanceWithdrawal(event) { event.preventDefault(); const payload = { assignedToCLevelUserId: document.getElementById("finance-withdrawal-user").value, financeAccountId: document.getElementById("finance-withdrawal-account").value, amount: Number(document.getElementById("finance-withdrawal-amount").value), movementMethod: canonicalSelectValue("finance-withdrawal-method", "movementMethod"), businessDate: document.getElementById("finance-withdrawal-date").value, reason: document.getElementById("finance-withdrawal-reason").value.trim(), categoryId: document.getElementById("finance-withdrawal-category")?.value || null }; await request("/api/v1/finance/withdrawals", { method: "POST", body: JSON.stringify(payload) }); notice(financeT("posted"), "success"); await loadFinanceWorkspace(); }
-async function postFinanceReviewAction(button) { const action = button.dataset.financeAction; const kind = button.dataset.financeKind; const id = button.dataset.financeId; if (!action || !kind || !id) return; const reason = action === "reject" ? await promptDialog({ title: financeT("openingBalances.reject"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true }) : null; if (action === "reject" && !reason) return; button.disabled = true; try { await request(`/api/v1/finance/${kind}/${id}/${action}`, { method: "POST", ...(reason ? { body: JSON.stringify({ reason }) } : {}) }); notice(financeT(action === "reject" ? "rejected" : "posted"), "success"); await loadFinanceWorkspace(); } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); button.disabled = false; } }
+async function submitFinanceWithdrawal(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (form.dataset.submitting === "true") return;
+  const submitButton = form.querySelector('button[type="submit"]');
+  form.dataset.submitting = "true";
+  if (submitButton) submitButton.disabled = true;
+  try {
+    const confirmed = await confirmDialog({
+      title: financeT("withdrawals.confirmTitle"),
+      message: financeT("withdrawals.confirmMessage"),
+      confirmLabel: financeT("withdrawals.create"),
+      cancelLabel: foundationT("common.cancel"),
+      tone: "warning",
+      translateMessage: false,
+      translateTitle: false
+    });
+    if (!confirmed) return;
+    const payload = {
+      assignedToCLevelUserId: document.getElementById("finance-withdrawal-user").value,
+      financeAccountId: document.getElementById("finance-withdrawal-account").value,
+      amount: Number(document.getElementById("finance-withdrawal-amount").value),
+      movementMethod: canonicalSelectValue("finance-withdrawal-method", "movementMethod"),
+      businessDate: document.getElementById("finance-withdrawal-date").value,
+      reason: document.getElementById("finance-withdrawal-reason").value.trim(),
+      categoryId: document.getElementById("finance-withdrawal-category")?.value || null
+    };
+    await request("/api/v1/finance/withdrawals", { method: "POST", body: JSON.stringify(payload) });
+    form.reset();
+    notice(financeT("withdrawals.posted"), "success");
+    await loadFinanceWorkspace();
+  } catch (error) {
+    notice(getFriendlyWorkspaceError(error), "error");
+  } finally {
+    delete form.dataset.submitting;
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+async function postFinanceReviewAction(button) {
+  const action = button.dataset.financeAction;
+  const kind = button.dataset.financeKind;
+  const id = button.dataset.financeId;
+  if (!action || !kind || !id) return;
+  return confirmFinalAction({
+    action: action === "reject" ? "reject" : "approve",
+    title: financeT(action === "reject" ? "openingBalances.reject" : "approve"),
+    message: financeT(action === "reject" ? "openingBalances.correctionNote" : "approve"),
+    reasonLabel: financeT("openingBalances.correctionNote"),
+    control: button,
+    key: `finance:${kind}:${id}:${action}`,
+    execute: async (reason) => {
+      try {
+        await request(`/api/v1/finance/${kind}/${id}/${action}`, { method: "POST", ...(reason ? { body: JSON.stringify({ reason }) } : {}) });
+        notice(financeT(action === "reject" ? "rejected" : "posted"), "success");
+        await loadFinanceWorkspace();
+      } catch (exception) {
+        notice(getFriendlyWorkspaceError(exception), "error");
+      }
+    }
+  });
+}
 
 async function submitFinanceTransfer(event) {
   event.preventDefault();
@@ -8172,11 +8699,12 @@ async function submitFinanceCategory(event) {
 
 async function editFinanceCategory(category) {
   if (!category) return;
+  const initialCategory = category.kind === "Expense" && category.createdBy === "00000000-0000-0000-0000-000000000000";
   const englishName = await promptDialog({ title: financeT("categories.edit"), label: financeT("categories.english"), defaultValue: category.englishName, required: true });
   if (englishName === null) return;
   const arabicName = await promptDialog({ title: financeT("categories.edit"), label: financeT("categories.arabic"), defaultValue: category.arabicName, required: true });
   if (arabicName === null) return;
-  const orderValue = await promptDialog({ title: financeT("categories.edit"), label: financeT("categories.order"), defaultValue: String(category.sortOrder), inputType: "number", required: true });
+  const orderValue = initialCategory ? String(category.sortOrder) : await promptDialog({ title: financeT("categories.edit"), label: financeT("categories.order"), defaultValue: String(category.sortOrder), inputType: "number", required: true });
   if (orderValue === null) return;
   try {
     await request(`/api/v1/finance/categories/${category.id}`, { method: "PUT", body: JSON.stringify({ englishName, arabicName, sortOrder: Number(orderValue), isActive: category.isActive }) });
@@ -8210,6 +8738,7 @@ async function submitFinanceRepayment(event) {
   const correctionId = form.dataset.correctId;
   if (correctionId) payload.reason = document.getElementById("finance-repayment-correction-note").value.trim();
   if (correctionId && !payload.reason) { notice(financeT("repayments.correctionNoteRequired"), "error"); return; }
+  if (!await confirmDialog({ title: correctionId ? financeT("repayments.correct") : financeT("repayments.posted"), message: correctionId ? financeT("openingBalances.correctionNote") : financeT("repayments.posted"), confirmLabel: foundationT("common.confirm"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
     await request(`/api/v1/finance/withdrawals/${id}/repayments${correctionId ? `/${correctionId}/correct` : ""}`, { method: "POST", body: JSON.stringify(payload) });
     notice(financeT("repayments.posted"), "success");
@@ -8296,7 +8825,13 @@ async function loadFinanceExecutiveSummary() {
 
 async function renderReports() {
   const role = getAuth()?.user.role;
-  const canSeeStock = role !== "Accountant";
+  const allowedReportKeys = role === "WarehouseClerk"
+    ? new Set(["stock", "operation-bill", "payment-receipt", "cash-receipt", "stocktake-summary"])
+    : role === "ERPAdmin" || role === "Accountant"
+      ? new Set(["financial-summary", "stock", "operations", "payments", "merchant-balances", "operation-bill", "payment-receipt", "cash-receipt", "merchant-statement", "stocktake-summary"])
+      : null;
+  const canSeeReport = (key) => !allowedReportKeys || allowedReportKeys.has(key);
+  const canSeeStock = canSeeReport("stock");
   try {
     reportCatalogEntries = await request("/api/v1/reports/catalog");
   } catch {
@@ -8324,25 +8859,25 @@ async function renderReports() {
             <label class="field"><span>${reportsT("operationType")}</span><select id="report-filter-operation-type" class="input"><option value="">${reportsT("allTypes")}</option><option value="WholesaleSale">${reportsT("wholesaleSale")}</option><option value="RetailSale">${reportsT("retailSale")}</option><option value="Return">${reportsT("return")}</option></select></label>
             <label class="field"><span>${foundationT("reports.sort")}</span><select id="report-filter-sort" class="input"><option value="createdAt">${foundationT("reports.sortCreated")}</option><option value="operationNumber">${foundationT("reports.sortOperationNumber")}</option><option value="total">${foundationT("reports.sortTotal")}</option><option value="quantity">${foundationT("reports.sortQuantity")}</option></select></label>
             <label class="field"><span>${foundationT("reports.direction")}</span><select id="report-filter-direction" class="input"><option value="desc">${foundationT("reports.descending")}</option><option value="asc">${foundationT("reports.ascending")}</option></select></label>
-            <label class="field"><span>${reportsT("supplyStatus")}</span><select id="report-filter-supply-status" class="input"><option value="">${reportsT("allStatuses")}</option><option value="Draft">${reportsT("draft")}</option><option value="Received">${reportsT("received")}</option><option value="Cancelled">${reportsT("cancelled")}</option></select></label>
+            <label class="field"><span>${reportsT("supplyStatus")}</span><select id="report-filter-supply-status" class="input"><option value="">${reportsT("allStatuses")}</option><option value="Draft">${reportsT("draft")}</option><option value="Arrived">${foundationT("supply.arrived")}</option><option value="PartiallyReceived">${foundationT("supply.partiallyReceived")}</option><option value="Received">${reportsT("received")}</option><option value="Cancelled">${reportsT("cancelled")}</option></select></label>
           </div>
         </section>
         <section class="report-ledger-section"><div class="ledger-section-title"><span>01</span><div><h3>${reportsT("analyticalReports")}</h3><p>${reportsT("analyticalHelp")}</p></div></div>
         ${canSeeStock ? renderAnalyticalReportRow("stock", reportsT("stock"), reportsT("stockDescription"), "report-stock") : ""}
-        ${renderAnalyticalReportRow("operations", reportsT("operations"), reportsT("operationsDescription"), "report-operations")}
-        ${renderAnalyticalReportRow("payments", reportsT("payments"), reportsT("paymentsDescription"), "report-payments")}
-        ${renderAnalyticalReportRow("supply", reportsT("supply"), reportsT("supplyDescription"), "report-supply")}
-        ${renderAnalyticalReportRow("merchant-balances", reportsT("merchantBalances"), reportsT("merchantBalancesDescription"), "report-balances")}
+        ${canSeeReport("operations") ? renderAnalyticalReportRow("operations", reportsT("operations"), reportsT("operationsDescription"), "report-operations") : ""}
+        ${canSeeReport("payments") ? renderAnalyticalReportRow("payments", reportsT("payments"), reportsT("paymentsDescription"), "report-payments") : ""}
+        ${canSeeReport("supply") ? renderAnalyticalReportRow("supply", reportsT("supply"), reportsT("supplyDescription"), "report-supply") : ""}
+        ${canSeeReport("merchant-balances") ? renderAnalyticalReportRow("merchant-balances", reportsT("merchantBalances"), reportsT("merchantBalancesDescription"), "report-balances") : ""}
         </section>
         <section class="report-panel report-download-panel">
           <div class="ledger-section-title"><span>02</span><div><h3>${reportsT("officialDocuments")}</h3><p>${reportsT("officialDocumentsHelp")}</p></div></div>
           <div class="download-grid">
-            ${renderReportSearchPicker("operation-bill", reportsT("operationBill"), reportsT("operationBillPlaceholder"), reportsT("downloadBill"))}
-            ${renderReportSearchPicker("payment-receipt", reportsT("paymentReceipt"), reportsT("paymentReceiptPlaceholder"), reportsT("downloadReceipt"))}
-            ${renderReportSearchPicker("cash-receipt", reportsT("cashReceipt"), reportsT("cashReceiptPlaceholder"), reportsT("downloadCashReceipt"))}
-            ${renderReportSearchPicker("supply-landed-cost", reportsT("supplyLandedCost"), reportsT("supplyLandedCostPlaceholder"), reportsT("downloadLandedCost"))}
-            ${renderReportSearchPicker("merchant-statement", reportsT("merchantStatement"), reportsT("merchantStatementPlaceholder"), reportsT("downloadStatement"))}
-            ${renderReportSearchPicker("stocktake-summary", reportsT("stocktakeSummary"), reportsT("stocktakeSummaryPlaceholder"), reportsT("downloadSummary"))}
+            ${canSeeReport("operation-bill") ? renderReportSearchPicker("operation-bill", reportsT("operationBill"), reportsT("operationBillPlaceholder"), reportsT("downloadBill")) : ""}
+            ${canSeeReport("payment-receipt") ? renderReportSearchPicker("payment-receipt", reportsT("paymentReceipt"), reportsT("paymentReceiptPlaceholder"), reportsT("downloadReceipt")) : ""}
+            ${canSeeReport("cash-receipt") ? renderReportSearchPicker("cash-receipt", reportsT("cashReceipt"), reportsT("cashReceiptPlaceholder"), reportsT("downloadCashReceipt")) : ""}
+            ${canSeeReport("supply-landed-cost") ? renderReportSearchPicker("supply-landed-cost", reportsT("supplyLandedCost"), reportsT("supplyLandedCostPlaceholder"), reportsT("downloadLandedCost")) : ""}
+            ${canSeeReport("merchant-statement") ? renderReportSearchPicker("merchant-statement", reportsT("merchantStatement"), reportsT("merchantStatementPlaceholder"), reportsT("downloadStatement")) : ""}
+            ${canSeeReport("stocktake-summary") ? renderReportSearchPicker("stocktake-summary", reportsT("stocktakeSummary"), reportsT("stocktakeSummaryPlaceholder"), reportsT("downloadSummary")) : ""}
           </div>
         </section>
         <section class="report-panel"><div class="section-head tight-head"><h3>${reportsT("exportLog")}</h3><span id="report-export-count" class="muted-text">${reportsT("loading")}</span></div><div id="report-exports" class="table-wrap compact-table">${reportsT("loading")}</div></section>
@@ -8396,9 +8931,9 @@ async function loadStockReport() {
       ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inline.noStockRows"))}</td></tr>`
       : rows.map((row) => `<tr>
           <td>${escapeHtml(row.locationName)}</td>
-          <td><strong>${escapeHtml(row.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(row.productName || "")}</span></td>
+          <td><strong class="sku-code">${escapeHtml(row.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(row.productName || "")}</span></td>
           <td>${escapeHtml(row.availableQty)}</td>
-          <td>${escapeHtml(Number(row.reservedInWarehouseQty || 0) + Number(row.reservedWithRepQty || 0))}</td>
+          <td>${escapeHtml(Number(row.reservedInWarehouseQty || 0))}</td>
           <td>${escapeHtml(row.targetQty ?? "-")}</td>
           <td>${escapeHtml(formatDateTime(row.lastUpdated))}</td>
         </tr>`).join("")}</tbody></table>${renderReportPager("stock", result, loadStockReport)}`;
@@ -8443,6 +8978,11 @@ function renderWearCycle(cycle, duration) {
 
 async function loadSupplyReport() {
   const target = document.getElementById("report-supply");
+  if (getAuth()?.user?.role === "ERPAdmin") {
+    reportSupplyRows = [];
+    target?.replaceChildren();
+    return;
+  }
   try {
     const result = await request(`/api/v1/reports/supply?${reportListParams("supply", reportPageState.supply)}`);
     const rows = result.items || [];
@@ -8811,22 +9351,12 @@ function bindPrintReportButtons(root = document) {
 function supplyStatusLabel(status) {
   const labels = {
     Draft: foundationT("supply.draft"),
+    Arrived: foundationT("supply.arrived"),
+    PartiallyReceived: foundationT("supply.partiallyReceived"),
     Received: foundationT("supply.received"),
     Cancelled: foundationT("supply.cancelled")
   };
   return labels[status] || status || "-";
-}
-
-function supplyCostTypeLabel(type) {
-  const labels = {
-    Customs: foundationT("supply.customs"),
-    Freight: foundationT("supply.freight"),
-    Clearance: foundationT("supply.clearance"),
-    Handling: foundationT("supply.handling"),
-    Insurance: foundationT("supply.insurance"),
-    Other: foundationT("supply.other")
-  };
-  return labels[type] || type || "-";
 }
 
 async function hydrateSupplySkus() {
@@ -8849,7 +9379,9 @@ function buildSupplySkuSearchIndex() {
 
 async function renderSupply() {
   const auth = getAuth();
-  const canWrite = auth?.user.role === "Admin";
+  supplyReceivingDrafts.clear();
+  supplyReceivingSharedBatch = "";
+  const canWrite = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   selectedSupplyShipmentId = null;
   supplyCurrentDetail = null;
   await Promise.all([
@@ -8864,7 +9396,6 @@ async function renderSupply() {
       body: foundationT("supply.subtitle"),
       metrics: `
         ${scenarioCard(foundationT("supply.shipments"), foundationT("supply.loading"), "status-muted", "supply-count")}
-        ${scenarioCard(foundationT("supply.draftValue"), foundationT("supply.loading"), "status-muted", "supply-draft-total")}
         ${scenarioCard(foundationT("supply.readyToConfirm"), foundationT("supply.loading"), "status-muted", "supply-ready-count")}
         ${scenarioCard(foundationT("supply.access"), canWrite ? foundationT("supply.admin") : foundationT("supply.readOnly"), canWrite ? "status-ok" : "status-muted")}
       `
@@ -8883,12 +9414,14 @@ async function renderSupply() {
             <select id="supply-status" class="select compact-select">
               <option value="">${foundationT("supply.allStatuses")}</option>
               <option value="Draft">${foundationT("supply.draft")}</option>
+              <option value="Arrived">${foundationT("supply.arrived")}</option>
+              <option value="PartiallyReceived">${foundationT("supply.partiallyReceived")}</option>
               <option value="Received">${foundationT("supply.received")}</option>
               <option value="Cancelled">${foundationT("supply.cancelled")}</option>
             </select>
           </div>
           <div class="table-wrap compact-table">
-            <table><thead><tr><th>${foundationT("supply.shipment")}</th><th>${foundationT("supply.supplier")}</th><th>${foundationT("supply.status")}</th><th>${foundationT("supply.total")}</th><th></th></tr></thead><tbody id="supply-rows"></tbody></table>
+            <table><thead><tr><th>${foundationT("supply.shipment")}</th><th>${foundationT("supply.supplier")}</th><th>${foundationT("supply.status")}</th><th></th></tr></thead><tbody id="supply-rows"></tbody></table>
           </div>
           <div id="supply-list-pagination" class="pagination" hidden></div>
         </section>
@@ -8936,19 +9469,9 @@ function renderSupplyForm() {
           </div>
         </section>
         <section class="operation-line-panel supply-document-block full-span">
-          <div class="section-head tight-head"><div><h2>${foundationT("supply.skuLines")}</h2><p class="muted-text">${foundationT("supply.priceHelp")}</p></div><button id="supply-add-line" class="button secondary" type="button">${foundationT("supply.addLine")}</button></div>
+      <div class="section-head tight-head"><div><h2>${foundationT("supply.skuLines")}</h2><p class="muted-text">${foundationT("supply.manifestHelp")}</p></div><button id="supply-add-line" class="button secondary" type="button">${foundationT("supply.addLine")}</button></div>
           <div id="supply-lines" class="line-editor"></div>
           <div id="supply-line-pagination" class="pagination" hidden></div>
-        </section>
-        <section class="operation-line-panel supply-document-block full-span">
-          <div class="section-head tight-head"><div><h2>${foundationT("supply.costBreakdown")}</h2></div><button id="supply-add-cost" class="button secondary" type="button">${foundationT("supply.addCost")}</button></div>
-          <div id="supply-costs" class="line-editor"></div>
-        </section>
-        <section class="supply-summary-panel full-span" id="supply-summary-panel">
-          <div><span>${foundationT("supply.productSubtotal")}</span><strong id="supply-form-product-total">0.00</strong></div>
-          <div><span>${foundationT("supply.importCosts")}</span><strong id="supply-form-cost-total">0.00</strong></div>
-          <div><span>${foundationT("supply.landedTotal")}</span><strong id="supply-form-landed-total">0.00</strong></div>
-          <div><span>${foundationT("supply.confirmationReadiness")}</span><strong id="supply-form-readiness" class="status-warn">${foundationT("supply.incompletePrices")}</strong></div>
         </section>
         <div class="form-actions full-span">
           <button class="button primary" type="submit">${foundationT("supply.saveDraft")}</button>
@@ -8961,7 +9484,6 @@ function wireSupplyForm() {
   document.getElementById("supply-form").addEventListener("submit", saveSupplyShipment);
   document.getElementById("supply-reset").addEventListener("click", resetSupplyForm);
   document.getElementById("supply-add-line").addEventListener("click", () => addSupplyLine());
-  document.getElementById("supply-add-cost").addEventListener("click", () => addSupplyCost());
   document.getElementById("supply-form").addEventListener("input", handleSupplyFormChange);
   document.getElementById("supply-form").addEventListener("change", handleSupplyFormChange);
   resetSupplyForm();
@@ -8978,12 +9500,9 @@ function resetSupplyForm() {
   supplyEditorLines = [];
   supplyEditorLineById.clear();
   supplyEditorPage = 1;
-  document.getElementById("supply-costs")?.replaceChildren();
   document.getElementById("supply-validation-list").hidden = true;
   document.getElementById("supply-form-error").hidden = true;
   addSupplyLine();
-  addSupplyCost({ costType: "Customs" });
-  updateSupplyFormSummary();
 }
 
 function addSupplyLine(line = {}, target = null) {
@@ -8995,7 +9514,6 @@ function addSupplyLine(line = {}, target = null) {
     _clientId: line._clientId || createUuid(),
     skuId: line.skuId || "",
     quantity: line.quantity || 1,
-    unitPrice: line.unitPrice ?? null,
     lotNumber: line.lotNumber || null,
     expiryDate: line.expiryDate || null,
     notes: line.notes || null,
@@ -9006,12 +9524,10 @@ function addSupplyLine(line = {}, target = null) {
     syncCurrentSupplyPage();
     supplyEditorLines.push(model);
     supplyEditorLineById.set(model._clientId, model);
-    supplyEditorStatsDirty = true;
     supplyEditorPage = Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize));
     renderSupplyEditorPage();
     return;
   }
-  const unitPriceValue = model.unitPrice ?? "";
   const row = document.createElement("div");
   row.className = "line-editor-row supply-line-row";
   row.dataset.supplyLineKey = model._clientId;
@@ -9020,19 +9536,16 @@ function addSupplyLine(line = {}, target = null) {
     <div class="field op-line-finder"><label>${foundationT("supply.findSKU")}</label><input class="input supply-line-search" autocomplete="off" placeholder="${foundationT("supply.productColorPowerSKUCode")}"><div class="op-line-search-results" hidden></div></div>
     <div class="op-line-resolved full-span"><span class="muted-text">${foundationT("supply.searchAndSelectASKU")}</span></div>
     <div class="field"><label>${foundationT("supply.quantity")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(model.quantity)}" required></div>
-    <div class="field"><label>${foundationT("supply.unitPrice")}</label><input class="input supply-line-price" type="number" min="0.01" step="0.01" value="${escapeHtml(unitPriceValue)}" placeholder="${foundationT("supply.draftBlank")}"><span class="field-hint supply-price-hint" hidden>${foundationT("supply.requiredBeforeConfirmation")}</span></div>
     <div class="field"><label>${foundationT("supply.lot")}</label><input class="input supply-line-lot" maxlength="100" value="${escapeHtml(model.lotNumber || "")}"></div>
     <div class="field"><label>${foundationT("supply.expiry")}</label><input class="input supply-line-expiry" type="date" value="${escapeHtml(model.expiryDate || "")}"></div>
     <div class="field full-span"><label>${foundationT("supply.lineNotes")}</label><input class="input supply-line-notes" maxlength="1000" value="${escapeHtml(model.notes || "")}"></div>
     <button class="icon-button supply-remove-line" type="button" title="${foundationT("supply.removeLine")}">x</button>`;
   row.querySelector(".supply-line-search").addEventListener("input", debounce(() => { void renderSupplySkuSearchResults(row); }, 250));
-  row.querySelector(".supply-line-price").addEventListener("input", () => updateSupplyLinePriceState(row, false));
   row.querySelector(".supply-remove-line").addEventListener("click", () => {
     syncCurrentSupplyPage();
     if (supplyEditorLines.length > 1) {
       supplyEditorLines = supplyEditorLines.filter((item) => item._clientId !== model._clientId);
       supplyEditorLineById.delete(model._clientId);
-      supplyEditorStatsDirty = true;
       supplyEditorPage = Math.min(supplyEditorPage, Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize)));
       renderSupplyEditorPage();
     }
@@ -9041,17 +9554,14 @@ function addSupplyLine(line = {}, target = null) {
   if (model.skuId) {
     seedSupplyLineSkuSelection(row, model.skuId);
   }
-  updateSupplyLinePriceState(row, false);
 }
 
 function readSupplyLineRow(row) {
-  const priceValue = row.querySelector(".supply-line-price").value.trim();
   const existing = supplyEditorLineById.get(row.dataset.supplyLineKey);
   return {
     _clientId: row.dataset.supplyLineKey,
     skuId: row.querySelector(".supply-line-sku").value,
     quantity: Number(row.querySelector(".supply-line-qty").value || 0),
-    unitPrice: priceValue === "" ? null : Number(priceValue),
     lotNumber: row.querySelector(".supply-line-lot").value.trim() || null,
     expiryDate: row.querySelector(".supply-line-expiry").value || null,
     notes: row.querySelector(".supply-line-notes").value.trim() || null,
@@ -9072,52 +9582,20 @@ function syncSupplyLineRow(row) {
   Object.assign(existing, readSupplyLineRow(row));
 }
 
-function supplyLineMetrics(line) {
-  const quantity = Number(line?.quantity);
-  const unitPrice = line?.unitPrice;
-  return {
-    productTotal: Number.isFinite(quantity) && Number.isFinite(unitPrice) ? quantity * unitPrice : 0,
-    incompletePrices: unitPrice === null ? 1 : 0,
-    invalidPrices: unitPrice !== null && (!Number.isFinite(unitPrice) || unitPrice <= 0) ? 1 : 0
-  };
-}
-
-function rebuildSupplyEditorStats() {
-  supplyEditorStats = supplyEditorLines.reduce((total, line) => {
-    const metrics = supplyLineMetrics(line);
-    total.productTotal += metrics.productTotal;
-    total.incompletePrices += metrics.incompletePrices;
-    total.invalidPrices += metrics.invalidPrices;
-    return total;
-  }, { productTotal: 0, incompletePrices: 0, invalidPrices: 0 });
-  supplyEditorStatsDirty = false;
-}
-
 function handleSupplyFormChange(event) {
   const row = event.target.closest?.(".supply-line-row");
-  if (row) {
-    const existing = supplyEditorLineById.get(row.dataset.supplyLineKey);
-    const before = supplyLineMetrics(existing);
-    syncSupplyLineRow(row);
-    const after = supplyLineMetrics(existing);
-    supplyEditorStats.productTotal += after.productTotal - before.productTotal;
-    supplyEditorStats.incompletePrices += after.incompletePrices - before.incompletePrices;
-    supplyEditorStats.invalidPrices += after.invalidPrices - before.invalidPrices;
-  }
-  updateSupplyFormSummary();
+  if (row) syncSupplyLineRow(row);
 }
 
 function renderSupplyEditorPage() {
   const container = document.getElementById("supply-lines");
   if (!container) return;
-  if (supplyEditorStatsDirty) rebuildSupplyEditorStats();
   container.replaceChildren();
   const start = (supplyEditorPage - 1) * supplyEditorPageSize;
   const fragment = document.createDocumentFragment();
   supplyEditorLines.slice(start, start + supplyEditorPageSize)
     .forEach((line) => addSupplyLine({ ...line, _fromModel: true }, fragment));
   container.replaceChildren(fragment);
-  updateSupplyFormSummary();
   const pager = document.getElementById("supply-line-pagination");
   if (!pager) return;
   const pages = Math.max(1, Math.ceil(supplyEditorLines.length / supplyEditorPageSize));
@@ -9128,21 +9606,6 @@ function renderSupplyEditorPage() {
     supplyEditorPage += delta;
     renderSupplyEditorPage();
   });
-}
-
-function updateSupplyLinePriceState(row, refreshSummary = true) {
-  const priceInput = row.querySelector(".supply-line-price");
-  const hint = row.querySelector(".supply-price-hint");
-  const isBlank = priceInput.value.trim() === "";
-  const value = Number(priceInput.value);
-  const isInvalid = !isBlank && (!Number.isFinite(value) || value <= 0);
-  row.classList.toggle("supply-line-incomplete", isBlank);
-  row.classList.toggle("supply-line-invalid", isInvalid);
-  if (hint) {
-    hint.hidden = !isBlank && !isInvalid;
-    hint.textContent = isInvalid ? foundationT("supply.priceMustBeGreaterThanZero") : foundationT("supply.requiredBeforeConfirmation");
-  }
-  if (refreshSummary) updateSupplyFormSummary();
 }
 
 async function renderSupplySkuSearchResults(row) {
@@ -9183,7 +9646,6 @@ async function renderSupplySkuSearchResults(row) {
       input.value = "";
       results.hidden = true;
     results.replaceChildren();
-      updateSupplyFormSummary();
     });
   });
 }
@@ -9203,36 +9665,14 @@ function seedSupplyLineSkuSelection(row, skuId) {
   }
 }
 
-function addSupplyCost(cost = {}) {
-  const container = document.getElementById("supply-costs");
-  if (!container) {
-    return;
-  }
-  const row = document.createElement("div");
-  row.className = "line-editor-row supply-cost-row";
-  row.innerHTML = `
-    <div class="field"><label>${foundationT("supply.costType")}</label><select class="select supply-cost-type">
-      ${["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"].map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(supplyCostTypeLabel(item))}</option>`).join("")}
-    </select></div>
-    <div class="field"><label>${foundationT("supply.description")}</label><input class="input supply-cost-description" maxlength="255" value="${escapeHtml(cost.description || "")}"></div>
-    <div class="field"><label>${foundationT("supply.amount")}</label><input class="input supply-cost-amount" type="number" min="0" step="0.01" value="${escapeHtml(cost.amount || 0)}"></div>
-    <button class="icon-button supply-remove-cost" type="button" title="${foundationT("supply.removeCost")}">x</button>`;
-  row.querySelector(".supply-cost-type").value = cost.costType || "Other";
-  row.querySelector(".supply-remove-cost").addEventListener("click", () => {
-    row.remove();
-    updateSupplyFormSummary();
-  });
-  container.appendChild(row);
-  updateSupplyFormSummary();
-}
-
 async function loadSupplyShipments() {
   const tbody = document.getElementById("supply-rows");
   const count = document.getElementById("supply-count");
   if (!tbody) {
     return;
   }
-  tbody.innerHTML = `<tr><td colspan="5">${foundationT("supply.loadingShipments")}</td></tr>`;
+  const columnCount = 4;
+  tbody.textContent = foundationT("supply.loadingShipments");
   const params = new URLSearchParams();
   params.set("paged", "true");
   params.set("page", String(supplyListPage));
@@ -9249,12 +9689,11 @@ async function loadSupplyShipments() {
     if (count) {
       count.textContent = foundationT(result.totalCount === 1 ? "app.count.shipment" : "app.count.shipments", { count: result.totalCount });
     }
-    tbody.innerHTML = rows.length === 0 ? `<tr><td colspan="5">${foundationT("supply.noSupplyShipmentsMatchTheCurrentFilters")}</td></tr>` : rows.map((row) => `
+    tbody.innerHTML = rows.length === 0 ? `<tr><td colspan="${columnCount}">${foundationT("supply.noSupplyShipmentsMatchTheCurrentFilters")}</td></tr>` : rows.map((row) => `
       <tr class="click-row ${row.id === selectedSupplyShipmentId ? "selected-row" : ""}" data-supply-id="${escapeHtml(row.id)}">
         <td><strong>${escapeHtml(row.shipmentNumber)}</strong><span class="muted-cell">${escapeHtml(row.invoiceNumber || foundationT("supply.noInvoice"))}</span></td>
         <td>${escapeHtml(row.supplierName)}<span class="muted-cell">${escapeHtml(row.destinationLocationName || "-")} / ${escapeHtml(row.quantity || 0)} ${foundationT("supply.packs")}</span></td>
         <td><span class="status-pill ${row.status === "Received" ? "status-ok" : row.status === "Cancelled" ? "status-muted" : "status-warn"}">${escapeHtml(supplyStatusLabel(row.status))}</span></td>
-        <td><strong>${escapeHtml(formatMoney(row.landedTotal))}</strong><span class="muted-cell">${escapeHtml(formatMoney(row.costSubtotal))} ${foundationT("supply.costs")}</span></td>
         <td><button class="button secondary table-action" type="button" data-supply-detail="${escapeHtml(row.id)}">${foundationT("supply.details")}</button></td>
       </tr>`).join("");
     tbody.querySelectorAll("[data-supply-detail], [data-supply-id]").forEach((element) => {
@@ -9273,7 +9712,7 @@ async function loadSupplyShipments() {
   } catch (exception) {
     if (count) count.textContent = foundationT("supply.failed");
     updateSupplyPageMetrics([]);
-    tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${columnCount}">${escapeHtml(getFriendlyWorkspaceError(exception))}</td></tr>`;
   }
 }
 
@@ -9281,26 +9720,47 @@ async function showSupplyDetail(id, linePage = 1) {
   selectedSupplyShipmentId = id;
   supplyDetailLinePage = linePage;
   const target = document.getElementById("supply-detail");
-  const canWrite = getAuth()?.user.role === "Admin";
+  const role = getAuth()?.user.role;
+  const canWrite = ["Admin", "ERPAdmin"].includes(role);
+  const canReceive = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(role);
   target.innerHTML = `<h2>${foundationT("supply.detail")}</h2><p>${foundationT("supply.loadingShipment")}</p>`;
   try {
     const shipment = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}?includeCollections=false`);
-    const [lineResult, costs, history] = await Promise.all([
+    const [lineResult, history] = await Promise.all([
       request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/lines?page=${supplyDetailLinePage}&pageSize=50`),
-      request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/costs`),
       request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/history`)
     ]);
     shipment.lines = lineResult.items || [];
-    shipment.costs = costs || [];
     shipment.history = history || [];
     supplyCurrentDetail = shipment;
     const readiness = getSupplyShipmentReadiness(shipment);
+    const receiving = shipment.receiving || { quantities: [], openSessions: [], history: [] };
+    const quantityByLine = new Map((receiving.quantities || []).map((row) => [row.shipmentLineId, row]));
+    const openReceivingSession = receiving.openSessions?.[0] || null;
+    if (openReceivingSession) {
+      const activeDrafts = [...supplyReceivingDrafts.keys()].filter((key) => key.startsWith(`${openReceivingSession.id}:`));
+      for (const key of activeDrafts) supplyReceivingDrafts.delete(key);
+      for (const line of shipment.lines) {
+        const saved = (openReceivingSession.lines || []).find((entry) => entry.shipmentLineId === line.id);
+        supplyReceivingDrafts.set(`${openReceivingSession.id}:${line.id}`, {
+          receivedQuantity: saved?.receivedQuantity ?? 0,
+          lotNumber: saved?.lotNumber || line.lotNumber || "",
+          expiryDate: saved?.expiryDate || line.expiryDate || "",
+          notes: saved?.notes || ""
+        });
+      }
+    }
+    const receivingLines = [...shipment.lines].sort((left, right) => {
+      const leftBatch = supplyReceivingDrafts.get(`${openReceivingSession?.id}:${left.id}`)?.lotNumber || left.lotNumber || "";
+      const rightBatch = supplyReceivingDrafts.get(`${openReceivingSession?.id}:${right.id}`)?.lotNumber || right.lotNumber || "";
+      return compareSupplyBatchValues(leftBatch, rightBatch) || String(left.skuCode || "").localeCompare(String(right.skuCode || ""), "en", { numeric: true, sensitivity: "base" });
+    });
     target.innerHTML = `
       <div class="section-head">
         <div><h2>${escapeHtml(shipment.shipmentNumber)}</h2><p class="muted-text">${escapeHtml(shipment.supplierName)} / ${escapeHtml(shipment.invoiceNumber || "-")}</p></div>
         <div class="inline-actions">
           <span class="status-pill ${shipment.status === "Received" ? "status-ok" : shipment.status === "Cancelled" ? "status-muted" : "status-warn"}">${escapeHtml(supplyStatusLabel(shipment.status))}</span>
-          ${canWrite && shipment.status === "Draft" ? `<button class="button secondary" type="button" id="supply-edit">${foundationT("supply.edit")}</button><button class="button primary" type="button" id="supply-confirm" ${readiness.canConfirm ? "" : `disabled title="${escapeHtml(readiness.message)}"`}>${foundationT("supply.confirmReceipt")}</button><button class="button secondary" type="button" id="supply-cancel">${foundationT("supply.cancel")}</button>` : ""}
+          ${canWrite && shipment.status === "Draft" ? `<button class="button secondary" type="button" id="supply-edit">${foundationT("supply.edit")}</button><button class="button primary" type="button" id="supply-confirm" ${readiness.canConfirm ? "" : `disabled title="${escapeHtml(readiness.message)}"`}>${foundationT("supply.confirmArrival")}</button><button class="button secondary" type="button" id="supply-cancel">${foundationT("supply.cancel")}</button>` : ""}
           ${shipment.inventoryReceiptOperationId ? `<button class="button secondary" type="button" data-print-report="operation-bill" data-print-id="${escapeHtml(shipment.inventoryReceiptOperationId)}" data-print-code="${escapeHtml(shipment.shipmentNumber)}">${foundationT("supply.printReceipt")}</button>` : ""}
         </div>
       </div>
@@ -9309,17 +9769,13 @@ async function showSupplyDetail(id, linePage = 1) {
       <div class="detail-grid supply-readiness-grid">
         <div><span>${foundationT("supply.destinationWarehouse")}</span><strong>${escapeHtml(shipment.destinationLocationName || shortId(shipment.destinationLocationId, "LOC"))}</strong></div>
         <div><span>${foundationT("supply.shipmentDate")}</span><strong>${escapeHtml(formatDateTime(shipment.shipmentDate))}</strong></div>
-        <div><span>${foundationT("supply.products")}</span><strong>${escapeHtml(formatMoney(shipment.productSubtotal))}</strong></div>
-        <div><span>${foundationT("supply.importCosts")}</span><strong>${escapeHtml(formatMoney(shipment.costSubtotal))}</strong></div>
-        <div><span>${foundationT("supply.landedTotal")}</span><strong>${escapeHtml(formatMoney(shipment.landedTotal))}</strong></div>
         <div><span>${foundationT("supply.readiness")}</span><strong class="${readiness.canConfirm ? "status-ok" : "status-warn"}">${escapeHtml(uiText(readiness.label))}</strong></div>
       </div>
       ${shipment.inventoryReceiptOperationId ? `<p class="muted-text">${foundationT("supply.inventoryReceiptOperation")}: <strong>${escapeHtml(shipment.inventoryReceiptOperationNumber || shortId(shipment.inventoryReceiptOperationId, "OP"))}</strong></p>` : ""}
+      ${renderSupplyReceivingPanel({ shipment, receiving, quantityByLine, openReceivingSession, receivingLines, canReceive })}
       <h3>${foundationT("supply.lines")} <span class="muted-text">${escapeHtml(lineResult.totalCount)}</span></h3>
-      <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${foundationT("supply.qty")}</th><th>${foundationT("supply.unitPrice")}</th><th>${foundationT("supply.line")}</th><th>${foundationT("supply.allocated")}</th><th>${foundationT("supply.landedUnit")}</th><th>${foundationT("supply.batch")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
-        <tr class="${line.unitPrice == null || line.unitPrice <= 0 ? "supply-line-incomplete-row" : ""}"><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span>${line.notes ? `<span class="muted-cell">${escapeHtml(line.notes)}</span>` : ""}</td><td>${escapeHtml(line.quantity)}</td><td>${line.unitPrice == null ? `<span class="status-pill status-warn">${foundationT("supply.blank")}</span>` : escapeHtml(formatMoney(line.unitPrice))}</td><td>${escapeHtml(formatMoney(line.lineSubtotal))}</td><td>${escapeHtml(formatMoney(line.allocatedCost))}</td><td>${escapeHtml(formatMoney(line.landedUnitCost))}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
-      <h3>${foundationT("supply.costBreakdown2")}</h3>
-      <div class="table-wrap compact-table"><table><thead><tr><th>${foundationT("supply.type")}</th><th>${foundationT("supply.description")}</th><th>${foundationT("supply.amount")}</th></tr></thead><tbody>${shipment.costs.length === 0 ? `<tr><td colspan="3">${foundationT("supply.noCosts")}</td></tr>` : shipment.costs.map((cost) => `<tr><td>${escapeHtml(supplyCostTypeLabel(cost.costType))}</td><td>${escapeHtml(cost.description || "-")}</td><td>${escapeHtml(formatMoney(cost.amount))}</td></tr>`).join("")}</tbody></table></div>
+      <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${foundationT("supply.qty")}</th><th>${foundationT("supply.batch")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
+        <tr><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span>${line.notes ? `<span class="muted-cell">${escapeHtml(line.notes)}</span>` : ""}</td><td>${escapeHtml(line.quantity)}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
       <h3>${foundationT("supply.history")}</h3>
       <div class="table-wrap compact-table"><table><thead><tr><th>${foundationT("supply.action")}</th><th>${foundationT("supply.time")}</th><th>${foundationT("supply.summary")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${foundationT("supply.noHistory")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(uiText(item.action))}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(uiText(item.summary || "-"))}</td></tr>`).join("")}</tbody></table></div>
       <div class="pagination" id="supply-detail-line-pagination"></div>`;
@@ -9327,16 +9783,196 @@ async function showSupplyDetail(id, linePage = 1) {
     const detailPager = document.getElementById("supply-detail-line-pagination");
     const detailPages = Math.max(1, lineResult.totalPages || 1);
     detailPager.hidden = detailPages <= 1;
-    setPagerContents(detailPager, foundationT("supply.previous"), `${lineResult.page} / ${detailPages}`, foundationT("supply.next"), lineResult.page <= 1, lineResult.page >= detailPages, (delta) => void showSupplyDetail(id, lineResult.page + delta));
+    setPagerContents(detailPager, foundationT("supply.previous"), `${lineResult.page} / ${detailPages}`, foundationT("supply.next"), lineResult.page <= 1, lineResult.page >= detailPages, (delta) => { captureSupplyReceivingDraft(openReceivingSession?.id); void showSupplyDetail(id, lineResult.page + delta); });
     document.getElementById("supply-edit")?.addEventListener("click", async () => {
       const editor = await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/editor`);
       fillSupplyForm(editor);
     });
     document.getElementById("supply-confirm")?.addEventListener("click", () => confirmSupplyShipment(shipment.id));
     document.getElementById("supply-cancel")?.addEventListener("click", () => cancelSupplyShipment(shipment.id));
+    document.getElementById("supply-start-receiving")?.addEventListener("click", (event) => void startSupplyReceiving(shipment.id, event.currentTarget));
+    document.getElementById("supply-shared-batch")?.addEventListener("input", (event) => { supplyReceivingSharedBatch = event.target.value; });
+    document.getElementById("supply-apply-shared-batch")?.addEventListener("click", () => {
+      const batch = document.getElementById("supply-shared-batch")?.value.trim() || "";
+      supplyReceivingSharedBatch = batch;
+      target.querySelectorAll("[data-supply-receipt-lot]").forEach((input) => { if (!input.value.trim()) input.value = batch; });
+      captureSupplyReceivingDraft(openReceivingSession.id);
+      sortSupplyReceivingRows(target);
+    });
+    target.querySelectorAll("[data-supply-receipt-lot]").forEach((input) => input.addEventListener("change", () => {
+      captureSupplyReceivingDraft(openReceivingSession.id);
+      sortSupplyReceivingRows(target);
+    }));
+    document.getElementById("supply-save-receiving")?.addEventListener("click", () => void saveSupplyReceiving(shipment.id, openReceivingSession.id, false));
+    document.getElementById("supply-confirm-receiving")?.addEventListener("click", () => void saveSupplyReceiving(shipment.id, openReceivingSession.id, true));
     bindPrintReportButtons(target);
   } catch (exception) {
     target.innerHTML = `<h2>${foundationT("supply.detail")}</h2><p>${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
+  }
+}
+
+function renderSupplyReceivingPanel({ shipment, receiving, quantityByLine, openReceivingSession, receivingLines, canReceive }) {
+  const canStartReceiving = canReceive && ["Arrived", "PartiallyReceived"].includes(shipment.status) && !openReceivingSession;
+  const lineTotals = [...quantityByLine.values()];
+  const totalReceived = lineTotals.reduce((total, line) => total + Number(line.cumulativeReceived || 0), 0);
+  const totalOutstanding = lineTotals.reduce((total, line) => total + Number(line.outstandingQuantity || 0), 0);
+  const totalOrdered = totalReceived + totalOutstanding;
+
+  return `
+    <section class="supply-receiving-panel" aria-labelledby="supply-receiving-title">
+      <header class="supply-receiving-header">
+        <div>
+          <h3 id="supply-receiving-title">${foundationT("supply.physicalReceiving")}</h3>
+          <p class="muted-text">${foundationT("supply.supplyShipmentArrivalConfirmed")}</p>
+        </div>
+        ${canStartReceiving ? `<button class="button primary" type="button" id="supply-start-receiving">${foundationT(shipment.status === "PartiallyReceived" ? "supply.resumeReceiving" : "supply.startReceiving")}</button>` : openReceivingSession ? `<span class="status-pill status-warn">${foundationT("supply.receivingOpen")}</span>` : ""}
+      </header>
+
+      <div class="supply-receiving-progress" aria-label="${escapeHtml(foundationT("supply.receivingProgress"))}">
+        <div><span>${foundationT("supply.orderedQuantity")}</span><strong>${escapeHtml(totalOrdered)}</strong></div>
+        <div><span>${foundationT("supply.receivedBefore")}</span><strong>${escapeHtml(totalReceived)}</strong></div>
+        <div><span>${foundationT("supply.remainingToReceive")}</span><strong>${escapeHtml(totalOutstanding)}</strong></div>
+      </div>
+
+      ${openReceivingSession ? `
+        <div class="supply-receiving-tools">
+          <div class="supply-batch-guidance">
+            <strong>${foundationT("supply.factoryBatchDefault")}</strong>
+            <small>${foundationT("supply.batchOverrideHelp")}</small>
+          </div>
+          <div class="supply-shared-batch-control">
+            <label for="supply-shared-batch">${foundationT("supply.factoryBatchDefault")}</label>
+            <div class="supply-batch-control">
+              <input class="input" id="supply-shared-batch" maxlength="100" value="${escapeHtml(supplyReceivingSharedBatch)}" placeholder="${foundationT("supply.factoryBatchPlaceholder")}">
+              <button class="button secondary" type="button" id="supply-apply-shared-batch">${foundationT("supply.applyFactoryBatch")}</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap compact-table supply-receiving-table-wrap">
+          <table class="supply-receiving-table">
+            <thead><tr>
+              <th scope="col">${foundationT("app.sku")}</th>
+              <th scope="col">${foundationT("supply.orderedQuantity")}</th>
+              <th scope="col">${foundationT("supply.receivedBefore")}</th>
+              <th scope="col">${foundationT("supply.remainingToReceive")}</th>
+              <th scope="col">${foundationT("supply.batch")}</th>
+              <th scope="col">${foundationT("app.batchExpiry")}</th>
+              <th scope="col">${foundationT("supply.receiveNow")}</th>
+              <th scope="col">${foundationT("supply.notes")}</th>
+            </tr></thead>
+            <tbody data-supply-receiving-lines>${receivingLines.map((line) => {
+              const aggregate = quantityByLine.get(line.id) || { cumulativeReceived: 0, outstandingQuantity: line.quantity };
+              const saved = supplyReceivingDrafts.get(`${openReceivingSession.id}:${line.id}`);
+              const lineLabel = `${line.skuCode || foundationT("app.sku")} — ${line.productName || ""}`.trim();
+              return `<tr data-sku-code="${escapeHtml(line.skuCode || "")}">
+                <th scope="row" class="supply-receiving-sku"><strong>${escapeHtml(line.skuCode)}</strong><span>${escapeHtml(line.productName)}</span></th>
+                <td class="supply-quantity-cell">${escapeHtml(line.quantity)}</td>
+                <td class="supply-quantity-cell">${escapeHtml(aggregate.cumulativeReceived)}</td>
+                <td class="supply-quantity-cell">${escapeHtml(aggregate.outstandingQuantity)}</td>
+                <td><input class="input" aria-label="${escapeHtml(`${foundationT("supply.batch")} ${lineLabel}`)}" data-supply-receipt-lot="${escapeHtml(line.id)}" value="${escapeHtml(saved?.lotNumber || "")}" maxlength="100"></td>
+                <td><input class="input" aria-label="${escapeHtml(`${foundationT("app.batchExpiry")} ${lineLabel}`)}" data-supply-receipt-expiry="${escapeHtml(line.id)}" type="date" value="${escapeHtml(saved?.expiryDate || "")}"></td>
+                <td><input class="input supply-receipt-quantity" aria-label="${escapeHtml(`${foundationT("supply.receiveNow")} ${lineLabel}`)}" data-supply-receipt-quantity="${escapeHtml(line.id)}" type="number" min="0" max="${escapeHtml(aggregate.outstandingQuantity)}" step="1" value="${escapeHtml(saved?.receivedQuantity || 0)}"></td>
+                <td><input class="input" aria-label="${escapeHtml(`${foundationT("supply.notes")} ${lineLabel}`)}" data-supply-receipt-notes="${escapeHtml(line.id)}" maxlength="1000" value="${escapeHtml(saved?.notes || "")}"></td>
+              </tr>`;
+            }).join("")}</tbody>
+          </table>
+        </div>
+
+        <div class="supply-receiving-actions">
+          ${canReceive ? `<button class="button secondary" type="button" id="supply-save-receiving">${foundationT("supply.saveReceipt")}</button><button class="button primary" type="button" id="supply-confirm-receiving">${foundationT("supply.confirmReceipt")}</button>` : ""}
+        </div>
+      ` : ""}
+
+      <div class="supply-receipt-history">
+        <h4>${foundationT("supply.receiptHistory")}</h4>
+        ${receiving.history?.length ? `<div class="table-wrap compact-table"><table><thead><tr><th scope="col">${foundationT("supply.time")}</th><th scope="col">${foundationT("supply.status")}</th><th scope="col">${foundationT("supply.receivedQuantity")}</th></tr></thead><tbody>${receiving.history.map((session) => `<tr><td><bdi>${escapeHtml(formatDateTime(session.confirmedAt || session.createdAt))}</bdi></td><td>${escapeHtml(supplyStatusLabel(session.status === "Confirmed" ? "Received" : session.status))}</td><td>${escapeHtml((session.lines || []).reduce((total, line) => total + Number(line.receivedQuantity || 0), 0))}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted-text">${foundationT("supply.noReceiptsYet")}</p>`}
+      </div>
+    </section>`;
+}
+
+function compareSupplyBatchValues(left, right) {
+  const leftValue = String(left || "").trim();
+  const rightValue = String(right || "").trim();
+  if (!leftValue && rightValue) return 1;
+  if (leftValue && !rightValue) return -1;
+  return leftValue.localeCompare(rightValue, "en", { numeric: true, sensitivity: "base" });
+}
+
+function sortSupplyReceivingRows(target) {
+  const rows = [...(target.querySelector("[data-supply-receiving-lines]")?.rows || [])];
+  rows.sort((left, right) => {
+    const leftBatch = left.querySelector("[data-supply-receipt-lot]")?.value;
+    const rightBatch = right.querySelector("[data-supply-receipt-lot]")?.value;
+    return compareSupplyBatchValues(leftBatch, rightBatch) ||
+      String(left.dataset.skuCode || "").localeCompare(String(right.dataset.skuCode || ""), "en", { numeric: true, sensitivity: "base" });
+  });
+  const body = target.querySelector("[data-supply-receiving-lines]");
+  rows.forEach((row) => body?.appendChild(row));
+}
+
+async function startSupplyReceiving(shipmentId, button = null) {
+  if (startingSupplyReceivings.has(shipmentId)) return;
+  startingSupplyReceivings.add(shipmentId);
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    await request(`/api/v1/supply/shipments/${encodeURIComponent(shipmentId)}/receiving-sessions`, { method: "POST" });
+    await showSupplyDetail(shipmentId);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  } finally {
+    startingSupplyReceivings.delete(shipmentId);
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+}
+
+async function saveSupplyReceiving(shipmentId, sessionId, confirm) {
+  captureSupplyReceivingDraft(sessionId);
+  const lines = [...document.querySelectorAll("[data-supply-receipt-quantity]")].map((input) => ({
+    shipmentLineId: input.dataset.supplyReceiptQuantity,
+    receivedQuantity: Number(input.value || 0),
+    lotNumber: document.querySelector(`[data-supply-receipt-lot="${input.dataset.supplyReceiptQuantity}"]`)?.value?.trim() || null,
+    expiryDate: document.querySelector(`[data-supply-receipt-expiry="${input.dataset.supplyReceiptQuantity}"]`)?.value || null,
+    notes: document.querySelector(`[data-supply-receipt-notes="${input.dataset.supplyReceiptQuantity}"]`)?.value?.trim() || null
+  }));
+  if (lines.some((line) => !Number.isInteger(line.receivedQuantity) || line.receivedQuantity < 0)) {
+    notice(foundationT("supply.fixTheHighlightedShipmentValuesBeforeSaving"), "error");
+    return;
+  }
+  if (confirm && !await confirmDialog({ title: foundationT("supply.confirmReceipt"), message: foundationT("supply.confirmReceipt"), confirmLabel: foundationT("supply.confirmReceipt"), tone: "warning" })) return;
+  try {
+    await request(`/api/v1/supply/shipments/${encodeURIComponent(shipmentId)}/receiving-sessions/${encodeURIComponent(sessionId)}/lines`, { method: "PUT", body: JSON.stringify(lines) });
+    if (confirm) {
+      await request(`/api/v1/supply/shipments/${encodeURIComponent(shipmentId)}/receiving-sessions/${encodeURIComponent(sessionId)}/confirm`, { method: "POST" });
+      for (const key of [...supplyReceivingDrafts.keys()]) if (key.startsWith(`${sessionId}:`)) supplyReceivingDrafts.delete(key);
+      supplyReceivingSharedBatch = "";
+      notice(foundationT("supply.receiptPosted"), "success");
+    } else {
+      notice(foundationT("supply.receivingCountSaved"), "success");
+    }
+    await showSupplyDetail(shipmentId);
+    await loadSupplyShipments();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function captureSupplyReceivingDraft(sessionId) {
+  if (!sessionId) return;
+  for (const input of document.querySelectorAll("[data-supply-receipt-quantity]")) {
+    const lineId = input.dataset.supplyReceiptQuantity;
+    supplyReceivingDrafts.set(`${sessionId}:${lineId}`, {
+      receivedQuantity: Number(input.value || 0),
+      lotNumber: document.querySelector(`[data-supply-receipt-lot="${lineId}"]`)?.value || "",
+      expiryDate: document.querySelector(`[data-supply-receipt-expiry="${lineId}"]`)?.value || "",
+      notes: document.querySelector(`[data-supply-receipt-notes="${lineId}"]`)?.value || ""
+    });
   }
 }
 
@@ -9351,7 +9987,6 @@ function fillSupplyForm(shipment) {
     _clientId: line.id || createUuid(),
     skuId: line.skuId,
     quantity: line.quantity,
-    unitPrice: line.unitPrice,
     lotNumber: line.lotNumber,
     expiryDate: line.expiryDate,
     notes: line.notes,
@@ -9359,13 +9994,9 @@ function fillSupplyForm(shipment) {
     productName: line.productName
   }));
   supplyEditorLineById = new Map(supplyEditorLines.map((line) => [line._clientId, line]));
-  supplyEditorStatsDirty = true;
   supplyEditorPage = 1;
   renderSupplyEditorPage();
-  document.getElementById("supply-costs")?.replaceChildren();
-  shipment.costs.forEach((cost) => addSupplyCost(cost));
   clearSupplyValidation();
-  updateSupplyFormSummary();
   document.getElementById("supply-form-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -9382,8 +10013,7 @@ async function saveSupplyShipment(event) {
   const validation = validateSupplyFormPayload(payload);
   if (validation.length > 0) {
     const firstInvalidLine = payload.lines.findIndex((line) =>
-      !line.skuId || !Number.isFinite(line.quantity) || line.quantity <= 0 ||
-      (line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)));
+      !line.skuId || !Number.isFinite(line.quantity) || line.quantity <= 0);
     if (firstInvalidLine >= 0) {
       supplyEditorPage = Math.floor(firstInvalidLine / supplyEditorPageSize) + 1;
       renderSupplyEditorPage();
@@ -9414,23 +10044,29 @@ async function saveSupplyShipment(event) {
 }
 
 async function confirmSupplyShipment(id) {
+  return confirmFinalAction({ action: "confirm", title: foundationT("supply.confirmArrival"), message: foundationT("supply.confirmArrival"), key: `supply:shipment:${id}:confirm`, execute: async () => {
   try {
     await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/confirm`, { method: "POST" });
-    notice(foundationT("supply.supplyShipmentReceivedIntoInventory"), "success");
+    notice(foundationT("supply.supplyShipmentArrivalConfirmed"), "success");
     await showSupplyDetail(id);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function cancelSupplyShipment(id) {
+  return confirmFinalAction({ action: "cancel", title: foundationT("supply.cancel"), message: foundationT("supply.cancel"), reasonLabel: foundationT("supply.cancel"), key: `supply:shipment:${id}:cancel`, execute: async (reason) => {
   try {
-    await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    await request(`/api/v1/supply/shipments/${encodeURIComponent(id)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
     notice(foundationT("supply.supplyShipmentCancelled"), "success");
     await showSupplyDetail(id);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function loadSupplyLocations() {
@@ -9446,13 +10082,7 @@ function collectSupplyFormPayload() {
     shipmentDate: document.getElementById("supply-date").value || null,
     destinationLocationId: document.getElementById("supply-location").value,
     notes: document.getElementById("supply-notes").value.trim() || null,
-    lines: supplyEditorLines.map((line) => ({ ...line, _row: visibleRows.get(line._clientId) })),
-    costs: [...document.querySelectorAll(".supply-cost-row")].map((row) => ({
-      costType: canonicalSystemValue(row.querySelector(".supply-cost-type").value, "supplyCostType"),
-      description: row.querySelector(".supply-cost-description").value.trim() || null,
-      amount: Number(row.querySelector(".supply-cost-amount").value || 0),
-      _row: row
-    }))
+    lines: supplyEditorLines.map((line) => ({ ...line, _row: visibleRows.get(line._clientId) }))
   };
 }
 
@@ -9479,10 +10109,6 @@ function validateSupplyFormPayload(payload) {
       line._row?.classList.add("supply-line-invalid");
       messages.push(foundationT("supply.validation.positiveQuantity", { line: index + 1 }));
     }
-    if (line.unitPrice !== null && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) {
-      line._row?.classList.add("supply-line-invalid");
-      messages.push(foundationT("supply.validation.positiveUnitPrice", { line: index + 1 }));
-    }
     const duplicateKey = `${line.skuId}|${(line.lotNumber || "").toUpperCase()}|${line.expiryDate || ""}`;
     if (line.skuId && duplicateKeys.has(duplicateKey)) {
       line._row?.classList.add("supply-line-invalid");
@@ -9491,64 +10117,19 @@ function validateSupplyFormPayload(payload) {
     duplicateKeys.add(duplicateKey);
   });
 
-  payload.costs.forEach((cost, index) => {
-    cost._row.classList.remove("supply-line-invalid");
-    if (!["Customs", "Freight", "Clearance", "Handling", "Insurance", "Other"].includes(cost.costType)) {
-      cost._row.classList.add("supply-line-invalid");
-      messages.push(foundationT("supply.validation.costType", { cost: index + 1 }));
-    }
-    if (!Number.isFinite(cost.amount) || cost.amount < 0) {
-      cost._row.classList.add("supply-line-invalid");
-      messages.push(foundationT("supply.validation.negativeCost", { cost: index + 1 }));
-    }
-  });
-
   return messages;
 }
 
 function stripSupplyPayloadInternals(payload) {
   return {
     ...payload,
-    lines: payload.lines.map(({ _row, _clientId, skuCode, productName, ...line }) => line),
-    costs: payload.costs.map(({ _row, ...cost }) => cost)
+    lines: payload.lines.map(({ _row, _clientId, skuCode, productName, ...line }) => line)
   };
 }
 
-function updateSupplyFormSummary() {
-  const form = document.getElementById("supply-form");
-  if (!form) {
-    return;
-  }
-  const lines = supplyEditorLines;
-  const productTotal = supplyEditorStats.productTotal;
-  const costTotal = [...document.querySelectorAll(".supply-cost-amount")].reduce((total, input) => total + Math.max(0, Number(input.value || 0) || 0), 0);
-  const incompletePrices = supplyEditorStats.incompletePrices;
-  const invalidPrices = supplyEditorStats.invalidPrices;
-  document.getElementById("supply-form-product-total").textContent = formatMoney(productTotal);
-  document.getElementById("supply-form-cost-total").textContent = formatMoney(costTotal);
-  document.getElementById("supply-form-landed-total").textContent = formatMoney(productTotal + costTotal);
-  const readiness = document.getElementById("supply-form-readiness");
-  if (invalidPrices > 0) {
-    readiness.textContent = foundationT("supply.invalidPrices");
-    readiness.className = "status-danger";
-  } else if (incompletePrices > 0 || lines.length === 0) {
-    readiness.textContent = foundationT("supply.incompleteCount", { count: incompletePrices || lines.length });
-    readiness.className = "status-warn";
-  } else {
-    readiness.textContent = foundationT("supply.ready");
-    readiness.className = "status-ok";
-  }
-}
-
 function updateSupplyPageMetrics(rows = supplyShipments) {
-  const draftTotal = rows.filter((row) => row.status === "Draft").reduce((sum, row) => sum + Number(row.landedTotal || 0), 0);
-  const readyCount = rows.filter((row) => row.status === "Draft" && Number(row.productSubtotal || 0) > 0).length;
-  const draftMetric = document.getElementById("supply-draft-total");
+  const readyCount = rows.filter((row) => row.status === "Draft" && Number(row.quantity || 0) > 0).length;
   const readyMetric = document.getElementById("supply-ready-count");
-  if (draftMetric) {
-    draftMetric.textContent = formatMoney(draftTotal);
-    draftMetric.className = draftTotal > 0 ? "status-warn" : "status-muted";
-  }
   if (readyMetric) {
     readyMetric.textContent = String(readyCount);
     readyMetric.className = readyCount > 0 ? "status-ok" : "status-muted";
@@ -9557,19 +10138,11 @@ function updateSupplyPageMetrics(rows = supplyShipments) {
 
 function getSupplyShipmentReadiness(shipment) {
   const lineCount = shipment.lineCount ?? shipment.lines?.length ?? 0;
-  const incomplete = shipment.incompletePriceCount ?? shipment.lines?.filter((line) => line.unitPrice == null).length ?? 0;
-  const invalid = shipment.invalidPriceCount ?? shipment.lines?.filter((line) => line.unitPrice != null && line.unitPrice <= 0).length ?? 0;
   if (shipment.status !== "Draft") {
     return { canConfirm: false, label: supplyStatusLabel(shipment.status), message: foundationT("supply.onlyDraftShipmentsCanBeConfirmed") };
   }
   if (lineCount === 0) {
     return { canConfirm: false, label: foundationT("supply.noLines"), message: foundationT("supply.atLeastOneSKULineIsRequired") };
-  }
-  if (invalid > 0) {
-    return { canConfirm: false, label: foundationT("supply.invalidPrices"), message: foundationT("supply.everySKUPriceMustBeGreaterThanZeroBeforeConfirmation") };
-  }
-  if (incomplete > 0) {
-    return { canConfirm: false, label: foundationT("supply.blankPriceCount", { count: incomplete }), message: foundationT("supply.everySKULineNeedsAUnitPriceBeforeConfirmation") };
   }
   return { canConfirm: true, label: foundationT("supply.ready"), message: foundationT("supply.readyToConfirm2") };
 }
@@ -9780,6 +10353,7 @@ async function saveStocktakeLines(event, sessionId) {
 }
 
 async function confirmStocktake(sessionId) {
+  return confirmFinalAction({ action: "confirm", title: foundationT("app.inline.confirmAdjustments"), message: foundationT("app.inline.confirmAdjustments"), key: `stocktake:${sessionId}:confirm`, execute: async () => {
   try {
     await request(`/api/v1/stocktakes/${sessionId}/confirm`, { method: "POST" });
     notice(foundationT("app.message.stocktakeConfirmedAndLedgerAdjustmentsPosted"), "success");
@@ -9788,6 +10362,8 @@ async function confirmStocktake(sessionId) {
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
+  }
+  });
 }
 
 async function renderNotifications() {
@@ -9837,7 +10413,6 @@ async function renderNotifications() {
         <div class="toolbar">
           <button class="button secondary" type="button" data-alert-run="low-stock">${escapeHtml(foundationT("app.inventoryLowStock"))}</button>
           <button class="button secondary" type="button" data-alert-run="expiry">${escapeHtml(foundationT("app.catalogExpiry"))}</button>
-          <button class="button secondary" type="button" data-alert-run="unresolved-reserves">${escapeHtml(foundationT("app.inline.unresolvedReserves"))}</button>
           <button class="button secondary" type="button" data-alert-run="open-payment-summary">${escapeHtml(foundationT("app.inline.generateWeeklyOpenPaymentSummary"))}</button>
         </div>
       </section>` : ""}`;
@@ -9869,7 +10444,7 @@ async function loadMerchantExpiryRecalls() {
     tbody.innerHTML = recalls.length === 0 ? `<tr><td colspan="8">${escapeHtml(foundationT("app.inline.noActiveMerchantExpiryRecalls"))}</td></tr>` : recalls.map((recall) => `
       <tr data-merchant-recall-row="${escapeHtml(recall.id)}">
         <td><strong>${escapeHtml(recall.merchantName)}</strong></td>
-        <td><strong>${escapeHtml(recall.skuCode || shortId(recall.skuId, "SKU"))}</strong><span class="muted-cell">${escapeHtml(recall.productName || "-")}</span></td>
+        <td><strong class="sku-code">${escapeHtml(recall.skuCode || shortId(recall.skuId, "SKU"))}</strong><span class="muted-cell">${escapeHtml(recall.productName || "-")}</span></td>
         <td>${escapeHtml(recall.lotNumber || "-")}</td>
         <td>${expiryBadge(recall.expiryDate)}</td>
         <td>${escapeHtml(recall.soldQuantity)}</td>
@@ -10553,7 +11128,7 @@ function canonicalOperationPayload(body) {
     const bonus = ["WholesaleSale", "RetailSale"].includes(type) && line.isBonus === true;
     return { skuId: line.skuId, section: type === "Change" ? canonicalSystemValue(line.section || "ChangeOut", "lineSection") : "Standard", entryMode, quantity, bonusQuantity: bonus ? quantity : 0, unitPrice: bonus ? 0 : Number(line.unitPrice || 0), lotNumber: String(line.lotNumber || "").trim() || null, expiryDate: line.expiryDate || null, notes: String(line.notes || "").trim() || null };
   }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify({ operationType: type, sourceLocationId: body.sourceLocationId || null, destinationLocationId: body.destinationLocationId || null, merchantId: body.merchantId || null, buyerName: body.merchantId ? null : String(body.buyerName || "").trim() || null, representativeId: null, paymentMethod: canonicalSystemValue(body.paymentMethod || "", "paymentMethod", { allowEmpty: true }) || null, buyerPhone: String(body.buyerPhone || "").trim() || null, notes: String(body.notes || "").trim() || null, receipt: body.receipt ? { supplierName: String(body.receipt.supplierName || "Supplier").trim() || "Supplier", invoiceNumber: String(body.receipt.invoiceNumber || "").trim() || null } : null, lines });
+  return JSON.stringify({ operationType: type, sourceLocationId: body.sourceLocationId || null, destinationLocationId: body.destinationLocationId || null, merchantId: body.merchantId || null, buyerName: body.merchantId ? null : String(body.buyerName || "").trim() || null, representativeId: null, paymentMethod: body.paymentMethod === "MerchantAccount" ? null : canonicalSystemValue(body.paymentMethod || "", "paymentMethod", { allowEmpty: true }) || null, buyerPhone: String(body.buyerPhone || "").trim() || null, notes: String(body.notes || "").trim() || null, receipt: body.receipt ? { supplierName: String(body.receipt.supplierName || "Supplier").trim() || "Supplier", invoiceNumber: String(body.receipt.invoiceNumber || "").trim() || null } : null, lines });
 }
 
 async function deleteAdminUser(userId) {
@@ -10712,7 +11287,7 @@ function auditSummaryFallback(event) {
 function auditSummaryText(event) {
   const summary = String(event.summary || auditSummaryFallback(event));
   const employeeCreated = summary.match(/^Created employee account (.+)\.$/);
-  if (employeeCreated && document.documentElement.dir === "rtl") {
+  if (employeeCreated && currentLanguage === "ar") {
     return foundationT("audit.employeeCreated", { employee: employeeCreated[1] });
   }
   return currentLanguage === "ar" ? (arabicTranslations[summary] || summary) : summary;
@@ -10833,12 +11408,13 @@ function renderShopifyEvent(event) {
     ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>${escapeHtml(foundationT("app.inline.retry"))}</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">${escapeHtml(foundationT("app.inline.resolve"))}</button>`
     : "";
   const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
-  const statusLabel = { RequiresAttention: "Needs review", Queued: "Queued", Processing: "Processing", Retrying: "Retrying", Resolved: "Resolved", Succeeded: "Succeeded", Imported: "Imported" }[event.status] || event.status;
-  const visibleStatus = document.documentElement.dir === "rtl" ? uiText(statusLabel) : event.status;
+  const statusKeys = { RequiresAttention: "app.inline.needsReview", Queued: "app.inline.queued", Processing: "app.inline.processing", Retrying: "app.inline.retrying", Resolved: "app.inline.resolved", Succeeded: "app.inline.succeeded", Imported: "app.inline.imported" };
+  const visibleStatus = statusKeys[event.status] ? foundationT(statusKeys[event.status]) : uiText(event.status);
   return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(visibleStatus)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(uiText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">${escapeHtml(foundationT("app.openOperation"))}${event.shopifyOrderId ? ` · Shopify ${escapeHtml(event.shopifyOrderId)}` : ""}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>${escapeHtml(foundationT("app.trust"))}</dt><dd>${escapeHtml(uiText(trust))}</dd></div><div><dt>${escapeHtml(foundationT("payments.order"))}</dt><dd>${escapeHtml(event.shopifyOrderId || foundationT("app.notParsed"))}</dd></div><div><dt>${escapeHtml(foundationT("app.store"))}</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>${escapeHtml(foundationT("app.attempts"))}</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>${escapeHtml(foundationT("app.payload"))}</dt><dd>${event.payloadAvailable ? escapeHtml(foundationT("app.retainedSecurely")) : escapeHtml(foundationT("app.retentionExpired"))}</dd></div>${event.resolutionNote ? `<div><dt>${escapeHtml(foundationT("app.resolution"))}</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
 }
 
 async function retryShopifyEvent(id) {
+  if (!await confirmDialog({ title: foundationT("app.confirm.retryShopifyEvent"), message: foundationT("app.confirm.retryShopifyEventMessage"), confirmLabel: foundationT("app.inline.retry"), tone: "warning" })) return;
   try {
     await request(`/api/v1/integrations/shopify/events/${id}/retry`, { method: "POST" });
     notice(foundationT("app.message.shopifyEventQueuedForRetry"), "success");
@@ -10856,6 +11432,7 @@ async function resolveShopifyEvent(id) {
     required: true
   });
   if (!note?.trim()) return;
+  if (!await confirmDialog({ title: foundationT("app.prompt.resolveShopifyEvent"), message: foundationT("app.confirm.resolveShopifyEventMessage"), confirmLabel: foundationT("app.inline.resolve"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
     await request(`/api/v1/integrations/shopify/events/${id}/resolve`, { method: "POST", body: JSON.stringify({ note: note.trim() }) });
     notice(foundationT("app.message.shopifyEventResolved"), "success");
@@ -11095,6 +11672,7 @@ function wireOperationLineEditor() {
     if (!row) return;
     if (control.matches(".op-line-bonus, .op-line-section, .op-line-entry-mode")) {
       syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType);
+      refreshOperationSourceLineOptions(row);
       await refreshOperationStockOptions(row);
       return;
     }
@@ -11109,6 +11687,7 @@ function wireOperationLineEditor() {
       return;
     }
     if (control.matches(".op-line-stock-option")) applySelectedStockOption(row);
+    if (control.matches(".op-line-source-line")) applyOperationSourceLine(row);
   });
 
   container.addEventListener("focusin", async (event) => {

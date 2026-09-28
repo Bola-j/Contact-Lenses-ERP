@@ -32,15 +32,27 @@ public sealed class MerchantAccountService
 
     public async Task<MerchantReceivableAccount> GetOrCreateForUpdateAsync(Guid merchantId, Guid actorId, DateTime now, CancellationToken cancellationToken)
     {
-        var account = _payments.MerchantReceivableAccounts.Local.FirstOrDefault(value => value.MerchantId == merchantId)
-            ?? await _payments.MerchantReceivableAccounts.FirstOrDefaultAsync(value => value.MerchantId == merchantId, cancellationToken);
+        // A nested call in the same workflow must reuse the entity that already
+        // owns the account lock; detaching it would discard pending NextSequence
+        // changes created earlier in the transaction.
+        var account = _payments.MerchantReceivableAccounts.Local.FirstOrDefault(value => value.MerchantId == merchantId);
+        if (account is not null) return account;
+
+        account = await _payments.MerchantReceivableAccounts.FirstOrDefaultAsync(value => value.MerchantId == merchantId, cancellationToken);
         if (account is not null)
         {
             if (_payments.Database.IsRelational())
             {
-                account = await _payments.MerchantReceivableAccounts
+                var locked = await _payments.MerchantReceivableAccounts
                     .FromSqlInterpolated($"select * from payments.merchant_receivable_accounts where merchant_id = {merchantId} for update")
+                    .AsNoTracking()
                     .SingleAsync(cancellationToken);
+                // The initial lookup may have placed a stale account instance in
+                // the change tracker. Replace it with the row read under the lock
+                // so NextSequence reflects commits that won the race before us.
+                _payments.Entry(account).State = EntityState.Detached;
+                _payments.MerchantReceivableAccounts.Attach(locked);
+                account = locked;
             }
             return account;
         }
@@ -63,10 +75,9 @@ public sealed class MerchantAccountService
     public async Task<MerchantOperationObligation> PostSaleAsync(Guid merchantId, Guid operationId, decimal amount, Guid actorId, DateTime now, string? notes, CancellationToken cancellationToken)
     {
         if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
+        var account = await GetOrCreateForUpdateAsync(merchantId, actorId, now, cancellationToken);
         var existing = await _payments.MerchantOperationObligations.SingleOrDefaultAsync(value => value.OperationId == operationId, cancellationToken);
         if (existing is not null) return existing;
-
-        var account = await GetOrCreateForUpdateAsync(merchantId, actorId, now, cancellationToken);
         await AppendAsync(account, "SaleCharge", amount, 0m, null, null, "OperationSale", operationId, operationId, null, actorId, now, notes, cancellationToken);
         var obligation = new MerchantOperationObligation
         {
@@ -96,6 +107,12 @@ public sealed class MerchantAccountService
         if (existing is not null) return existing;
 
         var account = await GetOrCreateForUpdateAsync(charge.MerchantId, actorId, now, cancellationToken);
+        // The initial read is only an optimistic fast path. Re-check after the
+        // account lock so concurrent retries cannot post the same opening charge
+        // twice before either transaction becomes visible to the other.
+        existing = await _payments.MerchantOperationObligations
+            .SingleOrDefaultAsync(value => value.SourceType == "OpeningBalanceCharge" && value.SourceId == charge.Id, cancellationToken);
+        if (existing is not null) return existing;
         var entry = await AppendAsync(account, "OpeningBalanceCharge", charge.Amount, 0m, null, null, "OpeningBalanceCharge", charge.Id, null, null, actorId, now, charge.Description, cancellationToken);
         var obligation = new MerchantOperationObligation
         {
@@ -126,13 +143,41 @@ public sealed class MerchantAccountService
         DateTime now,
         CancellationToken cancellationToken)
     {
-        // Reload under the same transaction that owns the idempotency key.  This
-        // serializes correction with collection posting because both paths then
-        // take the merchant-account row lock before changing allocations.
+        if (!_payments.Database.IsRelational() || _payments.Database.CurrentTransaction is not null)
+            return await CorrectOpeningBalanceCoreAsync(original, amount, asOfDate, description, actorId, now, cancellationToken);
+
+        await using var transaction = await _payments.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await CorrectOpeningBalanceCoreAsync(original, amount, asOfDate, description, actorId, now, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private async Task<MerchantOpeningBalanceCharge> CorrectOpeningBalanceCoreAsync(
+        MerchantOpeningBalanceCharge original,
+        decimal amount,
+        DateOnly asOfDate,
+        string description,
+        Guid actorId,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
+        // Collections lock the merchant account before locking open obligations.
+        // Use the same order here to avoid a correction/collection deadlock.
+        var account = await GetOrCreateForUpdateAsync(original.MerchantId, actorId, now, cancellationToken);
+        // Reload the charge under the same transaction after the account lock so
+        // the status check and all replacement writes are atomic with allocation
+        // reconciliation.
         original = await LockOpeningBalanceAsync(original.Id, cancellationToken);
         if (original.Status != "Posted") throw new InvalidOperationException("Only a posted opening balance can be corrected.");
-        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
-        var account = await GetOrCreateForUpdateAsync(original.MerchantId, actorId, now, cancellationToken);
         // Keep lock order consistent with collections: account, then all open
         // obligations, then the historical allocation rows being superseded.
         await LockOpenObligationsAsync(account.Id, cancellationToken);
@@ -203,8 +248,25 @@ public sealed class MerchantAccountService
         if (amount <= 0) return null;
         var account = await GetOrCreateForUpdateAsync(merchantId, actorId, now, cancellationToken);
         var entry = await AppendAsync(account, entryType, 0m, amount, null, null, entryType, sourceId, operationId, null, actorId, now, notes, cancellationToken);
+        if (entryType is "BalanceReduction" or "ReturnCredit")
+        {
+            var preferredOperationId = await ResolveSaleOperationForCreditAsync(operationId, cancellationToken);
+            await AllocateCreditAsync(account.Id, entry, null, actorId, now, cancellationToken, preferredOperationId);
+        }
         await _payments.SaveChangesAsync(cancellationToken);
         return entry;
+    }
+
+    private async Task<Guid?> ResolveSaleOperationForCreditAsync(Guid? operationId, CancellationToken cancellationToken)
+    {
+        if (!operationId.HasValue) return null;
+        var sourceLineIds = await _operations.OperationLineSourceAllocations.AsNoTracking()
+            .Where(value => _operations.OperationLines.Any(line => line.Id == value.TargetOperationLineId && line.OperationId == operationId.Value))
+            .Select(value => value.SourceOperationId)
+            .Distinct()
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        return sourceLineIds.Count == 1 ? sourceLineIds[0] : operationId;
     }
 
     public async Task<MerchantAccountEntry?> PostDebitForOperationAsync(Guid merchantId, Guid operationId, decimal amount, string entryType, Guid actorId, DateTime now, string? notes, CancellationToken cancellationToken)
@@ -219,6 +281,19 @@ public sealed class MerchantAccountService
         return entry;
     }
 
+    public async Task<MerchantAccountEntry> PostUnlinkedRefundPayoutAsync(Guid merchantId, Guid payoutId, Guid? operationId, decimal amount, string method, string? transactionReference, Guid actorId, DateTime now, string? notes, CancellationToken cancellationToken)
+    {
+        ValidateMovement(method, transactionReference);
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
+        var account = await GetOrCreateForUpdateAsync(merchantId, actorId, now, cancellationToken);
+        var snapshot = await GetSnapshotAsync(merchantId, cancellationToken);
+        if (snapshot is null || snapshot.CreditAvailable < amount)
+            throw new InvalidOperationException("The merchant account no longer has enough available credit for this refund payout.");
+        var entry = await AppendAsync(account, "RefundPayout", amount, 0m, method, transactionReference, "RefundPayout", payoutId, operationId, payoutId, actorId, now, notes, cancellationToken);
+        await _payments.SaveChangesAsync(cancellationToken);
+        return entry;
+    }
+
     public async Task<MerchantAccountEntry> PostCollectionAsync(
         Guid merchantId,
         Guid paymentId,
@@ -229,7 +304,38 @@ public sealed class MerchantAccountService
         DateTime now,
         IReadOnlyList<MerchantAllocationInput>? requestedAllocations,
         string? notes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? preferredOperationId = null)
+    {
+        if (!_payments.Database.IsRelational() || _payments.Database.CurrentTransaction is not null)
+            return await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, preferredOperationId);
+
+        await using var transaction = await _payments.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, preferredOperationId);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private async Task<MerchantAccountEntry> PostCollectionCoreAsync(
+        Guid merchantId,
+        Guid paymentId,
+        decimal amount,
+        string method,
+        string? transactionReference,
+        Guid actorId,
+        DateTime now,
+        IReadOnlyList<MerchantAllocationInput>? requestedAllocations,
+        string? notes,
+        CancellationToken cancellationToken,
+        Guid? preferredOperationId)
     {
         ValidateMovement(method, transactionReference);
         if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
@@ -239,7 +345,7 @@ public sealed class MerchantAccountService
         if (existing is not null) return existing;
         await LockOpenObligationsAsync(account.Id, cancellationToken);
         var entry = await AppendAsync(account, "Collection", 0m, amount, method, transactionReference, "PaymentCollection", paymentId, null, paymentId, actorId, now, notes, cancellationToken);
-        await AllocateCreditAsync(account.Id, entry, requestedAllocations, actorId, now, cancellationToken);
+        await AllocateCreditAsync(account.Id, entry, requestedAllocations, actorId, now, cancellationToken, preferredOperationId);
         await _payments.SaveChangesAsync(cancellationToken);
         return entry;
     }
@@ -256,7 +362,7 @@ public sealed class MerchantAccountService
             .Where(value => obligations.Select(obligation => obligation.Id).Contains(value.ObligationId) && value.Entry.CreditAmount > 0)
             .GroupBy(value => value.ObligationId).Select(group => new { group.Key, Amount = group.Sum(value => value.Amount) })
             .ToDictionaryAsync(value => value.Key, value => value.Amount, cancellationToken);
-        return BuildOldestFirst(obligations, allocated, amount)
+        return BuildCollectionAllocations(obligations, allocated, amount, null)
             .Select(value => new MerchantAllocationPreview(value.ObligationId, value.Amount, obligations.Single(obligation => obligation.Id == value.ObligationId).OperationId))
             .ToList();
     }
@@ -549,8 +655,8 @@ public sealed class MerchantAccountService
             where allocation.obligation_id = {obligationId}
               and not exists (
                   select 1 from payments.merchant_allocation_reconciliations reconciliation
-                  where reconciliation.source_allocation_id = allocation."Id")
-            order by allocation.allocated_at, allocation."Id"
+                  where reconciliation.source_allocation_id = allocation.id)
+            order by allocation.allocated_at, allocation.id
             for update
             """).ToListAsync(cancellationToken);
     }
@@ -583,14 +689,14 @@ public sealed class MerchantAccountService
         return entry;
     }
 
-    private async Task AllocateCreditAsync(Guid accountId, MerchantAccountEntry entry, IReadOnlyList<MerchantAllocationInput>? requested, Guid actorId, DateTime now, CancellationToken cancellationToken)
+    private async Task AllocateCreditAsync(Guid accountId, MerchantAccountEntry entry, IReadOnlyList<MerchantAllocationInput>? requested, Guid actorId, DateTime now, CancellationToken cancellationToken, Guid? preferredOperationId)
     {
         var obligations = await LockOpenObligationsAsync(accountId, cancellationToken);
         var allocatedByObligation = await _payments.EffectiveCreditAllocations()
             .Where(value => obligations.Select(obligation => obligation.Id).Contains(value.ObligationId) && value.Entry.CreditAmount > 0)
             .GroupBy(value => value.ObligationId).Select(group => new { group.Key, Amount = group.Sum(value => value.Amount) })
             .ToDictionaryAsync(value => value.Key, value => value.Amount, cancellationToken);
-        var allocations = requested?.Count > 0 ? requested : BuildOldestFirst(obligations, allocatedByObligation, entry.CreditAmount);
+        var allocations = requested?.Count > 0 ? requested : BuildCollectionAllocations(obligations, allocatedByObligation, entry.CreditAmount, preferredOperationId);
         if (allocations.Sum(value => value.Amount) > entry.CreditAmount) throw new InvalidOperationException("Allocations exceed the collection amount.");
         foreach (var allocation in allocations)
         {
@@ -601,6 +707,20 @@ public sealed class MerchantAccountService
             allocatedByObligation[obligation.Id] = allocatedByObligation.GetValueOrDefault(obligation.Id) + allocation.Amount;
             if (allocatedByObligation[obligation.Id] >= obligation.OriginalAmount) obligation.Status = "Settled";
         }
+    }
+
+    private static IReadOnlyList<MerchantAllocationInput> BuildCollectionAllocations(
+        IReadOnlyList<MerchantOperationObligation> obligations,
+        IReadOnlyDictionary<Guid, decimal> allocated,
+        decimal amount,
+        Guid? preferredOperationId)
+    {
+        var ordered = obligations
+            .OrderBy(value => preferredOperationId.HasValue && value.OperationId == preferredOperationId.Value ? 0 : value.OperationId.HasValue ? 1 : 2)
+            .ThenBy(value => value.PostedAt)
+            .ThenBy(value => value.Id)
+            .ToList();
+        return BuildOldestFirst(ordered, allocated, amount);
     }
 
     private async Task<List<MerchantOperationObligation>> LockOpenObligationsAsync(Guid accountId, CancellationToken cancellationToken)

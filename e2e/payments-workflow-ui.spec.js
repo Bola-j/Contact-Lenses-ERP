@@ -6,6 +6,8 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   const financeAccountId = "66666666-6666-6666-6666-666666666666";
   let rejectionBody = null;
   let collectionSubmitted = false;
+  let refundPayload = null;
+  let failMerchantRefresh = true;
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -15,14 +17,19 @@ test("payments: one collection workspace shows reconciled merchant figures and r
     if (url.pathname === "/api/v1/notifications/unread-count") return json({ count: 0 });
     if (url.pathname === "/api/v1/crm/merchants") return json({ items: [{ id: merchantId, businessName: "Hany Optics" }] });
     if (url.pathname === "/api/v1/users") return json([]);
-    if (url.pathname === "/api/v1/finance/accounts") return json([{ id: financeAccountId, name: "Main Cash", type: "CashOnHand" }]);
+    if (url.pathname === "/api/v1/finance/accounts" || url.pathname === "/api/v1/payments/finance-account-options") return json([{ id: financeAccountId, name: "Main Cash", type: "CashOnHand", isActive: true }]);
     if (url.pathname === "/api/v1/payments/merchant-account-payments") return json({ items: [{ id: "44444444-4444-4444-4444-444444444444", operationId: "55555555-5555-5555-5555-555555555555", merchantId, operationNumber: "OP-20260912-001", operationType: "WholesaleSale", buyerName: "Hany Optics", totalAmount: 1000, amountPaid: 0, remainingAmount: 1000, paymentMethod: "CashHandToHand", status: "PendingAccountant", initializedByName: "Admin", lastModifiedAt: "2026-09-12T10:00:00" }], page: 1, pageSize: 50, totalCount: 1 });
     if (url.pathname === "/api/v1/payments/other-payments") return json({ items: [], page: 1, pageSize: 50, totalCount: 0 });
     if (url.pathname === "/api/v1/payments/merchant-account-payments/history") return json({ items: [], page: 1, pageSize: 200, totalCount: 0 });
     if (url.pathname === "/api/v1/payments/other-payments/history") return json({ items: [], page: 1, pageSize: 200, totalCount: 0 });
     if (url.pathname === "/api/v1/payments") return json({ items: [], page: 1, pageSize: 50, totalCount: 0 });
     if (url.pathname === "/api/v1/payments/audit") return json({ items: [], page: 1, pageSize: 100, totalCount: 0 });
-    if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}` && collectionSubmitted) {
+    if (url.pathname === "/api/v1/payments/operations/resolve") return json({ operationId: "55555555-5555-5555-5555-555555555555", recordType: "Operation", scope: "OtherPayments", status: "Completed", permittedNextActions: ["record-refund"] });
+    if (method === "POST" && url.pathname === "/api/v1/payments/cash-records") {
+      refundPayload = JSON.parse(route.request().postData() || "{}");
+      return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "88888888-8888-8888-8888-888888888888", paymentType: "CashRefund", status: "PendingAdminReview" }) });
+    }
+    if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}` && collectionSubmitted && failMerchantRefresh) {
       return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ title: "Temporary refresh failure" }) });
     }
     if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}`) return json({
@@ -68,8 +75,7 @@ test("payments: one collection workspace shows reconciled merchant figures and r
     return route.continue();
   });
 
-  await page.addInitScript(() => localStorage.setItem("lensee.language", "en"));
-  await page.goto("/#/payments", { waitUntil: "domcontentloaded" });
+  await page.goto("/en/#/payments", { waitUntil: "domcontentloaded" });
   await page.locator("#load-merchant-balance").click();
 
   await expect(page.locator("#unified-collection-form")).toHaveCount(1);
@@ -108,6 +114,17 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   await expect(page.locator("#merchant-payment-section h2")).toContainText("Merchant account payments");
   await expect(page.locator("#payment-queue-section h2")).toContainText("Other payments");
   await expect(page.locator("#payment-ledger-section h2")).toContainText("Other payment history");
+  await page.locator("#other-collection-toggle").click();
+  await expect(page.locator("#collection-payment-type-field")).toBeVisible();
+  await page.locator("#collection-payment-type").selectOption("CashRefund");
+  await page.locator("#collection-source-reference").fill("OP-20260912-001");
+  await page.locator("#collection-amount").fill("25");
+  await page.locator("#collection-method").selectOption("CashHandToHand");
+  await page.locator("#collection-finance-account").selectOption(financeAccountId);
+  await page.locator("#unified-collection-form").getByRole("button", { name: "Send collection for approval" }).click();
+  await expect.poll(() => refundPayload?.paymentType).toBe("CashRefund");
+  expect(refundPayload.amount).toBe(25);
+  expect(refundPayload.financeAccountId).toBe(financeAccountId);
   await page.getByRole("tab", { name: "Merchant account payments" }).click();
   await expect(page.locator("#merchant-payment-section")).toBeVisible();
   await expect(page.locator("#payment-queue-section")).toBeHidden();
@@ -122,15 +139,37 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   await expect(page.locator("#notification-area")).toContainText("Collection sent for Admin approval");
   await expect(page.locator("#unified-collection-error")).toBeHidden();
   await expect(page.locator("body")).not.toContainText("The workspace request failed.");
+  failMerchantRefresh = false;
 
   await page.locator("#merchant-collection-draft-rows").getByRole("button", { name: "Reject" }).click();
   await expect(page.locator(".dialog-card")).toContainText("Reject collection");
   await expect(page.locator(".dialog-card textarea.dialog-input")).toBeVisible();
-  await page.locator(".dialog-card").getByRole("button", { name: "Continue" }).click();
+  await page.locator(".dialog-card").getByRole("button", { name: "Cancel" }).click();
+  await page.locator("#language-toggle").click();
+  await expect(page).toHaveURL(/\/ar\/#\/payments/);
+  await expect(page.locator("#merchant-collection-draft-rows")).toBeVisible();
+  await page.locator("#payment-merchant").selectOption(merchantId);
+  await page.locator("#load-merchant-balance").click();
+  await expect(page.locator("#merchant-collection-draft-rows")).toContainText("COL-333333333333");
+  await page.locator("#merchant-collection-draft-rows").getByRole("button", { name: "رفض" }).click();
+  await expect(page.locator(".dialog-card")).toContainText("رفض التحصيل");
+  await expect(page.locator(".dialog-card textarea.dialog-input")).toBeVisible();
+  await page.locator(".dialog-card").getByRole("button", { name: "متابعة" }).click();
   await expect(page.locator(".dialog-card textarea.dialog-input")).toHaveAttribute("aria-invalid", "true");
   await page.locator(".dialog-card textarea.dialog-input").fill("Receipt amount does not match");
-  await page.locator(".dialog-card").getByRole("button", { name: "Continue" }).click();
+  await page.locator(".dialog-card").getByRole("button", { name: "متابعة" }).click();
   await expect.poll(() => rejectionBody?.reason).toBe("Receipt amount does not match");
+
+  await page.locator("#language-toggle").click();
+  await expect(page).toHaveURL(/\/en\/#\/payments/);
+  await expect(page.locator("#merchant-collection-draft-rows")).toBeVisible();
+  await page.locator("#payment-merchant").selectOption(merchantId);
+  await page.locator("#load-merchant-balance").click();
+  await expect(page.locator("#merchant-collection-draft-rows")).toContainText("COL-333333333333");
+  await page.locator("#merchant-collection-draft-rows").getByRole("button", { name: "Reject" }).click();
+  await expect(page.locator(".dialog-card textarea.dialog-input")).toBeVisible();
+  await expect(page.locator(".dialog-card")).toContainText("Reject collection");
+  await page.locator(".dialog-card").getByRole("button", { name: "Cancel" }).click();
 
   await page.setViewportSize({ width: 412, height: 915 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);

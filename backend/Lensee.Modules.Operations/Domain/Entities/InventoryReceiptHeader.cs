@@ -15,5 +15,10 @@ public partial class InventoryReceiptHeader
 
     public DateTime ReceiptDate { get; set; }
 
+    public Guid? SupplyShipmentId { get; set; }
+    public Guid? SupplyFinanceLogId { get; set; }
+    public Guid? StocktakeSessionId { get; set; }
+    public Guid? SupplyReceivingSessionId { get; set; }
+
     public virtual OperationLog Operation { get; set; } = null!;
 }

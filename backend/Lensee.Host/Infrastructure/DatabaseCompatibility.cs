@@ -154,183 +154,6 @@ public static class DatabaseCompatibility
                             add constraint chk_cash_status
                             check (status in ('PendingAccountant','Completed','Cancelled'));
 
-                        insert into payments.main_payment_logs (
-                            id, operation_id, merchant_id, total_amount, amount_paid,
-                            payment_method, status, initialized_by, initialized_at,
-                            last_modified_by, last_modified_at, notes, is_deleted)
-                        select
-                            uuid_generate_v4(),
-                            operation.id,
-                            operation.client_id,
-                            sum(record.amount),
-                            sum(record.amount),
-                            'CashHandToHand',
-                            'Completed',
-                            operation.created_by,
-                            min(record.payment_date),
-                            operation.created_by,
-                            max(record.payment_date),
-                            'Backfilled from completed cash sale.',
-                            false
-                        from payments.cash_records record
-                        join operations.operation_logs operation on operation.id = record.operation_id
-                        where record.payment_type = 'CashReceived'
-                          and record.status = 'Completed'
-                          and operation.operation_type in ('WholesaleSale', 'RetailSale')
-                          and operation.status = 'Completed'
-                          and operation.client_id is not null
-                          and not exists (
-                              select 1 from payments.main_payment_logs existing
-                              where existing.operation_id = operation.id and existing.is_deleted = false)
-                        group by operation.id, operation.client_id, operation.created_by;
-                    end if;
-                end $$;
-
-                do $$
-                begin
-                    if to_regclass('crm.merchants') is not null
-                       and to_regclass('operations.operation_logs') is not null
-                       and to_regclass('payments.main_payment_logs') is not null
-                       and to_regclass('payments.cash_records') is not null then
-                        with anonymous_sales as (
-                            select
-                                operation.id,
-                                operation.client_name,
-                                operation.created_by,
-                                operation.created_at,
-                                operation.confirmed_at,
-                                coalesce((
-                                    select sum(line.line_total)
-                                    from operations.operation_lines line
-                                    where line.operation_id = operation.id
-                                ), 0) as total_amount
-                            from operations.operation_logs operation
-                            where operation.operation_type = 'RetailSale'
-                              and operation.status = 'Completed'
-                              and operation.payment_method in ('CashHandToHand', 'CashTransaction')
-                              and operation.client_id is null
-                              and coalesce(nullif(btrim(operation.client_name), ''), '') <> ''
-                        ),
-                        inserted_merchants as (
-                            insert into crm.merchants (
-                                id, business_name, contact_person_name, phone_numbers,
-                                business_type, status, notes, is_deleted, created_at, updated_at
-                            )
-                            select
-                                uuid_generate_v4(),
-                                sale.client_name,
-                                sale.client_name,
-                                '{{}}'::text[],
-                                'Other',
-                                'Active',
-                                'Auto-created from anonymous cash sale backfill.',
-                                false,
-                                sale.created_at,
-                                sale.created_at
-                            from anonymous_sales sale
-                            where not exists (
-                                select 1
-                                from crm.merchants merchant
-                                where merchant.is_deleted = false
-                                  and merchant.business_type = 'Other'
-                                  and merchant.business_name = sale.client_name
-                            )
-                            returning id, business_name
-                        ),
-                        merchant_lookup as (
-                            select merchant.id, merchant.business_name
-                            from crm.merchants merchant
-                            where merchant.is_deleted = false
-                              and merchant.business_type = 'Other'
-
-                            union all
-
-                            select id, business_name
-                            from inserted_merchants
-                        )
-                        update operations.operation_logs operation
-                        set client_id = merchant.id
-                        from merchant_lookup merchant
-                        where operation.operation_type = 'RetailSale'
-                          and operation.status = 'Completed'
-                          and operation.payment_method in ('CashHandToHand', 'CashTransaction')
-                          and operation.client_id is null
-                          and operation.client_name = merchant.business_name;
-
-                        insert into payments.cash_records (
-                            id, operation_id, payment_type, sub_type, amount, status,
-                            payment_date, created_by, notes
-                        )
-                        select
-                            uuid_generate_v4(),
-                            operation.id,
-                            'CashReceived',
-                            'CashHandToHand',
-                            coalesce((
-                                select sum(line.line_total)
-                                from operations.operation_lines line
-                                where line.operation_id = operation.id
-                            ), 0),
-                            'PendingAccountant',
-                            coalesce(operation.confirmed_at, operation.created_at),
-                            operation.created_by,
-                            'Backfilled from anonymous completed cash sale.'
-                        from operations.operation_logs operation
-                        where operation.operation_type = 'RetailSale'
-                          and operation.status = 'Completed'
-                          and operation.payment_method = 'CashHandToHand'
-                          and operation.client_id is not null
-                          and not exists (
-                              select 1
-                              from payments.cash_records record
-                              where record.operation_id = operation.id
-                          )
-                          and coalesce((
-                              select sum(line.line_total)
-                              from operations.operation_lines line
-                              where line.operation_id = operation.id
-                          ), 0) > 0;
-
-                        insert into payments.main_payment_logs (
-                            id, operation_id, merchant_id, total_amount, amount_paid,
-                            payment_method, status, initialized_by, initialized_at,
-                            last_modified_by, last_modified_at, notes, is_deleted
-                        )
-                        select
-                            uuid_generate_v4(),
-                            operation.id,
-                            operation.client_id,
-                            coalesce((
-                                select sum(line.line_total)
-                                from operations.operation_lines line
-                                where line.operation_id = operation.id
-                            ), 0),
-                            0,
-                            operation.payment_method,
-                            case
-                                when operation.payment_method = 'CashHandToHand' then 'PendingAccountant'
-                                else 'PendingAdmin'
-                            end,
-                            operation.created_by,
-                            operation.created_at,
-                            operation.created_by,
-                            coalesce(operation.confirmed_at, operation.created_at),
-                            'Backfilled from anonymous completed cash sale.',
-                            false
-                        from operations.operation_logs operation
-                        where operation.operation_type = 'RetailSale'
-                          and operation.status = 'Completed'
-                          and operation.payment_method in ('CashHandToHand', 'CashTransaction')
-                          and operation.client_id is not null
-                          and not exists (
-                              select 1 from payments.main_payment_logs existing
-                              where existing.operation_id = operation.id and existing.is_deleted = false
-                          )
-                          and coalesce((
-                              select sum(line.line_total)
-                              from operations.operation_lines line
-                              where line.operation_id = operation.id
-                          ), 0) > 0;
                     end if;
                 end $$;
 
@@ -483,18 +306,102 @@ public static class DatabaseCompatibility
                 create index if not exists ix_cash_records_finance_account_id
                     on payments.cash_records(finance_account_id);
 
-                create index if not exists idx_main_payment_operation
-                    on payments.main_payment_logs(operation_id);
-
-                create index if not exists idx_main_payment_merchant
-                    on payments.main_payment_logs(merchant_id);
-
                 create index if not exists idx_sub_logs_main_log
                     on payments.installment_sub_logs(main_log_id);
                 alter table if exists payments.installment_sub_logs
                     add column if not exists finance_account_id uuid;
                 create index if not exists ix_installment_sub_logs_finance_account_id
                     on payments.installment_sub_logs(finance_account_id);
+
+                create index if not exists idx_main_payment_operation
+                    on payments.main_payment_logs(operation_id);
+
+                create index if not exists idx_main_payment_merchant
+                    on payments.main_payment_logs(merchant_id);
+            """);
+
+            // Keep data backfills in a separate command from schema/index DDL.
+            // PostgreSQL deferrable payment-log triggers remain pending until a
+            // command transaction commits and prevent later indexes on that table.
+            await operationsDbContext.Database.ExecuteSqlRawAsync("""
+                do $$
+                begin
+                    if to_regclass('operations.operation_logs') is not null
+                       and to_regclass('payments.main_payment_logs') is not null
+                       and to_regclass('payments.cash_records') is not null then
+                        insert into payments.main_payment_logs (
+                            id, operation_id, merchant_id, scope, total_amount, amount_paid,
+                            payment_method, status, initialized_by, initialized_at,
+                            last_modified_by, last_modified_at, notes, is_deleted)
+                        select
+                            uuid_generate_v4(),
+                            operation.id,
+                            operation.client_id,
+                            'MerchantAccount',
+                            sum(record.amount),
+                            sum(record.amount),
+                            'CashHandToHand',
+                            'Completed',
+                            operation.created_by,
+                            min(record.payment_date),
+                            operation.created_by,
+                            max(record.payment_date),
+                            'Backfilled from completed cash sale.',
+                            false
+                        from payments.cash_records record
+                        join operations.operation_logs operation on operation.id = record.operation_id
+                        where record.payment_type = 'CashReceived'
+                          and record.status = 'Completed'
+                          and operation.operation_type in ('WholesaleSale', 'RetailSale')
+                          and operation.status = 'Completed'
+                          and operation.client_id is not null
+                          and not exists (
+                              select 1 from payments.main_payment_logs existing
+                              where existing.operation_id = operation.id and existing.is_deleted = false)
+                        group by operation.id, operation.client_id, operation.created_by;
+
+                        insert into payments.main_payment_logs (
+                            id, operation_id, merchant_id, scope, total_amount, amount_paid,
+                            payment_method, status, initialized_by, initialized_at,
+                            last_modified_by, last_modified_at, notes, is_deleted
+                        )
+                        select
+                            uuid_generate_v4(),
+                            operation.id,
+                            operation.client_id,
+                            case when operation.client_id is null then 'OtherPayments' else 'MerchantAccount' end,
+                            coalesce((
+                                select sum(line.line_total)
+                                from operations.operation_lines line
+                                where line.operation_id = operation.id
+                            ), 0),
+                            0,
+                            operation.payment_method,
+                            case
+                                when operation.payment_method = 'CashHandToHand' then 'PendingAccountant'
+                                else 'PendingAdmin'
+                            end,
+                            operation.created_by,
+                            operation.created_at,
+                            operation.created_by,
+                            coalesce(operation.confirmed_at, operation.created_at),
+                            'Payment track initialized from completed retail sale; record actual collection in Payments.',
+                            false
+                        from operations.operation_logs operation
+                        where operation.operation_type = 'RetailSale'
+                          and operation.status = 'Completed'
+                          and operation.payment_method in ('CashHandToHand', 'CashTransaction')
+                          and not exists (
+                              select 1 from payments.main_payment_logs existing
+                              where existing.operation_id = operation.id and existing.is_deleted = false
+                          )
+                          and coalesce((
+                              select sum(line.line_total)
+                              from operations.operation_lines line
+                              where line.operation_id = operation.id
+                          ), 0) > 0;
+                    end if;
+                end $$;
             """);
         }
         catch (Exception exception)
