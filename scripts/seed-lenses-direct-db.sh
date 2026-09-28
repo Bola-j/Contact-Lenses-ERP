@@ -91,9 +91,26 @@ else
   if [[ -n "$DB_SERVICE" ]]; then
     found=false
     for service in "${services[@]}"; do [[ "$service" == "$DB_SERVICE" ]] && found=true; done
-    [[ "$found" == true ]] || { printf "Compose database service '%s' is not running. Running services: %s\n" "$DB_SERVICE" "${services[*]:-<none>}" >&2; exit 2; }
-    TARGET_MODE=Compose
-    TARGET_NAME="$DB_SERVICE"
+    if [[ "$found" == true ]]; then
+      TARGET_MODE=Compose
+      TARGET_NAME="$DB_SERVICE"
+    elif [[ "$ENVIRONMENT" == Production ]]; then
+      # Production containers may have been launched under another Compose
+      # project or outside Compose. Accept an explicitly named live container.
+      running="$(docker inspect -f '{{.State.Running}}' "$DB_SERVICE" 2>/dev/null || true)"
+      image="$(docker inspect -f '{{.Config.Image}}' "$DB_SERVICE" 2>/dev/null || true)"
+      if [[ "$running" == true && ( "${image,,}" == *postgres* || "${DB_SERVICE,,}" == *postgres* || "${DB_SERVICE,,}" == *lensee*db* ) ]]; then
+        TARGET_MODE=Container
+        TARGET_NAME="$DB_SERVICE"
+      else
+        printf "Compose database service '%s' is not running. Running services: %s\n" "$DB_SERVICE" "${services[*]:-<none>}" >&2
+        echo "For a standalone or differently named production container, pass --db-container <running-postgres-container>." >&2
+        exit 2
+      fi
+    else
+      printf "Compose database service '%s' is not running. Running services: %s\n" "$DB_SERVICE" "${services[*]:-<none>}" >&2
+      exit 2
+    fi
   else
     for candidate in db postgres postgresql database; do
       for service in "${services[@]}"; do
