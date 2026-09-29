@@ -5861,6 +5861,8 @@ function seedOperationEditor(detail, mode) {
   form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
   document.getElementById("op-type").value = detail.operationType;
   syncOperationTypeControls();
+  // Inventory receipts have no source location; their persisted warehouse is
+  // the destination. Restore it only after the receipt-specific options exist.
   document.getElementById("op-source").value = detail.sourceLocationId || "";
   document.getElementById("op-destination").value = detail.destinationLocationId || "";
   const merchant = document.getElementById("op-merchant");
@@ -5964,6 +5966,14 @@ async function startOperationEditorMode(operationId, mode) {
       }
     }
     seedOperationEditor(detail, mode);
+    // Product and SKU catalogs load lazily on first use. Resolve every saved
+    // line before showing the editor-ready acknowledgement or enabling edits.
+    await hydrateOperationSkus();
+    if (operationsUiState.operationId !== detail.id || operationsUiState.mode !== mode) return;
+    document.querySelectorAll("#op-lines .line-editor-row").forEach((row) => {
+      const skuId = operationEditorLineById.get(row.dataset.operationLineKey)?.skuId;
+      if (skuId) seedOperationLineSkuSelection(row, skuId);
+    });
     if (detail.operationType === "Return" || detail.operationType === "Change") await hydrateOperationReturnSources();
     notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
   } catch (exception) {

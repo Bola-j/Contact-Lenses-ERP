@@ -8,7 +8,7 @@ Usage:
 
 Pulls the latest code, rebuilds production images, runs migrations, and restarts
 the app/frontend/proxy services without deleting or recreating the production
-database volume.
+database volume. Shows a maintenance page on the proxy for the duration.
 EOF
 }
 
@@ -77,6 +77,18 @@ if [[ "$PULL" == true ]]; then
   git pull --ff-only origin "$BRANCH"
 fi
 
+# Caddy serves this page from a host-mounted directory, independent of the
+# frontend container, so it stays visible throughout image builds and restarts.
+MAINTENANCE_DIR="deploy/maintenance"
+mkdir -p "$MAINTENANCE_DIR"
+cp frontend/maintenance.html "$MAINTENANCE_DIR/maintenance.html"
+MAINTENANCE_FLAG="$MAINTENANCE_DIR/maintenance.flag"
+cleanup_maintenance_flag() {
+  rm -f "$MAINTENANCE_FLAG"
+}
+trap cleanup_maintenance_flag EXIT INT TERM
+printf 'maintenance\n' > "$MAINTENANCE_FLAG"
+
 "${DC[@]}" config --quiet
 
 BUILD_ARGS=()
@@ -88,6 +100,8 @@ fi
 "${DC[@]}" up -d db
 "${DC[@]}" --profile migrate run --rm --no-deps migrator
 "${DC[@]}" up -d --no-deps lensee.host frontend caddy
+rm -f "$MAINTENANCE_FLAG"
+trap - EXIT INT TERM
 "${DC[@]}" ps
 
 echo "Deployment update complete. Production database volume was not removed."

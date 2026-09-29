@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Lensee is updating</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", Tahoma, Arial, sans-serif; background: #edf2f7; color: #17263a; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; }
+    main { width: min(100%, 560px); padding: 44px 40px; border: 1px solid #dce5ee; border-radius: 18px; background: #fff; box-shadow: 0 18px 55px #18334d14; text-align: center; }
+    .brand { margin: 0 0 30px; color: #264f7f; font-size: 24px; font-weight: 750; letter-spacing: .02em; }
+    .spinner { width: 44px; height: 44px; margin: 0 auto 24px; border: 4px solid #dce8f4; border-top-color: #356396; border-radius: 50%; animation: spin .9s linear infinite; }
+    h1 { margin: 0 0 14px; font-size: clamp(24px, 6vw, 32px); }
+    p { margin: 0; color: #52647a; font-size: 16px; line-height: 1.65; }
+    .note { margin-top: 18px; font-size: 14px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-top-color: #356396; } }
+    html[dir="rtl"] main { direction: rtl; }
+  </style>
+</head>
+<body>
+  <main aria-live="polite" aria-busy="true">
+    <p class="brand">Lensee</p>
+    <div class="spinner" aria-hidden="true"></div>
+    <h1 id="title">Lensee is updating</h1>
+    <p id="message">We’re applying a system update. Your company data is safe. Please wait a few minutes, then reload this page.</p>
+    <p class="note" id="note">This page will disappear automatically when the update is complete.</p>
+  </main>
+  <script>
+    const arabic = /^(ar)(?:-|$)/i.test(navigator.language || "");
+    if (arabic) {
+      document.documentElement.lang = "ar";
+      document.documentElement.dir = "rtl";
+      document.title = "لينسي قيد التحديث";
+      document.getElementById("title").textContent = "لينسي قيد التحديث";
+      document.getElementById("message").textContent = "نقوم بتطبيق تحديث للنظام. بيانات شركتك آمنة. يُرجى الانتظار بضع دقائق ثم إعادة تحميل الصفحة.";
+      document.getElementById("note").textContent = "ستختفي هذه الصفحة تلقائياً عند اكتمال التحديث.";
+    }
+  </script>
+</body>
+</html>
