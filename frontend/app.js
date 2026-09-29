@@ -5969,11 +5969,20 @@ async function startOperationEditorMode(operationId, mode) {
     // Product and SKU catalogs load lazily on first use. Resolve every saved
     // line before showing the editor-ready acknowledgement or enabling edits.
     await hydrateOperationSkus();
+    const savedSkuIds = [...new Set(operationEditorLines.map((line) => line.skuId).filter(Boolean))];
+    for (let offset = 0; offset < savedSkuIds.length; offset += 20) {
+      await Promise.all(savedSkuIds.slice(offset, offset + 20).map((skuId) => ensureSkuOption(skuId)));
+    }
+    if (savedSkuIds.some((skuId) => !operationSkuOptions.some((sku) => sku.id === skuId))) {
+      notice(foundationT("errors.catalog.loadFailed"), "error");
+      return;
+    }
     if (operationsUiState.operationId !== detail.id || operationsUiState.mode !== mode) return;
     document.querySelectorAll("#op-lines .line-editor-row").forEach((row) => {
       const skuId = operationEditorLineById.get(row.dataset.operationLineKey)?.skuId;
       if (skuId) seedOperationLineSkuSelection(row, skuId);
     });
+    primeAllOperationStockOptions();
     if (detail.operationType === "Return" || detail.operationType === "Change") await hydrateOperationReturnSources();
     notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
   } catch (exception) {
