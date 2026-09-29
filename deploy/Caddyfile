@@ -16,14 +16,5 @@
     @api path /api/* /health /ready /swagger* /openapi*
     reverse_proxy @api lensee.host:8080
 
-    @maintenance expression file({'root': '/srv', 'try_files': ['maintenance.flag']})
-    handle @maintenance {
-        root * /srv
-        header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate"
-        header Retry-After 60
-        rewrite * /maintenance.html
-        file_server
-    }
-
     reverse_proxy frontend:80
 }
