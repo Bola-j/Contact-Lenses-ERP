@@ -91,6 +91,10 @@ printf 'maintenance\n' > "$MAINTENANCE_FLAG"
 
 "${DC[@]}" config --quiet
 
+echo "Validating Caddy configuration before applying migrations..."
+"${DC[@]}" run --rm --no-deps --entrypoint caddy caddy \
+  validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
 BUILD_ARGS=()
 if [[ "$NO_CACHE" == true ]]; then
   BUILD_ARGS+=(--no-cache)
