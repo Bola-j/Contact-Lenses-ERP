@@ -4,6 +4,7 @@ param(
     [string]$EnvFile = ".env",
     [string[]]$AdditionalComposeFiles = @(),
     [string]$EvidenceDirectory,
+    [switch]$SkipApplicationBuild,
     [ValidatePattern("^[0-9a-fA-F]{40}$")]
     [string]$ApprovedCandidateSha,
     [string]$CertificationEvidenceDirectory,
@@ -239,6 +240,9 @@ try {
         }
         $releaseApproval = Assert-ReleaseApproval -CandidateSha $candidateSha
     }
+    if ($SkipApplicationBuild -and -not $isCertificationDeployment) {
+        throw "-SkipApplicationBuild is restricted to isolated certification Compose projects."
+    }
 
     $envLines = Get-Content -LiteralPath $resolvedEnvFile | Where-Object { $_ -match "^\s*[^#][^=]+=" }
     $envMap = @{}
@@ -257,8 +261,26 @@ try {
 
     Write-Host "Pulling external production images..."
     Invoke-Compose -Arguments @("pull", "db", "caddy")
-    Write-Host "Building application images..."
-    Invoke-Compose -Arguments @("build", "lensee.host", "migrator", "frontend")
+    if ($SkipApplicationBuild) {
+        $resolvedConfigJson = & docker compose @composeFiles config --format json
+        if ($LASTEXITCODE -ne 0) { throw "Could not resolve application image references for the prebuilt-image certification deployment." }
+        $resolvedConfig = (($resolvedConfigJson -join [Environment]::NewLine) | ConvertFrom-Json)
+        foreach ($serviceName in "lensee.host", "migrator", "frontend") {
+            $service = $resolvedConfig.services.PSObject.Properties[$serviceName].Value
+            if ($null -eq $service -or [string]::IsNullOrWhiteSpace($service.image)) {
+                throw "Resolved image reference is missing for '$serviceName'."
+            }
+            $imageId = (& docker image inspect --format '{{.Id}}' $service.image).Trim()
+            if ($LASTEXITCODE -ne 0 -or $imageId -notmatch '^sha256:[0-9a-f]{64}$') {
+                throw "Prebuilt image '$($service.image)' for '$serviceName' is not available locally."
+            }
+        }
+        Write-Host "Using the already built and verified application images."
+    }
+    else {
+        Write-Host "Building application images..."
+        Invoke-Compose -Arguments @("build", "lensee.host", "migrator", "frontend")
+    }
 
     Write-Host "Starting PostgreSQL only..."
     Invoke-Compose -Arguments @("up", "-d", "db")

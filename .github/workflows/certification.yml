@@ -1,9 +1,6 @@
 name: Certification Evidence
 
 on:
-  schedule:
-    - cron: "0 0 * * 0"
-  workflow_dispatch:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -13,239 +10,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: certification-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-  DOTNET_NOLOGO: "1"
+  group: certification-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
 
 jobs:
-  phase4-10-static-image-config:
-    name: Certification / Phase 4-10 static image config
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Set up toolchains
-        uses: ./.github/actions/setup-certification
-
-      - name: Run Phase 4-10 static image config validation
-        run: pwsh -NoProfile -File scripts/verify-phase4-10.ps1
-
-      - name: Upload Phase 4-10 evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: certification-phase4-10-static-image-config
-          path: artifacts/certification/**
-          if-no-files-found: warn
-          retention-days: 30
-
-  phase0-3-runtime:
-    name: Certification / Phase 0-3 runtime
-    needs: phase4-10-static-image-config
-    runs-on: ubuntu-latest
-    timeout-minutes: 55
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Set up toolchains and browsers
-        uses: ./.github/actions/setup-certification
-        with:
-          playwright: "true"
-
-      - name: Run Phase 0-3 runtime certification
-        run: pwsh -NoProfile -File scripts/verify-phase0-3-runtime.ps1
-
-      - name: Upload Phase 0-3 evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: certification-phase0-3-runtime
-          path: |
-            artifacts/certification/**
-            playwright-report/**
-            test-results/**
-          if-no-files-found: warn
-          retention-days: 30
-
-  complete-browser-suite:
-    name: Certification / Complete browser suite
-    needs: phase4-10-static-image-config
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Set up toolchains and browsers
-        uses: ./.github/actions/setup-certification
-        with:
-          playwright: "true"
-
-      - name: Reset isolated E2E stack
-        run: pwsh -NoProfile -File scripts/e2e-setup.ps1
-
-      - name: Run complete browser certification suite
-        env:
-          LENSEE_E2E_SKIP_WEBSERVER: "1"
-        run: npm run e2e
-
-      - name: Collect bounded browser Compose logs
-        if: failure()
-        shell: bash
-        run: |
-          mkdir -p artifacts/certification/browser-compose-logs
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/certification/browser-compose-logs/compose-ps.txt 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/certification/browser-compose-logs/db.log 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/certification/browser-compose-logs/api.log 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/certification/browser-compose-logs/frontend.log 2>&1 || true
-
-      - name: Upload browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: certification-complete-browser-suite
-          path: |
-            artifacts/certification/**
-            playwright-report/**
-            test-results/**
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Clean up isolated E2E stack
-        if: always()
-        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
-
-  recovery-drill:
-    name: Certification / Recovery drill
-    needs: phase4-10-static-image-config
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Set up toolchains
-        uses: ./.github/actions/setup-certification
-
-      - name: Run recovery drill
-        run: pwsh -NoProfile -File scripts/verify-recovery-drill.ps1
-
-      - name: Upload recovery evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: certification-recovery-drill
-          path: artifacts/certification/**
-          if-no-files-found: warn
-          retention-days: 30
-
-  publish-certified-images:
-    name: Certification / Publish exact-SHA images
-    needs:
-      - phase4-10-static-image-config
-      - phase0-3-runtime
-      - complete-browser-suite
-      - recovery-drill
+  certify-release-candidate:
     if: >-
-      needs.phase4-10-static-image-config.result == 'success' &&
-      needs.phase0-3-runtime.result == 'success' &&
-      needs.complete-browser-suite.result == 'success' &&
-      needs.recovery-drill.result == 'success' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    uses: ./.github/workflows/reusable-certification.yml
+    with:
+      candidate_sha: ${{ github.event.workflow_run.head_sha }}
+      release_run: true
+      source_ci_event: ${{ github.event.workflow_run.event }}
+      source_ci_branch: ${{ github.event.workflow_run.head_branch }}
+      source_ci_repository: ${{ github.event.workflow_run.head_repository.full_name }}
+      source_ci_sha: ${{ github.event.workflow_run.head_sha }}
+      source_ci_conclusion: ${{ github.event.workflow_run.conclusion }}
+      source_ci_run_id: ${{ github.event.workflow_run.id }}
     permissions:
       contents: read
+      actions: read
       packages: write
-    steps:
-      - name: Check out the exact certified commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Verify the candidate is on main
-        shell: bash
-        run: |
-          set -euo pipefail
-          candidate_sha="$(git rev-parse HEAD)"
-          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$candidate_sha" origin/main
-          printf 'Publishing images for certified commit %s\n' "$candidate_sha"
-
-      - name: Authenticate to GitHub Container Registry
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Build and publish immutable images for the certified SHA
-        env:
-          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
-          IMAGE_REPOSITORY: ${{ github.event.repository.name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          namespace="${IMAGE_NAMESPACE,,}"
-          repository="${IMAGE_REPOSITORY,,}"
-          candidate_sha="$(git rev-parse HEAD)"
-          docker build --file backend/Lensee.Host/Dockerfile --tag "$namespace/$repository-api:$candidate_sha" .
-          docker build --file frontend/Dockerfile --tag "$namespace/$repository-frontend:$candidate_sha" frontend
-          docker push "$namespace/$repository-api:$candidate_sha"
-          docker push "$namespace/$repository-frontend:$candidate_sha"
-
-  certification-result:
-    name: Certification / Release gate
-    if: always()
-    needs:
-      - phase4-10-static-image-config
-      - phase0-3-runtime
-      - complete-browser-suite
-      - recovery-drill
-      - publish-certified-images
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require all certification and release jobs to pass
-        env:
-          STATIC_RESULT: ${{ needs.phase4-10-static-image-config.result }}
-          RUNTIME_RESULT: ${{ needs.phase0-3-runtime.result }}
-          BROWSER_RESULT: ${{ needs.complete-browser-suite.result }}
-          RECOVERY_RESULT: ${{ needs.recovery-drill.result }}
-          IMAGE_RESULT: ${{ needs.publish-certified-images.result }}
-          SOURCE_EVENT: ${{ github.event_name }}
-          CI_RESULT: ${{ github.event.workflow_run.conclusion }}
-          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SOURCE_CI_EVENT: ${{ github.event.workflow_run.event }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf 'static=%s runtime=%s browser=%s recovery=%s images=%s\n' \
-            "$STATIC_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$RECOVERY_RESULT" "$IMAGE_RESULT"
-          for result in "$STATIC_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$RECOVERY_RESULT"; do
-            if [[ "$result" != "success" ]]; then
-              echo "Certification is incomplete or failed; release gate is closed." >&2
-              exit 1
-            fi
-          done
-          if [[ "$SOURCE_EVENT" == "workflow_run" ]]; then
-            [[ "$CI_RESULT" == "success" && "$SOURCE_BRANCH" == "main" && "$SOURCE_CI_EVENT" == "push" ]]
-            [[ "$IMAGE_RESULT" == "success" ]]
-          fi

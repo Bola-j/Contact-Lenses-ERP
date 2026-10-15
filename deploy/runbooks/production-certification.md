@@ -2,8 +2,11 @@
 
 ## What CI/local automation may do
 
-- `powershell -NoProfile -File scripts/verify-phase4-10.ps1` records static, PostgreSQL, image-policy, and configuration evidence only.
-- Add `-IncludeRuntime`, `-IncludeBrowser`, and `-IncludeRecovery` only on a disposable Docker host. These modes use `lensee-certification-*` and `lensee-e2e` projects; they never target the default stack.
+- A successful `CI` push to `main` triggers `Certification Evidence`, which calls the single reusable release-certification workflow for that exact commit.
+- `Full UI Certification` runs the same certification suites nightly and manually. Manual runs may specify a full commit SHA reachable from `main`; they do not publish images or deploy.
+- The release workflow keeps production-configuration, runtime/deployment, complete browser, and backup/restore recovery evidence in separate artifacts. Review `certification-suite-inventory.md` for the old-to-new coverage map.
+- A release run publishes immutable full-SHA images only after every release suite passes. `CD / Production` downloads and validates the manifest from that exact certification run before checking out or deploying the certified SHA.
+- For local diagnostics, run the focused scripts only on a disposable Docker host. They use dedicated `lensee-certification-*` and `lensee-e2e` Compose projects; never target the default or production stack. A local pass is not release evidence.
 - Review the PR workflow for the exact commit before treating any local evidence as release evidence.
 
 ## VPS-only operator runbook

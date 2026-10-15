@@ -1,0 +1,726 @@
+name: Reusable Release Certification
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact commit to certify
+        required: true
+        type: string
+      release_run:
+        description: Whether passing certification may publish immutable images
+        required: true
+        type: boolean
+      source_ci_event:
+        required: true
+        type: string
+      source_ci_branch:
+        required: true
+        type: string
+      source_ci_repository:
+        required: true
+        type: string
+      source_ci_sha:
+        required: true
+        type: string
+      source_ci_conclusion:
+        required: true
+        type: string
+      source_ci_run_id:
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-certification-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Certification / Candidate preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Verify candidate and source CI identity
+        id: candidate
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          SOURCE_CI_EVENT: ${{ inputs.source_ci_event }}
+          SOURCE_CI_BRANCH: ${{ inputs.source_ci_branch }}
+          SOURCE_CI_REPOSITORY: ${{ inputs.source_ci_repository }}
+          SOURCE_CI_SHA: ${{ inputs.source_ci_sha }}
+          SOURCE_CI_CONCLUSION: ${{ inputs.source_ci_conclusion }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
+          if [[ "$RELEASE_RUN" == "true" ]]; then
+            [[ "$SOURCE_CI_EVENT" == "push" ]]
+            [[ "$SOURCE_CI_BRANCH" == "main" ]]
+            [[ "$SOURCE_CI_REPOSITORY" == "$SOURCE_REPOSITORY" ]]
+            [[ "$SOURCE_CI_SHA" == "$CANDIDATE_SHA" ]]
+            [[ "$SOURCE_CI_CONCLUSION" == "success" ]]
+          fi
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+  same-sha-security-gate:
+    name: Certification / Same-SHA security evidence
+    needs: [preflight, build-candidate-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      security_scan_result: ${{ steps.security.outputs.security_scan_result }}
+      semgrep_result: ${{ steps.security.outputs.semgrep_result }}
+      duration_seconds: ${{ steps.duration.outputs.duration_seconds }}
+    steps:
+      - name: Start security gate timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Download candidate image bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
+          path: candidate-image-bundle
+      - name: Load and verify candidate images
+        shell: pwsh
+        run: >-
+          ./scripts/verify-candidate-image-bundle.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
+          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+      - name: Prepare security evidence directory
+        run: mkdir -p artifacts/certification
+      - name: Generate SBOM for the exact candidate API image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: ${{ needs.build-candidate-images.outputs.api_image }}
+          format: spdx-json
+          output-file: artifacts/certification/candidate-api-sbom.spdx.json
+      - name: Generate Trivy SARIF for the exact candidate API image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ needs.build-candidate-images.outputs.api_image }}
+          format: sarif
+          output: artifacts/certification/candidate-api-trivy.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+      - name: Block HIGH and CRITICAL findings in the exact candidate API image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ needs.build-candidate-images.outputs.api_image }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+      - name: Upload candidate image security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: certification-security-${{ needs.preflight.outputs.candidate_sha }}
+          path: artifacts/certification/candidate-api-*
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Wait for successful exact-SHA security workflows
+        id: security
+        env:
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_RUN" != "true" ]]; then
+            echo "security_scan_result=not-required" >> "$GITHUB_OUTPUT"
+            echo "semgrep_result=not-required" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          workflows=("Security Evidence" "Semgrep SAST")
+          outputs=(security_scan_result semgrep_result)
+          for index in "${!workflows[@]}"; do
+            workflow_name="${workflows[$index]}"
+            workflow_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" --jq ".workflows[] | select(.name == \"$workflow_name\") | .id" | head -n 1)"
+            [[ -n "$workflow_id" ]] || { echo "Required same-SHA workflow not found: $workflow_name" >&2; exit 1; }
+            deadline=$(( $(date +%s) + 2100 ))
+            result=""
+            while (( $(date +%s) < deadline )); do
+              runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?head_sha=$CANDIDATE_SHA&event=push&branch=main&per_page=100")"
+              run="$(jq -c --arg sha "$CANDIDATE_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.run_number) | last // empty' <<< "$runs")"
+              if [[ -n "$run" ]]; then
+                status="$(jq -r '.status' <<< "$run")"
+                conclusion="$(jq -r '.conclusion // ""' <<< "$run")"
+                if [[ "$status" == "completed" ]]; then
+                  [[ "$conclusion" == "success" ]] || { echo "$workflow_name failed for $CANDIDATE_SHA: $conclusion" >&2; exit 1; }
+                  result=success
+                  break
+                fi
+              fi
+              sleep 20
+            done
+            [[ "$result" == "success" ]] || { echo "Timed out waiting for successful $workflow_name on $CANDIDATE_SHA" >&2; exit 1; }
+            echo "${outputs[$index]}=$result" >> "$GITHUB_OUTPUT"
+          done
+      - name: Record same-SHA gate duration
+        id: duration
+        if: always()
+        env:
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+        shell: bash
+        run: |
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+
+  build-candidate-images:
+    name: Certification / Build candidate image bundle
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      api_image: ${{ steps.build.outputs.api_image }}
+      frontend_image: ${{ steps.build.outputs.frontend_image }}
+      api_image_id: ${{ steps.build.outputs.api_image_id }}
+      frontend_image_id: ${{ steps.build.outputs.frontend_image_id }}
+      duration_seconds: ${{ steps.duration.outputs.duration_seconds }}
+    steps:
+      - name: Start candidate build timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Build and archive exact-SHA application images
+        id: build
+        env:
+          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+          IMAGE_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="${IMAGE_NAMESPACE,,}"
+          repository="${IMAGE_REPOSITORY##*/}"
+          repository="${repository,,}"
+          api_image="$namespace/$repository-api:$CANDIDATE_SHA"
+          frontend_image="$namespace/$repository-frontend:$CANDIDATE_SHA"
+          mkdir -p candidate-image-bundle
+          docker build --file backend/Lensee.Host/Dockerfile --tag "$api_image" .
+          docker build --file frontend/Dockerfile --tag "$frontend_image" frontend
+          docker save --output candidate-image-bundle/candidate-images.tar "$api_image" "$frontend_image"
+          api_id="$(docker image inspect --format '{{.Id}}' "$api_image")"
+          frontend_id="$(docker image inspect --format '{{.Id}}' "$frontend_image")"
+          archive_sha256="$(sha256sum candidate-image-bundle/candidate-images.tar | awk '{print $1}')"
+          export API_IMAGE="$api_image" FRONTEND_IMAGE="$frontend_image" API_ID="$api_id" FRONTEND_ID="$frontend_id" ARCHIVE_SHA256="$archive_sha256"
+          python - <<'PY'
+          import json, os, pathlib
+          data = {
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "api": {"reference": os.environ["API_IMAGE"], "image_id": os.environ["API_ID"]},
+              "frontend": {"reference": os.environ["FRONTEND_IMAGE"], "image_id": os.environ["FRONTEND_ID"]},
+              "archive_sha256": os.environ["ARCHIVE_SHA256"],
+          }
+          pathlib.Path("candidate-image-bundle/candidate-images.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+          echo "api_image=$api_image" >> "$GITHUB_OUTPUT"
+          echo "frontend_image=$frontend_image" >> "$GITHUB_OUTPUT"
+          echo "api_image_id=$api_id" >> "$GITHUB_OUTPUT"
+          echo "frontend_image_id=$frontend_id" >> "$GITHUB_OUTPUT"
+      - name: Upload exact candidate images for certification and publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
+          path: candidate-image-bundle/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Record candidate build duration
+        id: duration
+        if: always()
+        env:
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+        shell: bash
+        run: |
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+
+  release-config:
+    name: Certification / Release configuration
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
+    steps:
+      - name: Start suite timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Verify resolved production configuration
+        shell: pwsh
+        run: ./scripts/verify-release-config.ps1 -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+      - name: Record configuration result and duration
+        id: evidence
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          printf '{"candidate_sha":"%s","suite":"release-config","result":"%s","duration_seconds":%s}\n' \
+            "$CANDIDATE_SHA" "$JOB_RESULT" "$duration" > artifacts/certification/release-config-suite-result.json
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+      - name: Upload release configuration evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: certification-config-${{ needs.preflight.outputs.candidate_sha }}
+          path: artifacts/certification/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  runtime:
+    name: Certification / Runtime and deployment
+    needs: [preflight, build-candidate-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    outputs:
+      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
+    steps:
+      - name: Start suite timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Download candidate images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
+          path: candidate-image-bundle
+      - name: Load and verify exact candidate images
+        shell: pwsh
+        run: >-
+          ./scripts/verify-candidate-image-bundle.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
+          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+      - name: Set up Node for synthetic workload script
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+      - name: Run runtime and deployment certification
+        shell: pwsh
+        run: >-
+          ./scripts/verify-phase0-3-runtime.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+      - name: Record runtime result and duration
+        id: evidence
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          printf '{"candidate_sha":"%s","suite":"runtime-deployment","result":"%s","duration_seconds":%s}\n' \
+            "$CANDIDATE_SHA" "$JOB_RESULT" "$duration" > artifacts/certification/runtime-suite-result.json
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: certification-runtime-${{ needs.preflight.outputs.candidate_sha }}
+          path: artifacts/certification/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  complete-browser-suite:
+    name: Certification / Complete browser suite
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    outputs:
+      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
+    steps:
+      - name: Start suite timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Set up toolchains and Chromium
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+      - name: Start isolated E2E stack
+        shell: pwsh
+        run: ./scripts/e2e-setup.ps1
+      - name: Run complete browser certification
+        env:
+          LENSEE_E2E_SKIP_WEBSERVER: "1"
+        run: npm run e2e
+      - name: Capture bounded browser diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification/browser-compose-logs
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/certification/browser-compose-logs/compose-ps.txt 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/certification/browser-compose-logs/db.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/certification/browser-compose-logs/api.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/certification/browser-compose-logs/frontend.log 2>&1 || true
+      - name: Clean up isolated E2E stack
+        if: always()
+        shell: bash
+        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
+      - name: Record browser result and duration
+        id: evidence
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          printf '{"candidate_sha":"%s","suite":"complete-browser","result":"%s","duration_seconds":%s}\n' \
+            "$CANDIDATE_SHA" "$JOB_RESULT" "$duration" > artifacts/certification/browser-suite-result.json
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+      - name: Upload browser results and artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: certification-browser-${{ needs.preflight.outputs.candidate_sha }}
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  recovery:
+    name: Certification / Backup and restore recovery
+    needs: [preflight, build-candidate-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    outputs:
+      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
+    steps:
+      - name: Start suite timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Download candidate images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
+          path: candidate-image-bundle
+      - name: Load and verify exact candidate images
+        shell: pwsh
+        run: >-
+          ./scripts/verify-candidate-image-bundle.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
+          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+      - name: Run isolated backup and restore drill
+        shell: pwsh
+        run: >-
+          ./scripts/verify-recovery-drill.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+      - name: Record recovery result and duration
+        id: evidence
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          printf '{"candidate_sha":"%s","suite":"backup-restore-recovery","result":"%s","duration_seconds":%s}\n' \
+            "$CANDIDATE_SHA" "$JOB_RESULT" "$duration" > artifacts/certification/recovery-suite-result.json
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: certification-recovery-${{ needs.preflight.outputs.candidate_sha }}
+          path: artifacts/certification/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish-images:
+    name: Certification / Publish immutable candidate images
+    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, complete-browser-suite, recovery]
+    if: >-
+      inputs.release_run == true &&
+      needs.preflight.result == 'success' &&
+      needs.same-sha-security-gate.result == 'success' &&
+      needs.build-candidate-images.result == 'success' &&
+      needs.release-config.result == 'success' &&
+      needs.runtime.result == 'success' &&
+      needs.complete-browser-suite.result == 'success' &&
+      needs.recovery.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
+      api_digest_ref: ${{ steps.publish.outputs.api_digest_ref }}
+      frontend_digest_ref: ${{ steps.publish.outputs.frontend_digest_ref }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Start image publication timer
+        id: timer
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Check out exact certified candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Download candidate image bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
+          path: candidate-image-bundle
+      - name: Load and verify candidate image IDs
+        shell: pwsh
+        run: >-
+          ./scripts/verify-candidate-image-bundle.ps1
+          -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
+          -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
+          -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
+          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
+          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+      - name: Authenticate to GitHub Container Registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build and push immutable SHA-tagged images
+        id: publish
+        env:
+          API_IMAGE: ${{ needs.build-candidate-images.outputs.api_image }}
+          FRONTEND_IMAGE: ${{ needs.build-candidate-images.outputs.frontend_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$API_IMAGE"
+          docker push "$FRONTEND_IMAGE"
+          api_digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$API_IMAGE")"
+          frontend_digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")"
+          [[ "$api_digest_ref" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
+          [[ "$frontend_digest_ref" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
+          echo "api_digest_ref=$api_digest_ref" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest_ref=$frontend_digest_ref" >> "$GITHUB_OUTPUT"
+      - name: Record image publication duration
+        id: evidence
+        if: always()
+        env:
+          STARTED_AT: ${{ steps.timer.outputs.started_at }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          ended_at="$(date +%s)"
+          duration=$((ended_at - STARTED_AT))
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+
+  certification-result:
+    name: Certification / Result manifest
+    if: always()
+    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, complete-browser-suite, recovery, publish-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact candidate for certification evidence
+        if: needs.preflight.result == 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.candidate_sha }}
+      - name: Produce suite result manifest
+        id: manifest
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_RUN: ${{ inputs.release_run }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          SECURITY_GATE_RESULT: ${{ needs.same-sha-security-gate.result }}
+          IMAGE_BUILD_RESULT: ${{ needs.build-candidate-images.result }}
+          CONFIG_RESULT: ${{ needs.release-config.result }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+          BROWSER_RESULT: ${{ needs.complete-browser-suite.result }}
+          RECOVERY_RESULT: ${{ needs.recovery.result }}
+          IMAGE_RESULT: ${{ needs.publish-images.result }}
+          CONFIG_DURATION: ${{ needs['release-config'].outputs.duration_seconds }}
+          IMAGE_BUILD_DURATION: ${{ needs.build-candidate-images.outputs.duration_seconds }}
+          API_IMAGE_REF: ${{ needs.build-candidate-images.outputs.api_image }}
+          FRONTEND_IMAGE_REF: ${{ needs.build-candidate-images.outputs.frontend_image }}
+          API_IMAGE_ID: ${{ needs.build-candidate-images.outputs.api_image_id }}
+          FRONTEND_IMAGE_ID: ${{ needs.build-candidate-images.outputs.frontend_image_id }}
+          SECURITY_DURATION: ${{ needs['same-sha-security-gate'].outputs.duration_seconds }}
+          RUNTIME_DURATION: ${{ needs.runtime.outputs.duration_seconds }}
+          BROWSER_DURATION: ${{ needs.complete-browser-suite.outputs.duration_seconds }}
+          RECOVERY_DURATION: ${{ needs.recovery.outputs.duration_seconds }}
+          IMAGE_DURATION: ${{ needs.publish-images.outputs.duration_seconds }}
+          API_DIGEST_REF: ${{ needs.publish-images.outputs.api_digest_ref }}
+          FRONTEND_DIGEST_REF: ${{ needs.publish-images.outputs.frontend_digest_ref }}
+          SOURCE_CI_EVENT: ${{ inputs.source_ci_event }}
+          SOURCE_CI_BRANCH: ${{ inputs.source_ci_branch }}
+          SOURCE_CI_REPOSITORY: ${{ inputs.source_ci_repository }}
+          SOURCE_CI_SHA: ${{ inputs.source_ci_sha }}
+          SOURCE_CI_CONCLUSION: ${{ inputs.source_ci_conclusion }}
+          SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
+          SECURITY_SCAN_RESULT: ${{ needs.same-sha-security-gate.outputs.security_scan_result }}
+          SEMGREP_RESULT: ${{ needs.same-sha-security-gate.outputs.semgrep_result }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/certification
+          python - <<'PY'
+          import json, os, pathlib
+          suites = {
+              "preflight": os.environ["PREFLIGHT_RESULT"],
+              "same_sha_security_gate": os.environ["SECURITY_GATE_RESULT"],
+              "candidate_image_build": os.environ["IMAGE_BUILD_RESULT"],
+              "release_config": os.environ["CONFIG_RESULT"],
+              "runtime_deployment": os.environ["RUNTIME_RESULT"],
+              "complete_browser": os.environ["BROWSER_RESULT"],
+              "backup_restore_recovery": os.environ["RECOVERY_RESULT"],
+              "immutable_images": os.environ["IMAGE_RESULT"],
+          }
+          release = os.environ["RELEASE_RUN"].lower() == "true"
+          security_scan = os.environ.get("SECURITY_SCAN_RESULT", "") if release else "not-required"
+          semgrep = os.environ.get("SEMGREP_RESULT", "") if release else "not-required"
+          if release and not security_scan:
+              security_scan = "failed-or-missing"
+          if release and not semgrep:
+              semgrep = "failed-or-missing"
+          durations = {
+              "same_sha_security_gate": os.environ.get("SECURITY_DURATION", ""),
+              "candidate_image_build": os.environ.get("IMAGE_BUILD_DURATION", ""),
+              "release_config": os.environ.get("CONFIG_DURATION", ""),
+              "runtime_deployment": os.environ.get("RUNTIME_DURATION", ""),
+              "complete_browser": os.environ.get("BROWSER_DURATION", ""),
+              "backup_restore_recovery": os.environ.get("RECOVERY_DURATION", ""),
+              "immutable_images": os.environ.get("IMAGE_DURATION", ""),
+          }
+          required = ["preflight", "candidate_image_build", "same_sha_security_gate", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery"]
+          passed = all(suites[name] == "success" for name in required)
+          if release:
+              passed = passed and security_scan == "success" and semgrep == "success" and suites["immutable_images"] == "success"
+          else:
+              passed = passed and suites["immutable_images"] == "skipped"
+          manifest = {
+              "schema_version": 1,
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "release_run": release,
+              "overall_result": "passed" if passed else "failed",
+              "suites": suites,
+              "durations_seconds": durations,
+              "candidate_images": {
+                  "api": {
+                      "sha_tag": os.environ["API_IMAGE_REF"],
+                      "image_id": os.environ["API_IMAGE_ID"],
+                      "digest_ref": os.environ.get("API_DIGEST_REF", ""),
+                  },
+                  "frontend": {
+                      "sha_tag": os.environ["FRONTEND_IMAGE_REF"],
+                      "image_id": os.environ["FRONTEND_IMAGE_ID"],
+                      "digest_ref": os.environ.get("FRONTEND_DIGEST_REF", ""),
+                  },
+              },
+              "source_ci": {
+                  "event": os.environ["SOURCE_CI_EVENT"],
+                  "branch": os.environ["SOURCE_CI_BRANCH"],
+                  "repository": os.environ["SOURCE_CI_REPOSITORY"],
+                  "head_sha": os.environ["SOURCE_CI_SHA"],
+                  "conclusion": os.environ["SOURCE_CI_CONCLUSION"],
+                  "run_id": os.environ["SOURCE_CI_RUN_ID"],
+              },
+              "same_sha_required_checks": {
+                  "security_evidence": security_scan,
+                  "semgrep_sast": semgrep,
+              },
+              "repository": os.environ["CURRENT_REPOSITORY"],
+              "certification_run_id": os.environ["WORKFLOW_RUN_ID"],
+              "certification_run_url": os.environ["WORKFLOW_URL"],
+          }
+          pathlib.Path("artifacts/certification/release-certification-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"result={'passed' if passed else 'failed'}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"## Release certification: {'PASS' if passed else 'FAIL'}\n\n")
+              summary.write(f"- Candidate: `{os.environ['CANDIDATE_SHA']}`\n- Release run: `{release}`\n")
+              for name, result in suites.items():
+                  summary.write(f"- {name}: `{result}`\n")
+              summary.write(f"- Source CI: `{os.environ['SOURCE_CI_REPOSITORY']}@{os.environ['SOURCE_CI_SHA']}` (`{os.environ['SOURCE_CI_CONCLUSION']}`)\n")
+          if not passed:
+              raise SystemExit("One or more required certification suites did not pass.")
+          PY
+      - name: Upload exact-SHA result manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-certification-manifest
+          path: artifacts/certification/release-certification-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Require manifest result
+        if: always()
+        env:
+          MANIFEST_RESULT: ${{ steps.manifest.outputs.result }}
+        shell: bash
+        run: test "$MANIFEST_RESULT" = passed
