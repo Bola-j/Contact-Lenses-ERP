@@ -149,6 +149,8 @@ public sealed class AnonymousRetailPaymentCompatibilityPostgresTests : IAsyncLif
         Section = "Standard",
         EntryMode = "Packs",
         Quantity = 1,
+        NormalQuantity = 1,
+        ExceptionQuantity = 0,
         UnitPrice = 100m,
         LineTotal = 100m
     };
