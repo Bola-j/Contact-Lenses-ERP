@@ -168,12 +168,17 @@ public static class OperationsEndpoints
             {
                 operationsDbContext.ReturnApprovalLines.Add(new ReturnApprovalLine
                 {
-                    Id = Guid.NewGuid(), OperationId = operation.Id, OperationLineId = line.Id, SkuId = line.SkuId,
+                    Id = Guid.NewGuid(),
+                    OperationId = operation.Id,
+                    OperationLineId = line.Id,
+                    SkuId = line.SkuId,
                     RequestedQuantity = line.Quantity,
                     EligibleQuantity = warning.AlertType == "ApprovalRequired" ? null : Math.Max(0, warning.SoldQuantity - warning.ReturnedQuantity),
-                    BatchName = line.LotNumber, ExpiryDate = line.ExpiryDate,
+                    BatchName = line.LotNumber,
+                    ExpiryDate = line.ExpiryDate,
                     MismatchType = warning.AlertType,
-                    Detail = warning.Message, CreatedAt = now
+                    Detail = warning.Message,
+                    CreatedAt = now
                 });
             }
         }
@@ -1508,395 +1513,441 @@ public static class OperationsEndpoints
     {
         try
         {
-        var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
-        if (operation is null)
-        {
-            return Results.NotFound();
-        }
-        if (operation.OperationType == Reserve)
-        {
-            return RetiredReserveResult();
-        }
-        if (operation.Status != Draft && !(operation.OperationType == Return && operation.Status == Approved))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Only draft operations or approved returns can be confirmed."] });
-        }
-        if (operation.OperationType == Return && operation.Status == Draft && operation.ClientId is null && !operation.OperationLines.Any(line => line.SourceAllocations.Count > 0))
-        {
-            return Results.Conflict(new { code = "return-approval-submission-required", status = Draft, detail = "This unlinked retail/online return must be submitted by an Admin or ERPAdmin before physical confirmation." });
-        }
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "confirm", cancellationToken))
-        {
-            return Results.Forbid();
-        }
-
-        var codChargeResult = ValidateCodChargeAtConfirmation(operation);
-        if (codChargeResult is not null) return codChargeResult;
-
-        // The route branch is selected from this preflight read. The aggregate is
-        // locked and loaded again inside the shared transaction before any stock
-        // mutation, so a concurrent draft edit cannot make this branch operate on
-        // obsolete lines or a different operation type.
-        var requestedOperationType = operation.OperationType;
-        IResult? confirmationConflict = null;
-        async Task<bool> LockDraftForConfirmationAsync()
-        {
-            var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
-            if (lockedOperation is null ||
-                (lockedOperation.Status != Draft && !(lockedOperation.OperationType == Return && lockedOperation.Status == Approved)) ||
-                !string.Equals(lockedOperation.OperationType, requestedOperationType, StringComparison.Ordinal))
+            var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
+            if (operation is null)
             {
-                confirmationConflict = Results.Conflict(new
-                {
-                    code = "transition-conflict",
-                    detail = "The operation changed before confirmation could be applied. Reload and retry."
-                });
-                return false;
+                return Results.NotFound();
             }
-
-            operation = lockedOperation;
-            await NormalizeLegacySealedWholesalePieceLinesAsync(operation, catalogDbContext, cancellationToken);
+            if (operation.OperationType == Reserve)
+            {
+                return RetiredReserveResult();
+            }
+            if (operation.Status != Draft && !(operation.OperationType == Return && operation.Status == Approved))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Only draft operations or approved returns can be confirmed."] });
+            }
+            if (operation.OperationType == Return && operation.Status == Draft && operation.ClientId is null && !operation.OperationLines.Any(line => line.SourceAllocations.Count > 0))
+            {
+                return Results.Conflict(new { code = "return-approval-submission-required", status = Draft, detail = "This unlinked retail/online return must be submitted by an Admin or ERPAdmin before physical confirmation." });
+            }
             if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "confirm", cancellationToken))
             {
-                confirmationConflict = Results.Forbid();
-                return false;
+                return Results.Forbid();
             }
 
-            return true;
-        }
+            var codChargeResult = ValidateCodChargeAtConfirmation(operation);
+            if (codChargeResult is not null) return codChargeResult;
 
-        OperationConfirmationRequest confirmationRequest;
-        try
-        {
-            confirmationRequest = await ReadConfirmationRequestAsync(httpContext.Request, cancellationToken);
-        }
-        catch (JsonException)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["request"] = ["Confirmation request is not valid JSON."] });
-        }
-
-        // Return exceptions are operational acceptance exceptions, not an
-        // in-app finance approval. Any permitted return operator may record the
-        // required verbal authorization; settlement remains Finance-only.
-        var canBypassSalesVariance = operation.OperationType == Return || LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
-        var salesVarianceReason = NormalizeBlank(confirmationRequest.SalesVarianceReason);
-        var verbalAuthorizer = NormalizeBlank(confirmationRequest.VerbalAuthorizer);
-        var salesVarianceOverrideRequested = canBypassSalesVariance &&
-            confirmationRequest.AcknowledgeSalesVariance == true &&
-            salesVarianceReason is { Length: > 0 and <= 500 } &&
-            verbalAuthorizer is { Length: > 0 and <= 255 };
-
-        // New returns are manually entered and have no source-line allocation.
-        // They must therefore pass the explicit Operations approval workflow
-        // before physical confirmation, regardless of their entered amount.
-        var hasExplicitReturnException = operation.OperationType == Return;
-
-        IReadOnlyList<MerchantSalesVarianceWarning> salesVarianceWarnings = [];
-        if (operation.OperationType is Return or Change)
-        {
-            salesVarianceWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
-            if (operation.OperationType == Return &&
-                (salesVarianceWarnings.Count > 0 || hasExplicitReturnException) &&
-                operation.Status == Draft &&
-                !salesVarianceOverrideRequested)
+            // The route branch is selected from this preflight read. The aggregate is
+            // locked and loaded again inside the shared transaction before any stock
+            // mutation, so a concurrent draft edit cannot make this branch operate on
+            // obsolete lines or a different operation type.
+            var requestedOperationType = operation.OperationType;
+            IResult? confirmationConflict = null;
+            async Task<bool> LockDraftForConfirmationAsync()
             {
-                return Results.Conflict(new
+                var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
+                if (lockedOperation is null ||
+                    (lockedOperation.Status != Draft && !(lockedOperation.OperationType == Return && lockedOperation.Status == Approved)) ||
+                    !string.Equals(lockedOperation.OperationType, requestedOperationType, StringComparison.Ordinal))
                 {
-                    code = "return-approval-submission-required",
-                    status = Draft,
-                    detail = "This return has exceptions and must be submitted for Admin or ERPAdmin approval before physical confirmation."
-                });
-            }
-
-            if ((salesVarianceWarnings.Count > 0 || hasExplicitReturnException) &&
-                operation.Status == Draft &&
-                !salesVarianceOverrideRequested)
-                return Results.Conflict(CreateMerchantSalesVarianceGate(salesVarianceWarnings, canBypassSalesVariance));
-        }
-
-        var now = clock.EgyptNow;
-        var userId = currentUser.UserId ?? Guid.Empty;
-        var salesVarianceBypassed = false;
-        Task WriteConfirmAuditAsync() => auditLogWriter.WriteAsync(
-            "Operation",
-            operation.Id,
-            "Confirm",
-            new
-            {
-                operation.OperationType,
-                operation.Status,
-                SalesVarianceBypassed = salesVarianceBypassed,
-                SalesVarianceReason = salesVarianceBypassed ? salesVarianceReason : null,
-                VerbalAuthorizer = salesVarianceBypassed ? verbalAuthorizer : null,
-                SalesVarianceOverrideRole = salesVarianceBypassed ? LenseeRoles.Normalize(currentUser.Role) : null
-            },
-            cancellationToken: cancellationToken);
-        if (operation.OperationType == InventoryReceipt)
-        {
-            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
-            {
-                if (!await LockDraftForConfirmationAsync()) return;
-                foreach (var line in operation.OperationLines)
-                {
-                    if (line.EntryMode == "Pieces")
+                    confirmationConflict = Results.Conflict(new
                     {
-                        await ledgerService.ReceivePiecesAsync(
+                        code = "transition-conflict",
+                        detail = "The operation changed before confirmation could be applied. Reload and retry."
+                    });
+                    return false;
+                }
+
+                operation = lockedOperation;
+                await NormalizeLegacySealedWholesalePieceLinesAsync(operation, catalogDbContext, cancellationToken);
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "confirm", cancellationToken))
+                {
+                    confirmationConflict = Results.Forbid();
+                    return false;
+                }
+
+                return true;
+            }
+
+            OperationConfirmationRequest confirmationRequest;
+            try
+            {
+                confirmationRequest = await ReadConfirmationRequestAsync(httpContext.Request, cancellationToken);
+            }
+            catch (JsonException)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["request"] = ["Confirmation request is not valid JSON."] });
+            }
+
+            // Return exceptions are operational acceptance exceptions, not an
+            // in-app finance approval. Any permitted return operator may record the
+            // required verbal authorization; settlement remains Finance-only.
+            var canBypassSalesVariance = operation.OperationType == Return || LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
+            var salesVarianceReason = NormalizeBlank(confirmationRequest.SalesVarianceReason);
+            var verbalAuthorizer = NormalizeBlank(confirmationRequest.VerbalAuthorizer);
+            var salesVarianceOverrideRequested = canBypassSalesVariance &&
+                confirmationRequest.AcknowledgeSalesVariance == true &&
+                salesVarianceReason is { Length: > 0 and <= 500 } &&
+                verbalAuthorizer is { Length: > 0 and <= 255 };
+
+            // New returns are manually entered and have no source-line allocation.
+            // They must therefore pass the explicit Operations approval workflow
+            // before physical confirmation, regardless of their entered amount.
+            var hasExplicitReturnException = operation.OperationType == Return;
+
+            IReadOnlyList<MerchantSalesVarianceWarning> salesVarianceWarnings = [];
+            if (operation.OperationType is Return or Change)
+            {
+                salesVarianceWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
+                if (operation.OperationType == Return &&
+                    (salesVarianceWarnings.Count > 0 || hasExplicitReturnException) &&
+                    operation.Status == Draft &&
+                    !salesVarianceOverrideRequested)
+                {
+                    return Results.Conflict(new
+                    {
+                        code = "return-approval-submission-required",
+                        status = Draft,
+                        detail = "This return has exceptions and must be submitted for Admin or ERPAdmin approval before physical confirmation."
+                    });
+                }
+
+                if ((salesVarianceWarnings.Count > 0 || hasExplicitReturnException) &&
+                    operation.Status == Draft &&
+                    !salesVarianceOverrideRequested)
+                    return Results.Conflict(CreateMerchantSalesVarianceGate(salesVarianceWarnings, canBypassSalesVariance));
+            }
+
+            var now = clock.EgyptNow;
+            var userId = currentUser.UserId ?? Guid.Empty;
+            var salesVarianceBypassed = false;
+            Task WriteConfirmAuditAsync() => auditLogWriter.WriteAsync(
+                "Operation",
+                operation.Id,
+                "Confirm",
+                new
+                {
+                    operation.OperationType,
+                    operation.Status,
+                    SalesVarianceBypassed = salesVarianceBypassed,
+                    SalesVarianceReason = salesVarianceBypassed ? salesVarianceReason : null,
+                    VerbalAuthorizer = salesVarianceBypassed ? verbalAuthorizer : null,
+                    SalesVarianceOverrideRole = salesVarianceBypassed ? LenseeRoles.Normalize(currentUser.Role) : null
+                },
+                cancellationToken: cancellationToken);
+            if (operation.OperationType == InventoryReceipt)
+            {
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
+                {
+                    if (!await LockDraftForConfirmationAsync()) return;
+                    foreach (var line in operation.OperationLines)
+                    {
+                        if (line.EntryMode == "Pieces")
+                        {
+                            await ledgerService.ReceivePiecesAsync(
+                                operation.DestinationLocationId!.Value,
+                                line.SkuId,
+                                line.Quantity,
+                                userId,
+                                InventoryTransactionTypes.Receipt,
+                                line.LotNumber,
+                                line.ExpiryDate,
+                                line.LineNotes,
+                                operation.Id,
+                                cancellationToken);
+                            continue;
+                        }
+                        await ledgerService.ReceiveAsync(
                             operation.DestinationLocationId!.Value,
                             line.SkuId,
                             line.Quantity,
                             userId,
-                            InventoryTransactionTypes.Receipt,
                             line.LotNumber,
                             line.ExpiryDate,
                             line.LineNotes,
                             operation.Id,
                             cancellationToken);
-                        continue;
                     }
-                    await ledgerService.ReceiveAsync(
-                        operation.DestinationLocationId!.Value,
-                        line.SkuId,
-                        line.Quantity,
-                        userId,
-                        line.LotNumber,
-                        line.ExpiryDate,
-                        line.LineNotes,
-                        operation.Id,
-                        cancellationToken);
+
+                    operation.Status = Received;
+                    operation.ConfirmedAt = now;
+                    operation.ConfirmedBy = userId;
+                    await AddVersionAsync(operationsDbContext, operation, "Received", userId, CreateSnapshot(operation), now, cancellationToken);
+                    await operationsDbContext.SaveChangesAsync(cancellationToken);
+                    await WriteConfirmAuditAsync();
+                }, cancellationToken);
+            }
+            else if (operation.OperationType == WarehouseTransfer)
+            {
+                IReadOnlyList<TransferAllocationSnapshot> allocations;
+                try
+                {
+                    allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = [$"The selected inventory allocation is not valid: {exception.Message}"] });
                 }
 
-                operation.Status = Received;
-                operation.ConfirmedAt = now;
-                operation.ConfirmedBy = userId;
-                await AddVersionAsync(operationsDbContext, operation, "Received", userId, CreateSnapshot(operation), now, cancellationToken);
-                await operationsDbContext.SaveChangesAsync(cancellationToken);
-                await WriteConfirmAuditAsync();
-            }, cancellationToken);
-        }
-        else if (operation.OperationType == WarehouseTransfer)
-        {
-            IReadOnlyList<TransferAllocationSnapshot> allocations;
-            try
-            {
-                allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
-            }
-            catch (InvalidOperationException exception)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = [$"The selected inventory allocation is not valid: {exception.Message}"] });
-            }
-
-            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
-            {
-                if (!await LockDraftForConfirmationAsync()) return;
-                await ReserveSelectedAllocationsAsync(operation.SourceLocationId!.Value, allocations, ledgerService, userId, operation.Id, cancellationToken);
-
-                operation.Status = Reserved;
-                operation.ConfirmedAt = now;
-                operation.ConfirmedBy = userId;
-                await AddVersionAsync(operationsDbContext, operation, "Reserved", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
-                await operationsDbContext.SaveChangesAsync(cancellationToken);
-                await WriteConfirmAuditAsync();
-            }, cancellationToken);
-        }
-        else if (operation.OperationType is WholesaleSale or RetailSale)
-        {
-            IReadOnlyList<TransferAllocationSnapshot> allocations = [];
-            try
-            {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
-                    allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
                     await ReserveSelectedAllocationsAsync(operation.SourceLocationId!.Value, allocations, ledgerService, userId, operation.Id, cancellationToken);
 
                     operation.Status = Reserved;
                     operation.ConfirmedAt = now;
                     operation.ConfirmedBy = userId;
-                    if (operation.OperationType == RetailSale && !IsOnlineSale(operation))
-                    {
-                        // Counter sales have no shipping hand-off. Reservation,
-                        // physical issue and creation of the Payments work item
-                        // commit as one checkout transaction.
-                        await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, now, cancellationToken);
-                        operation.Status = Completed;
-                        if (operation.ClientId is { } merchantId)
-                            await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, now, "Retail checkout.", cancellationToken);
-                        await EnsureRetailDraftPaymentLogAsync(operation, paymentsDbContext, userId, now, cancellationToken);
-                        await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, identityDbContext, merchantAccountService, null, userId, now, cancellationToken);
-                        await AddVersionAsync(operationsDbContext, operation, "Completed retail checkout", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
-                    }
-                    else
-                    {
-                        await AddVersionAsync(operationsDbContext, operation, "Reserved sale", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
-                    }
-                    await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
+                    await AddVersionAsync(operationsDbContext, operation, "Reserved", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
+                    await operationsDbContext.SaveChangesAsync(cancellationToken);
                     await WriteConfirmAuditAsync();
                 }, cancellationToken);
             }
-            catch (InvalidOperationException exception)
+            else if (operation.OperationType is WholesaleSale or RetailSale)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = [$"The selected inventory allocation is not valid: {exception.Message}"] });
-            }
-        }
-        else if (operation.OperationType == Return)
-        {
-            try
-            {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
+                IReadOnlyList<TransferAllocationSnapshot> allocations = [];
+                try
                 {
-                    if (!await LockDraftForConfirmationAsync()) return;
-                    await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
-                    var lockedWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
-                    if ((lockedWarnings.Count > 0 || hasExplicitReturnException) && operation.Status != Approved)
+                    await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
                     {
-                        confirmationConflict = Results.Conflict(new { code = "return-approval-submission-required", status = Draft, detail = "The return changed and now requires Admin or ERPAdmin approval before physical confirmation." });
-                        return;
-                    }
-                    salesVarianceBypassed = (lockedWarnings.Count > 0 || hasExplicitReturnException) && salesVarianceOverrideRequested;
-                    await PopulateReturnValueSplitAsync(operation, operationsDbContext, returnPersistence, cancellationToken);
-                    operation.ReturnExceptionReason = salesVarianceBypassed ? salesVarianceReason : null;
-                    operation.ReturnVerbalAuthorizer = salesVarianceBypassed ? verbalAuthorizer : null;
-                    operation.ReturnNormalValue = operation.OperationLines.Sum(line => line.NormalValue);
-                    operation.ReturnExceptionValue = operation.OperationLines.Sum(line => line.ExceptionValue);
-                    foreach (var line in operation.OperationLines)
-                    {
-                        if (string.IsNullOrWhiteSpace(line.LotNumber) && line.ExpiryDate is { } returnExpiry)
-                            line.LotNumber = $"return-{returnExpiry.ToString("MMMyy", CultureInfo.InvariantCulture)}".ToLowerInvariant();
-                        var disposition = NormalizeReturnDisposition(line.ReturnDisposition);
-                        if (line.EntryMode == "Pieces")
+                        if (!await LockDraftForConfirmationAsync()) return;
+                        allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
+                        await ReserveSelectedAllocationsAsync(operation.SourceLocationId!.Value, allocations, ledgerService, userId, operation.Id, cancellationToken);
+
+                        operation.Status = Reserved;
+                        operation.ConfirmedAt = now;
+                        operation.ConfirmedBy = userId;
+                        if (operation.OperationType == RetailSale && !IsOnlineSale(operation))
                         {
-                            if (disposition == "WriteOff")
-                            {
-                                line.WriteOffReason = "CustomerReturnDisposition";
-                                line.WriteOffReasonText = NormalizeBlank(line.LineNotes) ?? "Returned goods were marked for write-off.";
-                                continue;
-                            }
-                            await ledgerService.ReceiveReturnPiecesAsync(operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId, line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
-                            continue;
-                        }
-                        if (line.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(now))
-                        {
-                            disposition = "WriteOff";
-                            line.WriteOffReason = "ExpiredMerchantReturn";
-                            line.WriteOffReasonText = "Expired merchant return was received and written off in the same operation.";
-                            line.ReturnDisposition = disposition;
-                            await ledgerService.ReceiveReturnAndWriteOffAsync(
-                                operation.SourceLocationId!.Value,
-                                line.SkuId,
-                                line.Quantity,
-                                userId,
-                                line.LotNumber,
-                                line.ExpiryDate,
-                                line.LineNotes,
-                                operation.Id,
-                                cancellationToken);
-                        }
-                        else if (disposition == "Sellable")
-                        {
-                            await ledgerService.ReceiveReturnAsync(
-                                operation.SourceLocationId!.Value,
-                                line.SkuId,
-                                line.Quantity,
-                                userId,
-                                line.LotNumber,
-                                line.ExpiryDate,
-                                line.LineNotes,
-                                operation.Id,
-                                cancellationToken);
-                        }
-                        else if (disposition == "Quarantine")
-                        {
-                            await ledgerService.ReceiveQuarantinedReturnAsync(
-                                operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId,
-                                line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
+                            // Counter sales have no shipping hand-off. Reservation,
+                            // physical issue and creation of the Payments work item
+                            // commit as one checkout transaction.
+                            await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, now, cancellationToken);
+                            operation.Status = Completed;
+                            if (operation.ClientId is { } merchantId)
+                                await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, now, "Retail checkout.", cancellationToken);
+                            await EnsureRetailDraftPaymentLogAsync(operation, paymentsDbContext, userId, now, cancellationToken);
+                            await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, identityDbContext, merchantAccountService, null, userId, now, cancellationToken);
+                            await AddVersionAsync(operationsDbContext, operation, "Completed retail checkout", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
                         }
                         else
                         {
-                            line.WriteOffReason = "CustomerReturnDisposition";
-                            line.WriteOffReasonText = NormalizeBlank(line.LineNotes) ?? "Returned goods were marked for write-off.";
-                            await ledgerService.ReceiveReturnAndWriteOffAsync(
-                                operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId,
-                                line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
+                            await AddVersionAsync(operationsDbContext, operation, "Reserved sale", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
                         }
-                    }
+                        await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
+                        await WriteConfirmAuditAsync();
+                    }, cancellationToken);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = [$"The selected inventory allocation is not valid: {exception.Message}"] });
+                }
+            }
+            else if (operation.OperationType == Return)
+            {
+                try
+                {
+                    await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
+                    {
+                        if (!await LockDraftForConfirmationAsync()) return;
+                        await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
+                        var lockedWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
+                        if ((lockedWarnings.Count > 0 || hasExplicitReturnException) && operation.Status != Approved)
+                        {
+                            confirmationConflict = Results.Conflict(new { code = "return-approval-submission-required", status = Draft, detail = "The return changed and now requires Admin or ERPAdmin approval before physical confirmation." });
+                            return;
+                        }
+                        salesVarianceBypassed = (lockedWarnings.Count > 0 || hasExplicitReturnException) && salesVarianceOverrideRequested;
+                        await PopulateReturnValueSplitAsync(operation, operationsDbContext, returnPersistence, cancellationToken);
+                        operation.ReturnExceptionReason = salesVarianceBypassed ? salesVarianceReason : null;
+                        operation.ReturnVerbalAuthorizer = salesVarianceBypassed ? verbalAuthorizer : null;
+                        operation.ReturnNormalValue = operation.OperationLines.Sum(line => line.NormalValue);
+                        operation.ReturnExceptionValue = operation.OperationLines.Sum(line => line.ExceptionValue);
+                        foreach (var line in operation.OperationLines)
+                        {
+                            if (string.IsNullOrWhiteSpace(line.LotNumber) && line.ExpiryDate is { } returnExpiry)
+                                line.LotNumber = $"return-{returnExpiry.ToString("MMMyy", CultureInfo.InvariantCulture)}".ToLowerInvariant();
+                            var disposition = NormalizeReturnDisposition(line.ReturnDisposition);
+                            if (line.EntryMode == "Pieces")
+                            {
+                                if (disposition == "WriteOff")
+                                {
+                                    line.WriteOffReason = "CustomerReturnDisposition";
+                                    line.WriteOffReasonText = NormalizeBlank(line.LineNotes) ?? "Returned goods were marked for write-off.";
+                                    continue;
+                                }
+                                await ledgerService.ReceiveReturnPiecesAsync(operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId, line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
+                                continue;
+                            }
+                            if (line.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(now))
+                            {
+                                disposition = "WriteOff";
+                                line.WriteOffReason = "ExpiredMerchantReturn";
+                                line.WriteOffReasonText = "Expired merchant return was received and written off in the same operation.";
+                                line.ReturnDisposition = disposition;
+                                await ledgerService.ReceiveReturnAndWriteOffAsync(
+                                    operation.SourceLocationId!.Value,
+                                    line.SkuId,
+                                    line.Quantity,
+                                    userId,
+                                    line.LotNumber,
+                                    line.ExpiryDate,
+                                    line.LineNotes,
+                                    operation.Id,
+                                    cancellationToken);
+                            }
+                            else if (disposition == "Sellable")
+                            {
+                                await ledgerService.ReceiveReturnAsync(
+                                    operation.SourceLocationId!.Value,
+                                    line.SkuId,
+                                    line.Quantity,
+                                    userId,
+                                    line.LotNumber,
+                                    line.ExpiryDate,
+                                    line.LineNotes,
+                                    operation.Id,
+                                    cancellationToken);
+                            }
+                            else if (disposition == "Quarantine")
+                            {
+                                await ledgerService.ReceiveQuarantinedReturnAsync(
+                                    operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId,
+                                    line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
+                            }
+                            else
+                            {
+                                line.WriteOffReason = "CustomerReturnDisposition";
+                                line.WriteOffReasonText = NormalizeBlank(line.LineNotes) ?? "Returned goods were marked for write-off.";
+                                await ledgerService.ReceiveReturnAndWriteOffAsync(
+                                    operation.SourceLocationId!.Value, line.SkuId, line.Quantity, userId,
+                                    line.LotNumber, line.ExpiryDate, line.LineNotes, operation.Id, cancellationToken);
+                            }
+                        }
 
-                    operation.Status = Confirmed;
-                    operation.ConfirmedAt = now;
-                    operation.ConfirmedBy = userId;
-                    await CreateReturnEntitlementAsync(operation, operationsDbContext, paymentsDbContext, userId, now, cancellationToken);
-                    await recallService.ApplyConfirmedReturnAsync(operation, cancellationToken);
-                    await AddVersionAsync(operationsDbContext, operation, "Confirmed return", userId, CreateSnapshot(operation), now, cancellationToken);
-                    // The entitlement is a Payments fact enlisted in the same
-                    // inventory/operations transaction; explicitly flush it so
-                    // stock receipt and held financial entitlement commit together.
-                    await returnPersistence.SaveAsync(paymentsDbContext, cancellationToken);
-                    await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
-                    await WriteConfirmAuditAsync();
-                }, cancellationToken);
-            }
-            catch (MerchantSalesVarianceException exception)
-            {
-                return Results.Conflict(CreateMerchantSalesVarianceGate(exception.Warnings, canBypassSalesVariance));
-            }
-            catch (SourceAllocationCapException exception)
-            {
-                return Results.Conflict(new { code = "source-allocation-cap", detail = "The selected source allocation exceeds available stock.", violations = exception.Violations });
-            }
-            if (operation.OperationType == Return && operation.Status == Confirmed)
-            {
-                await NotifyReturnWorkflowAsync(notificationsDbContext, operation, Confirmed, clock.EgyptNow, cancellationToken);
-            }
+                        operation.Status = Confirmed;
+                        operation.ConfirmedAt = now;
+                        operation.ConfirmedBy = userId;
+                        await CreateReturnEntitlementAsync(operation, operationsDbContext, paymentsDbContext, userId, now, cancellationToken);
+                        await recallService.ApplyConfirmedReturnAsync(operation, cancellationToken);
+                        await AddVersionAsync(operationsDbContext, operation, "Confirmed return", userId, CreateSnapshot(operation), now, cancellationToken);
+                        // The entitlement is a Payments fact enlisted in the same
+                        // inventory/operations transaction; explicitly flush it so
+                        // stock receipt and held financial entitlement commit together.
+                        await returnPersistence.SaveAsync(paymentsDbContext, cancellationToken);
+                        await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
+                        await WriteConfirmAuditAsync();
+                    }, cancellationToken);
+                }
+                catch (MerchantSalesVarianceException exception)
+                {
+                    return Results.Conflict(CreateMerchantSalesVarianceGate(exception.Warnings, canBypassSalesVariance));
+                }
+                catch (SourceAllocationCapException exception)
+                {
+                    return Results.Conflict(new { code = "source-allocation-cap", detail = "The selected source allocation exceeds available stock.", violations = exception.Violations });
+                }
+                if (operation.OperationType == Return && operation.Status == Confirmed)
+                {
+                    await NotifyReturnWorkflowAsync(notificationsDbContext, operation, Confirmed, clock.EgyptNow, cancellationToken);
+                }
 
-            if (operation.MerchantExpiryRecallId is { } recallId)
-            {
-                await recallService.SynchronizeResolvedNotificationAsync(recallId, cancellationToken);
+                if (operation.MerchantExpiryRecallId is { } recallId)
+                {
+                    await recallService.SynchronizeResolvedNotificationAsync(recallId, cancellationToken);
+                }
             }
-        }
-        else if (operation.OperationType == Change)
-        {
-            var allocations = new List<TransferAllocationSnapshot>();
-            try
+            else if (operation.OperationType == Change)
             {
-                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
+                var allocations = new List<TransferAllocationSnapshot>();
+                try
+                {
+                    await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
+                    {
+                        if (!await LockDraftForConfirmationAsync()) return;
+                        await EnforceSourceAllocationCapsAsync(operation, operationsDbContext, inventoryDbContext, cancellationToken);
+                        await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
+                        var lockedWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
+                        if (lockedWarnings.Count > 0 && !salesVarianceOverrideRequested)
+                        {
+                            throw new MerchantSalesVarianceException(lockedWarnings);
+                        }
+                        salesVarianceBypassed = lockedWarnings.Count > 0 && salesVarianceOverrideRequested;
+                        var sourceAllocations = await LoadSourceAllocationByTargetLineAsync(operation, operationsDbContext, cancellationToken);
+                        foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeOut))
+                        {
+                            if (line.EntryMode == "Pieces")
+                            {
+                                if (!sourceAllocations.TryGetValue(line.Id, out var sourceAllocation) || sourceAllocation.SourceOpenedPieceLotId is not { } openedPieceLotId)
+                                    throw new SourceAllocationCapException("A piece exchange return must reference its original opened piece lot.", []);
+                                await ledgerService.RestorePiecesToOpenedLotAsync(openedPieceLotId, line.Quantity, userId, operation.Id, cancellationToken);
+                                continue;
+                            }
+                            await ledgerService.ReceiveChangeOutAsync(
+                                operation.SourceLocationId!.Value,
+                                line.SkuId,
+                                line.Quantity,
+                                userId,
+                                line.LotNumber,
+                                line.ExpiryDate,
+                                line.LineNotes,
+                                operation.Id,
+                                cancellationToken);
+                        }
+
+                        foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeIn))
+                        {
+                            if (line.EntryMode == "Pieces")
+                            {
+                                var piecesPerPack = await LoadPiecesPerPackBySkuAsync(catalogDbContext, [line], cancellationToken);
+                                if (!piecesPerPack.TryGetValue(line.SkuId, out var packPieces) || packPieces <= 0)
+                                    throw new InvalidOperationException("SKU pieces per pack is required for replacement pieces.");
+                                await ledgerService.IssuePiecesFromSelectionAsync(
+                                    operation.SourceLocationId!.Value,
+                                    line.SkuId,
+                                    line.Quantity,
+                                    packPieces,
+                                    line.LotNumber,
+                                    line.ExpiryDate,
+                                    userId,
+                                    operation.Id,
+                                    cancellationToken);
+                                continue;
+                            }
+                            var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.ChangeIn, ledgerService, userId, operation.Id, cancellationToken);
+                            allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
+                        }
+
+                        operation.Status = Confirmed;
+                        operation.ConfirmedAt = now;
+                        operation.ConfirmedBy = userId;
+                        await AddVersionAsync(operationsDbContext, operation, "Confirmed change", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
+                        await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
+                        await WriteConfirmAuditAsync();
+                    }, cancellationToken);
+                }
+                catch (MerchantSalesVarianceException exception)
+                {
+                    return Results.Conflict(CreateMerchantSalesVarianceGate(exception.Warnings, canBypassSalesVariance));
+                }
+                catch (SourceAllocationCapException exception)
+                {
+                    return Results.Conflict(new { code = "source-allocation-cap", detail = "The selected source allocation exceeds available stock.", violations = exception.Violations });
+                }
+            }
+            else if (operation.OperationType == WriteOff)
+            {
+                var allocations = new List<TransferAllocationSnapshot>();
+                await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
-                    await EnforceSourceAllocationCapsAsync(operation, operationsDbContext, inventoryDbContext, cancellationToken);
-                    await AcquireMerchantReturnLocksAsync(operation, operationsDbContext, cancellationToken);
-                    var lockedWarnings = await BuildMerchantSalesVarianceWarningsAsync(operation, operationsDbContext, batchHistoryService, cancellationToken);
-                    if (lockedWarnings.Count > 0 && !salesVarianceOverrideRequested)
-                    {
-                        throw new MerchantSalesVarianceException(lockedWarnings);
-                    }
-                    salesVarianceBypassed = lockedWarnings.Count > 0 && salesVarianceOverrideRequested;
-                    var sourceAllocations = await LoadSourceAllocationByTargetLineAsync(operation, operationsDbContext, cancellationToken);
-                    foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeOut))
-                    {
-                        if (line.EntryMode == "Pieces")
-                        {
-                            if (!sourceAllocations.TryGetValue(line.Id, out var sourceAllocation) || sourceAllocation.SourceOpenedPieceLotId is not { } openedPieceLotId)
-                                throw new SourceAllocationCapException("A piece exchange return must reference its original opened piece lot.", []);
-                            await ledgerService.RestorePiecesToOpenedLotAsync(openedPieceLotId, line.Quantity, userId, operation.Id, cancellationToken);
-                            continue;
-                        }
-                        await ledgerService.ReceiveChangeOutAsync(
-                            operation.SourceLocationId!.Value,
-                            line.SkuId,
-                            line.Quantity,
-                            userId,
-                            line.LotNumber,
-                            line.ExpiryDate,
-                            line.LineNotes,
-                            operation.Id,
-                            cancellationToken);
-                    }
-
-                    foreach (var line in operation.OperationLines.Where(line => line.Section == ChangeIn))
+                    foreach (var line in operation.OperationLines)
                     {
                         if (line.EntryMode == "Pieces")
                         {
                             var piecesPerPack = await LoadPiecesPerPackBySkuAsync(catalogDbContext, [line], cancellationToken);
                             if (!piecesPerPack.TryGetValue(line.SkuId, out var packPieces) || packPieces <= 0)
-                                throw new InvalidOperationException("SKU pieces per pack is required for replacement pieces.");
+                                throw new InvalidOperationException("SKU pieces per pack is required for piece write-offs.");
                             await ledgerService.IssuePiecesFromSelectionAsync(
                                 operation.SourceLocationId!.Value,
                                 line.SkuId,
@@ -1906,71 +1957,25 @@ public static class OperationsEndpoints
                                 line.ExpiryDate,
                                 userId,
                                 operation.Id,
-                                cancellationToken);
+                                cancellationToken,
+                                InventoryTransactionTypes.WriteOff);
                             continue;
                         }
-                        var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.ChangeIn, ledgerService, userId, operation.Id, cancellationToken);
+                        var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.WriteOff, ledgerService, userId, operation.Id, cancellationToken);
                         allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
                     }
 
                     operation.Status = Confirmed;
                     operation.ConfirmedAt = now;
                     operation.ConfirmedBy = userId;
-                    await AddVersionAsync(operationsDbContext, operation, "Confirmed change", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
-                    await returnPersistence.SaveAsync(operationsDbContext, cancellationToken);
+                    await AddVersionAsync(operationsDbContext, operation, "Confirmed write-off", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
+                    await operationsDbContext.SaveChangesAsync(cancellationToken);
                     await WriteConfirmAuditAsync();
                 }, cancellationToken);
             }
-            catch (MerchantSalesVarianceException exception)
-            {
-                return Results.Conflict(CreateMerchantSalesVarianceGate(exception.Warnings, canBypassSalesVariance));
-            }
-            catch (SourceAllocationCapException exception)
-            {
-                return Results.Conflict(new { code = "source-allocation-cap", detail = "The selected source allocation exceeds available stock.", violations = exception.Violations });
-            }
-        }
-        else if (operation.OperationType == WriteOff)
-        {
-            var allocations = new List<TransferAllocationSnapshot>();
-            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
-            {
-                if (!await LockDraftForConfirmationAsync()) return;
-                foreach (var line in operation.OperationLines)
-                {
-                    if (line.EntryMode == "Pieces")
-                    {
-                        var piecesPerPack = await LoadPiecesPerPackBySkuAsync(catalogDbContext, [line], cancellationToken);
-                        if (!piecesPerPack.TryGetValue(line.SkuId, out var packPieces) || packPieces <= 0)
-                            throw new InvalidOperationException("SKU pieces per pack is required for piece write-offs.");
-                        await ledgerService.IssuePiecesFromSelectionAsync(
-                            operation.SourceLocationId!.Value,
-                            line.SkuId,
-                            line.Quantity,
-                            packPieces,
-                            line.LotNumber,
-                            line.ExpiryDate,
-                            userId,
-                            operation.Id,
-                            cancellationToken,
-                            InventoryTransactionTypes.WriteOff);
-                        continue;
-                    }
-                    var lineAllocation = await IssueSelectedOrFefoAsync(operation.SourceLocationId!.Value, line, InventoryTransactionTypes.WriteOff, ledgerService, userId, operation.Id, cancellationToken);
-                    allocations.Add(new TransferAllocationSnapshot(line.SkuId, [lineAllocation]));
-                }
-
-                operation.Status = Confirmed;
-                operation.ConfirmedAt = now;
-                operation.ConfirmedBy = userId;
-                await AddVersionAsync(operationsDbContext, operation, "Confirmed write-off", userId, CreateSnapshot(operation, allocations), now, cancellationToken);
-                await operationsDbContext.SaveChangesAsync(cancellationToken);
-                await WriteConfirmAuditAsync();
-            }, cancellationToken);
-        }
-        if (confirmationConflict is not null) return confirmationConflict;
-        if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
-        return Results.NoContent();
+            if (confirmationConflict is not null) return confirmationConflict;
+            if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
+            return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -1997,9 +2002,17 @@ public static class OperationsEndpoints
                 var warning = warnings?.FirstOrDefault(value => value.SkuId == line.SkuId && value.LotNumber == line.LotNumber && value.ExpiryDate == line.ExpiryDate);
                 operationsDbContext.ReturnApprovalLines.Add(new ReturnApprovalLine
                 {
-                    Id = Guid.NewGuid(), OperationId = operation.Id, OperationLineId = line.Id, SkuId = line.SkuId,
-                    RequestedQuantity = line.Quantity, EligibleQuantity = warning?.SoldQuantity - warning?.ReturnedQuantity, BatchName = line.LotNumber, ExpiryDate = line.ExpiryDate,
-                    MismatchType = warning?.AlertType ?? "UnlinkedReturn", Detail = warning?.Message ?? reason, CreatedAt = now
+                    Id = Guid.NewGuid(),
+                    OperationId = operation.Id,
+                    OperationLineId = line.Id,
+                    SkuId = line.SkuId,
+                    RequestedQuantity = line.Quantity,
+                    EligibleQuantity = warning?.SoldQuantity - warning?.ReturnedQuantity,
+                    BatchName = line.LotNumber,
+                    ExpiryDate = line.ExpiryDate,
+                    MismatchType = warning?.AlertType ?? "UnlinkedReturn",
+                    Detail = warning?.Message ?? reason,
+                    CreatedAt = now
                 });
             }
         }
@@ -2021,87 +2034,87 @@ public static class OperationsEndpoints
     {
         try
         {
-        var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
-        if (operation is null)
-        {
-            return Results.NotFound();
-        }
-        if (operation.OperationType == Reserve)
-        {
-            return RetiredReserveResult();
-        }
-        if (operation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) || operation.Status != Reserved)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Only reserved transfers or sales can be shipped."] });
-        }
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "ship", cancellationToken))
-        {
-            return Results.Forbid();
-        }
-
-        var userId = currentUser.UserId ?? Guid.Empty;
-        IReadOnlyList<TransferAllocationSnapshot> allocations = ReadTransferAllocations(operation);
-        if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
-        }
-
-        IResult? shipConflict = null;
-
-        await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
-        {
-            var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
-            if (lockedOperation is null ||
-                lockedOperation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
-                lockedOperation.Status != Reserved)
+            var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
+            if (operation is null)
             {
-                shipConflict = Results.Conflict(new
-                {
-                    code = "transition-conflict",
-                    detail = "The operation changed before shipping could be applied. Reload and retry."
-                });
-                return;
+                return Results.NotFound();
             }
-
-            operation = lockedOperation;
+            if (operation.OperationType == Reserve)
+            {
+                return RetiredReserveResult();
+            }
+            if (operation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) || operation.Status != Reserved)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Only reserved transfers or sales can be shipped."] });
+            }
             if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "ship", cancellationToken))
             {
-                shipConflict = Results.Forbid();
-                return;
+                return Results.Forbid();
             }
 
-            allocations = ReadTransferAllocations(operation);
+            var userId = currentUser.UserId ?? Guid.Empty;
+            IReadOnlyList<TransferAllocationSnapshot> allocations = ReadTransferAllocations(operation);
             if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
             {
-                shipConflict = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
-                return;
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
             }
 
-            if (operation.OperationType == WarehouseTransfer)
+            IResult? shipConflict = null;
+
+            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
             {
-                await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
-            }
-            else if (operation.OperationType is WholesaleSale or RetailSale)
-            {
-                await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
-            }
-            var dispatchedOnline = IsOnlineSale(operation);
-            operation.Status = dispatchedOnline ? Dispatched : Shipped;
-            await AddVersionAsync(operationsDbContext, operation, dispatchedOnline ? "Dispatched" : "Shipped", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
-            await operationsDbContext.SaveChangesAsync(cancellationToken);
-            await auditLogWriter.WriteAsync(
-                "Operation",
-                operation.Id,
-                dispatchedOnline ? "Dispatch" : "Ship",
-                new { operation.OperationType, operation.Status },
-                cancellationToken: cancellationToken);
-        }, cancellationToken);
+                var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
+                if (lockedOperation is null ||
+                    lockedOperation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
+                    lockedOperation.Status != Reserved)
+                {
+                    shipConflict = Results.Conflict(new
+                    {
+                        code = "transition-conflict",
+                        detail = "The operation changed before shipping could be applied. Reload and retry."
+                    });
+                    return;
+                }
 
-        if (shipConflict is not null) return shipConflict;
+                operation = lockedOperation;
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "ship", cancellationToken))
+                {
+                    shipConflict = Results.Forbid();
+                    return;
+                }
 
-        if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
+                allocations = ReadTransferAllocations(operation);
+                if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
+                {
+                    shipConflict = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
+                    return;
+                }
 
-        return Results.NoContent();
+                if (operation.OperationType == WarehouseTransfer)
+                {
+                    await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
+                }
+                else if (operation.OperationType is WholesaleSale or RetailSale)
+                {
+                    await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
+                }
+                var dispatchedOnline = IsOnlineSale(operation);
+                operation.Status = dispatchedOnline ? Dispatched : Shipped;
+                await AddVersionAsync(operationsDbContext, operation, dispatchedOnline ? "Dispatched" : "Shipped", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
+                await operationsDbContext.SaveChangesAsync(cancellationToken);
+                await auditLogWriter.WriteAsync(
+                    "Operation",
+                    operation.Id,
+                    dispatchedOnline ? "Dispatch" : "Ship",
+                    new { operation.OperationType, operation.Status },
+                    cancellationToken: cancellationToken);
+            }, cancellationToken);
+
+            if (shipConflict is not null) return shipConflict;
+
+            if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
+
+            return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -2139,191 +2152,191 @@ public static class OperationsEndpoints
     {
         try
         {
-        var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
-        if (operation is null)
-        {
-            return Results.NotFound();
-        }
-        if (operation.OperationType == Reserve)
-        {
-            return RetiredReserveResult();
-        }
-        var onlineDelivery = IsOnlineSale(operation);
-        if (operation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
-            (operation.OperationType == WholesaleSale && operation.Status != Shipped) ||
-            (onlineDelivery && operation.Status != Dispatched) ||
-            (!onlineDelivery && operation.OperationType is not WholesaleSale && operation.Status is not (Reserved or Shipped)))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Wholesale sales must be shipped before receipt/complete. Other reserved transfers or sales can be received."] });
-        }
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "receive", cancellationToken))
-        {
-            return Results.Forbid();
-        }
-
-        var userId = currentUser.UserId ?? Guid.Empty;
-        IReadOnlyList<TransferAllocationSnapshot> allocations = ReadTransferAllocations(operation);
-        if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
-        }
-
-        IResult? receiveConflict = null;
-
-        await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, financeDbContext, crmDbContext, identityDbContext, async () =>
-        {
-            var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
-            if (lockedOperation is null ||
-                lockedOperation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
-                (lockedOperation.OperationType == WholesaleSale && lockedOperation.Status != Shipped) ||
-                (IsOnlineSale(lockedOperation) && lockedOperation.Status != Dispatched) ||
-                (!IsOnlineSale(lockedOperation) && lockedOperation.OperationType is not WholesaleSale && lockedOperation.Status is not (Reserved or Shipped)))
+            var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
+            if (operation is null)
             {
-                receiveConflict = Results.Conflict(new
-                {
-                    code = "transition-conflict",
-                    detail = "The operation changed before receiving could be applied. Reload and retry."
-                });
-                return;
+                return Results.NotFound();
             }
-
-            operation = lockedOperation;
+            if (operation.OperationType == Reserve)
+            {
+                return RetiredReserveResult();
+            }
+            var onlineDelivery = IsOnlineSale(operation);
+            if (operation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
+                (operation.OperationType == WholesaleSale && operation.Status != Shipped) ||
+                (onlineDelivery && operation.Status != Dispatched) ||
+                (!onlineDelivery && operation.OperationType is not WholesaleSale && operation.Status is not (Reserved or Shipped)))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Wholesale sales must be shipped before receipt/complete. Other reserved transfers or sales can be received."] });
+            }
             if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "receive", cancellationToken))
             {
-                receiveConflict = Results.Forbid();
-                return;
+                return Results.Forbid();
             }
 
-            allocations = ReadTransferAllocations(operation);
+            var userId = currentUser.UserId ?? Guid.Empty;
+            IReadOnlyList<TransferAllocationSnapshot> allocations = ReadTransferAllocations(operation);
             if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
             {
-                receiveConflict = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
-                return;
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
             }
 
-            if (operation.Status == Reserved)
+            IResult? receiveConflict = null;
+
+            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, financeDbContext, crmDbContext, identityDbContext, async () =>
             {
+                var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
+                if (lockedOperation is null ||
+                    lockedOperation.OperationType is not (WarehouseTransfer or WholesaleSale or RetailSale) ||
+                    (lockedOperation.OperationType == WholesaleSale && lockedOperation.Status != Shipped) ||
+                    (IsOnlineSale(lockedOperation) && lockedOperation.Status != Dispatched) ||
+                    (!IsOnlineSale(lockedOperation) && lockedOperation.OperationType is not WholesaleSale && lockedOperation.Status is not (Reserved or Shipped)))
+                {
+                    receiveConflict = Results.Conflict(new
+                    {
+                        code = "transition-conflict",
+                        detail = "The operation changed before receiving could be applied. Reload and retry."
+                    });
+                    return;
+                }
+
+                operation = lockedOperation;
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "receive", cancellationToken))
+                {
+                    receiveConflict = Results.Forbid();
+                    return;
+                }
+
+                allocations = ReadTransferAllocations(operation);
+                if (LinesRequiringAllocation(operation).Any(line => allocations.All(value => value.SkuId != line.SkuId)))
+                {
+                    receiveConflict = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.OperationLines)] = ["Transfer allocation snapshot is missing."] });
+                    return;
+                }
+
+                if (operation.Status == Reserved)
+                {
+                    if (operation.OperationType == WarehouseTransfer)
+                    {
+                        await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
+                    }
+                    else if (operation.OperationType is WholesaleSale or RetailSale)
+                    {
+                        await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
+                    }
+                }
+
                 if (operation.OperationType == WarehouseTransfer)
                 {
-                    await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
-                }
-                else if (operation.OperationType is WholesaleSale or RetailSale)
-                {
-                    await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
-                }
-            }
-
-            if (operation.OperationType == WarehouseTransfer)
-            {
-                var allocationLookup = BuildAllocationLookupBySku(allocations);
-                foreach (var line in operation.OperationLines)
-                {
-                    if (line.EntryMode == "Pieces")
+                    var allocationLookup = BuildAllocationLookupBySku(allocations);
+                    foreach (var line in operation.OperationLines)
                     {
-                        if (line.PiecesPerPackSnapshot is not > 0)
+                        if (line.EntryMode == "Pieces")
                         {
-                            throw new InvalidOperationException($"{line.SkuCodeSnapshot} requires a valid pieces-per-pack snapshot.");
+                            if (line.PiecesPerPackSnapshot is not > 0)
+                            {
+                                throw new InvalidOperationException($"{line.SkuCodeSnapshot} requires a valid pieces-per-pack snapshot.");
+                            }
+
+                            await ledgerService.ReceivePiecesAsync(
+                                operation.DestinationLocationId!.Value,
+                                line.SkuId,
+                                line.Quantity,
+                                userId,
+                                InventoryTransactionTypes.SupplyIn,
+                                line.LotNumber,
+                                line.ExpiryDate,
+                                line.LineNotes,
+                                operation.Id,
+                                cancellationToken);
+                            continue;
                         }
 
-                        await ledgerService.ReceivePiecesAsync(
-                            operation.DestinationLocationId!.Value,
-                            line.SkuId,
-                            line.Quantity,
-                            userId,
-                            InventoryTransactionTypes.SupplyIn,
-                            line.LotNumber,
-                            line.ExpiryDate,
-                            line.LineNotes,
-                            operation.Id,
-                            cancellationToken);
-                        continue;
+                        if (!allocationLookup.TryGetValue(line.SkuId, out var lineAllocations))
+                        {
+                            throw new InvalidOperationException("Transfer allocation snapshot is missing.");
+                        }
+
+                        var lineLotNumber = NormalizeBlank(line.LotNumber);
+                        var matchingAllocations = lineAllocations
+                            .Where(allocation =>
+                                (lineLotNumber is null || NormalizeBlank(allocation.LotNumber) == lineLotNumber) &&
+                                (!line.ExpiryDate.HasValue || allocation.ExpiryDate == line.ExpiryDate))
+                            .ToList();
+                        if (matchingAllocations.Count == 0)
+                        {
+                            throw new InvalidOperationException("Transfer allocation does not match the revised line batch.");
+                        }
+
+                        foreach (var allocation in matchingAllocations)
+                        {
+                            await ledgerService.ReceiveSupplyAsync(
+                                operation.DestinationLocationId!.Value,
+                                line.SkuId,
+                                allocation.Quantity,
+                                userId,
+                                allocation.LotNumber,
+                                allocation.ExpiryDate,
+                                line.LineNotes,
+                                operation.Id,
+                                cancellationToken);
+                        }
+
                     }
 
-                    if (!allocationLookup.TryGetValue(line.SkuId, out var lineAllocations))
-                    {
-                        throw new InvalidOperationException("Transfer allocation snapshot is missing.");
-                    }
-
-                    var lineLotNumber = NormalizeBlank(line.LotNumber);
-                    var matchingAllocations = lineAllocations
-                        .Where(allocation =>
-                            (lineLotNumber is null || NormalizeBlank(allocation.LotNumber) == lineLotNumber) &&
-                            (!line.ExpiryDate.HasValue || allocation.ExpiryDate == line.ExpiryDate))
-                        .ToList();
-                    if (matchingAllocations.Count == 0)
-                    {
-                        throw new InvalidOperationException("Transfer allocation does not match the revised line batch.");
-                    }
-
-                    foreach (var allocation in matchingAllocations)
-                    {
-                        await ledgerService.ReceiveSupplyAsync(
-                            operation.DestinationLocationId!.Value,
-                            line.SkuId,
-                            allocation.Quantity,
-                            userId,
-                            allocation.LotNumber,
-                            allocation.ExpiryDate,
-                            line.LineNotes,
-                            operation.Id,
-                            cancellationToken);
-                    }
-
+                    operation.Status = Received;
+                    await AddVersionAsync(operationsDbContext, operation, "Received", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
                 }
-
-                operation.Status = Received;
-                await AddVersionAsync(operationsDbContext, operation, "Received", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
-            }
-            else
-            {
-                operation.Status = IsOnlineSale(operation) ? Delivered : operation.OperationType == WholesaleSale ? Received : operation.OperationType == RetailSale ? Completed : Confirmed;
-                operation.ConfirmedAt = clock.EgyptNow;
-                operation.ConfirmedBy = userId;
-                await AddVersionAsync(operationsDbContext, operation, operation.OperationType == Reserve ? "Representative received stock" : "Customer completed sale", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
-            }
-
-            await operationCompletionService.SaveAsync(cancellationToken);
-            if (operation.OperationType is WholesaleSale or RetailSale && operation.Status is (Completed or Delivered))
-            {
-                await operationCompletionService.SaveAsync(cancellationToken);
-                if (operation.ClientId is { } merchantId)
+                else
                 {
-                    await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, clock.EgyptNow, "Completed sale.", cancellationToken);
+                    operation.Status = IsOnlineSale(operation) ? Delivered : operation.OperationType == WholesaleSale ? Received : operation.OperationType == RetailSale ? Completed : Confirmed;
+                    operation.ConfirmedAt = clock.EgyptNow;
+                    operation.ConfirmedBy = userId;
+                    await AddVersionAsync(operationsDbContext, operation, operation.OperationType == Reserve ? "Representative received stock" : "Customer completed sale", userId, CreateSnapshot(operation, allocations), clock.EgyptNow, cancellationToken);
                 }
-                await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, identityDbContext, merchantAccountService, financeLedgerService, userId, clock.EgyptNow, cancellationToken);
-            }
-            await auditLogWriter.WriteAsync(
-                "Operation",
-                operation.Id,
-                "Receive",
-                new { operation.OperationType, operation.Status },
-                cancellationToken: cancellationToken);
-        }, cancellationToken);
 
-        if (receiveConflict is not null) return receiveConflict;
-
-        if (!operation.ClientId.HasValue && operation.OperationType is (WholesaleSale or RetailSale) &&
-            operation.PaymentMethod is "CashHandToHand" or "BankTransfer")
-        {
-            var paymentLog = await paymentsDbContext.MainPaymentLogs
-                .FirstOrDefaultAsync(log => log.OperationId == operation.Id && !log.IsDeleted, cancellationToken);
-            if (paymentLog is not null)
-            {
-                await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
-                    paymentLog.Id,
-                    paymentLog.MerchantId,
+                await operationCompletionService.SaveAsync(cancellationToken);
+                if (operation.OperationType is WholesaleSale or RetailSale && operation.Status is (Completed or Delivered))
+                {
+                    await operationCompletionService.SaveAsync(cancellationToken);
+                    if (operation.ClientId is { } merchantId)
+                    {
+                        await merchantAccountService.PostSaleAsync(merchantId, operation.Id, operation.OperationLines.Sum(line => line.LineTotal), userId, clock.EgyptNow, "Completed sale.", cancellationToken);
+                    }
+                    await PaymentsEndpoints.CreatePaymentArtifactsForCompletedSaleAsync(operation, paymentsDbContext, identityDbContext, merchantAccountService, financeLedgerService, userId, clock.EgyptNow, cancellationToken);
+                }
+                await auditLogWriter.WriteAsync(
+                    "Operation",
                     operation.Id,
-                    "CollectionRequired",
-                    $"Sale {operation.OperationNumber} is complete and its collection must be recorded and approved.",
-                    null,
-                    LenseeRoles.Accountant,
-                    clock.EgyptNow), cancellationToken);
+                    "Receive",
+                    new { operation.OperationType, operation.Status },
+                    cancellationToken: cancellationToken);
+            }, cancellationToken);
+
+            if (receiveConflict is not null) return receiveConflict;
+
+            if (!operation.ClientId.HasValue && operation.OperationType is (WholesaleSale or RetailSale) &&
+                operation.PaymentMethod is "CashHandToHand" or "BankTransfer")
+            {
+                var paymentLog = await paymentsDbContext.MainPaymentLogs
+                    .FirstOrDefaultAsync(log => log.OperationId == operation.Id && !log.IsDeleted, cancellationToken);
+                if (paymentLog is not null)
+                {
+                    await eventPublisher.PublishAsync(new PaymentWorkflowChangedEvent(
+                        paymentLog.Id,
+                        paymentLog.MerchantId,
+                        operation.Id,
+                        "CollectionRequired",
+                        $"Sale {operation.OperationNumber} is complete and its collection must be recorded and approved.",
+                        null,
+                        LenseeRoles.Accountant,
+                        clock.EgyptNow), cancellationToken);
+                }
             }
-        }
 
-        if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
+            if (operation.AutomationType == "TargetReplenishment") await EnsureReplenishmentStageNotificationAsync(notificationsDbContext, operation, clock.EgyptNow, cancellationToken);
 
-        return Results.NoContent();
+            return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -2437,125 +2450,125 @@ public static class OperationsEndpoints
 
         try
         {
-        var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
-        if (operation is null)
-        {
-            return Results.NotFound();
-        }
-        if (operation.OperationType == Reserve)
-        {
-            return RetiredReserveResult();
-        }
-        if (IsFinalizedForCorrection(operation.Status))
-        {
-            return Results.Conflict(new
+            var operation = await LoadOperationAsync(operationsDbContext, id, cancellationToken);
+            if (operation is null)
             {
-                detail = "Finalized operations are immutable. Create a correction proposal instead.",
-                correctionRoute = $"/api/v1/operations/{operation.Id}/corrections"
-            });
-        }
-        if (operation.Status == Shipped)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Shipped transfers cannot be cancelled because stock has already left the main warehouse. Receive it, then use a return/transfer correction if needed."] });
-        }
-        if (IsOnlineSale(operation) && operation.Status is Dispatched or Delivered or FailedDelivery)
-        {
-            return Results.Conflict(new
-            {
-                code = "online-delivery-recovery-required",
-                detail = "A dispatched online order cannot be cancelled. Record the delivery outcome; if goods return physically, create a linked return operation."
-            });
-        }
-        if (operation.Status == Cancelled)
-        {
-            return Results.NoContent();
-        }
-        if (operation.OperationType == Return && operation.Status == PendingApproval && !IsOperationsAdministrator(currentUser))
-        {
-            return Results.Forbid();
-        }
-        if (operation.OperationType == Return && operation.Status == Draft && operation.CreatedBy != (currentUser.UserId ?? Guid.Empty) && !IsOperationsAdministrator(currentUser))
-        {
-            return Results.Forbid();
-        }
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "cancel", cancellationToken))
-        {
-            return Results.Forbid();
-        }
-
-        var userId = currentUser.UserId ?? Guid.Empty;
-        IResult? cancelConflict = null;
-        await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
-        {
-            var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
-            if (lockedOperation is null)
-            {
-                cancelConflict = Results.Conflict(new
-                {
-                    code = "transition-conflict",
-                    detail = "The operation changed before cancellation could be applied. Reload and retry."
-                });
-                return;
+                return Results.NotFound();
             }
-
-            operation = lockedOperation;
+            if (operation.OperationType == Reserve)
+            {
+                return RetiredReserveResult();
+            }
             if (IsFinalizedForCorrection(operation.Status))
             {
-                cancelConflict = Results.Conflict(new
+                return Results.Conflict(new
                 {
-                    code = "transition-conflict",
                     detail = "Finalized operations are immutable. Create a correction proposal instead.",
                     correctionRoute = $"/api/v1/operations/{operation.Id}/corrections"
                 });
-                return;
             }
             if (operation.Status == Shipped)
             {
-                cancelConflict = Results.Conflict(new
+                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Shipped transfers cannot be cancelled because stock has already left the main warehouse. Receive it, then use a return/transfer correction if needed."] });
+            }
+            if (IsOnlineSale(operation) && operation.Status is Dispatched or Delivered or FailedDelivery)
+            {
+                return Results.Conflict(new
                 {
-                    code = "transition-conflict",
-                    detail = "The operation was shipped before cancellation could be applied."
+                    code = "online-delivery-recovery-required",
+                    detail = "A dispatched online order cannot be cancelled. Record the delivery outcome; if goods return physically, create a linked return operation."
                 });
-                return;
             }
             if (operation.Status == Cancelled)
             {
-                return;
+                return Results.NoContent();
+            }
+            if (operation.OperationType == Return && operation.Status == PendingApproval && !IsOperationsAdministrator(currentUser))
+            {
+                return Results.Forbid();
+            }
+            if (operation.OperationType == Return && operation.Status == Draft && operation.CreatedBy != (currentUser.UserId ?? Guid.Empty) && !IsOperationsAdministrator(currentUser))
+            {
+                return Results.Forbid();
             }
             if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "cancel", cancellationToken))
             {
-                cancelConflict = Results.Forbid();
-                return;
+                return Results.Forbid();
             }
 
-            if (operation.OperationType == WarehouseTransfer && operation.Status is Reserved or Shipped)
+            var userId = currentUser.UserId ?? Guid.Empty;
+            IResult? cancelConflict = null;
+            await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
             {
-                foreach (var group in operation.OperationLines.GroupBy(line => line.SkuId))
+                var lockedOperation = await LockAndLoadOperationAsync(operationsDbContext, id, cancellationToken);
+                if (lockedOperation is null)
                 {
-                    await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
+                    cancelConflict = Results.Conflict(new
+                    {
+                        code = "transition-conflict",
+                        detail = "The operation changed before cancellation could be applied. Reload and retry."
+                    });
+                    return;
                 }
-            }
-            if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Reserved)
-            {
-                foreach (var group in operation.OperationLines.Where(line => line.EntryMode == "Packs").GroupBy(line => line.SkuId))
-                {
-                    await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
-                }
-            }
 
-            operation.Status = Cancelled;
-            operation.Notes = $"{operation.Notes}\nCancellation reason: {request.Reason.Trim()}".Trim();
-            await AddVersionAsync(operationsDbContext, operation, "Cancelled", userId, CreateSnapshot(operation, ReadTransferAllocations(operation)), clock.EgyptNow, cancellationToken);
-            await operationsDbContext.SaveChangesAsync(cancellationToken);
-            await auditLogWriter.WriteAsync(
-                "Operation",
-                operation.Id,
-                "Cancel",
-                new { operation.OperationType, operation.Status },
-                cancellationToken: cancellationToken);
-        }, cancellationToken);
-        if (cancelConflict is not null) return cancelConflict;
-        return Results.NoContent();
+                operation = lockedOperation;
+                if (IsFinalizedForCorrection(operation.Status))
+                {
+                    cancelConflict = Results.Conflict(new
+                    {
+                        code = "transition-conflict",
+                        detail = "Finalized operations are immutable. Create a correction proposal instead.",
+                        correctionRoute = $"/api/v1/operations/{operation.Id}/corrections"
+                    });
+                    return;
+                }
+                if (operation.Status == Shipped)
+                {
+                    cancelConflict = Results.Conflict(new
+                    {
+                        code = "transition-conflict",
+                        detail = "The operation was shipped before cancellation could be applied."
+                    });
+                    return;
+                }
+                if (operation.Status == Cancelled)
+                {
+                    return;
+                }
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "cancel", cancellationToken))
+                {
+                    cancelConflict = Results.Forbid();
+                    return;
+                }
+
+                if (operation.OperationType == WarehouseTransfer && operation.Status is Reserved or Shipped)
+                {
+                    foreach (var group in operation.OperationLines.GroupBy(line => line.SkuId))
+                    {
+                        await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
+                    }
+                }
+                if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Reserved)
+                {
+                    foreach (var group in operation.OperationLines.Where(line => line.EntryMode == "Packs").GroupBy(line => line.SkuId))
+                    {
+                        await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
+                    }
+                }
+
+                operation.Status = Cancelled;
+                operation.Notes = $"{operation.Notes}\nCancellation reason: {request.Reason.Trim()}".Trim();
+                await AddVersionAsync(operationsDbContext, operation, "Cancelled", userId, CreateSnapshot(operation, ReadTransferAllocations(operation)), clock.EgyptNow, cancellationToken);
+                await operationsDbContext.SaveChangesAsync(cancellationToken);
+                await auditLogWriter.WriteAsync(
+                    "Operation",
+                    operation.Id,
+                    "Cancel",
+                    new { operation.OperationType, operation.Status },
+                    cancellationToken: cancellationToken);
+            }, cancellationToken);
+            if (cancelConflict is not null) return cancelConflict;
+            return Results.NoContent();
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -4376,11 +4389,16 @@ public static class OperationsEndpoints
                 throw new InvalidOperationException("Piece issue transaction evidence is required.");
             operationsDbContext.OperationLinePieceAllocations.Add(new OperationLinePieceAllocation
             {
-                Id = Guid.NewGuid(), OperationLineId = line.Id,
-                OpenedPieceLotId = allocation.OpenedPieceLotId, SourceBatchId = allocation.SourceBatchId,
-                IssuedPieceQuantity = allocation.Quantity, PiecesPerPackSnapshot = piecesPerPackSnapshot,
-                PieceIssueTransactionId = pieceTransactionId, PackOpenTransactionId = allocation.PackOpenTransactionId,
-                LotNumber = allocation.LotNumber, ExpiryDate = allocation.BatchExpiryDate,
+                Id = Guid.NewGuid(),
+                OperationLineId = line.Id,
+                OpenedPieceLotId = allocation.OpenedPieceLotId,
+                SourceBatchId = allocation.SourceBatchId,
+                IssuedPieceQuantity = allocation.Quantity,
+                PiecesPerPackSnapshot = piecesPerPackSnapshot,
+                PieceIssueTransactionId = pieceTransactionId,
+                PackOpenTransactionId = allocation.PackOpenTransactionId,
+                LotNumber = allocation.LotNumber,
+                ExpiryDate = allocation.BatchExpiryDate,
                 CreatedAt = now
             });
         }

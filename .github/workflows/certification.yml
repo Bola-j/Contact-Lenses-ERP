@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "0 0 * * 0"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -21,11 +25,13 @@ jobs:
     name: Certification / Phase 4-10 static image config
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up toolchains
         uses: ./.github/actions/setup-certification
@@ -50,6 +56,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up toolchains and browsers
         uses: ./.github/actions/setup-certification
@@ -79,6 +87,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up toolchains and browsers
         uses: ./.github/actions/setup-certification
@@ -127,6 +137,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up toolchains
         uses: ./.github/actions/setup-certification

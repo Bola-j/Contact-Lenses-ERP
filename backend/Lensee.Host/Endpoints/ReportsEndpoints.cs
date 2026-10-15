@@ -79,10 +79,9 @@ public static partial class ReportsEndpoints
         "stocktake-summary.pdf"
     };
 
-    private static PageRequest NormalizeReportPage(int page, int pageSize, int maxExportRows)
+    private static PageRequest NormalizeReportPage(int page, int pageSize, int maximumPageSize)
     {
-        var maximum = maxExportRows == int.MaxValue ? int.MaxValue : Math.Max(1, maxExportRows + 1);
-        return new PageRequest(Math.Max(1, page), Math.Clamp(pageSize, 1, maximum));
+        return new PageRequest(Math.Max(1, page), Math.Clamp(pageSize, 1, Math.Max(1, maximumPageSize)));
     }
 
     private static bool TryNormalizeSort(string? sortBy, string? sortDirection, IReadOnlySet<string> allowed, string defaultSort, out string normalizedSort, out bool descending)
@@ -139,15 +138,15 @@ public static partial class ReportsEndpoints
     private static IResult GetReportCatalog(IReportCatalog catalog, ICurrentUser currentUser) => Results.Ok(catalog.All
         .Where(descriptor => CanAccessReport(currentUser.Role, descriptor.Key))
         .Select(descriptor => new
-    {
-        descriptor.Key,
-        template = descriptor.Template.ToString().ToLowerInvariant(),
-        formats = descriptor.Formats.Select(FormatValue).OrderBy(value => value).ToArray(),
-        languages = descriptor.Languages.Select(LanguageValue).OrderBy(value => value).ToArray(),
-        descriptor.Filters,
-        descriptor.AuthorizationPolicy,
-        descriptor.LocationScoped,
-        descriptor.IsDocument
+        {
+            descriptor.Key,
+            template = descriptor.Template.ToString().ToLowerInvariant(),
+            formats = descriptor.Formats.Select(FormatValue).OrderBy(value => value).ToArray(),
+            languages = descriptor.Languages.Select(LanguageValue).OrderBy(value => value).ToArray(),
+            descriptor.Filters,
+            descriptor.AuthorizationPolicy,
+            descriptor.LocationScoped,
+            descriptor.IsDocument
         }));
 
     private static async Task<IResult> ExportReportAsync(
@@ -159,6 +158,8 @@ public static partial class ReportsEndpoints
         DateTime? to,
         string? operationType,
         string? status,
+        string? scope,
+        int? page,
         int? pageSize,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
@@ -196,7 +197,16 @@ public static partial class ReportsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateRange"] = ["From must be earlier than or equal to To."] });
         }
 
-        var requestedPageSize = pageSize ?? reportingOptions.Value.MaxExportRows;
+        var exportAllRows = string.IsNullOrWhiteSpace(scope) || string.Equals(scope, "all", StringComparison.OrdinalIgnoreCase);
+        if (!exportAllRows && !string.Equals(scope, "page", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["scope"] = ["Export scope must be all or page."] });
+        }
+
+        var requestedPage = exportAllRows ? 1 : page ?? 1;
+        var requestedPageSize = exportAllRows
+            ? reportingOptions.Value.MaxExportRows + 1
+            : pageSize ?? reportingOptions.Value.MaxPageSize;
 
         var snapshot = await SharedDbTransaction.ExecuteRepeatableReadAsync(
             operationsDbContext,
@@ -205,11 +215,11 @@ public static partial class ReportsEndpoints
                 IResult queryResult = key.ToLowerInvariant() switch
                 {
                     "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, financeDbContext, cancellationToken),
-                    "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, requestedPageSize),
-                    "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
-                    "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
-                    "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
-                    "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, requestedPage, requestedPageSize, forExport: exportAllRows),
+                    "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, requestedPage, requestedPageSize, forExport: exportAllRows),
+                    "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, requestedPage, requestedPageSize, forExport: exportAllRows),
+                    "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, requestedPage, requestedPageSize, forExport: exportAllRows),
+                    "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, requestedPage, requestedPageSize, forExport: exportAllRows),
                     _ => Results.NotFound()
                 };
 
@@ -229,6 +239,14 @@ public static partial class ReportsEndpoints
         if (snapshot.Document is null)
         {
             return snapshot.Result;
+        }
+
+        if (exportAllRows && snapshot.Document.Metadata.RowCount > reportingOptions.Value.MaxExportRows)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["rows"] = [$"This export contains more than {reportingOptions.Value.MaxExportRows} rows. Narrow the selected filters."]
+            });
         }
 
         var document = snapshot.Document;
@@ -401,7 +419,8 @@ public static partial class ReportsEndpoints
         int page = 1,
         int pageSize = 50,
         string? sortBy = null,
-        string? sortDirection = null)
+        string? sortDirection = null,
+        bool forExport = false)
     {
         if (string.Equals(currentUser.Role, LenseeRoles.Accountant, StringComparison.OrdinalIgnoreCase))
         {
@@ -427,7 +446,7 @@ public static partial class ReportsEndpoints
             query = query.Where(balance => balance.LocationId == effectiveLocationId.Value);
         }
 
-        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
         var total = await query.CountAsync(cancellationToken);
         var balances = await query
             .OrderBy(balance => balance.Location.Name)
@@ -465,7 +484,8 @@ public static partial class ReportsEndpoints
                 balance.LastUpdated,
                 sku?.ColorName,
                 sku?.Product.PiecesPerPack,
-                loosePieceQuantity);
+                loosePieceQuantity,
+                sku?.Product.ProductType);
         }).ToList();
 
         return Results.Ok(new PagedResult<StockReportRow>(rows, request.Page, request.PageSize, total));
@@ -483,7 +503,7 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        var result = await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1, forExport: true);
         if (result is IValueHttpResult { Value: PagedResult<StockReportRow> rows })
         {
             return await ExportLegacyCsvAsync("stock", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
@@ -501,7 +521,8 @@ public static partial class ReportsEndpoints
         int page = 1,
         int pageSize = 50,
         string? sortBy = null,
-        string? sortDirection = null)
+        string? sortDirection = null,
+        bool forExport = false)
     {
         if (from.HasValue && to.HasValue && from.Value > to.Value)
         {
@@ -535,7 +556,7 @@ public static partial class ReportsEndpoints
             query = query.Where(operation => operation.OperationType == operationType.Trim());
         }
 
-        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort switch
         {
@@ -580,7 +601,7 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        var result = await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1, forExport: true);
         if (result is IValueHttpResult { Value: PagedResult<OperationReportRow> rows })
         {
             return await ExportLegacyCsvAsync("operations", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
@@ -596,7 +617,8 @@ public static partial class ReportsEndpoints
         int page = 1,
         int pageSize = 50,
         string? sortBy = null,
-        string? sortDirection = null)
+        string? sortDirection = null,
+        bool forExport = false)
     {
         var allowedSorts = new HashSet<string>(StringComparer.Ordinal) { "lastModifiedAt", "totalAmount" };
         if (!TryNormalizeSort(sortBy, sortDirection, allowedSorts, "lastModifiedAt", out var normalizedSort, out var descending))
@@ -607,7 +629,7 @@ public static partial class ReportsEndpoints
             .Include(log => log.InstallmentSubLogs)
             .Where(log => !log.IsDeleted)
             .AsQueryable();
-        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort == "totalAmount"
             ? (descending ? query.OrderByDescending(log => log.TotalAmount) : query.OrderBy(log => log.TotalAmount))
@@ -672,7 +694,7 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        var result = await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1, forExport: true);
         if (result is IValueHttpResult { Value: PagedResult<PaymentReportRow> rows })
         {
             return await ExportLegacyCsvAsync("payments", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
@@ -690,7 +712,8 @@ public static partial class ReportsEndpoints
         int page = 1,
         int pageSize = 50,
         string? sortBy = null,
-        string? sortDirection = null)
+        string? sortDirection = null,
+        bool forExport = false)
     {
         if (from.HasValue && to.HasValue && from.Value > to.Value)
         {
@@ -728,7 +751,7 @@ public static partial class ReportsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["sortBy"] = ["Sort field is not valid."] });
         }
 
-        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort switch
         {
@@ -770,7 +793,7 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        var result = await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1, forExport: true);
         if (result is IValueHttpResult { Value: PagedResult<SupplyLandedCostReportRow> rows })
         {
             return await ExportLegacyCsvAsync("supply", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
@@ -909,13 +932,14 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken,
         int page = 1,
-        int pageSize = 50)
+        int pageSize = 50,
+        bool forExport = false)
     {
         var query = crmDbContext.Merchants
             .AsNoTracking()
             .Where(merchant => !merchant.IsDeleted)
             .AsQueryable();
-        var request = NormalizeReportPage(page, pageSize, reportingOptions.Value.MaxExportRows);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
         var total = await query.CountAsync(cancellationToken);
         var merchants = await query.OrderBy(merchant => merchant.BusinessName)
             .Skip(request.Skip)
@@ -954,7 +978,7 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         CancellationToken cancellationToken)
     {
-        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1);
+        var result = await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1, forExport: true);
         if (result is IValueHttpResult { Value: PagedResult<MerchantBalanceReportRow> rows })
         {
             return await ExportLegacyCsvAsync("merchant-balances", rows.Items.ToList(), language, reportingDbContext, currentUser, clock, exportService, reportingOptions, cancellationToken);
@@ -1383,7 +1407,6 @@ public static partial class ReportsEndpoints
 
         var statement = await merchantAccountService.GetStatementAsync(merchantId, int.MaxValue, cancellationToken, from, to);
         var openingBalance = await merchantAccountService.GetOpeningBalanceAsync(merchantId, from, cancellationToken);
-        var closingBalance = await merchantAccountService.GetClosingBalanceAsync(merchantId, to, cancellationToken);
         var operations = await operationsDbContext.OperationLogs
             .Include(value => value.OperationLines)
             .Include(value => value.OperationVersions)
@@ -1444,11 +1467,23 @@ public static partial class ReportsEndpoints
             }
         }
 
+        // The statement table is the authoritative period ledger. Every summary
+        // value is derived from these same posted rows so the visible
+        // reconciliation cannot omit a movement that affected the balance.
         var periodSales = statement.Where(value => value.EntryType == "SaleCharge").Sum(value => value.DebitAmount);
         var periodCollections = statement.Where(value => value.EntryType == "Collection").Sum(value => value.CreditAmount);
         var periodRefunds = statement.Where(value => value.EntryType == "RefundPayout").Sum(value => value.DebitAmount);
-        var periodAdjustments = statement.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount)
-            - statement.Where(value => value.EntryType == "BalanceReduction").Sum(value => value.CreditAmount);
+        var periodReturnCredits = statement.Where(value => value.EntryType is "ReturnCredit" or "ExchangeCredit").Sum(value => value.CreditAmount);
+        var periodAdditionalCharges = statement.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount);
+        var periodReductions = statement.Where(value => value.EntryType is "BalanceReduction" or "OpeningBalanceReversal").Sum(value => value.CreditAmount);
+        var periodOpeningCharges = statement.Where(value => value.EntryType == "OpeningBalanceCharge").Sum(value => value.DebitAmount);
+        var summarizedTypes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "SaleCharge", "Collection", "RefundPayout", "ReturnCredit", "ExchangeCredit", "AdditionalCharge", "ExchangeSurcharge", "BalanceReduction", "OpeningBalanceCharge", "OpeningBalanceReversal"
+        };
+        var periodOtherMovements = statement.Where(value => !summarizedTypes.Contains(value.EntryType)).Sum(value => value.DebitAmount - value.CreditAmount);
+        var periodNetMovement = statement.Sum(value => value.DebitAmount - value.CreditAmount);
+        var closingBalance = openingBalance + periodNetMovement;
 
         var summary = new List<PdfFact>
         {
@@ -1473,7 +1508,12 @@ public static partial class ReportsEndpoints
                     new PdfFact("Sales", FormatMoney(periodSales)),
                     new PdfFact("Collections", FormatMoney(periodCollections)),
                     new PdfFact("Refunds/paybacks", FormatMoney(periodRefunds)),
-                    new PdfFact("Net adjustments", FormatMoney(periodAdjustments)),
+                    new PdfFact("Return and exchange credits", FormatMoney(periodReturnCredits)),
+                    new PdfFact("Additional charges", FormatMoney(periodAdditionalCharges)),
+                    new PdfFact("Amount reductions", FormatMoney(periodReductions)),
+                    new PdfFact("Opening balance movements", FormatMoney(periodOpeningCharges)),
+                    new PdfFact("Other posted movements", FormatMoney(periodOtherMovements)),
+                    new PdfFact("Net period movement", FormatMoney(periodNetMovement)),
                     new PdfFact("Outstanding balance", FormatMoney(Math.Max(0m, closingBalance))),
                     new PdfFact("Closing balance", FormatMoney(closingBalance))
                 ]),
@@ -2083,7 +2123,7 @@ public static partial class ReportsEndpoints
 
 }
 
-public sealed record StockReportRow(Guid LocationId, string LocationName, string LocationType, Guid SkuId, string? SkuCode, string? ProductName, int AvailableQty, int ReservedInWarehouseQty, int ReservedWithRepQty, int? TargetQty, DateTime LastUpdated, string? ColorName = null, int? PiecesPerPack = null, int LoosePieceQuantity = 0);
+public sealed record StockReportRow(Guid LocationId, string LocationName, string LocationType, Guid SkuId, string? SkuCode, string? ProductName, int AvailableQty, int ReservedInWarehouseQty, int ReservedWithRepQty, int? TargetQty, DateTime LastUpdated, string? ColorName = null, int? PiecesPerPack = null, int LoosePieceQuantity = 0, string? ProductType = null);
 
 public sealed record FinancialSummaryResponse(
     decimal TotalSales,

@@ -11,21 +11,24 @@ public sealed class CsvDocumentRenderer : IDocumentRenderer
 
     public async Task<RenderedDocument> RenderAsync(DocumentModel document, CancellationToken cancellationToken = default)
     {
-        if (document.Tables.Count != 1)
-        {
-            throw new NotSupportedException("CSV export requires exactly one table.");
-        }
-
-        var table = document.Tables[0];
         var stream = new MemoryStream();
         await using (var writer = new StreamWriter(stream, new UTF8Encoding(true), 1024, leaveOpen: true))
         {
-            await writer.WriteLineAsync(string.Join(',', table.Columns.Select(column => Escape(column.Header))));
-            foreach (var row in table.Rows)
+            for (var tableIndex = 0; tableIndex < document.Tables.Count; tableIndex++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var values = row.Cells.Select((cell, index) => Escape(CellText(cell, index < table.Columns.Count ? table.Columns[index] : null)));
-                await writer.WriteLineAsync(string.Join(',', values));
+                var table = document.Tables[tableIndex];
+                if (document.Tables.Count > 1)
+                {
+                    await writer.WriteLineAsync(Escape(table.Title ?? document.Header.Title));
+                }
+                await writer.WriteLineAsync(string.Join(',', table.Columns.Select(column => Escape(column.Header))));
+                foreach (var row in table.Rows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var values = row.Cells.Select((cell, index) => Escape(CellText(cell, index < table.Columns.Count ? table.Columns[index] : null)));
+                    await writer.WriteLineAsync(string.Join(',', values));
+                }
+                if (tableIndex < document.Tables.Count - 1) await writer.WriteLineAsync();
             }
         }
         stream.Position = 0;

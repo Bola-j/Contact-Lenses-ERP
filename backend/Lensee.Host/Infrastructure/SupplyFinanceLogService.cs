@@ -37,8 +37,14 @@ public sealed class SupplyFinanceLogService
         }
         log = new SupplyFinanceLog
         {
-            Id = Guid.NewGuid(), SupplyShipmentId = shipmentId, ShipmentNumber = shipmentNumber,
-            SupplierName = supplierName, Notes = notes, Status = "Open", CreatedByUserId = actorId, CreatedAt = _clock.EgyptNow
+            Id = Guid.NewGuid(),
+            SupplyShipmentId = shipmentId,
+            ShipmentNumber = shipmentNumber,
+            SupplierName = supplierName,
+            Notes = notes,
+            Status = "Open",
+            CreatedByUserId = actorId,
+            CreatedAt = _clock.EgyptNow
         };
         _finance.SupplyFinanceLogs.Add(log);
         await _finance.SaveChangesAsync(ct);

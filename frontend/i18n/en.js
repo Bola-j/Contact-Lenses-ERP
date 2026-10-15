@@ -564,6 +564,8 @@ export default Object.freeze({
   ,"reports.descending": "Descending"
   ,"reports.ascending": "Ascending"
   ,"reports.allRows": "All matching rows"
+  ,"reports.exportRows": "Rows to export"
+  ,"reports.currentPage": "Visible page only"
   ,"reports.register": "Official report register"
   ,"reports.title": "Reports and exports"
   ,"reports.subtitle": "One controlled workspace for analytical reports and official business documents."

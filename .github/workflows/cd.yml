@@ -1,0 +1,75 @@
+name: CD / Production
+
+on:
+  workflow_run:
+    workflows: ["Certification Evidence"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact commit SHA to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: CD / Deploy certified commit
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, linux, lensee-production]
+    timeout-minutes: 60
+    steps:
+      - name: Check out the certified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
+          fetch-depth: 0
+          clean: true
+
+      - name: Verify the certified commit belongs to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_sha="$(git rev-parse HEAD)"
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$candidate_sha" origin/main
+          printf 'Deploying certified commit %s\n' "$candidate_sha"
+
+      - name: Deploy with backup, health checks, and application rollback
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCTION_ENV_FILE: ${{ vars.LENSEE_PRODUCTION_ENV_FILE }}
+          PRODUCTION_BACKUP_DIR: ${{ vars.LENSEE_PRODUCTION_BACKUP_DIR }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          : "${PRODUCTION_ENV_FILE:?Set repository variable LENSEE_PRODUCTION_ENV_FILE to the VPS .env path}"
+          : "${PRODUCTION_BACKUP_DIR:?Set repository variable LENSEE_PRODUCTION_BACKUP_DIR to the VPS backup directory}"
+          test -f "$PRODUCTION_ENV_FILE"
+          candidate_sha="$(git rev-parse HEAD)"
+          image_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          image_repository="${GITHUB_REPOSITORY##*/}"
+          image_repository="${image_repository,,}"
+          env_file="$(mktemp)"
+          trap 'rm -f "$env_file"' EXIT
+          cp "$PRODUCTION_ENV_FILE" "$env_file"
+          printf '\nLENSEE_HOST_IMAGE=%s\nLENSEE_FRONTEND_IMAGE=%s\n' \
+            "$image_namespace/$image_repository-api:$candidate_sha" \
+            "$image_namespace/$image_repository-frontend:$candidate_sha" >> "$env_file"
+          bash scripts/deploy-automatic.sh \
+            --env-file "$env_file" \
+            --backup-dir "$PRODUCTION_BACKUP_DIR" \
+            --release-sha "$candidate_sha"

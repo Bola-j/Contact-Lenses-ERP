@@ -578,9 +578,9 @@ public static class SupplyEndpoints
         var destination = await operations.SupplyShipments.AsNoTracking().Where(x => x.Id == id).Select(x => (Guid?)x.DestinationLocationId).SingleOrDefaultAsync(ct);
         if (destination is null) return Results.NotFound();
         if (!CanAccessShipmentLocation(user, destination.Value)) return Results.Forbid();
-        if (session.Status != Draft) return Results.ValidationProblem(new Dictionary<string,string[]> { ["session"] = ["Only draft receiving sessions can be changed."] });
+        if (session.Status != Draft) return Results.ValidationProblem(new Dictionary<string, string[]> { ["session"] = ["Only draft receiving sessions can be changed."] });
         if (request.GroupBy(x => x.ShipmentLineId).Any(group => group.Count() > 1) || request.Any(x => x.ReceivedQuantity < 0 || !IsPackUnit(x.QuantityUnit) || x.LotNumber?.Length > 100 || x.Notes?.Length > 1000) || request.Select(x => x.ShipmentLineId).Except(session.Lines.Select(x => x.ShipmentLineId)).Any())
-            return Results.ValidationProblem(new Dictionary<string,string[]> { ["lines"] = ["Receiving lines must be unique, belong to the shipment, and use valid non-negative values."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["lines"] = ["Receiving lines must be unique, belong to the shipment, and use valid non-negative values."] });
         foreach (var item in request)
         {
             var line = session.Lines.Single(x => x.ShipmentLineId == item.ShipmentLineId);
@@ -609,7 +609,9 @@ public static class SupplyEndpoints
     private static async Task<IResult> ConfirmReceivingSessionAsync(Guid id, Guid sessionId, OperationsDbContext operations, InventoryDbContext inventory, CatalogDbContext catalog, StockLedgerService ledgerService, ICurrentUser user, IClock clock, CancellationToken ct)
     {
         var now = clock.EgyptNow; var actor = user.UserId ?? Guid.Empty;
-        try { await SharedDbTransaction.ExecuteAsync(inventory, async () =>
+        try
+        {
+            await SharedDbTransaction.ExecuteAsync(inventory, async () =>
         {
             await LockShipmentAsync(operations, id, ct);
             var shipment = await operations.SupplyShipments.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
@@ -671,7 +673,8 @@ public static class SupplyEndpoints
             shipment.Status = shipment.Lines.All(x => prior.GetValueOrDefault(x.Id) == x.Quantity) ? Received : PartiallyReceived; shipment.ConfirmedAt = now; shipment.ConfirmedBy = actor;
             AddHistory(operations, shipment, "ReceivingSessionConfirm", actor, now, $"Physical receipt {operation.OperationNumber} posted from receiving count {session.Id}.");
             await PersistenceBoundary.CommitAsync(operations, ct);
-        }, ct, operations); }
+        }, ct, operations);
+        }
         catch (KeyNotFoundException) { return Results.NotFound(); }
         catch (UnauthorizedAccessException) { return Results.Forbid(); }
         catch (ArgumentException ex) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["lines"] = [ex.Message] }); }

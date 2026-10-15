@@ -70,7 +70,9 @@ public static partial class ReportsEndpoints
                 new DocumentCell.Integer(row.AvailableQty), new DocumentCell.Integer(row.ReservedInWarehouseQty), new DocumentCell.Integer(row.ReservedWithRepQty),
                 row.TargetQty.HasValue ? new DocumentCell.Integer(row.TargetQty.Value) : Text(string.Empty), new DocumentCell.DateTimeValue(row.LastUpdated)])).ToList());
 
-        var colorSummary = rows.GroupBy(row => string.IsNullOrWhiteSpace(row.ColorName) ? Localized("Unspecified", language) : row.ColorName!.Trim(), StringComparer.OrdinalIgnoreCase)
+        var colorSummary = rows
+            .Where(row => string.Equals(row.ProductType, "Lens", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(row => string.IsNullOrWhiteSpace(row.ColorName) ? Localized("Unspecified", language) : row.ColorName!.Trim(), StringComparer.OrdinalIgnoreCase)
             .OrderBy(group => group.Key)
             .Select(group => new TableRow([
                 Text(group.Key),
@@ -83,7 +85,7 @@ public static partial class ReportsEndpoints
         {
             Tables = [
                 detail.Tables[0],
-                new TableSection(Localized("Stock totals by color", language),
+                new TableSection(Localized("Lens stock totals by color", language),
                     [Column("Color"), Column("Boxes", ColumnDataType.Integer), Column("Loose pieces", ColumnDataType.Integer), Column("Total pieces", ColumnDataType.Integer)],
                     colorSummary,
                     Localized("No color totals found for the selected criteria.", language))]

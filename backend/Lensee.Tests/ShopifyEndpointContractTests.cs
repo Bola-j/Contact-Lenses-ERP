@@ -226,7 +226,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
             operationId = operation.Id;
             Assert.Equal(2, operation.OperationLines.Count);
             Assert.All(operation.OperationLines, line => Assert.Equal("Pieces", line.EntryMode));
-            inventory.InventoryBatches.Add(new InventoryBatch { Id = Guid.NewGuid(), LocationId = seed.OnlineLocationId, SkuId = seed.SkuId, LotNumber = "ONLINE-1", ExpiryDate = expiry, Quantity = 4, CreatedAt = DateTime.UtcNow });
+            inventory.InventoryBatches.Add(new InventoryBatch { Id = Guid.NewGuid(), LocationId = seed.SubLocationId, SkuId = seed.SkuId, LotNumber = "ONLINE-1", ExpiryDate = expiry, Quantity = 4, CreatedAt = DateTime.UtcNow });
             await inventory.SaveChangesAsync();
         }
 
@@ -242,7 +242,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
 
         using var detailResponse = await client.GetAsync($"/api/v1/operations/{operationId}");
         var detail = await detailResponse.Content.ReadFromJsonAsync<OperationDetailContract>();
-        using var successResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new { lines = detail!.Lines.Select(line => new { operationLineId = line.Id, lotNumber = "ONLINE-1", expiryDate = expiry }) });
+        using var successResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new { sourceLocationId = seed.SubLocationId, lines = detail!.Lines.Select(line => new { operationLineId = line.Id, lotNumber = "ONLINE-1", expiryDate = expiry }) });
         Assert.Equal(HttpStatusCode.NoContent, successResponse.StatusCode);
         Assert.All(detail.Lines, line => Assert.NotNull(line.ShopifyLineItemId));
     }
@@ -278,7 +278,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
             inventory.InventoryBatches.Add(new InventoryBatch
             {
                 Id = Guid.NewGuid(),
-                LocationId = seed.OnlineLocationId,
+                LocationId = seed.SubLocationId,
                 SkuId = seed.SkuId,
                 LotNumber = "ONLINE-AUDIT",
                 ExpiryDate = expiry,
@@ -291,6 +291,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsWrite, LenseePermissions.OperationsRead);
         using var allocationResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new
         {
+            sourceLocationId = seed.SubLocationId,
             lines = new[] { new { operationLineId, lotNumber = "ONLINE-AUDIT", expiryDate = expiry } }
         });
 

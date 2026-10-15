@@ -18,7 +18,9 @@ public sealed class ApiDateOnlyJsonConverter : JsonConverter<DateOnly>
     }
 
     public override void Write(Utf8JsonWriter writer, DateOnly value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
+        // Keep the public response contract compatible with built-in .NET JSON clients.
+        // The SPA owns localized presentation; this converter still accepts dd/MM/yyyy input.
+        writer.WriteStringValue(value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
     public override DateOnly ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
         DateOnly.TryParseExact(reader.GetString(), AcceptedFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
@@ -26,7 +28,7 @@ public sealed class ApiDateOnlyJsonConverter : JsonConverter<DateOnly>
             : throw new JsonException("Date dictionary key must use dd/MM/yyyy or the legacy yyyy-MM-dd format.");
 
     public override void WriteAsPropertyName(Utf8JsonWriter writer, DateOnly value, JsonSerializerOptions options) =>
-        writer.WritePropertyName(value.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
+        writer.WritePropertyName(value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 }
 
 public sealed class ApiNullableDateOnlyJsonConverter : JsonConverter<DateOnly?>
@@ -61,7 +63,7 @@ public sealed class ApiDateTimeJsonConverter : JsonConverter<DateTime>
     }
 
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture));
+        writer.WriteStringValue(value.ToString("O", CultureInfo.InvariantCulture));
 }
 
 public sealed class ApiNullableDateTimeJsonConverter : JsonConverter<DateTime?>
@@ -95,7 +97,7 @@ public sealed class ApiDateTimeOffsetJsonConverter : JsonConverter<DateTimeOffse
     }
 
     public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(value.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture));
+        writer.WriteStringValue(value.ToString("O", CultureInfo.InvariantCulture));
 }
 
 public sealed class ApiNullableDateTimeOffsetJsonConverter : JsonConverter<DateTimeOffset?>

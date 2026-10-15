@@ -54,7 +54,7 @@ public static class SupplyFinanceEndpoints
     }
     private static async Task<IResult> AddCostAsync(Guid id, SupplyFinanceCostRequest request, SupplyFinanceLogService service, FinanceDbContext finance, ICurrentUser user, IClock clock, CancellationToken ct)
     {
-        if (!Categories.Contains(request.Category, StringComparer.Ordinal) || request.Amount <= 0) return Results.ValidationProblem(new Dictionary<string,string[]> { [nameof(request.Category)] = ["Supply cost category and a positive amount are required."] });
+        if (!Categories.Contains(request.Category, StringComparer.Ordinal) || request.Amount <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Category)] = ["Supply cost category and a positive amount are required."] });
         await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
         await LockSupplyFinanceLogAsync(finance, id, ct);
         if (!await finance.SupplyFinanceLogs.AnyAsync(x => x.Id == id, ct)) return Results.NotFound();
@@ -79,7 +79,7 @@ public static class SupplyFinanceEndpoints
     private static async Task<IResult> CorrectCostAsync(Guid id, Guid costId, SupplyFinanceCostCorrectionRequest request, FinanceDbContext finance, ICurrentUser user, IClock clock, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length > 1000 || !Categories.Contains(request.Category, StringComparer.Ordinal) || request.Amount <= 0)
-            return Results.ValidationProblem(new Dictionary<string,string[]> { [nameof(request.Reason)] = ["A correction reason, supported category, and positive replacement amount are required."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A correction reason, supported category, and positive replacement amount are required."] });
         await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
         await LockSupplyFinanceLogAsync(finance, id, ct);
         var cost = await finance.SupplyFinanceCostEntries.SingleOrDefaultAsync(x => x.Id == costId && x.SupplyFinanceLogId == id, ct);
@@ -107,11 +107,11 @@ public static class SupplyFinanceEndpoints
         await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
         await LockSupplyFinanceLogAsync(finance, id, ct);
         if (!await finance.SupplyFinanceLogs.AnyAsync(x => x.Id == id, ct)) return Results.NotFound();
-        if (request.FinanceAccountId == Guid.Empty || request.Amount <= 0 || !Methods.Contains(request.MovementMethod, StringComparer.Ordinal)) return Results.ValidationProblem(new Dictionary<string,string[]> { [nameof(request.Amount)] = ["An account, a positive amount, and a valid payment method are required."] });
+        if (request.FinanceAccountId == Guid.Empty || request.Amount <= 0 || !Methods.Contains(request.MovementMethod, StringComparer.Ordinal)) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["An account, a positive amount, and a valid payment method are required."] });
         var account = await finance.FinanceAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.FinanceAccountId && x.IsActive, ct);
-        if (account is null) return Results.ValidationProblem(new Dictionary<string,string[]> { [nameof(request.FinanceAccountId)] = ["The selected Finance account is inactive or does not exist."] });
+        if (account is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = ["The selected Finance account is inactive or does not exist."] });
         if (!FinanceLedgerService.MovementMatchesAccount(request.MovementMethod, account.Type, "SupplierPurchase"))
-            return Results.ValidationProblem(new Dictionary<string,string[]> { [nameof(request.MovementMethod)] = ["The payment method does not match the selected Finance account."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.MovementMethod)] = ["The payment method does not match the selected Finance account."] });
         SupplySupplierInstallment installment;
         try
         {
@@ -200,11 +200,19 @@ public static class SupplyFinanceEndpoints
         var originalEntry = await finance.FinanceLedgerEntries.SingleAsync(x => x.Id == originalEntryId, ct);
         var replacement = new SupplySupplierInstallment
         {
-            Id = Guid.NewGuid(), SupplyFinanceLogId = id, FinanceAccountId = request.FinanceAccountId,
-            Amount = request.Amount, MovementMethod = request.MovementMethod,
-            BusinessDate = request.BusinessDate ?? original.BusinessDate, ExternalReference = Clean(request.ExternalReference),
-            Notes = Clean(request.Notes), Status = "Draft", CreatedByUserId = user.UserId ?? Guid.Empty,
-            CreatedAt = clock.EgyptNow, ReversesInstallmentId = original.Id, CorrectionNote = request.Reason.Trim(),
+            Id = Guid.NewGuid(),
+            SupplyFinanceLogId = id,
+            FinanceAccountId = request.FinanceAccountId,
+            Amount = request.Amount,
+            MovementMethod = request.MovementMethod,
+            BusinessDate = request.BusinessDate ?? original.BusinessDate,
+            ExternalReference = Clean(request.ExternalReference),
+            Notes = Clean(request.Notes),
+            Status = "Draft",
+            CreatedByUserId = user.UserId ?? Guid.Empty,
+            CreatedAt = clock.EgyptNow,
+            ReversesInstallmentId = original.Id,
+            CorrectionNote = request.Reason.Trim(),
             CorrelationId = Clean(request.CorrelationId)
         };
         await ledger.ReverseMovementAsync(originalEntry, "SupplySupplierInstallmentReversal", replacement.Id, user.UserId ?? Guid.Empty, replacement.CorrelationId, ct, "Supply");

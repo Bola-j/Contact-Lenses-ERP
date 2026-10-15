@@ -564,6 +564,8 @@ export default Object.freeze({
   ,"reports.descending": "تنازلي"
   ,"reports.ascending": "تصاعدي"
   ,"reports.allRows": "كل الصفوف المطابقة"
+  ,"reports.exportRows": "صفوف التصدير"
+  ,"reports.currentPage": "الصفحة الظاهرة فقط"
   ,"reports.register": "سجل التقارير الرسمي"
   ,"reports.title": "التقارير والتصدير"
   ,"reports.subtitle": "مساحة عمل موحدة للتقارير التحليلية ومستندات الأعمال الرسمية."

@@ -219,9 +219,17 @@ public sealed class StockLedgerServiceTests
         var batchId = Guid.NewGuid();
         dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batchId,
-            LotNumber = "LOT", BatchExpiryDate = new DateOnly(2028, 6, 1), OpenedDate = new DateOnly(2026, 6, 25),
-            PieceExpiryDate = new DateOnly(2028, 6, 1), LoosePieceQuantity = 5, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = batchId,
+            LotNumber = "LOT",
+            BatchExpiryDate = new DateOnly(2028, 6, 1),
+            OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = new DateOnly(2028, 6, 1),
+            LoosePieceQuantity = 5,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
         });
         await dbContext.SaveChangesAsync();
 
@@ -248,9 +256,17 @@ public sealed class StockLedgerServiceTests
         var batch = await dbContext.InventoryBatches.SingleAsync();
         dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
-            LotNumber = "LOT", BatchExpiryDate = expiry, OpenedDate = new DateOnly(2026, 6, 25),
-            PieceExpiryDate = expiry, LoosePieceQuantity = 2, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = batch.Id,
+            LotNumber = "LOT",
+            BatchExpiryDate = expiry,
+            OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = expiry,
+            LoosePieceQuantity = 2,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
         });
         await dbContext.SaveChangesAsync();
 
@@ -275,9 +291,17 @@ public sealed class StockLedgerServiceTests
         var batch = await dbContext.InventoryBatches.SingleAsync();
         dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
-            LotNumber = "LOT", BatchExpiryDate = expiry, OpenedDate = new DateOnly(2026, 6, 25),
-            PieceExpiryDate = expiry, LoosePieceQuantity = 1, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = batch.Id,
+            LotNumber = "LOT",
+            BatchExpiryDate = expiry,
+            OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = expiry,
+            LoosePieceQuantity = 1,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
         });
         await dbContext.SaveChangesAsync();
 
@@ -301,9 +325,17 @@ public sealed class StockLedgerServiceTests
         var batch = await dbContext.InventoryBatches.SingleAsync();
         dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
-            LotNumber = "LOT", BatchExpiryDate = batch.ExpiryDate, OpenedDate = new DateOnly(2026, 6, 25),
-            PieceExpiryDate = batch.ExpiryDate, LoosePieceQuantity = 2, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = batch.Id,
+            LotNumber = "LOT",
+            BatchExpiryDate = batch.ExpiryDate,
+            OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = batch.ExpiryDate,
+            LoosePieceQuantity = 2,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
         });
         await dbContext.SaveChangesAsync();
 
@@ -352,9 +384,15 @@ public sealed class StockLedgerServiceTests
         var operationId = Guid.NewGuid();
         var lot = new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(),
-            LotNumber = "LOT", OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 1,
-            CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = Guid.NewGuid(),
+            LotNumber = "LOT",
+            OpenedDate = new DateOnly(2026, 6, 25),
+            LoosePieceQuantity = 1,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
         };
         dbContext.OpenedPieceLots.Add(lot);
         await dbContext.SaveChangesAsync();

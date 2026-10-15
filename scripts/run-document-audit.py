@@ -23,6 +23,7 @@ from typing import Any
 from openpyxl import load_workbook
 from playwright.sync_api import Browser, Page, sync_playwright
 from pypdf import PdfReader
+import requests
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,32 +194,30 @@ def entity_id(key: str, row: dict[str, Any]) -> str:
     return str(row.get("merchantId") or row.get("id") or "") if key == "merchant-statement" else str(row.get("id") or "")
 
 
-def direct_document(page: Page, path: str, destination: Path, language: str) -> dict[str, Any]:
-    """Request legacy/doc endpoints through the authenticated browser and save bytes safely."""
-    result = page.evaluate("""async (path) => {
-      async function resolve(path) {
-        let r = await fetch(path, { headers: { 'X-Document-Audit': 'true' } });
-        if (r.status !== 202) return r;
-        const job = await r.json();
-        for (let i = 0; i < 60; i++) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const p = await fetch(`/api/v1/reports/document-jobs/${job.id}`, { headers: { 'X-Document-Audit': 'true' } });
-          const state = await p.json();
-          if (state.status === 'Ready') return fetch(`/api/v1/reports/document-jobs/${job.id}/file`, { headers: { 'X-Document-Audit': 'true' } });
-          if (state.status === 'Failed') return new Response(state.error || 'Document job failed.', { status: 500 });
-        }
-        return new Response('Document job timed out.', { status: 504 });
-      }
-      const response = await resolve(path);
-      const buffer = new Uint8Array(await response.arrayBuffer());
-      let binary = ''; for (const byte of buffer) binary += String.fromCharCode(byte);
-      return { status: response.status, type: response.headers.get('content-type') || '', body: btoa(binary) };
-    }""", path)
-    if result["status"] >= 400:
-        return {"direct": outcome("FAIL", "direct-route", f"HTTP {result['status']}", path=path)}
+def direct_document(base_url: str, cookie_header: str, path: str, destination: Path, language: str) -> dict[str, Any]:
+    """Fetch the same authorized endpoint after its SPA action has been verified."""
+    headers = {"Cookie": cookie_header, "X-Document-Audit": "true"}
+    try:
+        response = requests.get(base_url + path, headers=headers, timeout=120)
+        if response.status_code == 202:
+            job = response.json()
+            for _ in range(60):
+                time.sleep(0.5)
+                state = requests.get(base_url + f"/api/v1/reports/document-jobs/{job['id']}", headers=headers, timeout=30).json()
+                if state.get("status") == "Ready":
+                    response = requests.get(base_url + f"/api/v1/reports/document-jobs/{job['id']}/file", headers=headers, timeout=120)
+                    break
+                if state.get("status") == "Failed":
+                    return {"direct": outcome("FAIL", "direct-route", state.get("error", "Document job failed."), path=path)}
+            else:
+                return {"direct": outcome("FAIL", "direct-route", "Document job timed out.", path=path)}
+    except requests.RequestException as exc:
+        return {"direct": outcome("FAIL", "direct-route", str(exc), path=path)}
+    if response.status_code >= 400:
+        return {"direct": outcome("FAIL", "direct-route", f"HTTP {response.status_code}", path=path)}
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(base64.b64decode(result["body"]))
-    metadata = {"bytes": destination.stat().st_size, "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(), "contentType": result["type"]}
+    destination.write_bytes(response.content)
+    metadata = {"bytes": destination.stat().st_size, "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(), "contentType": response.headers.get("content-type", "")}
     metadata.update(inspect_file(destination, language))
     metadata["direct"] = outcome("PASS", "direct-route", "Authenticated browser request completed.", path=path)
     return metadata
@@ -289,6 +288,8 @@ def main() -> int:
                         if attempt == 2: raise
                         page.wait_for_timeout(1_000)
                 page.locator("#report-page-size").select_option("100000"); page.wait_for_timeout(1_000)
+                cookie_header = "; ".join(f"{item['name']}={item['value']}" for item in page.context.cookies())
+                if not cookie_header: raise RuntimeError("The authenticated SPA session did not provide cookies for endpoint verification.")
                 page.screenshot(path=str(evidence / "reports-spa.png"), full_page=True)
                 leaks = page.evaluate("() => window.__lenseeFindVisibleUuidLeaks ? window.__lenseeFindVisibleUuidLeaks() : ['presentation scanner unavailable']")
                 run["checks"].append(outcome("PASS" if not leaks else "FAIL", "SPA-visible-identifiers", "No visible UUID leaks." if not leaks else str(leaks)))
@@ -313,11 +314,11 @@ def main() -> int:
                                             identifier = entity_id(key, row)
                                             if not identifier: continue
                                             ext = "xlsx" if fmt == "excel" else fmt
-                                            direct = direct_document(page, f"/api/v1/documents/{key}/{identifier}?format={fmt}&language={language}", raw / f"{key}-{index}-{language}.{ext}", language)
+                                            direct = direct_document(run["baseUrl"], cookie_header, f"/api/v1/documents/{key}/{identifier}?format={fmt}&language={language}", raw / f"{key}-{index}-{language}.{ext}", language)
                                             run["checks"].append({"id": f"document:{key}:{index}:{fmt}:{language}", **direct})
                                             if fmt == "pdf":
                                                 legacy_path = LEGACY_DOCUMENT_PATHS[key].format(id=identifier, language=language)
-                                                legacy = direct_document(page, legacy_path, raw / f"legacy-{key}-{index}-{language}.pdf", language)
+                                                legacy = direct_document(run["baseUrl"], cookie_header, legacy_path, raw / f"legacy-{key}-{index}-{language}.pdf", language)
                                                 run["checks"].append({"id": f"legacy-document:{key}:{index}:{language}", **legacy})
                                         hidden = f"#report-picker-{key}-value"
                                         if page.locator(hidden).count():
@@ -327,10 +328,10 @@ def main() -> int:
                                     record.update(ui_export(page, f'[data-download-report="{key}"][data-export-format="{fmt}"]', language, raw / f"spa-{key}-{language}.{fmt}"))
                                     inspect_path = f"/api/v1/reports/{key}/export?format={fmt}&language={language}&pageSize=100000"
                                     extension = "xlsx" if fmt == "excel" else fmt
-                                    record.update({"artifact": direct_document(page, inspect_path, raw / f"{key}-{language}.{extension}", language)})
+                                    record.update({"artifact": direct_document(run["baseUrl"], cookie_header, inspect_path, raw / f"{key}-{language}.{extension}", language)})
                                 run["checks"].append(record)
                     for key, path in LEGACY_PATHS.items():
-                        run["checks"].append({"id": f"legacy:{key}", **direct_document(page, path, raw / f"legacy-{key}.csv", "en")})
+                        run["checks"].append({"id": f"legacy:{key}", **direct_document(run["baseUrl"], cookie_header, path, raw / f"legacy-{key}.csv", "en")})
                 if console_errors:
                     run["checks"].append(outcome("FAIL", "browser-console", "; ".join(console_errors[:10])))
             except Exception as exc:

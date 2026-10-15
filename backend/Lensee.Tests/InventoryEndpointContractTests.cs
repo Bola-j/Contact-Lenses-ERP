@@ -17,6 +17,13 @@ using Xunit;
 
 namespace Lensee.Tests;
 
+[CollectionDefinition(CollectionName, DisableParallelization = true)]
+public sealed class InventoryEndpointContractTestCollection
+{
+    public const string CollectionName = "Inventory endpoint contract tests";
+}
+
+[Collection(InventoryEndpointContractTestCollection.CollectionName)]
 public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndpointFactory>
 {
     private readonly InventoryEndpointFactory _factory;
@@ -134,12 +141,14 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
     [Fact]
     public async Task StockBalances_FilterByColorBeforePaginationAndCountAcrossLocations()
     {
+        await _factory.ResetAsync();
         var seed = await _factory.SeedAsync(withBalance: true);
         Guid transparentSkuId;
         using (var scope = _factory.Services.CreateScope())
         {
             var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
             var source = await catalog.Skus.Include(sku => sku.Product).FirstAsync(sku => sku.Id == seed.SkuId);
+            source.ColorName = $"Hazel-{seed.SkuId:N}";
             transparentSkuId = Guid.NewGuid();
             catalog.Skus.Add(new Sku
             {
@@ -155,7 +164,7 @@ public sealed class InventoryEndpointContractTests : IClassFixture<InventoryEndp
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.InventoryRead);
         var hazel = await client.GetFromJsonAsync<PagedContract<StockBalanceContract>>(
-            "/api/v1/inventory/stock-balances?colorName=Hazel&page=1&pageSize=1");
+            $"/api/v1/inventory/stock-balances?skuId={seed.SkuId}&colorName=Hazel-{seed.SkuId:N}&includeZeroStock=true&page=1&pageSize=1");
         var transparent = await client.GetFromJsonAsync<PagedContract<StockBalanceContract>>(
             "/api/v1/inventory/stock-balances?colorName=__transparent__&includeZeroStock=true");
 
@@ -455,6 +464,13 @@ public sealed class InventoryEndpointFactory : WebApplicationFactory<Program>
         await catalog.SaveChangesAsync();
         await inventory.SaveChangesAsync();
         return new InventorySeed(locationA, locationB, skuId);
+    }
+
+    public async Task ResetAsync()
+    {
+        using var scope = Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        await catalog.Database.EnsureDeletedAsync();
     }
 
     public async Task DeactivateSeedAsync(Guid locationId, Guid skuId)

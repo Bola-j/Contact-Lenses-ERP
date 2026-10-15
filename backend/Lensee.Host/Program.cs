@@ -521,13 +521,13 @@ builder.Services.AddAuthorization(options =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
             .RequireClaim("permission", LenseePermissions.AuditRead));
 
-      options.AddPolicy("supply.read", policy =>
-          policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.ERPAdmin, LenseeRoles.WarehouseClerk)
-              .RequireClaim("permission", LenseePermissions.SupplyRead));
+    options.AddPolicy("supply.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.ERPAdmin, LenseeRoles.WarehouseClerk)
+            .RequireClaim("permission", LenseePermissions.SupplyRead));
 
-      options.AddPolicy("supply.costs.read", policy =>
-          policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
-              .RequireClaim("permission", LenseePermissions.SupplyRead));
+    options.AddPolicy("supply.costs.read", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
+            .RequireClaim("permission", LenseePermissions.SupplyRead));
 
     options.AddPolicy("supply.write", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)

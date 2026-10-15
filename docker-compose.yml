@@ -32,7 +32,7 @@ services:
       retries: 5
 
   lensee.host:
-    image: ${DOCKER_REGISTRY-}lenseehost
+    image: ${LENSEE_HOST_IMAGE:-lenseehost}
     build:
       context: .
       dockerfile: backend/Lensee.Host/Dockerfile
@@ -92,7 +92,7 @@ services:
       - data_protection:/home/app/.aspnet/DataProtection-Keys
 
   migrator:
-    image: ${DOCKER_REGISTRY-}lenseehost
+    image: ${LENSEE_HOST_IMAGE:-lenseehost}
     build:
       context: .
       dockerfile: backend/Lensee.Host/Dockerfile
@@ -112,6 +112,7 @@ services:
       - data_protection:/home/app/.aspnet/DataProtection-Keys
 
   frontend:
+    image: ${LENSEE_FRONTEND_IMAGE:-lenseeproduction-frontend}
     build:
       context: ./frontend
       dockerfile: Dockerfile

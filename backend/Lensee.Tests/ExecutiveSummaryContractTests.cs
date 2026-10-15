@@ -107,10 +107,18 @@ public sealed class ExecutiveSummaryContractTests : IClassFixture<OperationsEndp
         });
         finance.FinanceLedgerEntries.Add(new FinanceLedgerEntry
         {
-            Id = Guid.NewGuid(), FinanceAccountId = financeAccountId,
-            Direction = "Credit", Amount = 135m, Category = "SaleCollection",
-            MovementMethod = "CashHandToHand", SourceType = "CashRecord", SourceId = saleId,
-            BusinessDate = day, Status = "Posted", CreatedBy = actor, CreatedAt = now
+            Id = Guid.NewGuid(),
+            FinanceAccountId = financeAccountId,
+            Direction = "Credit",
+            Amount = 135m,
+            Category = "SaleCollection",
+            MovementMethod = "CashHandToHand",
+            SourceType = "CashRecord",
+            SourceId = saleId,
+            BusinessDate = day,
+            Status = "Posted",
+            CreatedBy = actor,
+            CreatedAt = now
         });
         await operations.SaveChangesAsync();
         await finance.SaveChangesAsync();
@@ -135,9 +143,17 @@ public sealed class ExecutiveSummaryContractTests : IClassFixture<OperationsEndp
 
         FinanceLedgerEntry Entry(string sourceType, string direction, decimal amount, string status = "Posted") => new()
         {
-            Id = Guid.NewGuid(), FinanceAccountId = financeAccountId, SourceType = sourceType,
-            SourceId = Guid.NewGuid(), Direction = direction, Amount = amount, Category = "SupplierPurchase",
-            MovementMethod = "CashHandToHand", BusinessDate = day, Status = status, CreatedBy = actor,
+            Id = Guid.NewGuid(),
+            FinanceAccountId = financeAccountId,
+            SourceType = sourceType,
+            SourceId = Guid.NewGuid(),
+            Direction = direction,
+            Amount = amount,
+            Category = "SupplierPurchase",
+            MovementMethod = "CashHandToHand",
+            BusinessDate = day,
+            Status = status,
+            CreatedBy = actor,
             CreatedAt = day.ToDateTime(TimeOnly.MinValue)
         };
 
@@ -170,9 +186,17 @@ public sealed class ExecutiveSummaryContractTests : IClassFixture<OperationsEndp
 
         FinanceLedgerEntry Entry(string sourceType, string direction, decimal amount) => new()
         {
-            Id = Guid.NewGuid(), FinanceAccountId = financeAccountId, SourceType = sourceType,
-            SourceId = Guid.NewGuid(), Direction = direction, Amount = amount, Category = "CLevelWithdrawal",
-            MovementMethod = "CashHandToHand", BusinessDate = historicDay, Status = "Posted", CreatedBy = actor,
+            Id = Guid.NewGuid(),
+            FinanceAccountId = financeAccountId,
+            SourceType = sourceType,
+            SourceId = Guid.NewGuid(),
+            Direction = direction,
+            Amount = amount,
+            Category = "CLevelWithdrawal",
+            MovementMethod = "CashHandToHand",
+            BusinessDate = historicDay,
+            Status = "Posted",
+            CreatedBy = actor,
             CreatedAt = historicDay.ToDateTime(TimeOnly.MinValue)
         };
 
@@ -204,9 +228,16 @@ public sealed class ExecutiveSummaryContractTests : IClassFixture<OperationsEndp
 
         OperationLog Sale(string salesChannel, decimal amount, decimal codCharge) => new()
         {
-            Id = Guid.NewGuid(), OperationNumber = $"SALE-{Guid.NewGuid():N}", OperationType = "RetailSale",
-            Status = "Delivered", SalesChannel = salesChannel, SourceLocationId = seed.SubLocationId,
-            CreatedBy = actor, CreatedAt = now, ConfirmedAt = now, CodCharge = codCharge,
+            Id = Guid.NewGuid(),
+            OperationNumber = $"SALE-{Guid.NewGuid():N}",
+            OperationType = "RetailSale",
+            Status = "Delivered",
+            SalesChannel = salesChannel,
+            SourceLocationId = seed.SubLocationId,
+            CreatedBy = actor,
+            CreatedAt = now,
+            ConfirmedAt = now,
+            CodCharge = codCharge,
             OperationLines = [new OperationLine
             {
                 Id = Guid.NewGuid(), SkuId = seed.SkuId, ProductNameSnapshot = "Lens", SkuCodeSnapshot = "METRIC-TEST",

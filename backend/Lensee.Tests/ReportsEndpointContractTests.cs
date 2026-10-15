@@ -161,7 +161,7 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
     }
 
     [Fact]
-    public async Task StandardExport_IgnoresLegacyConfiguredLimitAndIncludesAllFilteredRows()
+    public async Task CompleteExport_RejectsOverLimitResultInsteadOfSilentlyTruncating()
     {
         await using var factory = new LimitedReportsEndpointFactory();
         await factory.SeedPrintableDocumentsAsync();
@@ -171,9 +171,9 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
 
         using var response = await client.GetAsync("/api/v1/reports/operations/export?format=xlsx&language=en");
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", response.Content.Headers.ContentType?.MediaType);
-        Assert.True((await response.Content.ReadAsByteArrayAsync()).Length > 20);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadAsStringAsync();
+        Assert.Contains("more than 1 rows", problem, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -205,6 +205,11 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
         Assert.Equal(HttpStatusCode.OK, export.StatusCode);
         var csv = await export.Content.ReadAsStringAsync();
         Assert.True(csv.Split('\n').Length >= 3);
+
+        using var pageOnlyExport = await client.GetAsync("/api/v1/reports/operations/export?format=csv&language=en&scope=page&page=1&pageSize=1");
+        Assert.Equal(HttpStatusCode.OK, pageOnlyExport.StatusCode);
+        var pageOnlyCsv = await pageOnlyExport.Content.ReadAsStringAsync();
+        Assert.Equal(2, pageOnlyCsv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
     }
 
     [Fact]

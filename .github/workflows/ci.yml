@@ -105,6 +105,39 @@ jobs:
         if: always()
         run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
 
+  release-images:
+    name: CI / Publish immutable release images
+    needs: [core, full-acceptance, secret-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Authenticate to GitHub Container Registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build and publish immutable images
+        env:
+          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+          IMAGE_REPOSITORY: ${{ github.event.repository.name }}
+          RELEASE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="${IMAGE_NAMESPACE,,}"
+          repository="${IMAGE_REPOSITORY,,}"
+          docker build --file backend/Lensee.Host/Dockerfile --tag "$namespace/$repository-api:$RELEASE_SHA" .
+          docker build --file frontend/Dockerfile --tag "$namespace/$repository-frontend:$RELEASE_SHA" frontend
+          docker push "$namespace/$repository-api:$RELEASE_SHA"
+          docker push "$namespace/$repository-frontend:$RELEASE_SHA"
+
   secret-scan:
     name: CI / Secret scan
     runs-on: ubuntu-latest

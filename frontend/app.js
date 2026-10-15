@@ -9621,11 +9621,15 @@ function paymentEmptyTableRow(columnCount, message) {
   return row;
 }
 
+function directionalTransition(from, to) {
+  return currentLanguage === "ar" ? `${from} ← ${to}` : `${from} → ${to}`;
+}
+
 function paymentAuditRow(item) {
   const row = paymentTableRow([
     formatDateTime(item.occurredAt) || "-",
     paymentAuditActionLabel(item.action),
-    `${paymentWorkflowStatusLabel(item.previousStatus)} → ${paymentWorkflowStatusLabel(item.newStatus)}`,
+    directionalTransition(paymentWorkflowStatusLabel(item.previousStatus), paymentWorkflowStatusLabel(item.newStatus)),
     item.amount == null ? "-" : formatMoney(item.amount),
     movementMethodLabel(item.paymentMethod),
     item.reason || "-",
@@ -9701,7 +9705,7 @@ function togglePaymentAuditDetails(row, item) {
     [paymentT("scope"), item.scope === "MerchantAccount" ? paymentT("merchantAccount") : paymentT("otherPayments")],
     [paymentT("method"), movementMethodLabel(item.paymentMethod)],
     [paymentT("transactionReferenceLabel"), item.transactionReference || "-"],
-    [paymentT("status"), `${paymentWorkflowStatusLabel(item.previousStatus)} → ${paymentWorkflowStatusLabel(item.newStatus)}`],
+    [paymentT("status"), directionalTransition(paymentWorkflowStatusLabel(item.previousStatus), paymentWorkflowStatusLabel(item.newStatus))],
     [foundationT("common.notes"), item.reason || "-"],
     [paymentT("correlation"), item.correlationId ? shortId(item.correlationId, "REF") : "-"],
     [paymentT("idempotency"), item.idempotencyKey ? shortId(item.idempotencyKey, "REF") : "-"],
@@ -10580,7 +10584,8 @@ async function renderReports() {
             <label class="field"><span>${reportsT("operationType")}</span><select id="report-filter-operation-type" class="input"><option value="">${reportsT("allTypes")}</option><option value="WholesaleSale">${reportsT("wholesaleSale")}</option><option value="RetailSale">${reportsT("retailSale")}</option><option value="Return">${reportsT("return")}</option></select></label>
             <label class="field"><span>${foundationT("reports.sort")}</span><select id="report-filter-sort" class="input"><option value="createdAt">${foundationT("reports.sortCreated")}</option><option value="operationNumber">${foundationT("reports.sortOperationNumber")}</option><option value="total">${foundationT("reports.sortTotal")}</option><option value="quantity">${foundationT("reports.sortQuantity")}</option></select></label>
             <label class="field"><span>${foundationT("reports.direction")}</span><select id="report-filter-direction" class="input"><option value="desc">${foundationT("reports.descending")}</option><option value="asc">${foundationT("reports.ascending")}</option></select></label>
-            <label class="field"><span>${escapeHtml(foundationT("app.inline.rowsPerPage"))}</span><select id="report-page-size" class="input"><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1,000</option><option value="100000">${escapeHtml(reportsT("allRows"))}</option></select></label>
+            <label class="field"><span>${escapeHtml(foundationT("app.inline.rowsPerPage"))}</span><select id="report-page-size" class="input"><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1,000</option></select></label>
+            <label class="field"><span>${escapeHtml(reportsT("exportRows"))}</span><select id="report-export-scope" class="input"><option value="all">${escapeHtml(reportsT("allRows"))}</option><option value="page">${escapeHtml(reportsT("currentPage"))}</option></select></label>
             <label class="field"><span>${reportsT("supplyStatus")}</span><select id="report-filter-supply-status" class="input"><option value="">${reportsT("allStatuses")}</option><option value="Draft">${reportsT("draft")}</option><option value="Arrived">${foundationT("supply.arrived")}</option><option value="PartiallyReceived">${foundationT("supply.partiallyReceived")}</option><option value="Received">${reportsT("received")}</option><option value="Cancelled">${reportsT("cancelled")}</option></select></label>
           </div>
         </section>
@@ -10849,6 +10854,7 @@ function reportExportFilterParams(reportName) {
     if (value("report-filter-supply-status")) params.set("status", value("report-filter-supply-status"));
   }
   params.set("pageSize", String(reportPageSize));
+  params.set("scope", document.getElementById("report-export-scope")?.value || "all");
   return params;
 }
 

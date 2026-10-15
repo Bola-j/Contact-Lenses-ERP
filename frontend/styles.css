@@ -2785,6 +2785,10 @@ body.lang-ar {
   transform: rotate(-90deg);
 }
 
+html[dir="rtl"] .category-tree-chevron.is-collapsed {
+  transform: rotate(90deg);
+}
+
 .category-tree-name {
   min-width: 0;
   flex: 1;

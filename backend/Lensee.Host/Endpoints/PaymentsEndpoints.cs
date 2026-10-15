@@ -2033,12 +2033,12 @@ public static class PaymentsEndpoints
 
         await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
             {
-            paymentsDbContext.MainPaymentLogs.Add(log);
-            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentLogInitialized", log.Id, new { log.OperationId, log.TotalAmount, log.PaymentMethod }, now, cancellationToken);
-            AddPaymentWorkflowAudit(paymentsDbContext, "PaymentLogInitialized", null, log.Status, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, log.TotalAmount, log.PaymentMethod, null, httpContext, idempotencyKey, null);
-            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
-            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
-        }, cancellationToken, identityDbContext, sharedDbContext);
+                paymentsDbContext.MainPaymentLogs.Add(log);
+                await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "PaymentLogInitialized", log.Id, new { log.OperationId, log.TotalAmount, log.PaymentMethod }, now, cancellationToken);
+                AddPaymentWorkflowAudit(paymentsDbContext, "PaymentLogInitialized", null, log.Status, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, log.TotalAmount, log.PaymentMethod, null, httpContext, idempotencyKey, null);
+                await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+                await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+            }, cancellationToken, identityDbContext, sharedDbContext);
         var userLookup = await LoadUserLookupAsync(identityDbContext, [log], cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
         var cashRecords = await LoadCashRecordsForLogAsync(paymentsDbContext, log, cancellationToken);
@@ -2487,7 +2487,7 @@ public static class PaymentsEndpoints
             cashRecord.ConfirmedBy = currentUser.UserId;
             cashRecord.ConfirmedAt = now;
             if (returnEntitlement is not null)
-                    ApplyReturnEntitlementSettlement(returnEntitlement, cashRecord.Amount, cashRecord.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
+                ApplyReturnEntitlementSettlement(returnEntitlement, cashRecord.Amount, cashRecord.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
             if (!isReturnSettlement)
             {
                 var cashRecords = await paymentsDbContext.CashRecords
@@ -2626,7 +2626,7 @@ public static class PaymentsEndpoints
             var rejectedRefund = record.PaymentType == CashRefund;
             AddPaymentWorkflowAudit(paymentsDbContext, rejectedRefund ? "CashRefundRejected" : "CashReceiptRejected", PendingAccountant, Rejected, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, record.Amount, record.SubType, request.Reason.Trim(), null, idempotencyKey, new { record.Id });
             await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
-            }, cancellationToken);
+        }, cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -3293,8 +3293,14 @@ public static class PaymentsEndpoints
             if (request.Amount > available) { failure = Results.Conflict(new { code = "return-entitlement-waiver-cap-exceeded", scope, availableAmount = available }); return; }
             waiver = new ReturnEntitlementWaiver
             {
-                Id = Guid.NewGuid(), ReturnEntitlementId = id, Scope = scope, Amount = request.Amount,
-                Reason = request.Reason.Trim(), Status = "PendingReview", RequestedBy = actorId, RequestedAt = now,
+                Id = Guid.NewGuid(),
+                ReturnEntitlementId = id,
+                Scope = scope,
+                Amount = request.Amount,
+                Reason = request.Reason.Trim(),
+                Status = "PendingReview",
+                RequestedBy = actorId,
+                RequestedAt = now,
                 IdempotencyKey = idempotencyKey?.Trim()
             };
             paymentsDbContext.ReturnEntitlementWaivers.Add(waiver);
@@ -3630,15 +3636,22 @@ public static class PaymentsEndpoints
                     {
                         // Merchant reductions are obligations against the sold
                         // order, never the physical return document.
-                        Id = Guid.NewGuid(), MerchantId = entitlement.MerchantId.Value, OperationId = settlementScope == "SourceOperation" ? entitlement.OriginalSaleOperationId : null,
+                        Id = Guid.NewGuid(),
+                        MerchantId = entitlement.MerchantId.Value,
+                        OperationId = settlementScope == "SourceOperation" ? entitlement.OriginalSaleOperationId : null,
                         ReturnEntitlementId = entitlement.Id,
                         ReturnSettlementScope = settlementScope,
-                        AdjustmentType = method, Amount = request.Amount, Status = PendingApproval,
+                        AdjustmentType = method,
+                        Amount = request.Amount,
+                        Status = PendingApproval,
                         RefundFinanceAccountId = method == CashRefund ? request.FinanceAccountId : null,
                         RefundPaymentMethod = method == CashRefund ? NormalizeMovementMethod(request.RefundPaymentMethod) : null,
                         RefundTransactionReference = method == CashRefund ? request.TransactionReference?.Trim() : null,
                         RefundTransferFeeAmount = method == CashRefund ? request.TransferFeeAmount : null,
-                        Notes = request.Notes?.Trim(), CreatedBy = actorId, CreatedAt = now, LineageKind = "SourceLinked"
+                        Notes = request.Notes?.Trim(),
+                        CreatedBy = actorId,
+                        CreatedAt = now,
+                        LineageKind = "SourceLinked"
                     };
                     paymentsDbContext.FinancialAdjustments.Add(adjustment);
                 }
@@ -3668,15 +3681,24 @@ public static class PaymentsEndpoints
                     log.AssignedAt ??= log.AssignedTo.HasValue ? now : null;
                     cashRecord = new CashRecord
                     {
-                        Id = Guid.NewGuid(), OperationId = source?.Id ?? entitlement.ReturnOperationId, ReturnEntitlementId = entitlement.Id, ReturnSettlementScope = settlementScope,
-                        PaymentType = CashRefund, SubType = method,
+                        Id = Guid.NewGuid(),
+                        OperationId = source?.Id ?? entitlement.ReturnOperationId,
+                        ReturnEntitlementId = entitlement.Id,
+                        ReturnSettlementScope = settlementScope,
+                        PaymentType = CashRefund,
+                        SubType = method,
                         TransactionReference = method == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : request.TransactionReference!.Trim(),
-                        FinanceAccountId = request.FinanceAccountId, Amount = request.Amount, TransferFeeAmount = request.TransferFeeAmount,
+                        FinanceAccountId = request.FinanceAccountId,
+                        Amount = request.Amount,
+                        TransferFeeAmount = request.TransferFeeAmount,
                         // Cash records use their own workflow constraint; unlike a
                         // main payment log they cannot be PendingAdminReview.
                         // PendingAccountant remains reviewable by the existing
                         // approve/reject endpoint and satisfies chk_cash_status.
-                        Status = PendingAccountant, PaymentDate = now, CreatedBy = actorId, Notes = request.Notes?.Trim()
+                        Status = PendingAccountant,
+                        PaymentDate = now,
+                        CreatedBy = actorId,
+                        Notes = request.Notes?.Trim()
                     };
                     paymentsDbContext.CashRecords.Add(cashRecord);
                     // Keep the original sale payment complete while the separate
@@ -3780,69 +3802,69 @@ public static class PaymentsEndpoints
         var userId = currentUser.UserId ?? Guid.Empty;
         try
         {
-        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
-        {
-            if (operation is not null)
+            await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
             {
-                paymentLog = await paymentsDbContext.MainPaymentLogs
-                    .Include(log => log.InstallmentSubLogs)
-                    .FirstOrDefaultAsync(log => log.OperationId == operation.Id && log.MerchantId == request.MerchantId && !log.IsDeleted, cancellationToken);
-                var isConfirmedMerchantReturn = operation.ClientId == request.MerchantId &&
-                    operation.Status == Confirmed && operation.OperationType == Return;
-                if (paymentLog is null && !isConfirmedMerchantReturn)
+                if (operation is not null)
                 {
-                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["The linked order does not have a payment record yet."] });
-                    return;
-                }
-                if (paymentLog is not null)
-                {
-                    paymentLog = await LoadPaymentLogForUpdateAsync(paymentLog.Id, paymentsDbContext, cancellationToken);
-                    var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog!, adjustmentType, null, cancellationToken);
-                    if (cap.HasValue && request.Amount > cap.Value)
+                    paymentLog = await paymentsDbContext.MainPaymentLogs
+                        .Include(log => log.InstallmentSubLogs)
+                        .FirstOrDefaultAsync(log => log.OperationId == operation.Id && log.MerchantId == request.MerchantId && !log.IsDeleted, cancellationToken);
+                    var isConfirmedMerchantReturn = operation.ClientId == request.MerchantId &&
+                        operation.Status == Confirmed && operation.OperationType == Return;
+                    if (paymentLog is null && !isConfirmedMerchantReturn)
                     {
-                        transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
+                        transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["The linked order does not have a payment record yet."] });
                         return;
                     }
-                }
-                else if (adjustmentType == CashRefund)
-                {
-                    var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, request.MerchantId, null, cancellationToken);
-                    if (request.Amount > capacity)
+                    if (paymentLog is not null)
                     {
-                        transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Adjustment exceeds the merchant's available account credit ({capacity:0.####})." });
-                        return;
+                        paymentLog = await LoadPaymentLogForUpdateAsync(paymentLog.Id, paymentsDbContext, cancellationToken);
+                        var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog!, adjustmentType, null, cancellationToken);
+                        if (cap.HasValue && request.Amount > cap.Value)
+                        {
+                            transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
+                            return;
+                        }
+                    }
+                    else if (adjustmentType == CashRefund)
+                    {
+                        var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, request.MerchantId, null, cancellationToken);
+                        if (request.Amount > capacity)
+                        {
+                            transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Adjustment exceeds the merchant's available account credit ({capacity:0.####})." });
+                            return;
+                        }
                     }
                 }
+
+                adjustment = new FinancialAdjustment
+                {
+                    Id = Guid.NewGuid(),
+                    MerchantId = request.MerchantId,
+                    OperationId = operation?.Id,
+                    PaymentLogId = paymentLog?.Id,
+                    AdjustmentType = adjustmentType,
+                    Amount = request.Amount,
+                    Status = PendingApproval,
+                    Notes = request.Notes,
+                    CreatedBy = userId,
+                    CreatedAt = now,
+                    LineageKind = operation is null ? "MerchantAccount" : "SourceLinked"
+                };
+                paymentsDbContext.FinancialAdjustments.Add(adjustment);
+                await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRequested", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustmentType, request.Amount, adjustment.LineageKind }, now, cancellationToken);
+                AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentRequested", null, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, userId, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
+                await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+                await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+            }, cancellationToken, identityDbContext, sharedDbContext);
+
+            if (transactionResult is not null)
+            {
+                return await PaymentIdempotencyService.AbortAsync(idempotency, transactionResult);
             }
 
-            adjustment = new FinancialAdjustment
-            {
-                Id = Guid.NewGuid(),
-                MerchantId = request.MerchantId,
-                OperationId = operation?.Id,
-                PaymentLogId = paymentLog?.Id,
-                AdjustmentType = adjustmentType,
-                Amount = request.Amount,
-                Status = PendingApproval,
-                Notes = request.Notes,
-                CreatedBy = userId,
-                CreatedAt = now,
-                LineageKind = operation is null ? "MerchantAccount" : "SourceLinked"
-            };
-            paymentsDbContext.FinancialAdjustments.Add(adjustment);
-            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRequested", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustmentType, request.Amount, adjustment.LineageKind }, now, cancellationToken);
-            AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentRequested", null, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, userId, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
-            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
-            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
-        }, cancellationToken, identityDbContext, sharedDbContext);
-
-        if (transactionResult is not null)
-        {
-            return await PaymentIdempotencyService.AbortAsync(idempotency, transactionResult);
-        }
-
-        var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
-        return await paymentIdempotencyService.CompleteAsync(idempotency, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status201Created, cancellationToken);
+            var userLookup = await LoadUserLookupAsync(identityDbContext, [adjustment!], cancellationToken);
+            return await paymentIdempotencyService.CompleteAsync(idempotency, ToAdjustmentResponse(adjustment!, userLookup), StatusCodes.Status201Created, cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -3884,116 +3906,116 @@ public static class PaymentsEndpoints
             await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
             {
                 adjustment = await LoadFinancialAdjustmentForUpdateAsync(id, paymentsDbContext, cancellationToken);
-            if (adjustment is null)
-            {
-                transactionResult = Results.NotFound();
-                return;
-            }
-            if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
-            {
-                transactionResult = Results.Forbid();
-                return;
-            }
-            if (adjustment.Status != PendingApproval)
-            {
-                transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only pending adjustment requests can be approved." });
-                return;
-            }
-            ReturnEntitlement? returnEntitlement = null;
-            if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
-            {
-                returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
-                if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || adjustment.Amount > returnEntitlement.ReservedAmount)
+                if (adjustment is null)
                 {
-                    transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this adjustment." });
+                    transactionResult = Results.NotFound();
                     return;
                 }
-            }
-            MainPaymentLog? paymentLog = null;
-            if (adjustment.PaymentLogId is { } paymentLogId)
-            {
-                paymentLog = await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken);
-                if (paymentLog is null)
+                if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
                 {
-                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentLog"] = ["The source payment log no longer exists."] });
+                    transactionResult = Results.Forbid();
                     return;
                 }
-                var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog, adjustment.AdjustmentType, adjustment.Id, cancellationToken);
-                if (cap.HasValue && adjustment.Amount > cap.Value)
+                if (adjustment.Status != PendingApproval)
                 {
-                    transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
+                    transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only pending adjustment requests can be approved." });
                     return;
                 }
-            }
-            else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is null)
-            {
-                var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
-                if (adjustment.Amount > capacity)
+                ReturnEntitlement? returnEntitlement = null;
+                if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
                 {
-                    transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Refund exceeds the merchant's available account credit ({capacity:0.####})." });
-                    return;
+                    returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
+                    if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || adjustment.Amount > returnEntitlement.ReservedAmount)
+                    {
+                        transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this adjustment." });
+                        return;
+                    }
                 }
-            }
-
-            var now = clock.EgyptNow;
-            adjustment.Status = adjustment.AdjustmentType == CashRefund ? "Approved" : PaymentCompleted;
-            adjustment.ReviewedBy = currentUser.UserId;
-            adjustment.ReviewedAt = now;
-
-            if (adjustment.AdjustmentType == AdditionalCharge)
-            {
-                await merchantAccountService.PostDebitForSourceAsync(adjustment.MerchantId, adjustment.Id, adjustment.OperationId, adjustment.Amount, "AdditionalCharge", currentUser.UserId ?? Guid.Empty, now, adjustment.Notes, cancellationToken);
-            }
-            else if (adjustment.AdjustmentType == BalanceReduction)
-            {
-                await merchantAccountService.GetOrCreateForUpdateAsync(adjustment.MerchantId, currentUser.UserId ?? Guid.Empty, now, cancellationToken);
-                var merchantSnapshot = await merchantAccountService.GetSnapshotAsync(adjustment.MerchantId, cancellationToken);
-                if (merchantSnapshot is null || adjustment.Amount > merchantSnapshot.AmountDue)
+                MainPaymentLog? paymentLog = null;
+                if (adjustment.PaymentLogId is { } paymentLogId)
                 {
-                    transactionResult = Results.Conflict(new { code = "merchant-balance-reduction-exceeds-due", detail = "The adjustment exceeds the merchant's current outstanding balance." });
-                    return;
+                    paymentLog = await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken);
+                    if (paymentLog is null)
+                    {
+                        transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentLog"] = ["The source payment log no longer exists."] });
+                        return;
+                    }
+                    var cap = await CalculateAdjustmentCapAsync(paymentsDbContext, paymentLog, adjustment.AdjustmentType, adjustment.Id, cancellationToken);
+                    if (cap.HasValue && adjustment.Amount > cap.Value)
+                    {
+                        transactionResult = Results.Conflict(new { code = "payment-cap-exceeded", detail = $"Adjustment exceeds the remaining source cap ({cap.Value:0.####})." });
+                        return;
+                    }
                 }
-                await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id, adjustment.OperationId, adjustment.Amount, "BalanceReduction", currentUser.UserId ?? Guid.Empty, now, adjustment.Notes, cancellationToken);
-                if (returnEntitlement is not null)
-                    ApplyReturnEntitlementSettlement(returnEntitlement, adjustment.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
-            }
-            else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is not null)
-            {
-                // Approval turns the accepted return value into merchant
-                // credit and reserves it for this cash refund. The return
-                // entitlement, not unrelated prior credit, authorizes payout.
-                var account = await merchantAccountService.GetOrCreateForUpdateAsync(adjustment.MerchantId, currentUser.UserId ?? Guid.Empty, now, cancellationToken);
-                var existingReservation = await paymentsDbContext.MerchantRefundReservations
-                    .AnyAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
-                if (existingReservation)
+                else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is null)
                 {
-                    transactionResult = Results.Conflict(new { code = "return-refund-reservation-exists", detail = "This return refund already has an account reservation." });
-                    return;
+                    var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
+                    if (adjustment.Amount > capacity)
+                    {
+                        transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Refund exceeds the merchant's available account credit ({capacity:0.####})." });
+                        return;
+                    }
                 }
 
-                await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id,
-                    adjustment.OperationId, adjustment.Amount, "ReturnCredit", currentUser.UserId ?? Guid.Empty,
-                    now, adjustment.Notes, cancellationToken);
-                paymentsDbContext.MerchantRefundReservations.Add(new MerchantRefundReservation
-                {
-                    Id = Guid.NewGuid(),
-                    FinancialAdjustmentId = adjustment.Id,
-                    AccountId = account.Id,
-                    Amount = adjustment.Amount,
-                    PaidAmount = 0m,
-                    Status = "Approved",
-                    CreatedBy = adjustment.CreatedBy,
-                    CreatedAt = adjustment.CreatedAt,
-                    ApprovedBy = currentUser.UserId,
-                    ApprovedAt = now,
-                    Notes = adjustment.Notes
-                });
-            }
+                var now = clock.EgyptNow;
+                adjustment.Status = adjustment.AdjustmentType == CashRefund ? "Approved" : PaymentCompleted;
+                adjustment.ReviewedBy = currentUser.UserId;
+                adjustment.ReviewedAt = now;
 
-            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.LineageKind }, now, cancellationToken);
-            AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentApproved", PendingApproval, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
-            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
-            await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+                if (adjustment.AdjustmentType == AdditionalCharge)
+                {
+                    await merchantAccountService.PostDebitForSourceAsync(adjustment.MerchantId, adjustment.Id, adjustment.OperationId, adjustment.Amount, "AdditionalCharge", currentUser.UserId ?? Guid.Empty, now, adjustment.Notes, cancellationToken);
+                }
+                else if (adjustment.AdjustmentType == BalanceReduction)
+                {
+                    await merchantAccountService.GetOrCreateForUpdateAsync(adjustment.MerchantId, currentUser.UserId ?? Guid.Empty, now, cancellationToken);
+                    var merchantSnapshot = await merchantAccountService.GetSnapshotAsync(adjustment.MerchantId, cancellationToken);
+                    if (merchantSnapshot is null || adjustment.Amount > merchantSnapshot.AmountDue)
+                    {
+                        transactionResult = Results.Conflict(new { code = "merchant-balance-reduction-exceeds-due", detail = "The adjustment exceeds the merchant's current outstanding balance." });
+                        return;
+                    }
+                    await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id, adjustment.OperationId, adjustment.Amount, "BalanceReduction", currentUser.UserId ?? Guid.Empty, now, adjustment.Notes, cancellationToken);
+                    if (returnEntitlement is not null)
+                        ApplyReturnEntitlementSettlement(returnEntitlement, adjustment.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
+                }
+                else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is not null)
+                {
+                    // Approval turns the accepted return value into merchant
+                    // credit and reserves it for this cash refund. The return
+                    // entitlement, not unrelated prior credit, authorizes payout.
+                    var account = await merchantAccountService.GetOrCreateForUpdateAsync(adjustment.MerchantId, currentUser.UserId ?? Guid.Empty, now, cancellationToken);
+                    var existingReservation = await paymentsDbContext.MerchantRefundReservations
+                        .AnyAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
+                    if (existingReservation)
+                    {
+                        transactionResult = Results.Conflict(new { code = "return-refund-reservation-exists", detail = "This return refund already has an account reservation." });
+                        return;
+                    }
+
+                    await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id,
+                        adjustment.OperationId, adjustment.Amount, "ReturnCredit", currentUser.UserId ?? Guid.Empty,
+                        now, adjustment.Notes, cancellationToken);
+                    paymentsDbContext.MerchantRefundReservations.Add(new MerchantRefundReservation
+                    {
+                        Id = Guid.NewGuid(),
+                        FinancialAdjustmentId = adjustment.Id,
+                        AccountId = account.Id,
+                        Amount = adjustment.Amount,
+                        PaidAmount = 0m,
+                        Status = "Approved",
+                        CreatedBy = adjustment.CreatedBy,
+                        CreatedAt = adjustment.CreatedAt,
+                        ApprovedBy = currentUser.UserId,
+                        ApprovedAt = now,
+                        Notes = adjustment.Notes
+                    });
+                }
+
+                await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.LineageKind }, now, cancellationToken);
+                AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentApproved", PendingApproval, adjustment.Status, adjustment.MerchantId, adjustment.OperationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, adjustment.Amount, null, null, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType, adjustment.LineageKind });
+                await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+                await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
             }, cancellationToken, identityDbContext, sharedDbContext);
 
             if (transactionResult is not null)
@@ -4052,161 +4074,161 @@ public static class PaymentsEndpoints
             await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
             {
                 adjustment = await LoadFinancialAdjustmentForUpdateAsync(id, paymentsDbContext, cancellationToken);
-            if (adjustment is null)
-            {
-                transactionResult = Results.NotFound();
-                return;
-            }
-            if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
-            {
-                transactionResult = Results.Forbid();
-                return;
-            }
-            if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved")
-            {
-                transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only an approved cash refund can be paid out." });
-                return;
-            }
-            // New refund legs persist their payout instructions at request time.
-            // The request values remain a fallback for historical approvals.
-            paymentMethod = NormalizeMovementMethod(request.PaymentMethod ?? adjustment.RefundPaymentMethod);
-            financeAccountId = request.FinanceAccountId ?? adjustment.RefundFinanceAccountId;
-            transactionReference = request.TransactionReference?.Trim() ?? adjustment.RefundTransactionReference;
-            transferFeeAmount = request.TransferFeeAmount ?? adjustment.RefundTransferFeeAmount;
-            if (paymentMethod is null)
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Choose CashHandToHand, BankTransfer, or Wallet for this refund payout."] });
-                return;
-            }
-            var accountError = await ValidateReceivingAccountAsync(financeDbContext, financeAccountId, paymentMethod, cancellationToken);
-            if (accountError is not null)
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = [accountError.Replace("collection form", "cash refund")] });
-                return;
-            }
-            if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(transactionReference))
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
-                return;
-            }
-            if (ValidateRefundTransferFee(paymentMethod, transferFeeAmount) is { } feeError)
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] });
-                return;
-            }
-
-            var alreadyPaid = await paymentsDbContext.CashRecords
-                .Where(record => record.FinancialAdjustmentId == adjustment.Id && record.Status == PaymentCompleted)
-                .SumAsync(record => record.Amount, cancellationToken);
-            var due = adjustment.Amount - alreadyPaid;
-            if (request.Amount > due)
-            {
-                transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the remaining approved refund ({due:0.####})." });
-                return;
-            }
-            ReturnEntitlement? returnEntitlement = null;
-            if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
-            {
-                returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
-                if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || request.Amount > returnEntitlement.ReservedAmount)
+                if (adjustment is null)
                 {
-                    transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this payout." });
+                    transactionResult = Results.NotFound();
                     return;
                 }
-                if (returnEntitlement.PaymentTrack == FailedDeliveryReturnFinanceRepairService.RefundReviewPaymentTrack &&
-                    returnEntitlement.OriginalSaleOperationId is { } failedDeliverySourceId)
+                if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
                 {
-                    var capacity = await GetFailedDeliveryRefundCapacityAsync(paymentsDbContext, failedDeliverySourceId, adjustment.Id, cancellationToken);
+                    transactionResult = Results.Forbid();
+                    return;
+                }
+                if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved")
+                {
+                    transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only an approved cash refund can be paid out." });
+                    return;
+                }
+                // New refund legs persist their payout instructions at request time.
+                // The request values remain a fallback for historical approvals.
+                paymentMethod = NormalizeMovementMethod(request.PaymentMethod ?? adjustment.RefundPaymentMethod);
+                financeAccountId = request.FinanceAccountId ?? adjustment.RefundFinanceAccountId;
+                transactionReference = request.TransactionReference?.Trim() ?? adjustment.RefundTransactionReference;
+                transferFeeAmount = request.TransferFeeAmount ?? adjustment.RefundTransferFeeAmount;
+                if (paymentMethod is null)
+                {
+                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Choose CashHandToHand, BankTransfer, or Wallet for this refund payout."] });
+                    return;
+                }
+                var accountError = await ValidateReceivingAccountAsync(financeDbContext, financeAccountId, paymentMethod, cancellationToken);
+                if (accountError is not null)
+                {
+                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = [accountError.Replace("collection form", "cash refund")] });
+                    return;
+                }
+                if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(transactionReference))
+                {
+                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
+                    return;
+                }
+                if (ValidateRefundTransferFee(paymentMethod, transferFeeAmount) is { } feeError)
+                {
+                    transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] });
+                    return;
+                }
+
+                var alreadyPaid = await paymentsDbContext.CashRecords
+                    .Where(record => record.FinancialAdjustmentId == adjustment.Id && record.Status == PaymentCompleted)
+                    .SumAsync(record => record.Amount, cancellationToken);
+                var due = adjustment.Amount - alreadyPaid;
+                if (request.Amount > due)
+                {
+                    transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the remaining approved refund ({due:0.####})." });
+                    return;
+                }
+                ReturnEntitlement? returnEntitlement = null;
+                if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
+                {
+                    returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
+                    if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || request.Amount > returnEntitlement.ReservedAmount)
+                    {
+                        transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this payout." });
+                        return;
+                    }
+                    if (returnEntitlement.PaymentTrack == FailedDeliveryReturnFinanceRepairService.RefundReviewPaymentTrack &&
+                        returnEntitlement.OriginalSaleOperationId is { } failedDeliverySourceId)
+                    {
+                        var capacity = await GetFailedDeliveryRefundCapacityAsync(paymentsDbContext, failedDeliverySourceId, adjustment.Id, cancellationToken);
+                        if (request.Amount > capacity)
+                        {
+                            transactionResult = Results.Conflict(new { code = "failed-delivery-refund-cap-exceeded", detail = "Payout exceeds the confirmed collection remaining for the original failed delivery." });
+                            return;
+                        }
+                    }
+                }
+                if (adjustment.PaymentLogId is null && returnEntitlement is null)
+                {
+                    var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
                     if (request.Amount > capacity)
                     {
-                        transactionResult = Results.Conflict(new { code = "failed-delivery-refund-cap-exceeded", detail = "Payout exceeds the confirmed collection remaining for the original failed delivery." });
+                        transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the merchant's available account credit ({capacity:0.####})." });
                         return;
                     }
                 }
-            }
-            if (adjustment.PaymentLogId is null && returnEntitlement is null)
-            {
-                var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
-                if (request.Amount > capacity)
-                {
-                    transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the merchant's available account credit ({capacity:0.####})." });
-                    return;
-                }
-            }
 
-            var operationId = adjustment.OperationId;
-            var paymentLog = adjustment.PaymentLogId is { } paymentLogId
-                ? await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken)
-                : null;
+                var operationId = adjustment.OperationId;
+                var paymentLog = adjustment.PaymentLogId is { } paymentLogId
+                    ? await LoadPaymentLogForUpdateAsync(paymentLogId, paymentsDbContext, cancellationToken)
+                    : null;
 
-            var now = clock.EgyptNow;
-            var payout = new CashRecord
-            {
-                Id = Guid.NewGuid(),
-                OperationId = operationId,
-                MerchantId = adjustment.MerchantId,
-                PaymentType = CashRefund,
-                SubType = paymentMethod,
-                TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : transactionReference!,
-                Amount = request.Amount,
-                TransferFeeAmount = transferFeeAmount,
-                Status = PaymentCompleted,
-                PaymentDate = now,
-                CreatedBy = currentUser.UserId ?? Guid.Empty,
-                ConfirmedBy = currentUser.UserId ?? Guid.Empty,
-                ConfirmedAt = now,
-                Notes = string.IsNullOrWhiteSpace(request.Notes) ? adjustment.Notes : request.Notes.Trim(),
-                FinancialAdjustmentId = adjustment.Id,
-                FinanceAccountId = financeAccountId
-            };
-            if (returnEntitlement is not null)
-            {
-                payout.ReturnEntitlementId = returnEntitlement.Id;
-            }
-            if (returnEntitlement is not null)
-                ApplyReturnEntitlementSettlement(returnEntitlement, request.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
-            paymentsDbContext.CashRecords.Add(payout);
-            if (returnEntitlement is not null)
-            {
-                var reservation = paymentsDbContext.Database.IsRelational()
-                    ? await paymentsDbContext.MerchantRefundReservations
-                        .FromSqlInterpolated($"select * from payments.merchant_refund_reservations where financial_adjustment_id = {adjustment.Id} for update")
-                        .SingleOrDefaultAsync(cancellationToken)
-                    : await paymentsDbContext.MerchantRefundReservations
-                        .SingleOrDefaultAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
-                if (reservation is null)
+                var now = clock.EgyptNow;
+                var payout = new CashRecord
                 {
-                    transactionResult = Results.Conflict(new { code = "return-refund-reservation-missing", detail = "The approved return refund has no reserved merchant credit." });
-                    return;
+                    Id = Guid.NewGuid(),
+                    OperationId = operationId,
+                    MerchantId = adjustment.MerchantId,
+                    PaymentType = CashRefund,
+                    SubType = paymentMethod,
+                    TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : transactionReference!,
+                    Amount = request.Amount,
+                    TransferFeeAmount = transferFeeAmount,
+                    Status = PaymentCompleted,
+                    PaymentDate = now,
+                    CreatedBy = currentUser.UserId ?? Guid.Empty,
+                    ConfirmedBy = currentUser.UserId ?? Guid.Empty,
+                    ConfirmedAt = now,
+                    Notes = string.IsNullOrWhiteSpace(request.Notes) ? adjustment.Notes : request.Notes.Trim(),
+                    FinancialAdjustmentId = adjustment.Id,
+                    FinanceAccountId = financeAccountId
+                };
+                if (returnEntitlement is not null)
+                {
+                    payout.ReturnEntitlementId = returnEntitlement.Id;
                 }
-                await merchantAccountService.PostRefundPayoutAsync(adjustment.MerchantId, reservation.Id, payout.Id,
-                    request.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty,
-                    now, payout.Notes, cancellationToken);
-            }
-            else if (adjustment.PaymentLogId is null)
-            {
-                await merchantAccountService.PostUnlinkedRefundPayoutAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
-            }
-            else
-            {
-                await merchantAccountService.PostDebitForSourceAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, "RefundPayout", currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
-            }
-            await financeLedgerService.PostMovementAsync("RefundPayout", payout.Id, "MerchantAccount", paymentMethod,
-                payout.Amount, financeAccountId, payout.TransactionReference, "RefundPayout", FinanceLedgerService.Debit,
-                currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
-            if (payout.TransferFeeAmount > 0m)
-                await financeLedgerService.PostMovementAsync("RefundTransferFee", payout.Id, "CompanyCost", paymentMethod,
-                    payout.TransferFeeAmount.Value, financeAccountId, null, "TransferFee", FinanceLedgerService.Debit,
+                if (returnEntitlement is not null)
+                    ApplyReturnEntitlementSettlement(returnEntitlement, request.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
+                paymentsDbContext.CashRecords.Add(payout);
+                if (returnEntitlement is not null)
+                {
+                    var reservation = paymentsDbContext.Database.IsRelational()
+                        ? await paymentsDbContext.MerchantRefundReservations
+                            .FromSqlInterpolated($"select * from payments.merchant_refund_reservations where financial_adjustment_id = {adjustment.Id} for update")
+                            .SingleOrDefaultAsync(cancellationToken)
+                        : await paymentsDbContext.MerchantRefundReservations
+                            .SingleOrDefaultAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
+                    if (reservation is null)
+                    {
+                        transactionResult = Results.Conflict(new { code = "return-refund-reservation-missing", detail = "The approved return refund has no reserved merchant credit." });
+                        return;
+                    }
+                    await merchantAccountService.PostRefundPayoutAsync(adjustment.MerchantId, reservation.Id, payout.Id,
+                        request.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty,
+                        now, payout.Notes, cancellationToken);
+                }
+                else if (adjustment.PaymentLogId is null)
+                {
+                    await merchantAccountService.PostUnlinkedRefundPayoutAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
+                }
+                else
+                {
+                    await merchantAccountService.PostDebitForSourceAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, "RefundPayout", currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
+                }
+                await financeLedgerService.PostMovementAsync("RefundPayout", payout.Id, "MerchantAccount", paymentMethod,
+                    payout.Amount, financeAccountId, payout.TransactionReference, "RefundPayout", FinanceLedgerService.Debit,
                     currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
-            if (request.Amount == due)
-            {
-                adjustment.Status = PaymentCompleted;
-                adjustment.ReviewedAt = now;
-            }
-            if (paymentLog is not null) { paymentLog.LastModifiedBy = currentUser.UserId; paymentLog.LastModifiedAt = now; }
-            await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashRefundPaidOut", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, request.Amount, remaining = due - request.Amount, merchantLevel = operationId is null }, now, cancellationToken);
-            AddPaymentWorkflowAudit(paymentsDbContext, "CashRefundPaidOut", "Approved", adjustment.Status, adjustment.MerchantId, operationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, request.Amount, paymentMethod, null, httpContext, idempotencyKey, new { AdjustmentId = adjustment.Id, PayoutId = payout.Id, remaining = due - request.Amount, merchantLevel = operationId is null });
-            await PaymentPersistence.PersistAsync(paymentsDbContext, identityDbContext, cancellationToken);
+                if (payout.TransferFeeAmount > 0m)
+                    await financeLedgerService.PostMovementAsync("RefundTransferFee", payout.Id, "CompanyCost", paymentMethod,
+                        payout.TransferFeeAmount.Value, financeAccountId, null, "TransferFee", FinanceLedgerService.Debit,
+                        currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
+                if (request.Amount == due)
+                {
+                    adjustment.Status = PaymentCompleted;
+                    adjustment.ReviewedAt = now;
+                }
+                if (paymentLog is not null) { paymentLog.LastModifiedBy = currentUser.UserId; paymentLog.LastModifiedAt = now; }
+                await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "CashRefundPaidOut", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, request.Amount, remaining = due - request.Amount, merchantLevel = operationId is null }, now, cancellationToken);
+                AddPaymentWorkflowAudit(paymentsDbContext, "CashRefundPaidOut", "Approved", adjustment.Status, adjustment.MerchantId, operationId, paymentLog?.Id, null, currentUser.UserId ?? Guid.Empty, now, request.Amount, paymentMethod, null, httpContext, idempotencyKey, new { AdjustmentId = adjustment.Id, PayoutId = payout.Id, remaining = due - request.Amount, merchantLevel = operationId is null });
+                await PaymentPersistence.PersistAsync(paymentsDbContext, identityDbContext, cancellationToken);
             }, cancellationToken, identityDbContext, sharedDbContext, financeDbContext);
 
             if (transactionResult is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, transactionResult);

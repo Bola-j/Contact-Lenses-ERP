@@ -15,7 +15,7 @@ public sealed class ApiDateJsonConverterTests
     {
         var parsed = JsonSerializer.Deserialize<DateOnly>(json, _options);
         Assert.Equal(new DateOnly(year, month, day), parsed);
-        Assert.Equal($"\"{day:00}/{month:00}/{year:0000}\"", JsonSerializer.Serialize(parsed, _options));
+        Assert.Equal($"\"{year:0000}-{month:00}-{day:00}\"", JsonSerializer.Serialize(parsed, _options));
     }
 
     [Theory]
@@ -33,7 +33,7 @@ public sealed class ApiDateJsonConverterTests
     {
         var parsed = JsonSerializer.Deserialize<DateTime>(json, _options);
         Assert.Equal(new DateTime(2026, 10, 14, 9, 8, 7), parsed);
-        Assert.Equal("\"14/10/2026 09:08:07\"", JsonSerializer.Serialize(parsed, _options));
+        Assert.Equal("\"2026-10-14T09:08:07.0000000\"", JsonSerializer.Serialize(parsed, _options));
     }
 
     [Fact]
@@ -50,7 +50,8 @@ public sealed class ApiDateJsonConverterTests
     {
         var value = new DateTimeOffset(2026, 10, 14, 9, 8, 7, TimeSpan.FromHours(3));
 
-        Assert.Equal("\"14/10/2026 09:08:07\"", JsonSerializer.Serialize(value, _options));
+        using var serialized = JsonDocument.Parse(JsonSerializer.Serialize(value, _options));
+        Assert.Equal("2026-10-14T09:08:07.0000000+03:00", serialized.RootElement.GetString());
         Assert.Equal(value.DateTime, JsonSerializer.Deserialize<DateTimeOffset>("\"14/10/2026 09:08:07\"", _options).DateTime);
         Assert.Equal(value, JsonSerializer.Deserialize<DateTimeOffset>("\"2026-10-14T09:08:07+03:00\"", _options));
     }

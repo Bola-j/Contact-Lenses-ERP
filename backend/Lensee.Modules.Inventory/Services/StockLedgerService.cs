@@ -231,21 +231,34 @@ public sealed class StockLedgerService
         {
             batch = new InventoryBatch
             {
-                Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
-                LotNumber = NormalizeBlank(lotNumber), ExpiryDate = expiryDate,
-                Quantity = 0, Notes = NormalizeBlank(notes), CreatedFrom = referenceOperationId,
-                CreatedBy = userId, CreatedAt = now
+                Id = Guid.NewGuid(),
+                LocationId = locationId,
+                SkuId = skuId,
+                LotNumber = NormalizeBlank(lotNumber),
+                ExpiryDate = expiryDate,
+                Quantity = 0,
+                Notes = NormalizeBlank(notes),
+                CreatedFrom = referenceOperationId,
+                CreatedBy = userId,
+                CreatedAt = now
             };
             _dbContext.InventoryBatches.Add(batch);
         }
 
         _dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
-            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
-            SourceBatchId = batch.Id, LotNumber = batch.LotNumber,
-            BatchExpiryDate = batch.ExpiryDate, OpenedDate = DateOnly.FromDateTime(now),
-            PieceExpiryDate = batch.ExpiryDate, LoosePieceQuantity = pieceQuantity,
-            CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = now
+            Id = Guid.NewGuid(),
+            LocationId = locationId,
+            SkuId = skuId,
+            SourceBatchId = batch.Id,
+            LotNumber = batch.LotNumber,
+            BatchExpiryDate = batch.ExpiryDate,
+            OpenedDate = DateOnly.FromDateTime(now),
+            PieceExpiryDate = batch.ExpiryDate,
+            LoosePieceQuantity = pieceQuantity,
+            CreatedFrom = referenceOperationId,
+            CreatedBy = userId,
+            CreatedAt = now
         });
         AddTransaction(locationId, skuId, transactionType, pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -307,9 +320,17 @@ public sealed class StockLedgerService
         if (batch.Quantity == 0) batch.IsQuarantined = false;
         else _dbContext.InventoryBatches.Add(new InventoryBatch
         {
-            Id = Guid.NewGuid(), LocationId = batch.LocationId, SkuId = batch.SkuId, LotNumber = batch.LotNumber,
-            ExpiryDate = batch.ExpiryDate, Quantity = quantity, CreatedFrom = batch.CreatedFrom, CreatedBy = userId,
-            Notes = batch.Notes, CreatedAt = _clock.EgyptNow, IsQuarantined = false
+            Id = Guid.NewGuid(),
+            LocationId = batch.LocationId,
+            SkuId = batch.SkuId,
+            LotNumber = batch.LotNumber,
+            ExpiryDate = batch.ExpiryDate,
+            Quantity = quantity,
+            CreatedFrom = batch.CreatedFrom,
+            CreatedBy = userId,
+            Notes = batch.Notes,
+            CreatedAt = _clock.EgyptNow,
+            IsQuarantined = false
         });
         var balance = await GetOrCreateBalanceAsync(batch.LocationId, batch.SkuId, cancellationToken);
         ApplyAvailableDelta(balance, quantity, _clock.EgyptNow);
@@ -800,12 +821,18 @@ public sealed class StockLedgerService
             ApplyAvailableDelta(balance, -packsToOpen, now);
             var openedLot = new OpenedPieceLot
             {
-                Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
-                SourceBatchId = batch.Id, LotNumber = batch.LotNumber,
-                BatchExpiryDate = batch.ExpiryDate, OpenedDate = DateOnly.FromDateTime(now),
+                Id = Guid.NewGuid(),
+                LocationId = locationId,
+                SkuId = skuId,
+                SourceBatchId = batch.Id,
+                LotNumber = batch.LotNumber,
+                BatchExpiryDate = batch.ExpiryDate,
+                OpenedDate = DateOnly.FromDateTime(now),
                 PieceExpiryDate = batch.ExpiryDate,
                 LoosePieceQuantity = (packsToOpen * piecesPerPack) - remaining,
-                CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = now
+                CreatedFrom = referenceOperationId,
+                CreatedBy = userId,
+                CreatedAt = now
             };
             _dbContext.OpenedPieceLots.Add(openedLot);
             var pieceIssue = AddTransaction(locationId, skuId, transactionType, -pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, now);

@@ -139,6 +139,25 @@ public sealed class DocumentRendererTests
         Assert.True(rendered.Content.Length > 1_000);
     }
 
+    [Theory]
+    [InlineData(DocumentLanguage.English)]
+    [InlineData(DocumentLanguage.Arabic)]
+    public async Task Pdf_LongRepeatedHeaderTableGeneratesMultiplePagesWithoutDroppingRows(DocumentLanguage language)
+    {
+        QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+        var renderer = new QuestPdfDocumentRenderer(BrandingProvider, Localizer);
+        var document = SampleDocument(language, DocumentTemplateKind.Analytical, 1_200);
+
+        var rendered = await renderer.RenderAsync(document);
+        using var memory = new MemoryStream();
+        await rendered.Content.CopyToAsync(memory);
+        var pdf = Encoding.UTF8.GetString(memory.ToArray());
+
+        Assert.True(memory.Length > 50_000);
+        Assert.Contains("Page", pdf, StringComparison.OrdinalIgnoreCase);
+        Assert.True(System.Text.RegularExpressions.Regex.Matches(pdf, "/Type\\s*/Page(?!s)").Count > 1);
+    }
+
     [Fact]
     public async Task RepresentativeVisualSamplesAndBenchmarks_AreGenerated()
     {

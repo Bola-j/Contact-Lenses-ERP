@@ -681,48 +681,48 @@ public static partial class FinanceEndpoints
     {
         try
         {
-        await using var transaction = finance.Database.IsRelational()
-            ? await PersistenceBoundary.OpenTransactionAsync(finance, ct)
-            : null;
-        var balance = await LoadOpeningBalanceForUpdateAsync(id, finance, ct);
-        if (balance is null) return Results.NotFound();
-        if (balance.Status == "Posted") return Results.Ok(ToOpeningBalanceResponse(balance));
-        if (balance.Status != "PendingReview") return Results.Conflict(new { code = "opening-balance-not-reviewable" });
-        var actorId = currentUser.UserId ?? Guid.Empty;
-        if (balance.CreatedBy == actorId && currentUser.Role != LenseeRoles.Admin)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["An Accountant correction requires Admin approval."] });
+            await using var transaction = finance.Database.IsRelational()
+                ? await PersistenceBoundary.OpenTransactionAsync(finance, ct)
+                : null;
+            var balance = await LoadOpeningBalanceForUpdateAsync(id, finance, ct);
+            if (balance is null) return Results.NotFound();
+            if (balance.Status == "Posted") return Results.Ok(ToOpeningBalanceResponse(balance));
+            if (balance.Status != "PendingReview") return Results.Conflict(new { code = "opening-balance-not-reviewable" });
+            var actorId = currentUser.UserId ?? Guid.Empty;
+            if (balance.CreatedBy == actorId && currentUser.Role != LenseeRoles.Admin)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["An Accountant correction requires Admin approval."] });
 
-        balance.Status = "Posted";
-        balance.ReviewedBy = actorId;
-        balance.ReviewedAt = clock.EgyptNow;
-        if (balance.ReversesOpeningBalanceId is Guid originalId)
-        {
-            var original = await finance.FinanceOpeningBalances.SingleAsync(value => value.Id == originalId, ct);
-            if (original.PostedEntryId is null)
-                return Results.Conflict(new { code = "opening-balance-reversal-source-missing" });
-            // Post the credit leg before the debit leg. A lower replacement may
-            // still be valid after money from the original opening was spent.
-            if (balance.Direction == FinanceLedgerService.Credit)
+            balance.Status = "Posted";
+            balance.ReviewedBy = actorId;
+            balance.ReviewedAt = clock.EgyptNow;
+            if (balance.ReversesOpeningBalanceId is Guid originalId)
             {
-                var replacementEntry = await ledgerService.PostMovementAsync("FinanceOpeningBalance", balance.Id, "Finance", "FinanceOpeningBalance",
-                    balance.Amount, balance.FinanceAccountId, null, "TreasuryOpeningBalance", balance.Direction, actorId, balance.AsOfDate, balance.CorrelationId, ct);
-                balance.PostedEntryId = replacementEntry.Id;
+                var original = await finance.FinanceOpeningBalances.SingleAsync(value => value.Id == originalId, ct);
+                if (original.PostedEntryId is null)
+                    return Results.Conflict(new { code = "opening-balance-reversal-source-missing" });
+                // Post the credit leg before the debit leg. A lower replacement may
+                // still be valid after money from the original opening was spent.
+                if (balance.Direction == FinanceLedgerService.Credit)
+                {
+                    var replacementEntry = await ledgerService.PostMovementAsync("FinanceOpeningBalance", balance.Id, "Finance", "FinanceOpeningBalance",
+                        balance.Amount, balance.FinanceAccountId, null, "TreasuryOpeningBalance", balance.Direction, actorId, balance.AsOfDate, balance.CorrelationId, ct);
+                    balance.PostedEntryId = replacementEntry.Id;
+                }
+                await ledgerService.PostMovementAsync("FinanceOpeningBalanceReversal", balance.Id, "Finance", "FinanceOpeningBalance",
+                    original.Amount, original.FinanceAccountId, null, "TreasuryOpeningBalanceReversal",
+                    original.Direction == FinanceLedgerService.Credit ? FinanceLedgerService.Debit : FinanceLedgerService.Credit,
+                    actorId, original.AsOfDate, balance.CorrelationId, ct);
+                original.Status = "Corrected";
             }
-            await ledgerService.PostMovementAsync("FinanceOpeningBalanceReversal", balance.Id, "Finance", "FinanceOpeningBalance",
-                original.Amount, original.FinanceAccountId, null, "TreasuryOpeningBalanceReversal",
-                original.Direction == FinanceLedgerService.Credit ? FinanceLedgerService.Debit : FinanceLedgerService.Credit,
-                actorId, original.AsOfDate, balance.CorrelationId, ct);
-            original.Status = "Corrected";
-        }
-        if (balance.PostedEntryId is null)
-        {
-            var entry = await ledgerService.PostMovementAsync("FinanceOpeningBalance", balance.Id, "Finance", "FinanceOpeningBalance", balance.Amount, balance.FinanceAccountId, null, "TreasuryOpeningBalance", balance.Direction, actorId, balance.AsOfDate, balance.CorrelationId, ct);
-            balance.PostedEntryId = entry.Id;
-        }
-        await PersistenceBoundary.CommitAsync(finance, ct);
-        if (transaction is not null)
-            await transaction.CommitAsync(ct);
-        return Results.Ok(ToOpeningBalanceResponse(balance));
+            if (balance.PostedEntryId is null)
+            {
+                var entry = await ledgerService.PostMovementAsync("FinanceOpeningBalance", balance.Id, "Finance", "FinanceOpeningBalance", balance.Amount, balance.FinanceAccountId, null, "TreasuryOpeningBalance", balance.Direction, actorId, balance.AsOfDate, balance.CorrelationId, ct);
+                balance.PostedEntryId = entry.Id;
+            }
+            await PersistenceBoundary.CommitAsync(finance, ct);
+            if (transaction is not null)
+                await transaction.CommitAsync(ct);
+            return Results.Ok(ToOpeningBalanceResponse(balance));
         }
         catch (DbUpdateConcurrencyException)
         {
