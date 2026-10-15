@@ -171,8 +171,8 @@ public static class DatabaseCompatibility
                                 'WholesaleSale',
                                 'RetailSale',
                                 'Reserve',
-                                'Supply',
                                 'WriteOff',
+                                'StocktakeAdjustment',
                                 'Change',
                                 'Return'
                             ));
@@ -184,12 +184,18 @@ public static class DatabaseCompatibility
                             add constraint chk_op_status
                             check (status in (
                                 'Draft',
+                                'PendingApproval',
+                                'Approved',
                                 'Confirmed',
                                 'Completed',
                                 'Reserved',
                                 'Shipped',
                                 'Received',
-                                'Cancelled'
+                                'Cancelled',
+                                'Rejected',
+                                'Dispatched',
+                                'Delivered',
+                                'FailedDelivery'
                             ));
                     end if;
                 end $$;
@@ -215,7 +221,12 @@ public static class DatabaseCompatibility
                                 'StocktakeAdjustment',
                                 'ChangeOut',
                                 'ChangeIn',
-                                'ReturnIn'
+                                'ReturnIn',
+                                'ReturnRestore',
+                                'PackOpen',
+                                'QuarantineIn',
+                                'QuarantineRelease',
+                                'QuarantineWriteOff'
                             ));
                     end if;
                 end $$;

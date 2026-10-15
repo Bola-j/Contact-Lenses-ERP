@@ -318,7 +318,11 @@ public static class CrmEndpoints
                     row.Key.ExpiryDate,
                     row.SoldQuantity,
                     row.ReturnedQuantity,
-                    expiryStatus);
+                    expiryStatus,
+                    row.SoldPhysicalPieces,
+                    row.ReturnedPhysicalPieces,
+                    row.RecordedBalancePhysicalPieces,
+                    row.HasLegacyUnitUnknown);
             })
             .OrderBy(row => row.SkuCode ?? row.SkuId.ToString())
             .ThenBy(row => row.ExpiryDate)
@@ -508,7 +512,19 @@ public sealed record MerchantOperationResponse(Guid Id, string OperationNumber, 
 
 public sealed record MerchantNoteResponse(Guid Id, string Note, Guid AddedBy, DateTime CreatedAt);
 
-public sealed record MerchantBatchHistoryResponse(Guid SkuId, string? SkuCode, string? ProductName, string? LotNumber, DateOnly? ExpiryDate, int SoldQuantity, int ReturnedQuantity, string ExpiryStatus);
+public sealed record MerchantBatchHistoryResponse(
+    Guid SkuId,
+    string? SkuCode,
+    string? ProductName,
+    string? LotNumber,
+    DateOnly? ExpiryDate,
+    int SoldQuantity,
+    int ReturnedQuantity,
+    string ExpiryStatus,
+    int SoldPhysicalPieces,
+    int ReturnedPhysicalPieces,
+    int RecordedBalancePhysicalPieces,
+    bool HasLegacyUnitUnknown);
 
 public sealed record NoteRequest(string Note);
 

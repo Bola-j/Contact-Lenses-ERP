@@ -9,6 +9,8 @@ test("mobile: warehouse clerk navigation, inventory, and operations remain usabl
   await login(page, users.clerk);
 
   await test.step("Mobile shell exposes clerk routes and hides admin-only surfaces", async () => {
+    await expect(page.locator("#sidebar-toggle")).toHaveText("☰");
+    await expect(page.locator("#sidebar-toggle")).toHaveAccessibleName("Open navigation");
     await page.locator("#sidebar-toggle").click();
     await expect(page.locator(".sidebar")).toBeVisible();
     await expect(page.locator("#nav a", { hasText: "Inventory" })).toBeVisible();

@@ -41,7 +41,7 @@ public sealed class ShopifyIntegrationService
     private const string Cancelled = "Cancelled";
     private const string RetailSale = "RetailSale";
     private const string CashHandToHand = "CashHandToHand";
-    private const string CashTransaction = "CashTransaction";
+    private const string BankTransfer = "BankTransfer";
 
     private readonly ShopifyOptions _options;
     private readonly OperationsDbContext _operations;
@@ -80,8 +80,7 @@ public sealed class ShopifyIntegrationService
 
     private bool IsBaseConfigured =>
         _options.Enabled &&
-        !string.IsNullOrWhiteSpace(_options.StoreDomain) &&
-        _options.OnlineLocationId != Guid.Empty;
+        !string.IsNullOrWhiteSpace(_options.StoreDomain);
 
     public bool IsConfigured => IsBaseConfigured && !string.IsNullOrWhiteSpace(_options.WebhookSecret);
 
@@ -337,13 +336,6 @@ public sealed class ShopifyIntegrationService
             return new ShopifyWebhookResult(StatusCodes.Status200OK, "Duplicate", "Shopify order was already imported.", existing.OperationId);
         }
 
-        var location = await _inventory.Locations
-            .FirstOrDefaultAsync(value => value.Id == _options.OnlineLocationId && value.IsActive && value.LocationType == "Online", cancellationToken);
-        if (location is null)
-        {
-            throw new ShopifyBusinessException("Configured Shopify Online location is missing, inactive, or not an Online location.");
-        }
-
         var lineItems = ReadArray(root, "line_items");
         if (lineItems.Count == 0)
         {
@@ -418,13 +410,19 @@ public sealed class ShopifyIntegrationService
             OperationType = RetailSale,
             Status = Draft,
             SalesChannel = Shopify,
-            SourceLocationId = location.Id,
+            // Shopify is commercial intake only. A warehouse employee selects
+            // the active SubWarehouse and batch allocation before confirmation.
+            SourceLocationId = null,
             ClientId = merchant?.Id,
             ClientName = buyerName,
             BuyerPhone = buyerPhone,
             BuyerEmail = buyerEmail,
             ShippingAddress = ReadAddress(root),
-            PaymentMethod = IsCod(root) ? CashHandToHand : CashTransaction,
+            PaymentMethod = IsCod(root) ? CashHandToHand : BankTransfer,
+            PaymentStatus = IsCod(root) ? "DueOnDelivery" : "PendingReconciliation",
+            ExternalPaymentProvider = IsCod(root) ? null : "Shopify/Paymob",
+            ExternalPaymentReference = ReadValue(root, "payment_id") ?? ReadValue(root, "checkout_id"),
+            ExternalPaymentVerified = !IsCod(root),
             Notes = $"Imported from Shopify order {ReadValue(root, "name") ?? orderId}.",
             CreatedBy = Guid.Empty,
             CreatedActorName = Shopify,

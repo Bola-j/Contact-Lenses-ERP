@@ -65,7 +65,7 @@ public sealed class StockLedgerService
         batch.Quantity += quantity;
         var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
         ApplyAvailableDelta(balance, quantity, now);
-        var transaction = AddTransaction(locationId, skuId, InventoryTransactionTypes.Receipt, quantity, userId, null, now);
+        var transaction = AddTransaction(locationId, skuId, InventoryTransactionTypes.Receipt, quantity, InventoryQuantityUnits.Pack, userId, null, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new InventoryReceiptLedgerResult(batch, transaction.Id);
     }
@@ -168,7 +168,7 @@ public sealed class StockLedgerService
                 _dbContext.StockBalances.Add(balance);
             }
             ApplyAvailableDelta(balance, line.Quantity, now);
-            AddTransaction(locationId, line.SkuId, InventoryTransactionTypes.SupplyIn, line.Quantity, userId, referenceOperationId, now);
+            AddTransaction(locationId, line.SkuId, InventoryTransactionTypes.SupplyIn, line.Quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -196,6 +196,143 @@ public sealed class StockLedgerService
             notes,
             referenceOperationId,
             cancellationToken);
+    }
+
+    public async Task ReceiveReturnPiecesAsync(
+        Guid locationId,
+        Guid skuId,
+        int pieceQuantity,
+        Guid userId,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        Guid? referenceOperationId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await ReceivePiecesAsync(locationId, skuId, pieceQuantity, userId, InventoryTransactionTypes.ReturnIn, lotNumber, expiryDate, notes, referenceOperationId, cancellationToken);
+    }
+
+    public async Task ReceivePiecesAsync(
+        Guid locationId,
+        Guid skuId,
+        int pieceQuantity,
+        Guid userId,
+        string transactionType,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        Guid? referenceOperationId = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(pieceQuantity, nameof(pieceQuantity));
+        var now = _clock.EgyptNow;
+        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+        if (batch is null)
+        {
+            batch = new InventoryBatch
+            {
+                Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
+                LotNumber = NormalizeBlank(lotNumber), ExpiryDate = expiryDate,
+                Quantity = 0, Notes = NormalizeBlank(notes), CreatedFrom = referenceOperationId,
+                CreatedBy = userId, CreatedAt = now
+            };
+            _dbContext.InventoryBatches.Add(batch);
+        }
+
+        _dbContext.OpenedPieceLots.Add(new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
+            SourceBatchId = batch.Id, LotNumber = batch.LotNumber,
+            BatchExpiryDate = batch.ExpiryDate, OpenedDate = DateOnly.FromDateTime(now),
+            PieceExpiryDate = batch.ExpiryDate, LoosePieceQuantity = pieceQuantity,
+            CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = now
+        });
+        AddTransaction(locationId, skuId, transactionType, pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, now);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<InventoryBatch> ReceiveQuarantinedReturnAsync(
+        Guid locationId,
+        Guid skuId,
+        int quantity,
+        Guid userId,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        Guid? referenceOperationId = null,
+        CancellationToken cancellationToken = default) =>
+        await ReceiveInternalAsync(locationId, skuId, quantity, userId, InventoryTransactionTypes.QuarantineIn,
+            lotNumber, expiryDate, notes, referenceOperationId, cancellationToken, isQuarantined: true);
+
+    public async Task<InventoryBatch> ReceiveReturnAndWriteOffAsync(
+        Guid locationId,
+        Guid skuId,
+        int quantity,
+        Guid userId,
+        string? lotNumber = null,
+        DateOnly? expiryDate = null,
+        string? notes = null,
+        Guid? referenceOperationId = null,
+        CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(quantity, nameof(quantity));
+        var now = _clock.EgyptNow;
+        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+        if (batch is null)
+        {
+            batch = new InventoryBatch { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, LotNumber = NormalizeBlank(lotNumber), ExpiryDate = expiryDate, Quantity = 0, Notes = NormalizeBlank(notes), CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = now };
+            _dbContext.InventoryBatches.Add(batch);
+        }
+        batch.Quantity += quantity;
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReturnIn, quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
+        batch.Quantity -= quantity;
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.WriteOff, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return batch;
+    }
+
+    public async Task ReleaseQuarantinedBatchAsync(Guid batchId, int quantity, Guid userId, CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(quantity, nameof(quantity));
+        await using var transaction = _dbContext.Database.IsRelational()
+            ? await _dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var batch = _dbContext.Database.IsRelational()
+            ? await _dbContext.InventoryBatches.FromSqlInterpolated($"select * from inventory.inventory_batches where id = {batchId} for update").AsTracking().SingleOrDefaultAsync(cancellationToken)
+            : await _dbContext.InventoryBatches.SingleOrDefaultAsync(value => value.Id == batchId, cancellationToken);
+        if (batch is null || !batch.IsQuarantined || batch.Quantity < quantity)
+            throw new InvalidOperationException("Quarantined batch is unavailable or the release quantity exceeds its balance.");
+
+        batch.Quantity -= quantity;
+        if (batch.Quantity == 0) batch.IsQuarantined = false;
+        else _dbContext.InventoryBatches.Add(new InventoryBatch
+        {
+            Id = Guid.NewGuid(), LocationId = batch.LocationId, SkuId = batch.SkuId, LotNumber = batch.LotNumber,
+            ExpiryDate = batch.ExpiryDate, Quantity = quantity, CreatedFrom = batch.CreatedFrom, CreatedBy = userId,
+            Notes = batch.Notes, CreatedAt = _clock.EgyptNow, IsQuarantined = false
+        });
+        var balance = await GetOrCreateBalanceAsync(batch.LocationId, batch.SkuId, cancellationToken);
+        ApplyAvailableDelta(balance, quantity, _clock.EgyptNow);
+        AddTransaction(batch.LocationId, batch.SkuId, InventoryTransactionTypes.QuarantineRelease, quantity, InventoryQuantityUnits.Pack, userId, batch.CreatedFrom, _clock.EgyptNow);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task WriteOffQuarantinedBatchAsync(Guid batchId, int quantity, Guid userId, CancellationToken cancellationToken = default)
+    {
+        EnsurePositive(quantity, nameof(quantity));
+        await using var transaction = _dbContext.Database.IsRelational()
+            ? await _dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var batch = _dbContext.Database.IsRelational()
+            ? await _dbContext.InventoryBatches.FromSqlInterpolated($"select * from inventory.inventory_batches where id = {batchId} for update").AsTracking().SingleOrDefaultAsync(cancellationToken)
+            : await _dbContext.InventoryBatches.SingleOrDefaultAsync(value => value.Id == batchId, cancellationToken);
+        if (batch is null || !batch.IsQuarantined || batch.Quantity < quantity)
+            throw new InvalidOperationException("Quarantined batch is unavailable or the write-off quantity exceeds its balance.");
+        batch.Quantity -= quantity;
+        AddTransaction(batch.LocationId, batch.SkuId, InventoryTransactionTypes.QuarantineWriteOff, -quantity, InventoryQuantityUnits.Pack, userId, batch.CreatedFrom, _clock.EgyptNow);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<InventoryBatch> ReceiveExpiredReturnAndWriteOffAsync(
@@ -243,11 +380,11 @@ public sealed class StockLedgerService
         var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
         batch.Quantity += quantity;
         ApplyAvailableDelta(balance, quantity, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReturnIn, quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReturnIn, quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
 
         batch.Quantity -= quantity;
         ApplyAvailableDelta(balance, -quantity, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.WriteOff, -quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.WriteOff, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return batch;
     }
@@ -312,7 +449,7 @@ public sealed class StockLedgerService
             batch.Quantity += delta;
             var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
             ApplyAvailableDelta(balance, delta, now);
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, userId, referenceOperationId, now);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
             await _dbContext.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -376,7 +513,7 @@ public sealed class StockLedgerService
         batch.Quantity = nextBatchQuantity;
         var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
         ApplyAvailableDelta(balance, delta, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -390,20 +527,22 @@ public sealed class StockLedgerService
         DateOnly? expiryDate = null,
         string? notes = null,
         Guid? referenceOperationId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool isQuarantined = false)
     {
         EnsurePositive(quantity, nameof(quantity));
         EnsureTransactionType(transactionType);
         if (transactionType != InventoryTransactionTypes.Receipt &&
             transactionType != InventoryTransactionTypes.SupplyIn &&
             transactionType != InventoryTransactionTypes.ChangeOut &&
-            transactionType != InventoryTransactionTypes.ReturnIn)
+            transactionType != InventoryTransactionTypes.ReturnIn &&
+            transactionType != InventoryTransactionTypes.QuarantineIn)
         {
             throw new InvalidOperationException($"{transactionType} is not a receiving transaction type.");
         }
 
         var now = _clock.EgyptNow;
-        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+        var batch = await FindBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken, isQuarantined);
         if (batch is null)
         {
             batch = new InventoryBatch
@@ -414,6 +553,7 @@ public sealed class StockLedgerService
                 LotNumber = NormalizeBlank(lotNumber),
                 ExpiryDate = expiryDate,
                 Quantity = 0,
+                IsQuarantined = isQuarantined,
                 Notes = NormalizeBlank(notes),
                 CreatedFrom = referenceOperationId,
                 CreatedBy = userId,
@@ -428,8 +568,8 @@ public sealed class StockLedgerService
 
         batch.Quantity += quantity;
         var balance = await GetOrCreateBalanceAsync(locationId, skuId, cancellationToken);
-        ApplyAvailableDelta(balance, quantity, now);
-        AddTransaction(locationId, skuId, transactionType, quantity, userId, referenceOperationId, now);
+        if (!isQuarantined) ApplyAvailableDelta(balance, quantity, now);
+        AddTransaction(locationId, skuId, transactionType, quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return batch;
     }
@@ -480,7 +620,7 @@ public sealed class StockLedgerService
         }
 
         ApplyAvailableDelta(balance, -quantity, now);
-        AddTransaction(locationId, skuId, transactionType, -quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, transactionType, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return allocations;
     }
@@ -513,7 +653,7 @@ public sealed class StockLedgerService
 
         batch.Quantity -= quantity;
         ApplyAvailableDelta(balance, -quantity, now);
-        AddTransaction(locationId, skuId, transactionType, -quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, transactionType, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new BatchAllocation(batch.Id, quantity, batch.LotNumber, batch.ExpiryDate);
     }
@@ -526,7 +666,8 @@ public sealed class StockLedgerService
         Guid userId,
         Guid? referenceOperationId = null,
         DateOnly? minimumExpiryDate = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string transactionType = InventoryTransactionTypes.Sale)
     {
         EnsurePositive(pieceQuantity, nameof(pieceQuantity));
         EnsurePositive(piecesPerPack, nameof(piecesPerPack));
@@ -545,6 +686,11 @@ public sealed class StockLedgerService
             .ThenBy(lot => lot.CreatedAt)
             .ToListAsync(cancellationToken);
 
+        if (looseLots.Sum(lot => lot.LoosePieceQuantity) < pieceQuantity)
+        {
+            throw new InvalidOperationException("Insufficient loose pieces. Edit the piece quantity or use Packs.");
+        }
+
         foreach (var lot in looseLots)
         {
             if (remaining == 0)
@@ -555,47 +701,10 @@ public sealed class StockLedgerService
             var take = Math.Min(lot.LoosePieceQuantity, remaining);
             lot.LoosePieceQuantity -= take;
             remaining -= take;
-            allocations.Add(new PieceAllocation(lot.Id, null, take, lot.LotNumber, lot.BatchExpiryDate, lot.PieceExpiryDate, false));
+            allocations.Add(new PieceAllocation(lot.Id, lot.SourceBatchId, take, lot.LotNumber, lot.BatchExpiryDate, lot.PieceExpiryDate, false));
         }
 
-        while (remaining > 0)
-        {
-            var batchAllocations = await IssueFefoAsync(
-                locationId,
-                skuId,
-                1,
-                InventoryTransactionTypes.Sale,
-                userId,
-                referenceOperationId,
-                null,
-                cancellationToken);
-            var batchAllocation = batchAllocations.Single();
-            var batch = await _dbContext.InventoryBatches
-                .AsNoTracking()
-                .FirstAsync(value => value.Id == batchAllocation.BatchId, cancellationToken);
-            var pieceExpiryDate = batch.ExpiryDate;
-            var take = Math.Min(piecesPerPack, remaining);
-            remaining -= take;
-            var leftover = piecesPerPack - take;
-            var lot = new OpenedPieceLot
-            {
-                Id = Guid.NewGuid(),
-                LocationId = locationId,
-                SkuId = skuId,
-                SourceBatchId = batch.Id,
-                LotNumber = batch.LotNumber,
-                BatchExpiryDate = batch.ExpiryDate,
-                OpenedDate = today,
-                PieceExpiryDate = pieceExpiryDate,
-                LoosePieceQuantity = leftover,
-                CreatedFrom = referenceOperationId,
-                CreatedBy = userId,
-                CreatedAt = _clock.EgyptNow
-            };
-            _dbContext.OpenedPieceLots.Add(lot);
-            allocations.Add(new PieceAllocation(lot.Id, batch.Id, take, batch.LotNumber, batch.ExpiryDate, pieceExpiryDate, true));
-        }
-
+        AddTransaction(locationId, skuId, transactionType, -pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, _clock.EgyptNow);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return allocations;
     }
@@ -630,7 +739,9 @@ public sealed class StockLedgerService
         DateOnly? expiryDate,
         Guid userId,
         Guid? referenceOperationId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string transactionType = InventoryTransactionTypes.Sale,
+        bool allowOpeningSelectedPacks = false)
     {
         EnsurePositive(pieceQuantity, nameof(pieceQuantity));
         EnsurePositive(piecesPerPack, nameof(piecesPerPack));
@@ -650,6 +761,12 @@ public sealed class StockLedgerService
             .OrderBy(lot => lot.CreatedAt)
             .ToListAsync(cancellationToken);
 
+        var availableLoosePieces = looseLots.Sum(lot => lot.LoosePieceQuantity);
+        if (availableLoosePieces < pieceQuantity && !allowOpeningSelectedPacks)
+        {
+            throw new InvalidOperationException($"Insufficient loose pieces for the selected batch ({normalizedLot ?? "no lot"} / {expiryDate?.ToString("yyyy-MM-dd") ?? "no expiry"}). Edit the piece quantity or use Packs.");
+        }
+
         foreach (var lot in looseLots)
         {
             if (remaining == 0)
@@ -660,16 +777,16 @@ public sealed class StockLedgerService
             var take = Math.Min(lot.LoosePieceQuantity, remaining);
             lot.LoosePieceQuantity -= take;
             remaining -= take;
-            allocations.Add(new PieceAllocation(lot.Id, null, take, lot.LotNumber, lot.BatchExpiryDate, lot.PieceExpiryDate, false));
+            allocations.Add(new PieceAllocation(lot.Id, lot.SourceBatchId, take, lot.LotNumber, lot.BatchExpiryDate, lot.PieceExpiryDate, false));
         }
 
         if (remaining > 0)
         {
-            var packsToOpen = (int)Math.Ceiling(remaining / (decimal)piecesPerPack);
-            var batch = await LoadSelectedBatchAsync(locationId, skuId, lotNumber, expiryDate, cancellationToken);
+            var packsToOpen = (remaining + piecesPerPack - 1) / piecesPerPack;
+            var batch = await LoadSelectedBatchAsync(locationId, skuId, normalizedLot, expiryDate, cancellationToken);
             if (batch is null || batch.Quantity < packsToOpen)
             {
-                throw new InvalidOperationException("Selected stock does not have enough pieces.");
+                throw new InvalidOperationException($"Selected batch stock is insufficient for {remaining} additional piece(s).");
             }
 
             var now = _clock.EgyptNow;
@@ -681,30 +798,30 @@ public sealed class StockLedgerService
 
             batch.Quantity -= packsToOpen;
             ApplyAvailableDelta(balance, -packsToOpen, now);
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.Sale, -packsToOpen, userId, referenceOperationId, now);
-
-            var openedPieces = packsToOpen * piecesPerPack;
-            var take = remaining;
-            var leftover = openedPieces - take;
-            remaining = 0;
-
-            var lot = new OpenedPieceLot
+            var openedLot = new OpenedPieceLot
             {
-                Id = Guid.NewGuid(),
-                LocationId = locationId,
-                SkuId = skuId,
-                SourceBatchId = batch.Id,
-                LotNumber = batch.LotNumber,
-                BatchExpiryDate = batch.ExpiryDate,
-                OpenedDate = today,
+                Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId,
+                SourceBatchId = batch.Id, LotNumber = batch.LotNumber,
+                BatchExpiryDate = batch.ExpiryDate, OpenedDate = DateOnly.FromDateTime(now),
                 PieceExpiryDate = batch.ExpiryDate,
-                LoosePieceQuantity = leftover,
-                CreatedFrom = referenceOperationId,
-                CreatedBy = userId,
-                CreatedAt = now
+                LoosePieceQuantity = (packsToOpen * piecesPerPack) - remaining,
+                CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = now
             };
-            _dbContext.OpenedPieceLots.Add(lot);
-            allocations.Add(new PieceAllocation(lot.Id, batch.Id, take, batch.LotNumber, batch.ExpiryDate, batch.ExpiryDate, true));
+            _dbContext.OpenedPieceLots.Add(openedLot);
+            var pieceIssue = AddTransaction(locationId, skuId, transactionType, -pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, now);
+            var packOpen = AddTransaction(locationId, skuId, InventoryTransactionTypes.PackOpen, -packsToOpen, InventoryQuantityUnits.Pack, userId, referenceOperationId, now, pieceIssue.Id, piecesPerPack);
+            allocations.Add(new PieceAllocation(openedLot.Id, batch.Id, remaining, batch.LotNumber, batch.ExpiryDate, batch.ExpiryDate, true));
+            allocations = allocations.Select(allocation => allocation with
+            {
+                PieceIssueTransactionId = pieceIssue.Id,
+                PackOpenTransactionId = allocation.OpenedPack ? packOpen.Id : null
+            }).ToList();
+        }
+
+        if (remaining == 0)
+        {
+            var pieceIssue = AddTransaction(locationId, skuId, transactionType, -pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, _clock.EgyptNow);
+            allocations = allocations.Select(allocation => allocation with { PieceIssueTransactionId = pieceIssue.Id }).ToList();
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -736,7 +853,7 @@ public sealed class StockLedgerService
             if (batch is null) throw new InvalidOperationException("A stock batch is required for a positive loose-piece adjustment.");
             _dbContext.OpenedPieceLots.Add(new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id, LotNumber = normalizedLot, BatchExpiryDate = expiryDate, OpenedDate = DateOnly.FromDateTime(_clock.EgyptNow), PieceExpiryDate = expiryDate, LoosePieceQuantity = delta, CreatedFrom = referenceOperationId, CreatedBy = userId, CreatedAt = _clock.EgyptNow });
         }
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, userId, referenceOperationId, _clock.EgyptNow);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.StocktakeAdjustment, delta, InventoryQuantityUnits.Piece, userId, referenceOperationId, _clock.EgyptNow);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -748,6 +865,8 @@ public sealed class StockLedgerService
     public async Task RestorePiecesToOpenedLotAsync(
         Guid openedPieceLotId,
         int pieceQuantity,
+        Guid userId,
+        Guid? referenceOperationId = null,
         CancellationToken cancellationToken = default)
     {
         EnsurePositive(pieceQuantity, nameof(pieceQuantity));
@@ -759,15 +878,24 @@ public sealed class StockLedgerService
             if (lot.PieceExpiryDate is { } expiry && expiry < today)
                 throw new InvalidOperationException("Expired loose pieces cannot be returned to available inventory.");
             lot.LoosePieceQuantity += pieceQuantity;
+            AddTransaction(lot.LocationId, lot.SkuId, InventoryTransactionTypes.ReturnRestore, pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, _clock.EgyptNow);
             await _dbContext.SaveChangesAsync(cancellationToken);
             return;
         }
 
+        var lotSnapshot = await _dbContext.OpenedPieceLots
+            .AsNoTracking()
+            .Where(value => value.Id == openedPieceLotId && (value.PieceExpiryDate == null || value.PieceExpiryDate >= today))
+            .Select(value => new { value.LocationId, value.SkuId })
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? throw new InvalidOperationException("The original opened piece lot is unavailable or expired.");
         var restored = await _dbContext.OpenedPieceLots
             .Where(value => value.Id == openedPieceLotId && (value.PieceExpiryDate == null || value.PieceExpiryDate >= today))
             .ExecuteUpdateAsync(setters => setters.SetProperty(value => value.LoosePieceQuantity, value => value.LoosePieceQuantity + pieceQuantity), cancellationToken);
         if (restored != 1)
             throw new InvalidOperationException("The original opened piece lot is unavailable or expired.");
+        AddTransaction(lotSnapshot.LocationId, lotSnapshot.SkuId, InventoryTransactionTypes.ReturnRestore, pieceQuantity, InventoryQuantityUnits.Piece, userId, referenceOperationId, _clock.EgyptNow);
+        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
     public async Task ReserveInWarehouseAsync(Guid locationId, Guid skuId, int quantity, Guid userId, Guid? referenceOperationId = null, CancellationToken cancellationToken = default)
@@ -784,7 +912,7 @@ public sealed class StockLedgerService
 
             ApplyAvailableDelta(balance, -quantity, now);
             balance.ReservedInWarehouseQty += quantity;
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, userId, referenceOperationId, now);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
             await _dbContext.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -809,7 +937,7 @@ public sealed class StockLedgerService
             }
 
             await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, userId, referenceOperationId, now);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveInWarehouse, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }, cancellationToken);
     }
@@ -914,7 +1042,7 @@ public sealed class StockLedgerService
         balance.ReservedInWarehouseQty -= quantity;
         balance.RowVersion++;
         balance.LastUpdated = now;
-        AddTransaction(locationId, skuId, transactionType, -quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, transactionType, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -964,7 +1092,7 @@ public sealed class StockLedgerService
         balance.ReservedWithRepQty += quantity;
         balance.RowVersion++;
         balance.LastUpdated = now;
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -980,7 +1108,7 @@ public sealed class StockLedgerService
 
         balance.ReservedInWarehouseQty -= quantity;
         ApplyAvailableDelta(balance, quantity, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseInWarehouse, quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseInWarehouse, quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -997,7 +1125,7 @@ public sealed class StockLedgerService
 
         balance.ReservedInWarehouseQty -= released;
         ApplyAvailableDelta(balance, released, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseInWarehouse, released, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseInWarehouse, released, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return released;
     }
@@ -1016,7 +1144,7 @@ public sealed class StockLedgerService
 
             ApplyAvailableDelta(balance, -quantity, now);
             balance.ReservedWithRepQty += quantity;
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, userId, referenceOperationId, now);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
             await _dbContext.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -1041,7 +1169,7 @@ public sealed class StockLedgerService
             }
 
             await ReloadTrackedBalanceAsync(locationId, skuId, cancellationToken);
-            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, userId, referenceOperationId, now);
+            AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveWithRep, -quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }, cancellationToken);
     }
@@ -1058,7 +1186,7 @@ public sealed class StockLedgerService
 
         balance.ReservedWithRepQty -= quantity;
         ApplyAvailableDelta(balance, quantity, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseWithRep, quantity, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseWithRep, quantity, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -1075,17 +1203,18 @@ public sealed class StockLedgerService
 
         balance.ReservedWithRepQty -= released;
         ApplyAvailableDelta(balance, released, now);
-        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseWithRep, released, userId, referenceOperationId, now);
+        AddTransaction(locationId, skuId, InventoryTransactionTypes.ReserveReleaseWithRep, released, InventoryQuantityUnits.Pack, userId, referenceOperationId, now);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return released;
     }
 
-    private async Task<InventoryBatch?> FindBatchAsync(Guid locationId, Guid skuId, string? lotNumber, DateOnly? expiryDate, CancellationToken cancellationToken) =>
+    private async Task<InventoryBatch?> FindBatchAsync(Guid locationId, Guid skuId, string? lotNumber, DateOnly? expiryDate, CancellationToken cancellationToken, bool isQuarantined = false) =>
         await _dbContext.InventoryBatches.FirstOrDefaultAsync(batch =>
             batch.LocationId == locationId &&
             batch.SkuId == skuId &&
             batch.LotNumber == NormalizeBlank(lotNumber) &&
-            batch.ExpiryDate == expiryDate,
+            batch.ExpiryDate == expiryDate &&
+            batch.IsQuarantined == isQuarantined,
             cancellationToken);
 
     private async Task<List<InventoryBatch>> LoadFefoBatchesAsync(Guid locationId, Guid skuId, DateOnly? minimumExpiryDate, CancellationToken cancellationToken)
@@ -1096,6 +1225,7 @@ public sealed class StockLedgerService
                 batch.LocationId == locationId &&
                 batch.SkuId == skuId &&
                 batch.Quantity > 0 &&
+                !batch.IsQuarantined &&
                 (batch.ExpiryDate == null || batch.ExpiryDate >= today))
             .OrderBy(batch => batch.ExpiryDate == null)
             .ThenBy(batch => batch.ExpiryDate)
@@ -1113,6 +1243,7 @@ public sealed class StockLedgerService
             batch.LotNumber == normalizedLot &&
             batch.ExpiryDate == expiryDate &&
             batch.Quantity > 0 &&
+            !batch.IsQuarantined &&
             (batch.ExpiryDate == null || batch.ExpiryDate >= today),
             cancellationToken);
     }
@@ -1204,9 +1335,25 @@ public sealed class StockLedgerService
         balance.LastUpdated = now;
     }
 
-    private StockTransaction AddTransaction(Guid locationId, Guid skuId, string transactionType, int quantityChange, Guid userId, Guid? referenceOperationId, DateTime now)
+    private StockTransaction AddTransaction(
+        Guid locationId,
+        Guid skuId,
+        string transactionType,
+        int quantityChange,
+        string quantityUnit,
+        Guid userId,
+        Guid? referenceOperationId,
+        DateTime now,
+        Guid? relatedTransactionId = null,
+        int? conversionPiecesPerPack = null)
     {
         EnsureTransactionType(transactionType);
+        if (quantityChange == 0)
+            throw new ArgumentOutOfRangeException(nameof(quantityChange), "A transaction quantity cannot be zero.");
+        if (!InventoryQuantityUnits.IsValid(quantityUnit))
+            throw new InvalidOperationException($"Unsupported inventory quantity unit: {quantityUnit}.");
+        if (transactionType == InventoryTransactionTypes.PackOpen && (quantityUnit != InventoryQuantityUnits.Pack || conversionPiecesPerPack is not > 0 || relatedTransactionId is null))
+            throw new InvalidOperationException("Pack-opening transactions require a pack unit, related piece issue, and pack-size snapshot.");
         var transaction = new StockTransaction
         {
             Id = Guid.NewGuid(),
@@ -1214,6 +1361,9 @@ public sealed class StockLedgerService
             SkuId = skuId,
             TransactionType = transactionType,
             QuantityChange = quantityChange,
+            QuantityUnit = quantityUnit,
+            RelatedTransactionId = relatedTransactionId,
+            ConversionPiecesPerPack = conversionPiecesPerPack,
             ReferenceOperationId = referenceOperationId,
             UserId = userId,
             CreatedAt = now
@@ -1249,4 +1399,13 @@ public sealed record BatchAllocation(Guid BatchId, int Quantity, string? LotNumb
 
 public sealed record InventoryReceiptLedgerResult(InventoryBatch Batch, Guid StockTransactionId);
 
-public sealed record PieceAllocation(Guid OpenedPieceLotId, Guid? SourceBatchId, int Quantity, string? LotNumber, DateOnly? BatchExpiryDate, DateOnly? PieceExpiryDate, bool OpenedPack);
+public sealed record PieceAllocation(
+    Guid OpenedPieceLotId,
+    Guid? SourceBatchId,
+    int Quantity,
+    string? LotNumber,
+    DateOnly? BatchExpiryDate,
+    DateOnly? PieceExpiryDate,
+    bool OpenedPack,
+    Guid? PieceIssueTransactionId = null,
+    Guid? PackOpenTransactionId = null);

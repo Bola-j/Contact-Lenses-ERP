@@ -45,7 +45,7 @@ public sealed class ClosedXmlDocumentRenderer(
         worksheet.Cell(1, 1).Style.Font.FontSize = 16;
         worksheet.Cell(2, 1).Value = document.Header.Title;
         worksheet.Cell(2, 1).Style.Font.Bold = true;
-        worksheet.Cell(3, 1).Value = $"{localizer.Text("GeneratedAt", document.Metadata.Language)}: {document.Metadata.GeneratedAtUtc:yyyy-MM-dd HH:mm} UTC";
+        worksheet.Cell(3, 1).Value = $"{localizer.Text("GeneratedAt", document.Metadata.Language)}: {document.Metadata.GeneratedAtUtc.ToString("dd/MM/yyyy HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)} UTC";
 
         var row = 5;
         foreach (var section in document.InfoSections)
@@ -142,9 +142,11 @@ public sealed class ClosedXmlDocumentRenderer(
                 break;
             case DocumentCell.Date date:
                 cell.Value = date.Value.ToDateTime(TimeOnly.MinValue);
+                cell.Style.NumberFormat.Format = "dd/mm/yyyy";
                 break;
             case DocumentCell.DateTimeValue dateTime:
                 cell.Value = dateTime.Value;
+                cell.Style.NumberFormat.Format = "dd/mm/yyyy hh:mm:ss";
                 break;
             case DocumentCell.Boolean boolean:
                 cell.Value = boolean.Value;

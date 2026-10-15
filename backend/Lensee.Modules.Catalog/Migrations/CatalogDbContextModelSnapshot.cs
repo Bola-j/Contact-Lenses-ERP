@@ -211,6 +211,12 @@ namespace Lensee.Modules.Catalog.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsSellable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_sellable");
+
                     b.Property<string>("PowerSign")
                         .HasMaxLength(1)
                         .HasColumnType("character varying(1)")

@@ -23,6 +23,9 @@ namespace Lensee.Host.Endpoints;
 public static partial class ReportsEndpoints
 {
     private const string Completed = "Completed";
+    private const string WholesaleSale = "WholesaleSale";
+    private const string RetailSale = "RetailSale";
+    private const string Return = "Return";
     private const string Change = "Change";
     private const string ChangeOut = "ChangeOut";
     private const string ChangeIn = "ChangeIn";
@@ -46,7 +49,7 @@ public static partial class ReportsEndpoints
             return normalizedKey is "stock" or "operation-bill" or "payment-receipt" or "cash-receipt" or "stocktake-summary";
         }
 
-        if (normalizedRole is LenseeRoles.ERPAdmin or LenseeRoles.Accountant)
+        if (normalizedRole == LenseeRoles.Accountant)
         {
             return normalizedKey is not "supply" and not "supply-landed-cost";
         }
@@ -76,8 +79,11 @@ public static partial class ReportsEndpoints
         "stocktake-summary.pdf"
     };
 
-    private static PageRequest NormalizeReportPage(int page, int pageSize, int maxExportRows) =>
-        new(Math.Max(1, page), Math.Clamp(pageSize, 1, Math.Max(1, maxExportRows + 1)));
+    private static PageRequest NormalizeReportPage(int page, int pageSize, int maxExportRows)
+    {
+        var maximum = maxExportRows == int.MaxValue ? int.MaxValue : Math.Max(1, maxExportRows + 1);
+        return new PageRequest(Math.Max(1, page), Math.Clamp(pageSize, 1, maximum));
+    }
 
     private static bool TryNormalizeSort(string? sortBy, string? sortDirection, IReadOnlySet<string> allowed, string defaultSort, out string normalizedSort, out bool descending)
     {
@@ -122,6 +128,8 @@ public static partial class ReportsEndpoints
         group.MapGet("/stocktakes/{id:guid}/summary.pdf", GetStocktakeSummaryPdfAsync).RequireAuthorization("reports.read");
         group.MapGet("/exports", ListExportLogsAsync).RequireAuthorization("reports.read");
         group.MapPost("/exports", CreateExportLogAsync).RequireAuthorization("reports.read");
+        group.MapGet("/document-jobs/{id:guid}", GetDocumentExportJobAsync).RequireAuthorization("reports.read");
+        group.MapGet("/document-jobs/{id:guid}/file", DownloadDocumentExportJobAsync).RequireAuthorization("reports.read");
 
         routes.MapGet("/api/v1/documents/{key}/{id:guid}", ExportDocumentAsync).RequireAuthorization("reports.read");
 
@@ -151,6 +159,7 @@ public static partial class ReportsEndpoints
         DateTime? to,
         string? operationType,
         string? status,
+        int? pageSize,
         OperationsDbContext operationsDbContext,
         PaymentsDbContext paymentsDbContext,
         FinanceDbContext financeDbContext,
@@ -164,6 +173,8 @@ public static partial class ReportsEndpoints
         IOptions<ReportingOptions> reportingOptions,
         ICurrentUser currentUser,
         IClock clock,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!reportCatalog.TryGet(key, out var descriptor) || descriptor.IsDocument)
@@ -185,39 +196,85 @@ public static partial class ReportsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateRange"] = ["From must be earlier than or equal to To."] });
         }
 
-        IResult queryResult = key.ToLowerInvariant() switch
-        {
-            "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, financeDbContext, cancellationToken),
-            "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
-            "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
-            "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
-            "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
-            "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, reportingOptions.Value.MaxExportRows + 1),
-            _ => Results.NotFound()
-        };
+        var requestedPageSize = pageSize ?? reportingOptions.Value.MaxExportRows;
 
-        if (queryResult is IStatusCodeHttpResult { StatusCode: >= 400 })
-        {
-            return queryResult;
-        }
-        if (queryResult is not IValueHttpResult valueResult || valueResult.Value is null)
-        {
-            return queryResult;
-        }
-
-        var document = BuildAnalyticalDocument(key, UnwrapReportPage(valueResult.Value), documentLanguage, currentUser.Role, clock.UtcNow);
-        if (document.Metadata.RowCount > reportingOptions.Value.MaxExportRows)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
+        var snapshot = await SharedDbTransaction.ExecuteRepeatableReadAsync(
+            operationsDbContext,
+            async () =>
             {
-                ["rows"] = [$"This export contains more than {reportingOptions.Value.MaxExportRows} rows. Narrow the selected filters."]
-            });
+                IResult queryResult = key.ToLowerInvariant() switch
+                {
+                    "financial-summary" => await GetFinancialSummaryAsync(operationsDbContext, paymentsDbContext, financeDbContext, cancellationToken),
+                    "stock" => await GetStockReportAsync(locationId, inventoryDbContext, catalogDbContext, currentUser, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    "operations" => await GetOperationsReportAsync(from, to, operationType, operationsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    "payments" => await GetPaymentsReportAsync(operationsDbContext, paymentsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    "supply" => await GetSupplyLandedCostReportAsync(from, to, status, operationsDbContext, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    "merchant-balances" => await GetMerchantBalancesReportAsync(crmDbContext, merchantAccountService, reportingOptions, cancellationToken, 1, requestedPageSize),
+                    _ => Results.NotFound()
+                };
+
+                return queryResult is IStatusCodeHttpResult { StatusCode: >= 400 }
+                    ? (Result: queryResult, Document: (DocumentModel?)null)
+                    : queryResult is IValueHttpResult valueResult && valueResult.Value is not null
+                    ? (Result: queryResult, Document: BuildAnalyticalDocument(key, UnwrapReportPage(valueResult.Value), documentLanguage, currentUser.Role, clock.UtcNow))
+                    : (Result: queryResult, Document: (DocumentModel?)null);
+            },
+            cancellationToken,
+            paymentsDbContext,
+            financeDbContext,
+            inventoryDbContext,
+            catalogDbContext,
+            crmDbContext);
+
+        if (snapshot.Document is null)
+        {
+            return snapshot.Result;
         }
 
-        var exported = await exportService.ExportAsync(document, exportFormat, cancellationToken);
+        var document = snapshot.Document;
+        var job = await documentJobs.CreateAsync(document, exportFormat, currentUser, httpRequest.Headers["Idempotency-Key"].FirstOrDefault(), cancellationToken);
         var reportType = $"{key}.{FormatValue(exportFormat)}";
         await LogExportAsync(reportingDbContext, currentUser, clock, reportType, $"download://reports/{key}/export", cancellationToken);
-        return Results.File(exported.Content, exported.ContentType, exported.FileName);
+        if (job.Status != "Ready") return Results.Accepted($"/api/v1/reports/document-jobs/{job.Id}", job);
+        var ready = await documentJobs.GetForRequesterAsync(job.Id, currentUser, cancellationToken);
+        return ready?.Content is not null
+            ? Results.File(ready.Content, ready.ContentType ?? "application/octet-stream", ready.FileName ?? $"{key}.{FormatValue(exportFormat)}")
+            : Results.Problem("The report file is not available.");
+    }
+
+    private static async Task<IResult> GetDocumentExportJobAsync(Guid id, DocumentExportJobService documentJobs, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var job = await documentJobs.GetForRequesterAsync(id, currentUser, cancellationToken);
+        return job is null ? Results.NotFound() : Results.Ok(new DocumentExportJobResponse(job.Id, job.Status, job.RowCount, job.CreatedAt, job.ExpiresAt, job.FileName, job.Error));
+    }
+
+    private static async Task<IResult> DownloadDocumentExportJobAsync(Guid id, DocumentExportJobService documentJobs, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var job = await documentJobs.GetForRequesterAsync(id, currentUser, cancellationToken);
+        if (job is null) return Results.NotFound();
+        if (job.Status != "Ready" || job.Content is null) return Results.Conflict(new { status = job.Status, detail = job.Error ?? "The document is still being prepared." });
+        return Results.File(job.Content, job.ContentType ?? "application/octet-stream", job.FileName ?? "report");
+    }
+
+    private static async Task<IResult> CreateDocumentExportAsync(
+        DocumentModel document,
+        ExportFormat format,
+        string reportType,
+        string generatedUrl,
+        ReportingDbContext reportingDbContext,
+        ICurrentUser currentUser,
+        IClock clock,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
+        CancellationToken cancellationToken)
+    {
+        var job = await documentJobs.CreateAsync(document, format, currentUser, httpRequest.Headers["Idempotency-Key"].FirstOrDefault(), cancellationToken);
+        await LogExportAsync(reportingDbContext, currentUser, clock, reportType, generatedUrl, cancellationToken);
+        if (job.Status != "Ready") return Results.Accepted($"/api/v1/reports/document-jobs/{job.Id}", job);
+        var ready = await documentJobs.GetForRequesterAsync(job.Id, currentUser, cancellationToken);
+        return ready?.Content is not null
+            ? Results.File(ready.Content, ready.ContentType ?? "application/octet-stream", ready.FileName ?? $"{document.Metadata.DocumentKey}.{FormatValue(format)}")
+            : Results.Problem("The document file is not available.");
     }
 
     private static async Task<IResult> ExportDocumentAsync(
@@ -237,6 +294,8 @@ public static partial class ReportsEndpoints
         IDocumentExportService exportService,
         ICurrentUser currentUser,
         IClock clock,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!reportCatalog.TryGet(key, out var descriptor) || !descriptor.IsDocument)
@@ -258,11 +317,11 @@ public static partial class ReportsEndpoints
 
         return key.ToLowerInvariant() switch
         {
-            "operation-bill" => await GetOperationBillPdfAsync(id, language, format, operationsDbContext, paymentsDbContext, crmDbContext, inventoryDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
-            "payment-receipt" or "cash-receipt" => await GetPaymentReceiptPdfAsync(id, language, format, paymentsDbContext, operationsDbContext, crmDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
-            "supply-landed-cost" => await GetSupplyLandedCostPdfAsync(id, language, format, operationsDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, cancellationToken),
-            "merchant-statement" => await GetMerchantStatementPdfAsync(id, language, format, null, null, crmDbContext, operationsDbContext, paymentsDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, cancellationToken),
-            "stocktake-summary" => await GetStocktakeSummaryPdfAsync(id, language, format, operationsDbContext, catalogDbContext, inventoryDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, cancellationToken),
+            "operation-bill" => await GetOperationBillPdfAsync(id, language, format, operationsDbContext, paymentsDbContext, crmDbContext, inventoryDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, documentJobs, httpRequest, cancellationToken),
+            "payment-receipt" or "cash-receipt" => await GetPaymentReceiptPdfAsync(id, language, format, paymentsDbContext, operationsDbContext, crmDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, documentJobs, httpRequest, cancellationToken),
+            "supply-landed-cost" => await GetSupplyLandedCostPdfAsync(id, language, format, operationsDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, documentJobs, httpRequest, cancellationToken),
+            "merchant-statement" => await GetMerchantStatementPdfAsync(id, language, format, null, null, crmDbContext, operationsDbContext, paymentsDbContext, identityDbContext, reportingDbContext, merchantAccountService, currentUser, clock, exportService, documentJobs, httpRequest, cancellationToken),
+            "stocktake-summary" => await GetStocktakeSummaryPdfAsync(id, language, format, operationsDbContext, catalogDbContext, inventoryDbContext, identityDbContext, reportingDbContext, currentUser, clock, exportService, documentJobs, httpRequest, cancellationToken),
             _ => Results.NotFound()
         };
     }
@@ -378,6 +437,11 @@ public static partial class ReportsEndpoints
             .ToListAsync(cancellationToken);
 
         var skuIds = balances.Select(balance => balance.SkuId).Distinct().ToArray();
+        var loosePieces = await inventoryDbContext.OpenedPieceLots
+            .Where(lot => skuIds.Contains(lot.SkuId) && (!effectiveLocationId.HasValue || lot.LocationId == effectiveLocationId.Value))
+            .GroupBy(lot => new { lot.LocationId, lot.SkuId })
+            .Select(group => new { group.Key.LocationId, group.Key.SkuId, LoosePieces = group.Sum(lot => lot.LoosePieceQuantity) })
+            .ToDictionaryAsync(value => (value.LocationId, value.SkuId), value => value.LoosePieces, cancellationToken);
         var skus = await catalogDbContext.Skus
             .Include(sku => sku.Product)
             .Where(sku => skuIds.Contains(sku.Id))
@@ -386,6 +450,7 @@ public static partial class ReportsEndpoints
         var rows = balances.Select(balance =>
         {
             skus.TryGetValue(balance.SkuId, out var sku);
+            loosePieces.TryGetValue((balance.LocationId, balance.SkuId), out var loosePieceQuantity);
             return new StockReportRow(
                 balance.LocationId,
                 balance.Location.Name,
@@ -397,7 +462,10 @@ public static partial class ReportsEndpoints
                 balance.ReservedInWarehouseQty,
                 balance.ReservedWithRepQty,
                 balance.TargetQty,
-                balance.LastUpdated);
+                balance.LastUpdated,
+                sku?.ColorName,
+                sku?.Product.PiecesPerPack,
+                loosePieceQuantity);
         }).ToList();
 
         return Results.Ok(new PagedResult<StockReportRow>(rows, request.Page, request.PageSize, total));
@@ -484,6 +552,7 @@ public static partial class ReportsEndpoints
         var rows = operations.Select(operation => new OperationReportRow(
             operation.Id,
             operation.OperationNumber,
+            operation.ExternalReference,
             operation.OperationType,
             operation.Status,
             operation.ClientId,
@@ -578,6 +647,7 @@ public static partial class ReportsEndpoints
                 balance.ConfirmedCollections,
                 balance.RemainingAmount,
                 log.Status,
+                PaymentSettlementStatus(balance),
                 log.AssignedTo,
                 log.LastModifiedAt,
                 balance.RefundDue);
@@ -718,6 +788,8 @@ public static partial class ReportsEndpoints
         ICurrentUser currentUser,
         IClock clock,
         IDocumentExportService exportService,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
@@ -827,10 +899,8 @@ public static partial class ReportsEndpoints
             language,
             GetUserDisplayName(currentUser.UserId, userLookup),
             clock.UtcNow);
-        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
-        await LogExportAsync(reportingDbContext, currentUser, clock, $"supply-landed-cost.{exportExtension}", $"download://reports/supply/{id}/landed-cost.{exportExtension}", cancellationToken);
-        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
+        return await CreateDocumentExportAsync(document, exportFormat, $"supply-landed-cost.{exportExtension}", $"download://reports/supply/{id}/landed-cost.{exportExtension}", reportingDbContext, currentUser, clock, documentJobs, httpRequest, cancellationToken);
     }
 
     private static async Task<IResult> GetMerchantBalancesReportAsync(
@@ -906,6 +976,8 @@ public static partial class ReportsEndpoints
         ICurrentUser currentUser,
         IClock clock,
         IDocumentExportService exportService,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!TryResolveExportFormat(format, [ExportFormat.Pdf], out var exportFormat)) return InvalidExportFormat();
@@ -924,11 +996,17 @@ public static partial class ReportsEndpoints
         var merchant = operation.ClientId.HasValue
             ? await crmDbContext.Merchants.FirstOrDefaultAsync(value => value.Id == operation.ClientId.Value && !value.IsDeleted, cancellationToken)
             : null;
+        var returnEntitlement = operation.OperationType == Return
+            ? await paymentsDbContext.ReturnEntitlements.AsNoTracking().FirstOrDefaultAsync(value => value.ReturnOperationId == operation.Id, cancellationToken)
+            : null;
+        var originalSale = returnEntitlement?.OriginalSaleOperationId is { } originalSaleId
+            ? await operationsDbContext.OperationLogs.AsNoTracking().FirstOrDefaultAsync(value => value.Id == originalSaleId && !value.IsDeleted, cancellationToken)
+            : null;
         var paymentLog = await paymentsDbContext.MainPaymentLogs
             .Include(value => value.InstallmentSubLogs)
             .FirstOrDefaultAsync(value => value.OperationId == operation.Id && !value.IsDeleted, cancellationToken);
         var cashRecords = await paymentsDbContext.CashRecords
-            .Where(value => value.OperationId == operation.Id)
+            .Where(value => value.OperationId == operation.Id || (returnEntitlement != null && value.ReturnEntitlementId == returnEntitlement.Id))
             .OrderByDescending(value => value.PaymentDate)
             .ToListAsync(cancellationToken);
         var adjustments = await paymentsDbContext.FinancialAdjustments
@@ -955,13 +1033,52 @@ public static partial class ReportsEndpoints
             : PaymentBalanceCalculator.Calculate(paymentLog, adjustments, cashRecords);
         var totalQty = operation.OperationLines.Sum(line => line.Quantity);
         var totalValue = operation.OperationLines.Sum(line => line.LineTotal);
+        var isSale = operation.OperationType is WholesaleSale or RetailSale;
+        var isMerchantAccountSale = isSale && merchant is not null && operation.ClientId.HasValue;
+        var isReturn = operation.OperationType == Return;
         var isChangeOperation = string.Equals(operation.OperationType, Change, StringComparison.OrdinalIgnoreCase);
-        var lineHeaders = isChangeOperation
+        var onlineCodCharge = operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") ? operation.CodCharge : 0m;
+        var onlineDeliveryFee = operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") ? operation.DeliveryFee : 0m;
+        var returnLineIds = isReturn ? operation.OperationLines.Select(line => line.Id).ToArray() : [];
+        var returnSourceTrace = returnLineIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : (await operationsDbContext.OperationLineSourceAllocations.AsNoTracking()
+                .Where(value => returnLineIds.Contains(value.TargetOperationLineId))
+                .Select(value => new { value.TargetOperationLineId, value.Quantity, value.LotNumber, value.ExpiryDate })
+                .ToListAsync(cancellationToken))
+                .GroupBy(value => value.TargetOperationLineId)
+                .ToDictionary(group => group.Key, group => string.Join(", ", group.Select(value =>
+                    $"{value.Quantity} × {(string.IsNullOrWhiteSpace(value.LotNumber) ? "batch" : value.LotNumber)}{(value.ExpiryDate.HasValue ? $" ({value.ExpiryDate:dd/MM/yyyy})" : string.Empty)}")));
+        var lineHeaders = isReturn
+            ? new[] { "SKU", "Product", "Original allocation → received batch", "Qty", "Disposition", "Normal qty/value", "Exception qty/value" }
+            : isSale
+                ? new[] { "SKU", "Product", "Qty", "Bonus", "Pricing mode", "Unit price", "Total" }
+                : isChangeOperation
             ? new[] { "SKU", "Product", "Side", "Qty", "Bonus", "Unit price", "Total" }
             : ["SKU", "Product", "Qty", "Bonus", "Unit price", "Total"];
         var lineRows = operation.OperationLines
             .OrderBy(value => value.ProductNameSnapshot)
-            .Select(line => (IReadOnlyList<string>)(isChangeOperation
+            .Select(line => (IReadOnlyList<string>)(isReturn
+                ? [
+                    line.SkuCodeSnapshot,
+                    line.ProductNameSnapshot,
+                    $"{returnSourceTrace.GetValueOrDefault(line.Id, "Unmatched / exception")} → {(string.IsNullOrWhiteSpace(line.LotNumber) ? "batch unspecified" : line.LotNumber)}",
+                    line.Quantity.ToString(),
+                    line.ReturnDisposition ?? "Sellable",
+                    $"{line.NormalQuantity} / {FormatMoney(line.NormalValue)}",
+                    $"{line.ExceptionQuantity} / {FormatMoney(line.ExceptionValue)}"
+                ]
+                : isSale
+                ? [
+                    line.SkuCodeSnapshot,
+                    line.ProductNameSnapshot,
+                    line.Quantity.ToString(),
+                    line.BonusQuantity.ToString(),
+                    SaleLineType(line.LineType, line.PricingMode, line.BonusQuantity),
+                    FormatMoney(line.UnitPrice),
+                    FormatMoney(line.LineTotal)
+                ]
+                : isChangeOperation
                 ? [
                     line.SkuCodeSnapshot,
                     line.ProductNameSnapshot,
@@ -984,14 +1101,47 @@ public static partial class ReportsEndpoints
         var summary = new List<PdfFact>
         {
             new("Operation no.", operation.OperationNumber),
+            new("Operation reference", operation.ExternalReference ?? "-"),
             new("Date", FormatDateTime(operation.ConfirmedAt ?? operation.CreatedAt)),
             new("Type", operation.OperationType),
             new("Status", operation.Status),
             new("Customer", operation.ClientName ?? merchant?.BusinessName ?? "-"),
-            new("Payment method", DescribePaymentMethod(operation.PaymentMethod)),
             new("Total quantity", totalQty.ToString()),
-            new("Document total", FormatMoney(totalValue))
+            new("Document total", FormatMoney(totalValue + onlineDeliveryFee + onlineCodCharge))
         };
+
+        if (isMerchantAccountSale)
+        {
+            summary.Add(new PdfFact("Merchant account", "Settled through merchant account"));
+        }
+        else if (isSale)
+        {
+            summary.Add(new PdfFact("Sales channel", operation.SalesChannel));
+            if (operation.SalesChannel is "Online" or "Shopify")
+            {
+                summary.Add(new PdfFact("Buyer phone", operation.BuyerPhone ?? "-"));
+                summary.Add(new PdfFact("Delivery address", operation.ShippingAddress ?? "-"));
+                summary.Add(new PdfFact("Delivery fee (pass-through)", FormatMoney(onlineDeliveryFee)));
+                summary.Add(new PdfFact("COD charge", FormatMoney(onlineCodCharge)));
+                summary.Add(new PdfFact("Customer payable total", FormatMoney(totalValue + onlineDeliveryFee + onlineCodCharge)));
+                summary.Add(new PdfFact("Contact verified", operation.BuyerContactVerified ? "Yes" : "No"));
+                summary.Add(new PdfFact("Payment status", paymentLog?.Status ?? operation.PaymentStatus ?? "-"));
+                summary.Add(new PdfFact("Payment reference", operation.ExternalPaymentReference ?? "-"));
+            }
+        }
+        if (isReturn)
+        {
+            summary.Add(new PdfFact("Original sale", originalSale?.OperationNumber ?? "Unlinked"));
+            summary.Add(new PdfFact("Buyer", operation.ClientName ?? merchant?.BusinessName ?? "-"));
+            summary.Add(new PdfFact("Return disposition", string.Join(", ", operation.OperationLines.Select(line => line.ReturnDisposition ?? "Sellable").Distinct())));
+            summary.Add(new PdfFact("Normal return value", FormatMoney(returnEntitlement?.NormalAmount ?? operation.ReturnNormalValue)));
+            summary.Add(new PdfFact("Exception value (held)", FormatMoney(returnEntitlement?.ExceptionAmount ?? operation.ReturnExceptionValue)));
+            summary.Add(new PdfFact("Entitlement status", returnEntitlement?.Status ?? "Not created"));
+            summary.Add(new PdfFact("Settled / reserved", returnEntitlement is null ? "-" : $"{FormatMoney(returnEntitlement.SettledAmount)} / {FormatMoney(returnEntitlement.ReservedAmount)}"));
+            summary.Add(new PdfFact("Normal amount still payable", returnEntitlement is null ? "-" : FormatMoney(Math.Max(0m, returnEntitlement.NormalAmount - returnEntitlement.SettledAmount - returnEntitlement.ReservedAmount))));
+            summary.Add(new PdfFact("Exception reason", operation.ReturnExceptionReason ?? "-"));
+            summary.Add(new PdfFact("Verbal authorizer", operation.ReturnVerbalAuthorizer ?? "-"));
+        }
 
         if (operation.InventoryReceiptHeader is not null)
         {
@@ -1009,16 +1159,18 @@ public static partial class ReportsEndpoints
                     new PdfFact("Source", GetLocationName(operation.SourceLocationId, locations)),
                     new PdfFact("Destination", GetLocationName(operation.DestinationLocationId, locations))
                 ]),
-            new(
-                "Payment Summary",
-                [
-                    new PdfFact("Operation total", FormatMoney(totalValue)),
-                    new PdfFact("Payment method", paymentLog is null ? DescribePaymentMethod(operation.PaymentMethod) : DescribePaymentMethod(paymentLog.PaymentMethod)),
-                    new PdfFact("Paid to date", paymentBalance is null ? FormatMoney(cashRecords.Where(value => value.PaymentType == CashReceived).Sum(value => value.Amount)) : FormatMoney(paymentBalance.ConfirmedCollections)),
-                    new PdfFact("Remaining", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RemainingAmount)),
-                    new PdfFact("Refund due", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RefundDue)),
-                new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.AmountDue))
-                ]),
+            isMerchantAccountSale
+                ? new PdfSection("Merchant account", [new PdfFact("Merchant", merchant!.BusinessName), new PdfFact("Settlement", "Settled through merchant account")])
+                : new PdfSection(
+                    "Payment Summary",
+                    [
+                        new PdfFact("Operation total", FormatMoney(totalValue + onlineCodCharge)),
+                        new PdfFact("Payment method", paymentLog is null ? DescribePaymentMethod(operation.PaymentMethod) : DescribePaymentMethod(paymentLog.PaymentMethod)),
+                        new PdfFact("Paid to date", paymentBalance is null ? FormatMoney(cashRecords.Where(value => value.PaymentType == CashReceived).Sum(value => value.Amount)) : FormatMoney(paymentBalance.ConfirmedCollections)),
+                        new PdfFact("Remaining", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RemainingAmount)),
+                        new PdfFact("Refund due", paymentBalance is null ? "-" : FormatMoney(paymentBalance.RefundDue)),
+                        new PdfFact("Merchant balance", balance is null ? "-" : FormatMoney(balance.AmountDue))
+                    ]),
             new(
                 "Lines",
                 Tables:
@@ -1042,17 +1194,16 @@ public static partial class ReportsEndpoints
         };
 
         var document = BuildEnterpriseDocument(
-            "Operation bill",
-            "Official receipt-style operation document",
+            isReturn ? "Return note" : operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify")
+                ? "Online sale receipt" : operation.OperationType == RetailSale ? "Retail sale receipt" : "Operation bill",
+            isReturn ? "Return valuation and physical receipt evidence" : isSale ? "Sale and payment status receipt" : "Official operation document",
             operation.OperationNumber,
             summary,
             sections,
             language,
             GetUserDisplayName(currentUser.UserId, userLookup),
             clock.UtcNow);
-        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
-        await LogExportAsync(reportingDbContext, currentUser, clock, "operation-bill.pdf", $"download://reports/operations/{id}/bill.pdf", cancellationToken);
-        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
+        return await CreateDocumentExportAsync(document, exportFormat, "operation-bill.pdf", $"download://reports/operations/{id}/bill.pdf", reportingDbContext, currentUser, clock, documentJobs, httpRequest, cancellationToken);
     }
 
     private static async Task<IResult> GetPaymentReceiptPdfAsync(
@@ -1068,6 +1219,8 @@ public static partial class ReportsEndpoints
         ICurrentUser currentUser,
         IClock clock,
         IDocumentExportService exportService,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!TryResolveExportFormat(format, [ExportFormat.Pdf], out var exportFormat)) return InvalidExportFormat();
@@ -1150,7 +1303,7 @@ public static partial class ReportsEndpoints
             new(
                 "Operation",
                 [
-                    new PdfFact("Operation", operation?.OperationNumber ?? log.OperationId.ToString("N")[..8]),
+                    new PdfFact("Operation", operation?.OperationNumber ?? "Unavailable"),
                     new PdfFact("Type", operation?.OperationType ?? "-"),
                     new PdfFact("Date", operation is null ? "-" : FormatDateTime(operation.CreatedAt))
                 ]),
@@ -1188,11 +1341,9 @@ public static partial class ReportsEndpoints
             language,
             GetUserDisplayName(currentUser.UserId, userLookup),
             clock.UtcNow);
-        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         var documentName = isCashReceipt ? "cash-receipt.pdf" : "payment-receipt.pdf";
         var documentPath = isCashReceipt ? $"download://reports/payments/{id}/cash-receipt.pdf" : $"download://reports/payments/{id}/receipt.pdf";
-        await LogExportAsync(reportingDbContext, currentUser, clock, documentName, documentPath, cancellationToken);
-        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
+        return await CreateDocumentExportAsync(document, exportFormat, documentName, documentPath, reportingDbContext, currentUser, clock, documentJobs, httpRequest, cancellationToken);
     }
 
     private static async Task<IResult> GetMerchantStatementPdfAsync(
@@ -1210,6 +1361,8 @@ public static partial class ReportsEndpoints
         ICurrentUser currentUser,
         IClock clock,
         IDocumentExportService exportService,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
@@ -1228,31 +1381,37 @@ public static partial class ReportsEndpoints
             to = from.Value.AddMonths(1).AddDays(-1);
         }
 
-        var account = await merchantAccountService.GetSnapshotAsync(merchantId, cancellationToken);
-        var accountBreakdown = await merchantAccountService.GetFinancialBreakdownAsync(merchantId, cancellationToken);
-        var statement = await merchantAccountService.GetStatementAsync(merchantId, 500, cancellationToken, from, to);
+        var statement = await merchantAccountService.GetStatementAsync(merchantId, int.MaxValue, cancellationToken, from, to);
         var openingBalance = await merchantAccountService.GetOpeningBalanceAsync(merchantId, from, cancellationToken);
         var closingBalance = await merchantAccountService.GetClosingBalanceAsync(merchantId, to, cancellationToken);
         var operations = await operationsDbContext.OperationLogs
             .Include(value => value.OperationLines)
             .Include(value => value.OperationVersions)
-            .Where(value => value.ClientId == merchantId && !value.IsDeleted)
+            .Where(value => value.ClientId == merchantId && !value.IsDeleted &&
+                (!from.HasValue || value.CreatedAt >= from.Value.Date) &&
+                (!to.HasValue || value.CreatedAt < to.Value.Date.AddDays(1)))
             .OrderByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
         var merchantOperationIds = operations.Select(value => value.Id).ToArray();
         var notes = await crmDbContext.MerchantNotes
-            .Where(value => value.MerchantId == merchantId)
+            .Where(value => value.MerchantId == merchantId &&
+                (!from.HasValue || value.CreatedAt >= from.Value.Date) &&
+                (!to.HasValue || value.CreatedAt < to.Value.Date.AddDays(1)))
             .OrderByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
         var paymentLogs = await paymentsDbContext.MainPaymentLogs
             .Include(value => value.InstallmentSubLogs)
             .Where(value => !value.IsDeleted &&
                 (value.MerchantId == merchantId ||
-                 (value.MerchantId == null && merchantOperationIds.Contains(value.OperationId))))
+                 (value.MerchantId == null && merchantOperationIds.Contains(value.OperationId))) &&
+                (!from.HasValue || value.InitializedAt >= from.Value.Date) &&
+                (!to.HasValue || value.InitializedAt < to.Value.Date.AddDays(1)))
             .OrderByDescending(value => value.LastModifiedAt)
             .ToListAsync(cancellationToken);
         var adjustments = await paymentsDbContext.FinancialAdjustments
-            .Where(value => value.MerchantId == merchantId)
+            .Where(value => value.MerchantId == merchantId &&
+                (!from.HasValue || value.CreatedAt >= from.Value.Date) &&
+                (!to.HasValue || value.CreatedAt < to.Value.Date.AddDays(1)))
             .OrderByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
         var operationIds = operations.Select(value => value.Id)
@@ -1260,7 +1419,9 @@ public static partial class ReportsEndpoints
             .Distinct()
             .ToArray();
         var cashRecords = await paymentsDbContext.CashRecords
-            .Where(value => value.OperationId.HasValue && operationIds.Contains(value.OperationId.Value))
+            .Where(value => value.OperationId.HasValue && operationIds.Contains(value.OperationId.Value) &&
+                (!from.HasValue || value.PaymentDate >= from.Value.Date) &&
+                (!to.HasValue || value.PaymentDate < to.Value.Date.AddDays(1)))
             .OrderByDescending(value => value.PaymentDate)
             .ToListAsync(cancellationToken);
         var cashByOperation = cashRecords
@@ -1283,17 +1444,24 @@ public static partial class ReportsEndpoints
             }
         }
 
+        var periodSales = statement.Where(value => value.EntryType == "SaleCharge").Sum(value => value.DebitAmount);
+        var periodCollections = statement.Where(value => value.EntryType == "Collection").Sum(value => value.CreditAmount);
+        var periodRefunds = statement.Where(value => value.EntryType == "RefundPayout").Sum(value => value.DebitAmount);
+        var periodAdjustments = statement.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount)
+            - statement.Where(value => value.EntryType == "BalanceReduction").Sum(value => value.CreditAmount);
+
         var summary = new List<PdfFact>
         {
             new("Merchant", merchant.BusinessName),
             new("Status", merchant.Status),
             new("Contact person", merchant.ContactPersonName),
             new("Phone", JoinValues(merchant.PhoneNumbers)),
-            new("Statement period", from.HasValue || to.HasValue ? $"{from:yyyy-MM-dd} to {to:yyyy-MM-dd}" : "Current month"),
-            new("Total sales", FormatMoney(accountBreakdown?.TotalSales ?? 0m)),
-            new("Net collected", FormatMoney(accountBreakdown?.NetCollected ?? 0m)),
-            new("Remaining owed", FormatMoney(accountBreakdown?.RemainingOwed ?? 0m)),
-            new("Refunds", FormatMoney(accountBreakdown?.Refunds ?? 0m))
+            new("Statement period", from.HasValue || to.HasValue ? $"{from:dd/MM/yyyy} to {to:dd/MM/yyyy}" : "Current month"),
+            new("Opening balance", FormatMoney(openingBalance)),
+            new("Period sales", FormatMoney(periodSales)),
+            new("Collections", FormatMoney(periodCollections)),
+            new("Refunds/paybacks", FormatMoney(periodRefunds)),
+            new("Closing balance", FormatMoney(closingBalance))
         };
 
         var sections = new List<PdfSection>
@@ -1301,13 +1469,13 @@ public static partial class ReportsEndpoints
             new(
                 "Account summary",
                 [
-                    new PdfFact("Total sales", FormatMoney(accountBreakdown?.TotalSales ?? 0m)),
-                    new PdfFact("Net collected", FormatMoney(accountBreakdown?.NetCollected ?? 0m)),
-                    new PdfFact("Remaining owed", FormatMoney(accountBreakdown?.RemainingOwed ?? 0m)),
-                    new PdfFact("Refunds", FormatMoney(accountBreakdown?.Refunds ?? 0m)),
-                    new PdfFact("Accepted return value", FormatMoney(accountBreakdown?.AcceptedReturnValue ?? 0m)),
-                    new PdfFact("Additional charges", FormatMoney(accountBreakdown?.AdditionalCharges ?? 0m)),
-                    new PdfFact("Amount reductions", FormatMoney(accountBreakdown?.AmountReductions ?? 0m))
+                    new PdfFact("Opening balance", FormatMoney(openingBalance)),
+                    new PdfFact("Sales", FormatMoney(periodSales)),
+                    new PdfFact("Collections", FormatMoney(periodCollections)),
+                    new PdfFact("Refunds/paybacks", FormatMoney(periodRefunds)),
+                    new PdfFact("Net adjustments", FormatMoney(periodAdjustments)),
+                    new PdfFact("Outstanding balance", FormatMoney(Math.Max(0m, closingBalance))),
+                    new PdfFact("Closing balance", FormatMoney(closingBalance))
                 ]),
             new(
                 "Account activity",
@@ -1370,7 +1538,7 @@ public static partial class ReportsEndpoints
                         paymentLogs.Select(log => (IReadOnlyList<string>)new[]
                         {
                             DocumentRecordCode("PAY", log.Id),
-                            operations.FirstOrDefault(operation => operation.Id == log.OperationId)?.OperationNumber ?? log.OperationId.ToString("N")[..8],
+                            operations.FirstOrDefault(operation => operation.Id == log.OperationId)?.OperationNumber ?? "Unavailable",
                             DescribePaymentMethod(log.PaymentMethod),
                             log.Status,
                             FormatMoney(log.TotalAmount),
@@ -1385,7 +1553,7 @@ public static partial class ReportsEndpoints
                         cashRecords.Select(record => (IReadOnlyList<string>)new[]
                         {
                             FormatDateTime(record.PaymentDate),
-                            operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? (record.OperationId?.ToString("N")[..8] ?? "Merchant account"),
+                            operations.FirstOrDefault(operation => operation.Id == record.OperationId)?.OperationNumber ?? (record.OperationId.HasValue ? "Unavailable" : "Merchant account"),
                             DescribeCashRecordType(record.PaymentType),
                             FormatMoney(record.Amount),
                             GetUserDisplayName(record.CreatedBy, userLookup),
@@ -1446,10 +1614,8 @@ public static partial class ReportsEndpoints
             language,
             GetUserDisplayName(currentUser.UserId, userLookup),
             clock.UtcNow);
-        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
-        await LogExportAsync(reportingDbContext, currentUser, clock, $"merchant-statement.{exportExtension}", $"download://reports/merchants/{merchantId}/statement.{exportExtension}", cancellationToken);
-        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
+        return await CreateDocumentExportAsync(document, exportFormat, $"merchant-statement.{exportExtension}", $"download://reports/merchants/{merchantId}/statement.{exportExtension}", reportingDbContext, currentUser, clock, documentJobs, httpRequest, cancellationToken);
     }
 
     private static async Task<IResult> GetStocktakeSummaryPdfAsync(
@@ -1464,6 +1630,8 @@ public static partial class ReportsEndpoints
         ICurrentUser currentUser,
         IClock clock,
         IDocumentExportService exportService,
+        DocumentExportJobService documentJobs,
+        HttpRequest httpRequest,
         CancellationToken cancellationToken)
     {
         if (!TryResolveExportFormat(format, [ExportFormat.Pdf, ExportFormat.Excel], out var exportFormat)) return InvalidExportFormat();
@@ -1487,7 +1655,7 @@ public static partial class ReportsEndpoints
         var summary = new List<PdfFact>
         {
             new("Session", DocumentRecordCode("STK", session.Id)),
-            new("Location", location?.Name ?? session.LocationId.ToString("N")),
+            new("Location", location?.Name ?? "Unavailable"),
             new("Status", session.Status),
             new("Performed by", GetUserDisplayName(session.PerformedBy, userLookup)),
             new("Confirmed by", GetUserDisplayName(session.ConfirmedBy, userLookup)),
@@ -1531,7 +1699,7 @@ public static partial class ReportsEndpoints
                             skus.TryGetValue(line.SkuId, out var sku);
                             return (IReadOnlyList<string>)new[]
                             {
-                                sku?.SkuCode ?? line.SkuId.ToString("N")[..8],
+                                sku?.SkuCode ?? "Unavailable",
                                 sku?.Product.Name ?? "-",
                                 line.LotNumber ?? "-",
                                 FormatDate(line.ExpiryDate),
@@ -1554,10 +1722,8 @@ public static partial class ReportsEndpoints
             language,
             GetUserDisplayName(currentUser.UserId, userLookup),
             clock.UtcNow);
-        var pdf = await exportService.ExportAsync(document, exportFormat, cancellationToken);
         var exportExtension = exportFormat == ExportFormat.Excel ? "xlsx" : "pdf";
-        await LogExportAsync(reportingDbContext, currentUser, clock, $"stocktake-summary.{exportExtension}", $"download://reports/stocktakes/{id}/summary.{exportExtension}", cancellationToken);
-        return Results.File(pdf.Content, pdf.ContentType, pdf.FileName);
+        return await CreateDocumentExportAsync(document, exportFormat, $"stocktake-summary.{exportExtension}", $"download://reports/stocktakes/{id}/summary.{exportExtension}", reportingDbContext, currentUser, clock, documentJobs, httpRequest, cancellationToken);
     }
 
     private static async Task<IResult> ListExportLogsAsync(
@@ -1669,13 +1835,18 @@ public static partial class ReportsEndpoints
         return rows;
     }
 
+    private static string PaymentSettlementStatus(PaymentBalanceSnapshot balance) =>
+        balance.RefundDue > 0m ? "RefundDue" :
+        balance.PendingCollections > 0m ? "ReviewPending" :
+        balance.RemainingAmount <= 0m ? "Settled" : "Outstanding";
+
     private static string DescribePaymentMethod(string? value)
     {
         return value switch
         {
             null or "" => "-",
             "CashHandToHand" => "Cash hand to hand",
-            "CashTransaction" => "Cash transaction",
+            "CashTransaction" => "Bank transfer",
             "BankTransfer" => "Bank transfer",
             "Wallet" => "Wallet",
             "MerchantAccount" => "Merchant account",
@@ -1730,11 +1901,15 @@ public static partial class ReportsEndpoints
 
     private static string FormatMoney(decimal value) => value.ToString("0.####");
 
-    private static string FormatDate(DateOnly? value) => value?.ToString("yyyy-MM-dd") ?? "-";
+    private static string SaleLineType(string? lineType, string? pricingMode, int bonusQuantity) => lineType ??
+        (string.Equals(pricingMode, "PromotionFree", StringComparison.OrdinalIgnoreCase) || bonusQuantity > 0 ? "Bonus" :
+         string.Equals(pricingMode, "Promotion50", StringComparison.OrdinalIgnoreCase) ? "Offer" : "Paid");
 
-    private static string FormatDate(DateOnly value) => value.ToString("yyyy-MM-dd");
+    private static string FormatDate(DateOnly? value) => value?.ToString("dd/MM/yyyy", System.Globalization.CultureInfo.InvariantCulture) ?? "-";
 
-    private static string FormatDateTime(DateTime? value) => value?.ToString("yyyy-MM-dd HH:mm") ?? "-";
+    private static string FormatDate(DateOnly value) => value.ToString("dd/MM/yyyy", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string FormatDateTime(DateTime? value) => value?.ToString("dd/MM/yyyy HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture) ?? "-";
 
     private static string JoinValues(IEnumerable<string>? values)
     {
@@ -1751,7 +1926,7 @@ public static partial class ReportsEndpoints
 
         return locations.TryGetValue(locationId.Value, out var location)
             ? location.Name
-            : locationId.Value.ToString("N");
+            : "Unavailable";
     }
 
     private static string GetUserDisplayName(Guid? userId, IReadOnlyDictionary<Guid, User> users)
@@ -1763,7 +1938,7 @@ public static partial class ReportsEndpoints
 
         return users.TryGetValue(userId.Value, out var user)
             ? (string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName)
-            : userId.Value.ToString("N");
+            : "Unavailable";
     }
 
     private static async Task LogExportAsync(
@@ -1908,7 +2083,7 @@ public static partial class ReportsEndpoints
 
 }
 
-public sealed record StockReportRow(Guid LocationId, string LocationName, string LocationType, Guid SkuId, string? SkuCode, string? ProductName, int AvailableQty, int ReservedInWarehouseQty, int ReservedWithRepQty, int? TargetQty, DateTime LastUpdated);
+public sealed record StockReportRow(Guid LocationId, string LocationName, string LocationType, Guid SkuId, string? SkuCode, string? ProductName, int AvailableQty, int ReservedInWarehouseQty, int ReservedWithRepQty, int? TargetQty, DateTime LastUpdated, string? ColorName = null, int? PiecesPerPack = null, int LoosePieceQuantity = 0);
 
 public sealed record FinancialSummaryResponse(
     decimal TotalSales,
@@ -1923,9 +2098,9 @@ public sealed record FinancialSummaryResponse(
     public decimal TotalExpectedLiquidFunds => ExpectedCashOnHand + ExpectedBankBalance + ExpectedWalletBalance;
 }
 
-public sealed record OperationReportRow(Guid Id, string OperationNumber, string OperationType, string Status, Guid? MerchantId, string? ClientName, string? PaymentMethod, int Quantity, int BonusQuantity, decimal Total, DateTime CreatedAt, DateTime? ConfirmedAt);
+public sealed record OperationReportRow(Guid Id, string OperationNumber, string? ExternalReference, string OperationType, string Status, Guid? MerchantId, string? ClientName, string? PaymentMethod, int Quantity, int BonusQuantity, decimal Total, DateTime CreatedAt, DateTime? ConfirmedAt);
 
-public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? OperationNumber, Guid? MerchantId, string PaymentMethod, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string Status, Guid? AssignedTo, DateTime LastModifiedAt, decimal RefundDue);
+public sealed record PaymentReportRow(Guid Id, Guid OperationId, string? OperationNumber, Guid? MerchantId, string PaymentMethod, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string Status, string SettlementStatus, Guid? AssignedTo, DateTime LastModifiedAt, decimal RefundDue);
 
 public sealed record SupplyLandedCostReportRow(Guid Id, string ShipmentNumber, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, int Quantity, decimal ProductSubtotal, decimal CostSubtotal, decimal LandedTotal, Guid? InventoryReceiptOperationId, string? InventoryReceiptOperationNumber);
 

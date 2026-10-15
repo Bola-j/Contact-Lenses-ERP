@@ -169,6 +169,9 @@ public partial class CatalogDbContext : DbContext
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
+            entity.Property(e => e.IsSellable)
+                .HasDefaultValue(true)
+                .HasColumnName("is_sellable");
             entity.Property(e => e.PowerSign)
                 .HasMaxLength(1)
                 .HasColumnName("power_sign");

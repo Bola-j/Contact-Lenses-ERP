@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Lensee.Modules.Operations.Data;
+using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Payments.Data;
 using Lensee.SharedKernel.Data;
 using Microsoft.EntityFrameworkCore;
@@ -18,17 +19,19 @@ public sealed class MerchantAccountService
     private readonly PaymentsDbContext _payments;
     private readonly SharedDbContext _shared;
     private readonly OperationsDbContext _operations;
+    private readonly FinanceDbContext _finance;
 
-    public MerchantAccountService(PaymentsDbContext payments, SharedDbContext shared, OperationsDbContext operations)
+    public MerchantAccountService(PaymentsDbContext payments, SharedDbContext shared, OperationsDbContext operations, FinanceDbContext finance)
     {
         _payments = payments;
         _shared = shared;
         _operations = operations;
+        _finance = finance;
     }
 
-    public static bool IsMovementMethod(string? method) => method is "CashHandToHand" or "CashTransaction" or "BankTransfer" or "Wallet";
+    public static bool IsMovementMethod(string? method) => method is "CashHandToHand" or "BankTransfer" or "Wallet";
 
-    public static bool RequiresTransactionReference(string? method) => method is "CashTransaction" or "BankTransfer" or "Wallet";
+    public static bool RequiresTransactionReference(string? method) => method is "BankTransfer" or "Wallet";
 
     public async Task<MerchantReceivableAccount> GetOrCreateForUpdateAsync(Guid merchantId, Guid actorId, DateTime now, CancellationToken cancellationToken)
     {
@@ -248,7 +251,15 @@ public sealed class MerchantAccountService
         if (amount <= 0) return null;
         var account = await GetOrCreateForUpdateAsync(merchantId, actorId, now, cancellationToken);
         var entry = await AppendAsync(account, entryType, 0m, amount, null, null, entryType, sourceId, operationId, null, actorId, now, notes, cancellationToken);
-        if (entryType is "BalanceReduction" or "ReturnCredit")
+        if (entryType == "BalanceReduction")
+        {
+            // A merchant-account reduction is deliberately unallocated.  A
+            // source-linked reduction, conversely, can affect only its one
+            // sale obligation; it must never spill into older/newer orders.
+            if (operationId.HasValue)
+                await AllocateCollectionCreditAsync(account.Id, entry, null, actorId, now, cancellationToken, operationId);
+        }
+        else if (entryType == "ReturnCredit")
         {
             var preferredOperationId = await ResolveSaleOperationForCreditAsync(operationId, cancellationToken);
             await AllocateCreditAsync(account.Id, entry, null, actorId, now, cancellationToken, preferredOperationId);
@@ -305,15 +316,15 @@ public sealed class MerchantAccountService
         IReadOnlyList<MerchantAllocationInput>? requestedAllocations,
         string? notes,
         CancellationToken cancellationToken,
-        Guid? preferredOperationId = null)
+        Guid? requiredOperationId = null)
     {
         if (!_payments.Database.IsRelational() || _payments.Database.CurrentTransaction is not null)
-            return await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, preferredOperationId);
+            return await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, requiredOperationId);
 
         await using var transaction = await _payments.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            var result = await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, preferredOperationId);
+            var result = await PostCollectionCoreAsync(merchantId, paymentId, amount, method, transactionReference, actorId, now, requestedAllocations, notes, cancellationToken, requiredOperationId);
             await transaction.CommitAsync(cancellationToken);
             return result;
         }
@@ -335,7 +346,7 @@ public sealed class MerchantAccountService
         IReadOnlyList<MerchantAllocationInput>? requestedAllocations,
         string? notes,
         CancellationToken cancellationToken,
-        Guid? preferredOperationId)
+        Guid? requiredOperationId)
     {
         ValidateMovement(method, transactionReference);
         if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
@@ -345,7 +356,7 @@ public sealed class MerchantAccountService
         if (existing is not null) return existing;
         await LockOpenObligationsAsync(account.Id, cancellationToken);
         var entry = await AppendAsync(account, "Collection", 0m, amount, method, transactionReference, "PaymentCollection", paymentId, null, paymentId, actorId, now, notes, cancellationToken);
-        await AllocateCreditAsync(account.Id, entry, requestedAllocations, actorId, now, cancellationToken, preferredOperationId);
+        await AllocateCollectionCreditAsync(account.Id, entry, requestedAllocations, actorId, now, cancellationToken, requiredOperationId);
         await _payments.SaveChangesAsync(cancellationToken);
         return entry;
     }
@@ -365,6 +376,33 @@ public sealed class MerchantAccountService
         return BuildCollectionAllocations(obligations, allocated, amount, null)
             .Select(value => new MerchantAllocationPreview(value.ObligationId, value.Amount, obligations.Single(obligation => obligation.Id == value.ObligationId).OperationId))
             .ToList();
+    }
+
+    public async Task<MerchantOperationCollectionCapacity?> GetOperationCollectionCapacityAsync(Guid merchantId, Guid operationId, CancellationToken cancellationToken)
+    {
+        var account = await _payments.MerchantReceivableAccounts.AsNoTracking()
+            .SingleOrDefaultAsync(value => value.MerchantId == merchantId, cancellationToken);
+        if (account is null) return null;
+
+        var obligation = await _payments.MerchantOperationObligations.AsNoTracking()
+            .Where(value => value.AccountId == account.Id && value.OperationId == operationId)
+            .Select(value => new
+            {
+                value.Id,
+                value.OriginalAmount,
+                Allocated = _payments.EffectiveCreditAllocations()
+                    .Where(allocation => allocation.ObligationId == value.Id && allocation.Entry.CreditAmount > 0)
+                    .Sum(allocation => (decimal?)allocation.Amount) ?? 0m
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (obligation is null) return null;
+
+        // The immutable obligation anchors the operation to this account, but
+        // approved operation-level charges/credits can legitimately change the
+        // amount that must be collected before financial closure.  Keep the
+        // source-scoped collection cap aligned with that same settlement math.
+        var settlementAmount = await GetOperationSettlementLiabilityAsync(account.Id, operationId, obligation.OriginalAmount, cancellationToken);
+        return new MerchantOperationCollectionCapacity(obligation.Id, settlementAmount, Math.Max(settlementAmount - obligation.Allocated, 0m));
     }
 
     public async Task<MerchantAccountEntry> PostRefundPayoutAsync(Guid merchantId, Guid reservationId, Guid payoutId, decimal amount, string method, string? transactionReference, Guid actorId, DateTime now, string? notes, CancellationToken cancellationToken)
@@ -498,7 +536,7 @@ public sealed class MerchantAccountService
                 (!start.HasValue || value.PostedAt >= start.Value) &&
                 (!endExclusive.HasValue || value.PostedAt < endExclusive.Value))
             .OrderBy(value => value.Sequence)
-            .Take(Math.Clamp(take, 1, 500))
+            .Take(Math.Max(1, take))
             .ToListAsync(cancellationToken);
         decimal running = opening;
         return entries.Select(value =>
@@ -709,6 +747,55 @@ public sealed class MerchantAccountService
         }
     }
 
+    private async Task AllocateCollectionCreditAsync(Guid accountId, MerchantAccountEntry entry, IReadOnlyList<MerchantAllocationInput>? requested, Guid actorId, DateTime now, CancellationToken cancellationToken, Guid? requiredOperationId)
+    {
+        if (!requiredOperationId.HasValue)
+        {
+            await AllocateCreditAsync(accountId, entry, requested, actorId, now, cancellationToken, preferredOperationId: null);
+            return;
+        }
+
+        if (requested is { Count: > 0 })
+            throw new InvalidOperationException("Operation-scoped collections cannot override their allocation.");
+
+        var obligations = await LockOpenObligationsAsync(accountId, cancellationToken);
+        var obligation = obligations.SingleOrDefault(value => value.OperationId == requiredOperationId.Value)
+            ?? throw new InvalidOperationException("The selected operation no longer has an open merchant receivable.");
+        var allocated = await _payments.EffectiveCreditAllocations()
+            .Where(value => value.ObligationId == obligation.Id && value.Entry.CreditAmount > 0)
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var settlementAmount = await GetOperationSettlementLiabilityAsync(accountId, requiredOperationId.Value, obligation.OriginalAmount, cancellationToken);
+        var remaining = Math.Max(settlementAmount - allocated, 0m);
+        if (entry.CreditAmount > remaining)
+            throw new InvalidOperationException("Collection exceeds the selected operation's remaining receivable amount.");
+
+        _payments.MerchantEntryAllocations.Add(new MerchantEntryAllocation
+        {
+            Id = Guid.NewGuid(),
+            EntryId = entry.Id,
+            ObligationId = obligation.Id,
+            Amount = entry.CreditAmount,
+            AllocatedAt = now,
+            AllocatedBy = actorId
+        });
+        if (entry.CreditAmount == remaining) obligation.Status = "Settled";
+    }
+
+    private async Task<decimal> GetOperationSettlementLiabilityAsync(Guid accountId, Guid operationId, decimal fallbackAmount, CancellationToken cancellationToken)
+    {
+        var entries = await _payments.MerchantAccountEntries.AsNoTracking()
+            .Where(value => value.AccountId == accountId && value.OperationId == operationId && value.Status == Posted)
+            .Select(value => new { value.EntryType, value.DebitAmount, value.CreditAmount })
+            .ToListAsync(cancellationToken);
+
+        var saleTotal = entries.Where(value => value.EntryType == "SaleCharge").Sum(value => value.DebitAmount);
+        if (saleTotal <= 0m) return fallbackAmount;
+
+        var credits = entries.Where(value => value.EntryType is "ReturnCredit" or "ExchangeCredit").Sum(value => value.CreditAmount);
+        var charges = entries.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount);
+        return Math.Max(saleTotal + charges - credits, 0m);
+    }
+
     private static IReadOnlyList<MerchantAllocationInput> BuildCollectionAllocations(
         IReadOnlyList<MerchantOperationObligation> obligations,
         IReadOnlyDictionary<Guid, decimal> allocated,
@@ -756,13 +843,14 @@ public sealed class MerchantAccountService
 
     private static void ValidateMovement(string method, string? transactionReference)
     {
-        if (!IsMovementMethod(method)) throw new InvalidOperationException("Payment method must be CashHandToHand, CashTransaction, BankTransfer, or Wallet.");
+        if (!IsMovementMethod(method)) throw new InvalidOperationException("Payment method must be CashHandToHand, BankTransfer, or Wallet.");
         if (RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(transactionReference)) throw new InvalidOperationException("An electronic payment requires a transaction reference.");
     }
 }
 
 public sealed record MerchantAllocationInput(Guid ObligationId, decimal Amount);
 public sealed record MerchantAllocationPreview(Guid ObligationId, decimal Amount, Guid? OperationId);
+public sealed record MerchantOperationCollectionCapacity(Guid ObligationId, decimal OriginalAmount, decimal RemainingAmount);
 public sealed record MerchantAccountSnapshot(Guid AccountId, Guid MerchantId, decimal AmountDue, decimal GrossCredit, decimal CreditAvailable, decimal ReservedRefunds, decimal TotalDebits, decimal TotalCredits, decimal PendingCollections, decimal CompletedRefunds, DateTime OpenedAt)
 {
     public decimal RefundDue => GrossCredit;

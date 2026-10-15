@@ -41,7 +41,7 @@ public static partial class FinanceEndpoints
     private static async Task<IResult> CreateCategoryAsync(FinanceCategoryRequest request, FinanceDbContext finance, ICurrentUser user, IClock clock, CancellationToken ct)
     {
         if (request.Kind is not ("Expense" or "Withdrawal") || string.IsNullOrWhiteSpace(request.Code) ||
-            string.IsNullOrWhiteSpace(request.EnglishName) || string.IsNullOrWhiteSpace(request.ArabicName) || request.SortOrder < 0)
+            string.IsNullOrWhiteSpace(request.EnglishName) || string.IsNullOrWhiteSpace(request.ArabicName) || request.SortOrder is < 0)
             return Results.BadRequest(new { code = "invalid-category" });
         var code = request.Code.Trim();
         if (await finance.FinanceCategories.AnyAsync(value => value.Kind == request.Kind && value.Code == code, ct))
@@ -56,7 +56,7 @@ public static partial class FinanceEndpoints
             EnglishName = request.EnglishName.Trim(),
             ArabicName = request.ArabicName.Trim(),
             ParentId = request.ParentId,
-            SortOrder = request.SortOrder,
+            SortOrder = request.SortOrder ?? 100,
             IsActive = true,
             CreatedBy = user.UserId ?? Guid.Empty,
             CreatedAt = clock.EgyptNow
@@ -398,7 +398,7 @@ public static partial class FinanceEndpoints
     }
 }
 
-public sealed record FinanceCategoryRequest(string Kind, string Code, string EnglishName, string ArabicName, Guid? ParentId, int SortOrder);
+public sealed record FinanceCategoryRequest(string Kind, string Code, string EnglishName, string ArabicName, Guid? ParentId, int? SortOrder);
 public sealed record FinanceCategoryUpdateRequest(string EnglishName, string ArabicName, int SortOrder, bool IsActive);
 public sealed record FinanceTransferRequest(Guid ClientRequestId, Guid SourceAccountId, Guid DestinationAccountId, decimal Amount, decimal FeeAmount, DateOnly BusinessDate, string? Notes, string? FeeNotes, string? ExternalReference);
 public sealed record WithdrawalRepaymentRequest(Guid ClientRequestId, Guid FinanceAccountId, decimal Amount, string MovementMethod, DateOnly BusinessDate, string? Notes, string? ExternalReference);

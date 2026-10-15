@@ -211,7 +211,7 @@ test("PAY: unified collection review is visible in queue, detail, and final stat
   await page.locator("#collection-amount").fill("50");
   await page.locator("#collection-method").selectOption("CashHandToHand");
   await page.locator("#collection-finance-account").selectOption(financeAccountId);
-  await page.locator("#collection-date").fill("2026-07-11");
+  await page.locator("#collection-date").fill("11/07/2026");
   await page.locator("#collection-notes").fill(data.runId + " headed payment");
   await page.locator("#unified-collection-form button[type='submit']").click();
   await expectNotice(page, /collection submitted|approval/i);

@@ -1,3 +1,5 @@
+import { formatDateOnly, formatDateTime } from "./date-format.js?v=20261014-date-format";
+
 const UUID_SOURCE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 
 export const uuidPattern = new RegExp(`^${UUID_SOURCE}$`, "i");
@@ -19,7 +21,9 @@ export function createLocalizer({ messages = {}, language = () => "en" } = {}) {
     text,
     number: (value, options) => new Intl.NumberFormat(locale(), options).format(value),
     date: (value, options = { dateStyle: "medium", timeStyle: "short" }) =>
-      new Intl.DateTimeFormat(locale(), options).format(value instanceof Date ? value : new Date(value)),
+      options?.timeStyle
+        ? formatDateTime(value instanceof Date ? value.toISOString() : value)
+        : formatDateOnly(value instanceof Date ? value.toISOString().slice(0, 10) : value),
     bind(root) {
       root?.querySelectorAll("[data-i18n]").forEach((element) => {
         element.textContent = text(element.dataset.i18n);
@@ -40,8 +44,8 @@ export const canonicalValueSets = Object.freeze({
   durationUnit: Object.freeze(["Daily", "Monthly", "Annual"]),
   businessType: Object.freeze(["Merchant", "Pharmacy", "Oculist", "BeautyCenter", "Other"]),
   operationType: Object.freeze(["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Reserve", "Return", "Change", "WriteOff"]),
-  paymentMethod: Object.freeze(["CashHandToHand", "CashTransaction", "MerchantAccount"]),
-  movementMethod: Object.freeze(["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"]),
+  paymentMethod: Object.freeze(["CashHandToHand", "BankTransfer", "Wallet", "MerchantAccount"]),
+  movementMethod: Object.freeze(["CashHandToHand", "BankTransfer", "Wallet"]),
   financeAccountType: Object.freeze(["CashOnHand", "BankAccount", "Wallet"]),
   entryMode: Object.freeze(["Packs", "Pieces"]),
   lineSection: Object.freeze(["Standard", "ChangeOut", "ChangeIn"]),

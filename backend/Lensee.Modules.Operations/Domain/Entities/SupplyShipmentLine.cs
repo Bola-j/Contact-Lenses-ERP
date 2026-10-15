@@ -16,6 +16,9 @@ public partial class SupplyShipmentLine
 
     public int Quantity { get; set; }
 
+    /// <summary>Supply manifests are sealed-pack only. Kept explicitly so API and operation history cannot disagree.</summary>
+    public string QuantityUnit { get; set; } = "Pack";
+
     public decimal? UnitPrice { get; set; }
 
     public decimal LineSubtotal { get; set; }

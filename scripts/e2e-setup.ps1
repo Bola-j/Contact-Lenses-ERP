@@ -123,6 +123,8 @@ try {
     $e2eSeedSql = Convert-PlainPasswordPlaceholdersToHashes -Sql $e2eSeedSql
     Invoke-E2ESql -Sql $e2eSeedSql -Label "E2E users"
 
+    Invoke-E2ESql -Sql (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "database/seed-e2e-financial-workflows.sql")) -Label "E2E financial sales and returns fixtures"
+
     $frontend = Invoke-WebRequest $frontendUrl -UseBasicParsing -TimeoutSec 10
     if ($frontend.StatusCode -ne 200) {
         throw "E2E frontend returned HTTP $($frontend.StatusCode)."

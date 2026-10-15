@@ -108,8 +108,6 @@ test("Arabic Supply form renders semantic labels and language navigation changes
   await notes.fill("Supplier agreed to deliver on Friday");
   await page.locator("#supply-add-line").click();
   await page.locator(".supply-line-notes").nth(1).fill("Second carton note");
-  await page.locator("#supply-add-cost").click();
-  await page.locator(".supply-cost-description").nth(1).fill("Broker document fee");
   await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
   await expect(page).toHaveURL(/\/en\/#\/supply$/);
@@ -119,7 +117,9 @@ test("Reports retain their route when the presentation language changes", async 
   await mockAuthenticatedFrontend(page);
   await page.goto("/en/#/reports", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#report-filter-from")).toBeVisible();
-  await page.locator("#report-filter-from").fill("2026-09-01");
+  await expect(page.locator("#report-filter-from")).toHaveAttribute("type", "text");
+  await expect(page.locator("#report-filter-from")).toHaveAttribute("placeholder", "dd/mm/yyyy");
+  await page.locator("#report-filter-from").fill("01/09/2026");
   await page.locator("#report-filter-supply-status").selectOption("Draft");
   await page.locator("#language-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");

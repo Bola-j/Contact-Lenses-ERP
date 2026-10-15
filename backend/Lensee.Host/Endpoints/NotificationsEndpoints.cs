@@ -212,7 +212,7 @@ public static class NotificationsEndpoints
         {
             skuLabels.TryGetValue(batch.SkuId, out var skuLabel);
             var state = batch.ExpiryDate!.Value < today ? "expired" : "near expiry";
-            var message = $"Expiry alert at {batch.Location.Name}: {skuLabel ?? "Unknown SKU"} lot {batch.LotNumber ?? "No lot"} has {batch.Quantity} pack(s) and is {state} on {batch.ExpiryDate:yyyy-MM-dd}. Review the batch before selling or transferring.";
+            var message = $"Expiry alert at {batch.Location.Name}: {skuLabel ?? "Unknown SKU"} lot {batch.LotNumber ?? "No lot"} has {batch.Quantity} pack(s) and is {state} on {batch.ExpiryDate:dd/MM/yyyy}. Review the batch before selling or transferring.";
             created += await AddForRolesAsync(
                 notificationsDbContext,
                 Expiry,

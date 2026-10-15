@@ -251,8 +251,8 @@ public static class ReportingServiceCollectionExtensions
         DocumentCell.Decimal decimalValue => decimalValue.Value.ToString(numberFormat ?? "0.####", CultureInfo.InvariantCulture),
         DocumentCell.Money money => money.Value.ToString(numberFormat ?? "0.00", CultureInfo.InvariantCulture),
         DocumentCell.Percentage percentage => percentage.Value.ToString(numberFormat ?? "0.00%", CultureInfo.InvariantCulture),
-        DocumentCell.Date date => date.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        DocumentCell.DateTimeValue dateTime => dateTime.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+        DocumentCell.Date date => date.Value.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture),
+        DocumentCell.DateTimeValue dateTime => dateTime.Value.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture),
         DocumentCell.Boolean boolean => boolean.Value ? "Yes" : "No",
         _ => string.Empty
     };

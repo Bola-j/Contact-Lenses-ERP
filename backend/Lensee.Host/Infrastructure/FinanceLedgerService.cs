@@ -165,8 +165,8 @@ public sealed class FinanceLedgerService
             return category is "TreasuryOpeningBalance" or "TreasuryOpeningBalanceReversal";
         return accountType switch
         {
-            CashOnHand => movementMethod is "CashHandToHand" or "CashTransaction",
-            BankAccount => movementMethod == "BankTransfer",
+            CashOnHand => movementMethod == "CashHandToHand",
+            BankAccount => movementMethod is "CashTransaction" or "BankTransfer",
             Wallet => movementMethod == "Wallet",
             _ => false
         };

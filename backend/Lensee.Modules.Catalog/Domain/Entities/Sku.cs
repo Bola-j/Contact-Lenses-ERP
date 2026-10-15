@@ -23,6 +23,8 @@ public partial class Sku
 
     public bool IsActive { get; set; }
 
+    public bool IsSellable { get; set; } = true;
+
     public DateTime? DeletedAt { get; set; }
 
     public virtual Product Product { get; set; } = null!;

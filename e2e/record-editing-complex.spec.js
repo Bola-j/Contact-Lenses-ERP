@@ -338,7 +338,7 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await page.locator("#collection-method").selectOption("CashHandToHand");
   const financeAccount = await page.locator("#collection-finance-account option:not([value=''])").first().getAttribute("value");
   await page.locator("#collection-finance-account").selectOption(financeAccount);
-  await page.locator("#collection-date").fill("2026-07-09");
+  await page.locator("#collection-date").fill("09/07/2026");
   await page.locator("#collection-notes").fill(`${data.runId} draft to reject`);
   await page.locator("#unified-collection-form button[type='submit']").click();
   await expectNotice(page, /collection submitted|approval/i);

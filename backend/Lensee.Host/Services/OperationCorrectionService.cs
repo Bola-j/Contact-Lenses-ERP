@@ -390,6 +390,7 @@ public sealed class OperationCorrectionService
         if (!_operations.Database.IsRelational())
         {
             return await _operations.OperationLogs.Include(value => value.OperationLines)
+                .ThenInclude(line => line.PieceAllocations)
                 .FirstOrDefaultAsync(value => value.Id == operationId && !value.IsDeleted, cancellationToken);
         }
 
@@ -400,6 +401,7 @@ public sealed class OperationCorrectionService
             // the same versioned row used by the rest of Operations.
             .FromSqlInterpolated($"select operations.operation_logs.*, xmin from operations.operation_logs where id = {operationId} and is_deleted = false for update")
             .Include(value => value.OperationLines)
+            .ThenInclude(line => line.PieceAllocations)
             .FirstOrDefaultAsync(cancellationToken);
     }
 
@@ -496,20 +498,44 @@ public sealed class OperationCorrectionService
         {
             case "WholesaleSale":
             case "RetailSale":
-                if (original.OperationLines.Any(value => value.EntryMode == "Pieces"))
-                {
-                    throw new CorrectionBusinessException("Piece-level sale corrections require exact loose-lot lineage and cannot be approved yet.", 409);
-                }
                 foreach (var line in original.OperationLines)
                 {
-                    await _ledger.ReceiveReturnAsync(sourceLocation.Value, line.SkuId, line.Quantity, reviewerId, line.LotNumber, line.ExpiryDate, $"Correction reversal of {original.OperationNumber}", reversalOperationId, cancellationToken);
+                    if (line.EntryMode == "Pieces")
+                    {
+                        var allocations = line.PieceAllocations.ToList();
+                        if (allocations.Count == 0 || allocations.Sum(value => value.IssuedPieceQuantity) != line.Quantity)
+                        {
+                            throw new CorrectionBusinessException("Historic lineage unavailable: this piece sale cannot be corrected safely because its exact loose-lot allocations are missing.", 409, "historic-lineage-unavailable");
+                        }
+
+                        foreach (var allocation in allocations)
+                        {
+                            await _ledger.RestorePiecesToOpenedLotAsync(
+                                allocation.OpenedPieceLotId,
+                                allocation.IssuedPieceQuantity,
+                                reviewerId,
+                                reversalOperationId,
+                                cancellationToken);
+                        }
+                    }
+                    else
+                    {
+                        await _ledger.ReceiveReturnAsync(sourceLocation.Value, line.SkuId, line.Quantity, reviewerId, line.LotNumber, line.ExpiryDate, $"Correction reversal of {original.OperationNumber}", reversalOperationId, cancellationToken);
+                    }
                 }
                 break;
             case "InventoryReceipt":
             case "Return":
                 foreach (var line in original.OperationLines)
                 {
-                    await _ledger.AdjustStocktakeBatchAsync(sourceLocation.Value, line.SkuId, line.LotNumber, line.ExpiryDate, -line.Quantity, reviewerId, reversalOperationId, cancellationToken);
+                    if (line.EntryMode == "Pieces")
+                    {
+                        await _ledger.AdjustStocktakePiecesAsync(sourceLocation.Value, line.SkuId, line.LotNumber, line.ExpiryDate, -line.Quantity, reviewerId, reversalOperationId, cancellationToken);
+                    }
+                    else
+                    {
+                        await _ledger.AdjustStocktakeBatchAsync(sourceLocation.Value, line.SkuId, line.LotNumber, line.ExpiryDate, -line.Quantity, reviewerId, reversalOperationId, cancellationToken);
+                    }
                 }
                 break;
             case "WriteOff":

@@ -89,6 +89,7 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
             });
             entity.HasKey(value => value.Id);
             entity.HasIndex(value => new { value.Name, value.Type }).IsUnique();
+            entity.HasIndex(value => value.LocationId);
             entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
             entity.Property(value => value.Name).HasColumnName("name").HasMaxLength(150).IsRequired();
             entity.Property(value => value.Type).HasColumnName("type").HasMaxLength(30).IsRequired();
@@ -96,6 +97,7 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
             entity.Property(value => value.IsActive).HasColumnName("is_active");
             entity.Property(value => value.Reference).HasColumnName("reference");
             entity.Property(value => value.Details).HasColumnName("details");
+            entity.Property(value => value.LocationId).HasColumnName("location_id");
             entity.Property(value => value.CreatedBy).HasColumnName("created_by");
             entity.Property(value => value.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone");
             entity.Property(value => value.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamp without time zone");
@@ -377,4 +379,5 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
             entity.HasOne(value => value.Package).WithMany(value => value.Rows).HasForeignKey(value => value.PackageId).OnDelete(DeleteBehavior.Restrict);
         });
     }
+
 }

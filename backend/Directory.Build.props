@@ -3,6 +3,8 @@
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
     <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <!-- Keep MSBuild from exhausting memory in constrained IDE/CI environments while evaluating large project graphs. -->
+    <BuildInParallel>false</BuildInParallel>
   </PropertyGroup>
 
   <ItemGroup>

@@ -17,6 +17,8 @@ public partial class InventoryBatch
 
     public int Quantity { get; set; }
 
+    public bool IsQuarantined { get; set; }
+
     public Guid? CreatedFrom { get; set; }
 
     public Guid? CreatedBy { get; set; }

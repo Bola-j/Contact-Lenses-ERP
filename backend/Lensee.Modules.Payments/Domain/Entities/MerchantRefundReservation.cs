@@ -3,6 +3,7 @@ namespace Lensee.Modules.Payments.Data;
 public sealed class MerchantRefundReservation
 {
     public Guid Id { get; set; }
+    public Guid? FinancialAdjustmentId { get; set; }
     public Guid AccountId { get; set; }
     public decimal Amount { get; set; }
     public decimal PaidAmount { get; set; }

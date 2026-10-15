@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text.Json;
+using System.Linq.Expressions;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Finance.Data;
@@ -26,6 +27,7 @@ public static class PaymentsEndpoints
     private const string ChangeOut = "ChangeOut";
     private const string ChangeIn = "ChangeIn";
     private const string Completed = "Completed";
+    private const string Delivered = "Delivered";
     private const string Confirmed = "Confirmed";
     private const string CashReceived = "CashReceived";
     private const string CashRefund = "CashRefund";
@@ -41,10 +43,20 @@ public static class PaymentsEndpoints
     private const string PaymentCompleted = "Completed";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    // Payment eligibility follows the terminal state of each sales workflow.
+    // Counter/wholesale sales finish at Completed; delivery-channel retail
+    // sales finish at Delivered. Keep the EF-translatable form beside the
+    // in-memory helper so every Payments query uses the same contract.
+    private static readonly Expression<Func<OperationLog, bool>> FinalizedSaleForPaymentsPredicate = operation =>
+        (operation.OperationType == WholesaleSale && operation.Status == Completed) ||
+        (operation.OperationType == RetailSale &&
+            (operation.Status == Completed ||
+             ((operation.SalesChannel == "Online" || operation.SalesChannel == "Shopify") && operation.Status == Delivered)));
+
     private static readonly HashSet<string> PaymentMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "CashHandToHand",
-        "CashTransaction",
+        "BankTransfer",
         "MerchantAccount",
         "Installment"
     };
@@ -106,6 +118,13 @@ public static class PaymentsEndpoints
         group.MapPost("/cash-receipts/{id:guid}/approve", ApproveCashReceiptAsync).RequireAuthorization("payments.approve");
         group.MapPost("/cash-receipts/{id:guid}/reject", RejectCashReceiptAsync).RequireAuthorization("payments.approve");
         group.MapPost("/cash-records", CreateCashRecordAsync).RequireAuthorization("payments.draft");
+        group.MapGet("/return-entitlements", ListReturnEntitlementsAsync).RequireAuthorization("payments.read");
+        group.MapPost("/return-entitlements/{id:guid}/valuations", ValueReturnEntitlementAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/return-entitlements/{id:guid}/reserve", ReserveReturnEntitlementAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/return-entitlements/{id:guid}/settlements", CreateReturnEntitlementSettlementAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/return-entitlements/{id:guid}/waivers", RequestReturnEntitlementWaiverAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/return-entitlement-waivers/{waiverId:guid}/approve", ApproveReturnEntitlementWaiverAsync).RequireAuthorization("payments.adjustments.request");
+        group.MapPost("/return-entitlement-waivers/{waiverId:guid}/reject", RejectReturnEntitlementWaiverAsync).RequireAuthorization("payments.adjustments.request");
         group.MapGet("/adjustments", ListFinancialAdjustmentsAsync).RequireAuthorization("payments.read");
         group.MapPost("/adjustments", CreateFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.request");
         group.MapPost("/adjustments/{id:guid}/approve", ApproveFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
@@ -145,11 +164,14 @@ public static class PaymentsEndpoints
         var adjustments = await payments.FinancialAdjustments.AsNoTracking()
             .Where(value => value.PaymentLogId.HasValue && logIds.Contains(value.PaymentLogId.Value))
             .ToListAsync(ct);
-        var operationRows = await operations.OperationLogs.AsNoTracking().Include(value => value.OperationLines)
-            .Where(value => !value.IsDeleted &&
-                (((value.OperationType == WholesaleSale || value.OperationType == RetailSale) && value.Status == Completed) ||
-                 (value.OperationType == Return && value.Status == Confirmed)))
+        var finalizedSales = await operations.OperationLogs.AsNoTracking().Include(value => value.OperationLines)
+            .Where(value => !value.IsDeleted)
+            .Where(FinalizedSaleForPaymentsPredicate)
             .ToListAsync(ct);
+        var confirmedReturns = await operations.OperationLogs.AsNoTracking().Include(value => value.OperationLines)
+            .Where(value => !value.IsDeleted && value.OperationType == Return && value.Status == Confirmed)
+            .ToListAsync(ct);
+        var operationRows = finalizedSales.Concat(confirmedReturns).ToList();
         var obligations = await payments.MerchantOperationObligations.AsNoTracking()
             .Where(value => value.Status == "Open" || value.Status == "Settled")
             .Select(value => new
@@ -168,7 +190,8 @@ public static class PaymentsEndpoints
         var creditRows = financeRows.Where(value => value.Direction == FinanceLedgerService.Credit).ToList();
         var saleRows = operationRows.Where(value => value.OperationType is WholesaleSale or RetailSale).ToList();
         var returnRows = operationRows.Where(value => value.OperationType == Return).ToList();
-        decimal SourceAmount(OperationLog operation) => operation.OperationLines.Sum(line => line.LineTotal);
+        decimal SourceAmount(OperationLog operation) => operation.OperationLines.Sum(line => line.LineTotal) +
+            (operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") ? operation.CodCharge : 0m);
         var totalSales = saleRows.Sum(SourceAmount) - returnRows.Sum(SourceAmount);
         var otherIds = saleRows.Where(value => !value.ClientId.HasValue).Select(value => value.Id).ToHashSet();
         var merchantSales = saleRows.Where(value => value.ClientId.HasValue).Sum(SourceAmount) - returnRows.Where(value => value.ClientId.HasValue).Sum(SourceAmount);
@@ -186,13 +209,13 @@ public static class PaymentsEndpoints
         var openingRemaining = obligations.Where(value => value.SourceType == "OpeningBalanceCharge").Sum(value => Math.Max(value.OriginalAmount - value.Allocated, 0m));
         var erpMerchantRemaining = obligations.Where(value => value.SourceType != "OpeningBalanceCharge").Sum(value => Math.Max(value.OriginalAmount - value.Allocated, 0m));
         var actualPaymentCredits = financeRows.Where(value => value.Direction == FinanceLedgerService.Credit && value.SourceType is "MerchantCollection" or "CashRecord" or "InstallmentSubLog").ToList();
-        var cash = actualPaymentCredits.Where(value => value.MovementMethod is "CashHandToHand" or "CashTransaction").Sum(value => value.Amount) - financeRows.Where(value => value.Direction == FinanceLedgerService.Debit && value.Category == "CashRefund" && (value.MovementMethod is "CashHandToHand" or "CashTransaction")).Sum(value => value.Amount);
-        var bank = actualPaymentCredits.Where(value => value.MovementMethod == "BankTransfer").Sum(value => value.Amount) - financeRows.Where(value => value.Direction == FinanceLedgerService.Debit && value.Category == "CashRefund" && value.MovementMethod == "BankTransfer").Sum(value => value.Amount);
+        var cash = actualPaymentCredits.Where(value => value.MovementMethod == "CashHandToHand").Sum(value => value.Amount) - financeRows.Where(value => value.Direction == FinanceLedgerService.Debit && value.Category == "CashRefund" && value.MovementMethod == "CashHandToHand").Sum(value => value.Amount);
+        var bank = actualPaymentCredits.Where(value => value.MovementMethod is "CashTransaction" or "BankTransfer").Sum(value => value.Amount) - financeRows.Where(value => value.Direction == FinanceLedgerService.Debit && value.Category == "CashRefund" && value.MovementMethod is "CashTransaction" or "BankTransfer").Sum(value => value.Amount);
         var wallet = actualPaymentCredits.Where(value => value.MovementMethod == "Wallet").Sum(value => value.Amount) - financeRows.Where(value => value.Direction == FinanceLedgerService.Debit && value.Category == "CashRefund" && value.MovementMethod == "Wallet").Sum(value => value.Amount);
         return Results.Ok(new
         {
             totalActivity = new { erpSales = totalSales, merchantSales, otherPaymentsSales, openingReceivable },
-            actuallyCollected = new { cash = actualPaymentCredits.Where(value => value.MovementMethod is "CashHandToHand" or "CashTransaction").Sum(value => value.Amount), bank = actualPaymentCredits.Where(value => value.MovementMethod == "BankTransfer").Sum(value => value.Amount), wallet = actualPaymentCredits.Where(value => value.MovementMethod == "Wallet").Sum(value => value.Amount), other = actualPaymentCredits.Where(value => value.MovementMethod is not ("CashHandToHand" or "CashTransaction" or "BankTransfer" or "Wallet")).Sum(value => value.Amount) },
+            actuallyCollected = new { cash = actualPaymentCredits.Where(value => value.MovementMethod == "CashHandToHand").Sum(value => value.Amount), bank = actualPaymentCredits.Where(value => value.MovementMethod is "CashTransaction" or "BankTransfer").Sum(value => value.Amount), wallet = actualPaymentCredits.Where(value => value.MovementMethod == "Wallet").Sum(value => value.Amount), other = actualPaymentCredits.Where(value => value.MovementMethod is not ("CashHandToHand" or "CashTransaction" or "BankTransfer" or "Wallet")).Sum(value => value.Amount) },
             remaining = new { openingBalance = openingRemaining, erpMerchantObligations = erpMerchantRemaining, otherPayments = paymentBalances.Where(value => otherLogIds.Contains(value.Id)).Sum(value => Math.Max(value.Balance.RemainingAmount - value.Balance.PendingCollections, 0m)) },
             treasury = new { cash, bank, wallet, totalExpectedLiquidFunds = cash + bank + wallet }
         });
@@ -216,7 +239,7 @@ public static class PaymentsEndpoints
     {
         null or "" => "-",
         "CashHandToHand" => "Cash hand to hand",
-        "CashTransaction" => "Cash transaction",
+        "CashTransaction" => "Bank transfer",
         "BankTransfer" => "Bank transfer",
         "Wallet" => "Wallet",
         "MerchantAccount" or "Installment" or "Installlaugment" => "Merchant account",
@@ -602,7 +625,8 @@ public static class PaymentsEndpoints
             .Select(group => new { ObligationId = group.Key, Amount = group.Sum(value => value.Amount) })
             .ToDictionaryAsync(value => value.ObligationId, value => value.Amount, ct);
         var operationRows = await operations.OperationLogs.AsNoTracking()
-            .Where(value => operationIds.Contains(value.Id) && !value.IsDeleted && value.Status == Completed && (value.OperationType == WholesaleSale || value.OperationType == RetailSale) && value.FinancialClosureStatus == "Open")
+            .Where(value => operationIds.Contains(value.Id) && !value.IsDeleted && value.FinancialClosureStatus == "Open")
+            .Where(FinalizedSaleForPaymentsPredicate)
             .Select(value => new { value.Id, value.OperationNumber, value.OperationType, value.Status, value.FinancialClosureStatus })
             .ToListAsync(ct);
         var rows = operationObligations.Join(operationRows, value => value.OperationId, value => (Guid?)value.Id, (obligation, operation) =>
@@ -663,8 +687,8 @@ public static class PaymentsEndpoints
 
                 var operationRows = await operations.OperationLogs.AsNoTracking()
                     .Where(value => ids.Contains(value.Id) && value.ClientId == merchantId && !value.IsDeleted &&
-                        value.Status == Completed && (value.OperationType == WholesaleSale || value.OperationType == RetailSale) &&
                         value.FinancialClosureStatus == "Open")
+                    .Where(FinalizedSaleForPaymentsPredicate)
                     .ToDictionaryAsync(value => value.Id, ct);
                 var obligationRows = await payments.MerchantOperationObligations.AsNoTracking()
                     .Where(value => value.AccountId == account.Id && value.OperationId.HasValue && ids.Contains(value.OperationId.Value))
@@ -762,7 +786,7 @@ public static class PaymentsEndpoints
                 await operations.Database.ExecuteSqlInterpolatedAsync($"select 1 from operations.operation_logs where id = {operationId} for update", ct);
         }
         var ops = await operations.OperationLogs.Where(x => operationIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
-        if (ops.Count != proposal.Items.Count || ops.Values.Any(x => x.Status != Completed || x.FinancialClosureStatus != "Open")) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer eligible for closure." });
+        if (ops.Count != proposal.Items.Count || ops.Values.Any(x => !IsFinalizedSaleForPayments(x) || x.FinancialClosureStatus != "Open")) return Results.Conflict(new ProblemDetails { Title = "Settlement changed", Detail = "One or more operations are no longer eligible for closure." });
         var accountId = proposal.AccountId;
         var settlementObligations = await payments.MerchantOperationObligations.AsNoTracking()
             .Where(x => x.AccountId == accountId && x.OperationId.HasValue && operationIds.Contains(x.OperationId.Value))
@@ -865,10 +889,18 @@ public static class PaymentsEndpoints
                 return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SourceOperationId)] = ["The source operation does not belong to the selected merchant."] }));
             if (!IsPaymentEligible(sourceOperation))
                 return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SourceOperationId)] = ["The source operation is not a completed payable sale or confirmed payable change."] }));
+            if (request.Allocations is { Count: > 0 })
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Allocations)] = ["Operation-scoped collections allocate only to the selected operation."] }));
+
+            var capacity = await merchantAccountService.GetOperationCollectionCapacityAsync(merchantId, sourceOperationId, cancellationToken);
+            if (capacity is null || capacity.RemainingAmount <= 0)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SourceOperationId)] = ["The selected operation has no remaining merchant receivable amount."] }));
+            if (request.Amount > capacity.RemainingAmount)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Collection exceeds the selected operation's remaining receivable amount."] }));
         }
         if (request.Amount <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Amount must be greater than zero."] });
         var method = NormalizeMovementMethod(request.PaymentMethod);
-        if (method is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
+        if (method is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, BankTransfer, or Wallet."] });
         if (MerchantAccountService.RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(request.TransactionReference))
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
         var accountError = await ValidateReceivingAccountAsync(financeDbContext, request.FinanceAccountId, method, cancellationToken);
@@ -1103,7 +1135,18 @@ public static class PaymentsEndpoints
                 // A cash receipt is its own review item. Its status must win over
                 // the parent payment-log status so approval/rejection targets the
                 // exact receipt shown in the inbox.
-                var workflowStatus = record.Status;
+                // Return cash refunds created before the cash-record workflow was
+                // exposed in the approval inbox are persisted as PendingAccountant
+                // (the live database constraint only permits that pending value).
+                // They are nevertheless submitted payout requests: Admin/ERPAdmin
+                // can already approve or reject them through the same endpoint.
+                // Project that compatibility state as the actionable review state
+                // rather than hiding a real reservation behind an accountant-only
+                // label.
+                var isReturnCashRefund = record.PaymentType == CashRefund && record.ReturnEntitlementId.HasValue;
+                var workflowStatus = isReturnCashRefund && record.Status == PendingAccountant
+                    ? PendingAdminReview
+                    : record.Status;
                 return new
                 {
                     id = record.Id,
@@ -1126,7 +1169,7 @@ public static class PaymentsEndpoints
                     notes = record.Notes,
                     allocations = (string?)null,
                     permittedActions = CollectionPermittedActions(workflowStatus),
-                    source = "Direct operation cash receipt"
+                    source = isReturnCashRefund ? "Return cash refund" : "Direct operation cash receipt"
                 };
             }));
         }
@@ -1165,8 +1208,18 @@ public static class PaymentsEndpoints
         var directOperation = await operationsDbContext.OperationLogs.AsNoTracking()
             .FirstOrDefaultAsync(value => value.Id == request.OperationId.Value && !value.IsDeleted, cancellationToken);
         if (directOperation is null) return Results.NotFound();
-        if (directOperation.ClientId.HasValue || directOperation.OperationType != RetailSale || directOperation.Status != Completed)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Other payments can only be collected against a completed anonymous retail operation."] });
+        if (directOperation.ClientId.HasValue || directOperation.OperationType != RetailSale || !IsFinalizedSaleForPayments(directOperation))
+        {
+            if (directOperation.ClientId.HasValue)
+                return Results.Conflict(new
+                {
+                    code = "merchant-account-collection-required",
+                    detail = "This operation belongs to a merchant account. Submit a merchant-account collection for the selected operation.",
+                    merchantId = directOperation.ClientId,
+                    operationId = directOperation.Id
+                });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Other payments can only be collected against a finalized anonymous retail operation."] });
+        }
         var logId = await paymentsDbContext.MainPaymentLogs.AsNoTracking()
             .Where(value => value.OperationId == request.OperationId.Value && !value.MerchantId.HasValue && !value.IsDeleted)
             .Select(value => (Guid?)value.Id)
@@ -1244,7 +1297,7 @@ public static class PaymentsEndpoints
             return await ApproveSubLogAsync(id, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken);
         }
 
-        if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && value.PaymentType == CashReceived, cancellationToken))
+        if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && (value.PaymentType == CashReceived || value.PaymentType == CashRefund), cancellationToken))
         {
             return await ApproveCashReceiptAsync(id, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken, cashRecordId: id);
         }
@@ -1290,7 +1343,7 @@ public static class PaymentsEndpoints
     {
         if (await paymentsDbContext.InstallmentSubLogs.AsNoTracking().AnyAsync(value => value.Id == id, cancellationToken))
             return await RejectSubLogAsync(id, request, paymentsDbContext, financeDbContext, operationsDbContext, identityDbContext, sharedDbContext, merchantAccountService, httpContext, currentUser, eventPublisher, paymentIdempotencyService, financeLedgerService, clock, idempotencyKey, cancellationToken);
-        if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && value.PaymentType == CashReceived, cancellationToken))
+        if (await paymentsDbContext.CashRecords.AsNoTracking().AnyAsync(value => value.Id == id && (value.PaymentType == CashReceived || value.PaymentType == CashRefund), cancellationToken))
             return await RejectCashReceiptAsync(id, request, paymentsDbContext, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken, cashRecordId: id);
         if (await paymentsDbContext.MainPaymentLogs.AsNoTracking().AnyAsync(value => value.Id == id && !value.IsDeleted, cancellationToken))
             return await RejectCashReceiptAsync(id, request, paymentsDbContext, paymentIdempotencyService, currentUser, clock, idempotencyKey, cancellationToken);
@@ -1371,9 +1424,9 @@ public static class PaymentsEndpoints
             if (draft is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
             return await paymentIdempotencyService.CompleteAsync(idempotency, ToMerchantAccountCollectionDraftResponse(draft), StatusCodes.Status200OK, cancellationToken);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
-            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = ["The collection could not be recorded in its current state."] }));
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { ["collection"] = [ex.Message] }));
         }
     }
 
@@ -1553,8 +1606,9 @@ public static class PaymentsEndpoints
         var account = await paymentsDbContext.MerchantReceivableAccounts.AsNoTracking().SingleAsync(value => value.Id == reservation.AccountId, cancellationToken);
         if (request.Amount <= 0m) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Refund payout amount must be greater than zero."] });
         var method = NormalizeMovementMethod(request.PaymentMethod);
-        if (method is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
+        if (method is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method must be CashHandToHand, BankTransfer, or Wallet."] });
         if (MerchantAccountService.RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(request.TransactionReference)) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
+        if (ValidateRefundTransferFee(method, request.TransferFeeAmount) is { } feeError) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] });
         if (request.FinanceAccountId is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = ["A FinanceAccountId is required for a refund payout."] });
         try
         {
@@ -1564,6 +1618,8 @@ public static class PaymentsEndpoints
             {
                 entry = await merchantAccountService.PostRefundPayoutAsync(account.MerchantId, id, payoutId, request.Amount, method, request.TransactionReference?.Trim(), currentUser.UserId ?? Guid.Empty, clock.EgyptNow, request.Notes, cancellationToken);
                 await financeLedgerService.PostMovementAsync("RefundPayout", payoutId, "MerchantAccount", method, request.Amount, request.FinanceAccountId, request.TransactionReference, "RefundPayout", FinanceLedgerService.Debit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(clock.EgyptNow), idempotencyKey, cancellationToken);
+                if (request.TransferFeeAmount > 0m)
+                    await financeLedgerService.PostMovementAsync("RefundTransferFee", payoutId, "CompanyCost", method, request.TransferFeeAmount.Value, request.FinanceAccountId, null, "TransferFee", FinanceLedgerService.Debit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(clock.EgyptNow), idempotencyKey, cancellationToken);
             }, cancellationToken, financeDbContext);
             return await paymentIdempotencyService.CompleteAsync(idempotency, entry!, StatusCodes.Status200OK, cancellationToken);
         }
@@ -1650,16 +1706,35 @@ public static class PaymentsEndpoints
             string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase) ||
             merchantId.HasValue)
         {
-            var sourceOperationIds = await operationsDbContext.OperationLogs.AsNoTracking()
-                .Where(operation => !operation.IsDeleted &&
-                    (!merchantId.HasValue || operation.ClientId == merchantId.Value))
-                .Select(operation => new { operation.Id, operation.ClientId, operation.OperationType, operation.PaymentMethod })
-                .ToListAsync(cancellationToken);
-            var merchantOperationIds = sourceOperationIds.Where(value => value.ClientId.HasValue).Select(value => value.Id).ToArray();
-            var directOperationIds = sourceOperationIds
-                .Where(value => !value.ClientId.HasValue && value.OperationType == RetailSale)
-                .Select(value => value.Id)
-                .ToArray();
+            // Payment queues must not surface draft payment logs from cancelled,
+            // failed-delivery, or otherwise unfinished sales as collectible work.
+            // Scope determines ownership; the operation workflow determines whether
+            // it has reached the financial final state.
+            // Rows written before MerchantId was denormalized need their source
+            // operation to establish scope. Do not scan every finalized sale on
+            // every queue refresh: only legacy payment rows need that lookup.
+            var legacyOperationIds = await query
+                .Where(log => !log.MerchantId.HasValue)
+                .Select(log => log.OperationId)
+                .Distinct()
+                .ToArrayAsync(cancellationToken);
+            var merchantOperationIds = Array.Empty<Guid>();
+            var directOperationIds = Array.Empty<Guid>();
+            if (legacyOperationIds.Length > 0)
+            {
+                var legacySourceOperations = await operationsDbContext.OperationLogs.AsNoTracking()
+                    .Where(operation => !operation.IsDeleted &&
+                        (!merchantId.HasValue || operation.ClientId == merchantId.Value) &&
+                        legacyOperationIds.Contains(operation.Id))
+                    .Where(FinalizedSaleForPaymentsPredicate)
+                    .Select(operation => new { operation.Id, operation.ClientId, operation.OperationType })
+                    .ToListAsync(cancellationToken);
+                merchantOperationIds = legacySourceOperations.Where(value => value.ClientId.HasValue).Select(value => value.Id).ToArray();
+                directOperationIds = legacySourceOperations
+                    .Where(value => !value.ClientId.HasValue && value.OperationType == RetailSale)
+                    .Select(value => value.Id)
+                    .ToArray();
+            }
             if (merchantId.HasValue)
             {
                 query = query.Where(log => log.MerchantId == merchantId.Value ||
@@ -1697,9 +1772,11 @@ public static class PaymentsEndpoints
         var adjustmentsByLog = adjustments.GroupBy(adjustment => adjustment.PaymentLogId!.Value).ToDictionary(group => group.Key, group => (IReadOnlyList<FinancialAdjustment>)group.ToList());
         var userLookup = await LoadUserLookupAsync(identityDbContext, rows, cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, rows.Select(row => row.OperationId), cancellationToken);
+        var merchantPaymentProjections = await LoadMerchantPaymentProjectionsAsync(rows, operationLookup, paymentsDbContext, cancellationToken);
         var responses = rows.Select(log => ToListResponse(log, userLookup, operationLookup,
             cashByOperation.GetValueOrDefault(log.OperationId, []),
-            adjustmentsByLog.GetValueOrDefault(log.Id, []))).ToList();
+            adjustmentsByLog.GetValueOrDefault(log.Id, []),
+            merchantPaymentProjections.GetValueOrDefault(log.OperationId))).ToList();
 
         return Results.Ok(new PagedResult<PaymentLogListResponse>(responses, request.Page, request.PageSize, total));
     }
@@ -1729,7 +1806,8 @@ public static class PaymentsEndpoints
             .Select(value => value!.Value);
         var userLookup = await LoadUserLookupAsync(identityDbContext, userIds, cancellationToken);
         var operationLookup = await LoadPaymentOperationLookupAsync(operationsDbContext, [log.OperationId], cancellationToken);
-        return Results.Ok(ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup));
+        var merchantPaymentProjections = await LoadMerchantPaymentProjectionsAsync([log], operationLookup, paymentsDbContext, cancellationToken);
+        return Results.Ok(ToDetailResponse(log, cashRecords, adjustments, userLookup, operationLookup, merchantPaymentProjections.GetValueOrDefault(log.OperationId)));
     }
 
     private static async Task<IResult> ListPaymentHistoryAsync(
@@ -1778,12 +1856,34 @@ public static class PaymentsEndpoints
             adjustmentsQuery = adjustmentsQuery.Where(adjustment => adjustment.OperationId == operationId.Value);
         }
 
+        if (string.Equals(scope, "MerchantAccount", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase) ||
+            merchantId.HasValue)
+        {
+            // Suppress pre-finalization payment-log events from the payment
+            // history. Real cash and adjustment events stay auditable below.
+            var eligibleOperationIds = await operationsDbContext.OperationLogs.AsNoTracking()
+                .Where(operation => !operation.IsDeleted &&
+                    (!merchantId.HasValue || operation.ClientId == merchantId.Value))
+                .Where(FinalizedSaleForPaymentsPredicate)
+                .Select(operation => operation.Id)
+                .ToArrayAsync(cancellationToken);
+            logsQuery = logsQuery.Where(log => eligibleOperationIds.Contains(log.OperationId));
+        }
+
         // History is a merged view across three independently stored sources.
-        // Load the full filtered source sets before applying the global page so
-        // older records cannot disappear behind per-source 300-row caps.
-        var logs = await logsQuery.OrderByDescending(log => log.LastModifiedAt).ThenByDescending(log => log.Id).ToListAsync(cancellationToken);
-        var cashRecords = await cashQuery.OrderByDescending(record => record.PaymentDate).ThenByDescending(record => record.Id).ToListAsync(cancellationToken);
-        var adjustments = await adjustmentsQuery.OrderByDescending(adjustment => adjustment.CreatedAt).ThenByDescending(adjustment => adjustment.Id).ToListAsync(cancellationToken);
+        // Fetch only the source rows that can contribute to the requested page.
+        // The top (skip + page size) rows of each source are sufficient to
+        // produce that prefix of the merged ordering; do not materialize the
+        // entire ledger or use a fixed arbitrary history cap.
+        var historySourceWindow = request.Skip + request.PageSize;
+        var logs = await logsQuery.OrderByDescending(log => log.LastModifiedAt).ThenByDescending(log => log.Id)
+            .Take(historySourceWindow).ToListAsync(cancellationToken);
+        var cashRecords = await cashQuery.OrderByDescending(record => record.PaymentDate).ThenByDescending(record => record.Id)
+            .Take(historySourceWindow).ToListAsync(cancellationToken);
+        var adjustments = await adjustmentsQuery.OrderByDescending(adjustment => adjustment.CreatedAt).ThenByDescending(adjustment => adjustment.Id)
+            .Take(historySourceWindow).ToListAsync(cancellationToken);
 
         var operationIds = logs.Select(log => log.OperationId)
             .Concat(cashRecords.Where(record => record.OperationId.HasValue).Select(record => record.OperationId!.Value))
@@ -1813,24 +1913,33 @@ public static class PaymentsEndpoints
             .ToArray();
         var userLookup = await LoadUserLookupAsync(identityDbContext, userIds, cancellationToken);
 
+        // The ledger is a current-state list: render one row per payment operation,
+        // choosing the most recently updated payment event for its visible status.
+        // The expanded detail view remains the place for the complete event trail.
         var rows = new List<PaymentHistoryResponse>();
         rows.AddRange(BuildHistoryRowsFromLogs(logs, operationLookup, merchantLookup, userLookup));
         rows.AddRange(BuildHistoryRowsFromCashRecords(cashRecords, operationLookup, merchantLookup, userLookup));
         rows.AddRange(BuildHistoryRowsFromAdjustments(adjustments, operationLookup, merchantLookup, userLookup));
 
-        var ordered = rows
-            .OrderByDescending(row => row.HappenedAt)
-            .ThenByDescending(row => row.RecordType)
-            .ThenByDescending(row => row.Id)
-            .ToList();
+        var scopedRows = rows.AsEnumerable();
         if (string.Equals(scope, "MerchantAccount", StringComparison.OrdinalIgnoreCase))
         {
-            ordered = ordered.Where(row => row.MerchantId.HasValue).ToList();
+            scopedRows = scopedRows.Where(row => row.MerchantId.HasValue);
         }
         else if (string.Equals(scope, "OtherPayments", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "DirectOperation", StringComparison.OrdinalIgnoreCase))
         {
-            ordered = ordered.Where(row => !row.MerchantId.HasValue && string.Equals(row.OperationType, RetailSale, StringComparison.OrdinalIgnoreCase)).ToList();
+            scopedRows = scopedRows.Where(row => !row.MerchantId.HasValue && string.Equals(row.OperationType, RetailSale, StringComparison.OrdinalIgnoreCase));
         }
+        var ordered = scopedRows
+            .GroupBy(row => row.OperationId.HasValue ? $"operation:{row.OperationId.Value:D}" : $"record:{row.RecordType}:{row.Id:D}", StringComparer.Ordinal)
+            .Select(group => group
+                .OrderByDescending(row => row.HappenedAt)
+                .ThenByDescending(row => row.RecordType, StringComparer.Ordinal)
+                .ThenByDescending(row => row.Id)
+                .First())
+            .OrderByDescending(row => row.HappenedAt)
+            .ThenByDescending(row => row.Id)
+            .ToList();
         var pageItems = ordered
             .Skip(request.Skip)
             .Take(request.PageSize)
@@ -1893,7 +2002,7 @@ public static class PaymentsEndpoints
         var paymentMethod = NormalizePaymentMethod(request.PaymentMethod);
         if (paymentMethod is null)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, CashTransaction, or MerchantAccount."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, BankTransfer, or MerchantAccount."] });
         }
         if (!IsPaymentEligible(operation))
         {
@@ -2056,7 +2165,7 @@ public static class PaymentsEndpoints
         var paymentMethod = NormalizeMovementMethod(request.PaymentMethod);
         if (paymentMethod is null)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, BankTransfer, or Wallet."] });
         }
         if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(request.TransactionReference))
         {
@@ -2289,12 +2398,6 @@ public static class PaymentsEndpoints
                 .Where(value => value.Id == log.OperationId && !value.IsDeleted)
                 .Select(value => value.ClientId)
                 .SingleOrDefaultAsync(cancellationToken);
-            if (log.Status == PaymentCompleted)
-            {
-                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt is already approved."] });
-                return;
-            }
-
             var cashRecord = await paymentsDbContext.CashRecords
                 .FirstOrDefaultAsync(value => (cashRecordId.HasValue ? value.Id == cashRecordId.Value : value.OperationId == log.OperationId) &&
                                               (value.PaymentType == CashReceived || value.PaymentType == CashRefund) &&
@@ -2309,12 +2412,40 @@ public static class PaymentsEndpoints
                 transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt was already changed by another user."] });
                 return;
             }
+            var isReturnSettlement = cashRecord.PaymentType == CashRefund && cashRecord.ReturnEntitlementId.HasValue;
+            if (isReturnSettlement && !IsReturnEntitlementFinanceActor(currentUser))
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
+            if (log.Status == PaymentCompleted && !isReturnSettlement)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["This cash receipt is already approved."] });
+                return;
+            }
+
+            ReturnEntitlement? returnEntitlement = null;
+            if (cashRecord.ReturnEntitlementId is { } entitlementId)
+            {
+                returnEntitlement = await LoadReturnEntitlementForUpdateAsync(entitlementId, paymentsDbContext, cancellationToken);
+                if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || cashRecord.Amount > returnEntitlement.ReservedAmount ||
+                    !string.Equals(returnEntitlement.ReservedScope, cashRecord.ReturnSettlementScope, StringComparison.Ordinal))
+                {
+                    transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this payout scope." });
+                    return;
+                }
+            }
 
             var now = clock.EgyptNow;
             if (!MerchantAccountService.IsMovementMethod(cashRecord.SubType) ||
                 (MerchantAccountService.RequiresTransactionReference(cashRecord.SubType) && string.IsNullOrWhiteSpace(cashRecord.TransactionReference)))
             {
                 transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { ["paymentMethod"] = ["The cash receipt has no valid movement method or electronic reference and must be reconciled before approval."] });
+                return;
+            }
+            if (cashRecord.PaymentType == CashRefund && ValidateRefundTransferFee(cashRecord.SubType!, cashRecord.TransferFeeAmount) is { } feeError)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(cashRecord.TransferFeeAmount)] = [feeError] });
                 return;
             }
             if (cashRecord.PaymentType == CashRefund)
@@ -2324,7 +2455,23 @@ public static class PaymentsEndpoints
                     transactionResult = Results.Conflict(new { code = "merchant-refund-workflow-required", detail = "Merchant refunds must use the merchant refund approval and payout workflow." });
                     return;
                 }
-                var refundCapacity = await GetNonMerchantRefundCapacityAsync(paymentsDbContext, log, cashRecord.Id, cancellationToken);
+                decimal refundCapacity;
+                if (returnEntitlement is { OriginalSaleOperationId: null, BeneficiaryKind: "Anonymous" })
+                {
+                    // An unlinked return has no source-payment balance to
+                    // reconcile. Its amount was capped and atomically reserved
+                    // when the settlement request was created, regardless of
+                    // whether that amount came from normal value or a recorded
+                    // valuation. Re-reading only valuations here made a valid
+                    // normal-value reservation impossible to approve.
+                    refundCapacity = cashRecord.Amount;
+                }
+                else
+                {
+                    refundCapacity = isReturnSettlement
+                        ? await GetReturnRefundCapacityAsync(paymentsDbContext, log, cashRecord.Id, cancellationToken)
+                        : await GetNonMerchantRefundCapacityAsync(paymentsDbContext, log, cashRecord.Id, cancellationToken);
+                }
                 if (cashRecord.Amount > refundCapacity)
                 {
                     transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Refund exceeds the current refundable balance ({refundCapacity:0.##})." });
@@ -2339,26 +2486,36 @@ public static class PaymentsEndpoints
             cashRecord.Status = PaymentCompleted;
             cashRecord.ConfirmedBy = currentUser.UserId;
             cashRecord.ConfirmedAt = now;
-            var cashRecords = await paymentsDbContext.CashRecords
-                .Where(record => record.OperationId == log.OperationId)
-                .ToListAsync(cancellationToken);
-            var adjustments = await paymentsDbContext.FinancialAdjustments
-                .Where(adjustment => adjustment.PaymentLogId == log.Id)
-                .ToListAsync(cancellationToken);
-            var balance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
-            log.AmountPaid = balance.ConfirmedCollections;
-            log.PendingAmount = balance.PendingCollections;
-            log.Status = balance.RemainingAmount == 0m && balance.RefundDue == 0m
-                ? PaymentCompleted
-                : PendingAccountant;
+            if (returnEntitlement is not null)
+                    ApplyReturnEntitlementSettlement(returnEntitlement, cashRecord.Amount, cashRecord.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
+            if (!isReturnSettlement)
+            {
+                var cashRecords = await paymentsDbContext.CashRecords
+                    .Where(record => record.OperationId == log.OperationId)
+                    .ToListAsync(cancellationToken);
+                var adjustments = await paymentsDbContext.FinancialAdjustments
+                    .Where(adjustment => adjustment.PaymentLogId == log.Id)
+                    .ToListAsync(cancellationToken);
+                var balance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
+                log.AmountPaid = balance.ConfirmedCollections;
+                log.PendingAmount = balance.PendingCollections;
+                log.Status = balance.RemainingAmount == 0m && balance.RefundDue == 0m
+                    ? PaymentCompleted
+                    : PendingAccountant;
+            }
             if (cashRecord.PaymentType == CashReceived && effectiveMerchantId is { } merchantId)
             {
                 await merchantAccountService.PostCollectionAsync(merchantId, cashRecord.Id, cashRecord.Amount, cashRecord.SubType!, cashRecord.TransactionReference, currentUser.UserId ?? Guid.Empty, now, null, cashRecord.Notes, cancellationToken);
             }
             var refund = cashRecord.PaymentType == CashRefund;
             await financeLedgerService.PostMovementAsync("CashRecord", cashRecord.Id, "OtherPayments", cashRecord.SubType!, cashRecord.Amount, cashRecord.FinanceAccountId, cashRecord.TransactionReference, refund ? "CashRefund" : "CashReceipt", refund ? FinanceLedgerService.Debit : FinanceLedgerService.Credit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
-            log.LastModifiedBy = currentUser.UserId;
-            log.LastModifiedAt = now;
+            if (refund && cashRecord.TransferFeeAmount > 0m)
+                await financeLedgerService.PostMovementAsync("RefundTransferFee", cashRecord.Id, "CompanyCost", cashRecord.SubType!, cashRecord.TransferFeeAmount.Value, cashRecord.FinanceAccountId, null, "TransferFee", FinanceLedgerService.Debit, currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
+            if (!isReturnSettlement)
+            {
+                log.LastModifiedBy = currentUser.UserId;
+                log.LastModifiedAt = now;
+            }
 
             var approvalAction = refund ? "CashRefundApproved" : "CashReceiptApproved";
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, approvalAction, log.Id, new { cashRecord.Id, cashRecord.Amount }, now, cancellationToken);
@@ -2406,6 +2563,7 @@ public static class PaymentsEndpoints
 
         MainPaymentLog? log = null;
         CashRecord? record = null;
+        IResult? rejectionFailure = null;
         try
         {
             await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
@@ -2423,6 +2581,12 @@ public static class PaymentsEndpoints
             record = await paymentsDbContext.CashRecords
                 .FirstOrDefaultAsync(value => (cashRecordId.HasValue ? value.Id == cashRecordId.Value : value.OperationId == log.OperationId) && (value.PaymentType == CashReceived || value.PaymentType == CashRefund) && (value.Status == PendingAccountant || value.Status == PendingAdminReview), cancellationToken);
             if (record is null) return;
+            var isReturnSettlement = record.PaymentType == CashRefund && record.ReturnEntitlementId.HasValue;
+            if (isReturnSettlement && !IsReturnEntitlementFinanceActor(currentUser))
+            {
+                rejectionFailure = Results.Forbid();
+                return;
+            }
 
             // The status check and cancellation must be serialized with approval.
             // Without a row lock two reviewers can both observe a pending receipt
@@ -2437,14 +2601,28 @@ public static class PaymentsEndpoints
             record.Notes = string.IsNullOrWhiteSpace(record.Notes)
                 ? $"Rejected: {request.Reason.Trim()}"
                 : $"{record.Notes}\nRejected: {request.Reason.Trim()}";
-            var cashRecords = await paymentsDbContext.CashRecords.Where(value => value.OperationId == log.OperationId).ToListAsync(cancellationToken);
-            var adjustments = await paymentsDbContext.FinancialAdjustments.Where(value => value.PaymentLogId == log.Id).ToListAsync(cancellationToken);
-            var balance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
-            log.AmountPaid = balance.ConfirmedCollections;
-            log.PendingAmount = balance.PendingCollections;
-            log.Status = PendingAccountant;
-            log.LastModifiedBy = currentUser.UserId;
-            log.LastModifiedAt = now;
+            if (record.ReturnEntitlementId is { } entitlementId)
+            {
+                var entitlement = await LoadReturnEntitlementForUpdateAsync(entitlementId, paymentsDbContext, cancellationToken);
+                if (entitlement is not null && entitlement.Status == "Reserved")
+                {
+                    entitlement.ReservedAmount = Math.Max(0m, entitlement.ReservedAmount - record.Amount);
+                    entitlement.Status = entitlement.ExceptionAmount > 0m || entitlement.OriginalSaleOperationId is null ? "PendingValuation" : "Held";
+                    entitlement.UpdatedBy = currentUser.UserId;
+                    entitlement.UpdatedAt = now;
+                }
+            }
+            if (!isReturnSettlement)
+            {
+                var cashRecords = await paymentsDbContext.CashRecords.Where(value => value.OperationId == log.OperationId).ToListAsync(cancellationToken);
+                var adjustments = await paymentsDbContext.FinancialAdjustments.Where(value => value.PaymentLogId == log.Id).ToListAsync(cancellationToken);
+                var balance = PaymentBalanceCalculator.Calculate(log, adjustments, cashRecords);
+                log.AmountPaid = balance.ConfirmedCollections;
+                log.PendingAmount = balance.PendingCollections;
+                log.Status = PendingAccountant;
+                log.LastModifiedBy = currentUser.UserId;
+                log.LastModifiedAt = now;
+            }
             var rejectedRefund = record.PaymentType == CashRefund;
             AddPaymentWorkflowAudit(paymentsDbContext, rejectedRefund ? "CashRefundRejected" : "CashReceiptRejected", PendingAccountant, Rejected, log.MerchantId, log.OperationId, log.Id, null, currentUser.UserId ?? Guid.Empty, now, record.Amount, record.SubType, request.Reason.Trim(), null, idempotencyKey, new { record.Id });
             await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
@@ -2459,6 +2637,7 @@ public static class PaymentsEndpoints
             return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new { code = "cash-receipt-rejection-save-conflict", detail = "The cash receipt rejection could not be saved." }));
         }
 
+        if (rejectionFailure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, rejectionFailure);
         if (log is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.NotFound());
         if (record is null) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new { code = "transition-conflict", detail = "No cash receipt is waiting for review." }));
         return await paymentIdempotencyService.CompleteAsync(idempotency, new { record.Id, status = Rejected, record.ConfirmedBy, record.ConfirmedAt, rejectionReason = request.Reason.Trim() }, StatusCodes.Status200OK, cancellationToken);
@@ -2649,7 +2828,7 @@ public static class PaymentsEndpoints
         var paymentMethod = NormalizeMovementMethod(request.PaymentMethod ?? request.SubType);
         if (paymentMethod is null)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, BankTransfer, or Wallet."] });
         }
         if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(request.TransactionReference))
         {
@@ -2663,9 +2842,15 @@ public static class PaymentsEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must exist. Use the full operation ID or operation code."] });
         }
+        if (operation.OperationType == Return)
+            return Results.Conflict(new { code = "return-entitlement-required", detail = "A refund must be recorded from the confirmed return's Payments entitlement, not from a generic Return operation reference." });
         if (!IsPaymentEligible(operation))
         {
             return Results.Conflict(new { code = "payment-ineligible", detail = "Cash receipts require a finalized eligible operation." });
+        }
+        if (paymentType == CashReceived && IsDeliveredOnlineSale(operation) && !string.Equals(operation.PaymentStatus, "DueOnDelivery", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Conflict(new { code = "online-payment-not-due-on-delivery", detail = "A delivered online order can record a cash receipt only when its confirmed payment track is COD." });
         }
 
         var now = clock.EgyptNow;
@@ -2801,7 +2986,36 @@ public static class PaymentsEndpoints
             .OrderByDescending(value => value.LastModifiedAt)
             .Select(value => (Guid?)value.Id)
             .FirstOrDefaultAsync(cancellationToken);
-        var permittedNextActions = operation.Status == Completed && operation.OperationType is WholesaleSale or RetailSale
+        var merchantCapacity = operation.ClientId.HasValue
+            ? await paymentsDbContext.MerchantOperationObligations.AsNoTracking()
+                .Where(value => value.OperationId == operation.Id)
+                .Select(value => new
+                {
+                    value.AccountId,
+                    value.OriginalAmount,
+                    Allocated = paymentsDbContext.EffectiveCreditAllocations()
+                        .Where(allocation => allocation.ObligationId == value.Id && allocation.Entry.CreditAmount > 0)
+                        .Sum(allocation => (decimal?)allocation.Amount) ?? 0m
+                })
+                .SingleOrDefaultAsync(cancellationToken)
+            : null;
+        var settlementAmount = merchantCapacity?.OriginalAmount;
+        if (merchantCapacity is not null)
+        {
+            var operationEntries = await paymentsDbContext.MerchantAccountEntries.AsNoTracking()
+                .Where(value => value.AccountId == merchantCapacity.AccountId && value.OperationId == operation.Id && value.Status == "Posted")
+                .Select(value => new { value.EntryType, value.DebitAmount, value.CreditAmount })
+                .ToListAsync(cancellationToken);
+            var saleTotal = operationEntries.Where(value => value.EntryType == "SaleCharge").Sum(value => value.DebitAmount);
+            if (saleTotal > 0m)
+            {
+                var credits = operationEntries.Where(value => value.EntryType is "ReturnCredit" or "ExchangeCredit").Sum(value => value.CreditAmount);
+                var charges = operationEntries.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount);
+                settlementAmount = Math.Max(saleTotal + charges - credits, 0m);
+            }
+        }
+        var remainingAmount = settlementAmount is null ? (decimal?)null : Math.Max(settlementAmount.Value - merchantCapacity!.Allocated, 0m);
+        var permittedNextActions = IsFinalizedSaleForPayments(operation) && (!operation.ClientId.HasValue || remainingAmount > 0)
             ? new[] { "record-collection" }
             : [];
         return Results.Ok(new PaymentOperationResolutionResponse(
@@ -2815,7 +3029,10 @@ public static class PaymentsEndpoints
             operation.ClientId.HasValue ? "MerchantAccount" : "OtherPayments",
             paymentLogId.HasValue ? $"PAY-{paymentLogId.Value:N}"[..12].ToUpperInvariant() : null,
             operation.Status,
-            permittedNextActions));
+            permittedNextActions,
+            settlementAmount,
+            merchantCapacity?.Allocated,
+            remainingAmount));
     }
 
     private static async Task<List<CashRecord>> LoadCashRecordsForLogAsync(
@@ -2845,7 +3062,8 @@ public static class PaymentsEndpoints
         IdentityDbContext identityDbContext,
         OperationsDbContext operationsDbContext,
         CancellationToken cancellationToken,
-        bool? pendingOnly = null)
+        bool? pendingOnly = null,
+        bool? actionableOnly = null)
     {
         var query = paymentsDbContext.FinancialAdjustments.AsQueryable();
         if (merchantId.HasValue)
@@ -2859,6 +3077,14 @@ public static class PaymentsEndpoints
         if (pendingOnly == true)
         {
             query = query.Where(adjustment => adjustment.Status == PendingApproval);
+        }
+        if (actionableOnly == true)
+        {
+            // Approval inboxes must retain approved return cash refunds until
+            // their payout is recorded.  Filtering only PendingApproval made
+            // a valid approved refund disappear with no UI path to finish it.
+            query = query.Where(adjustment => adjustment.Status == PendingApproval ||
+                (adjustment.AdjustmentType == CashRefund && adjustment.Status == "Approved"));
         }
 
         var rows = await query
@@ -2876,6 +3102,616 @@ public static class PaymentsEndpoints
             adjustment.OperationId is { } linkedId ? operationNumbers.GetValueOrDefault(linkedId) : null)).ToList();
 
         return Results.Ok(responses);
+    }
+
+    private static async Task<IResult> ListReturnEntitlementsAsync(
+        string? status,
+        Guid? merchantId,
+        PaymentsDbContext paymentsDbContext,
+        OperationsDbContext operationsDbContext,
+        IdentityDbContext identityDbContext,
+        CancellationToken cancellationToken)
+    {
+        var query = paymentsDbContext.ReturnEntitlements.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(value => value.Status == status.Trim());
+        if (merchantId.HasValue)
+            query = query.Where(value => value.MerchantId == merchantId.Value);
+
+        var entitlements = await query.OrderBy(value => value.Status).ThenByDescending(value => value.CreatedAt).ToListAsync(cancellationToken);
+        var entitlementIds = entitlements.Select(value => value.Id).ToArray();
+        var waiverRows = entitlementIds.Length == 0
+            ? []
+            : await paymentsDbContext.ReturnEntitlementWaivers.AsNoTracking()
+                .Where(value => entitlementIds.Contains(value.ReturnEntitlementId))
+                .OrderBy(value => value.RequestedAt)
+                .ToListAsync(cancellationToken);
+        var approvedRefundsAwaitingPayout = entitlementIds.Length == 0
+            ? new Dictionary<Guid, decimal>()
+            : await paymentsDbContext.FinancialAdjustments.AsNoTracking()
+                .Where(value => value.ReturnEntitlementId.HasValue && entitlementIds.Contains(value.ReturnEntitlementId.Value) &&
+                    value.AdjustmentType == CashRefund && value.Status == "Approved")
+                .GroupBy(value => value.ReturnEntitlementId!.Value)
+                .Select(group => new { ReturnEntitlementId = group.Key, Amount = group.Sum(value => value.Amount) })
+                .ToDictionaryAsync(value => value.ReturnEntitlementId, value => value.Amount, cancellationToken);
+        var userIds = waiverRows.SelectMany(value => new Guid?[] { value.RequestedBy, value.ReviewedBy }).Where(value => value.HasValue).Select(value => value!.Value).Distinct().ToArray();
+        var userNames = userIds.Length == 0 ? new Dictionary<Guid, string>() : await identityDbContext.Users.AsNoTracking()
+            .Where(value => userIds.Contains(value.Id)).ToDictionaryAsync(value => value.Id, value => value.FullName ?? value.Username ?? value.Id.ToString(), cancellationToken);
+        var sourceOperationIds = entitlements.Where(value => value.OriginalSaleOperationId.HasValue)
+            .Select(value => value.OriginalSaleOperationId!.Value).Distinct().ToArray();
+        var paymentStates = sourceOperationIds.Length == 0
+            ? new Dictionary<Guid, (string Status, decimal TotalAmount, decimal AmountPaid)>()
+            : await paymentsDbContext.MainPaymentLogs.AsNoTracking()
+                .Where(value => sourceOperationIds.Contains(value.OperationId) && !value.IsDeleted)
+                .Select(value => new { value.OperationId, value.Status, value.TotalAmount, value.AmountPaid })
+                .ToDictionaryAsync(value => value.OperationId, value => (value.Status, value.TotalAmount, value.AmountPaid), cancellationToken);
+        var rows = entitlements.Select(value =>
+        {
+            (string Status, decimal TotalAmount, decimal AmountPaid)? paymentState = null;
+            if (value.OriginalSaleOperationId is { } sourceId && paymentStates.TryGetValue(sourceId, out var sourcePaymentState))
+                paymentState = sourcePaymentState;
+            // Do not infer a value for genuinely value-less legacy records.  A
+            // recorded return value, however, is payable in its normal return
+            // settlement scope; it must not be converted into a separate
+            // valuation workflow merely because the return is unlinked.
+            var normalAmount = value.NormalAmount;
+            var sourceSettled = value.SourceSettledAmount;
+            var valuationScope = value.BeneficiaryKind == "Merchant" ? "MerchantAccount" : "OtherPayments";
+            var accountSettled = valuationScope == "MerchantAccount" ? value.MerchantAccountSettledAmount : value.OtherPaymentsSettledAmount;
+            var recordedAmount = Math.Max(0m, normalAmount + value.ExceptionAmount);
+            var approvedWaivers = waiverRows.Where(row => row.ReturnEntitlementId == value.Id && row.Status == "Approved").ToList();
+            var sourceWaived = approvedWaivers.Where(row => row.Scope == "SourceOperation").Sum(row => row.Amount);
+            var accountWaived = approvedWaivers.Where(row => row.Scope == valuationScope).Sum(row => row.Amount);
+            var sourceReserved = value.ReservedScope == "SourceOperation" ? value.ReservedAmount : 0m;
+            var accountReserved = value.ReservedScope == valuationScope ? value.ReservedAmount : 0m;
+            var hasUnambiguousAmount = recordedAmount > 0m && !IsLegacyReturnEntitlementAmbiguous(value);
+            var thisEntitlementWaivers = waiverRows.Where(row => row.ReturnEntitlementId == value.Id).ToList();
+            var totalSettled = sourceSettled + value.MerchantAccountSettledAmount + value.OtherPaymentsSettledAmount;
+            var totalWaived = approvedWaivers.Sum(row => row.Amount);
+            var available = hasUnambiguousAmount && value.Status != "Cancelled"
+                ? Math.Max(0m, recordedAmount - totalSettled - totalWaived - value.ReservedAmount)
+                : 0m;
+            var sourceAvailable = value.OriginalSaleOperationId.HasValue ? available : 0m;
+            var scopeAvailable = value.OriginalSaleOperationId.HasValue ? 0m : available;
+            var unvaluedException = 0m;
+            return new ReturnEntitlementResponse(
+                value.Id, value.ReturnOperationId, value.OriginalSaleOperationId, value.MerchantId,
+                value.BeneficiaryKind, value.BuyerName, value.PaymentTrack, value.OriginalPaymentReference,
+                normalAmount, value.ExceptionAmount, value.ReservedAmount, value.SettledAmount,
+                available,
+                value.Status, value.Notes, value.CreatedAt,
+                sourceAvailable, unvaluedException,
+                paymentState?.Status,
+                paymentState.HasValue ? Math.Max(0m, paymentState.Value.TotalAmount - paymentState.Value.AmountPaid) : null,
+                sourceAvailable, scopeAvailable, scopeAvailable, unvaluedException,
+                sourceAvailable, scopeAvailable, sourceReserved + accountReserved, totalSettled,
+                totalWaived, waiverRows.Where(row => row.ReturnEntitlementId == value.Id && row.Status == "PendingReview").Sum(row => row.Amount),
+                value.ReservedScope,
+                thisEntitlementWaivers.Select(row => new ReturnEntitlementWaiverResponse(row.Id, row.Scope, row.Amount, row.Reason, row.Status,
+                    row.RequestedBy, userNames.GetValueOrDefault(row.RequestedBy), row.RequestedAt, row.ReviewedBy,
+                    row.ReviewedBy.HasValue ? userNames.GetValueOrDefault(row.ReviewedBy.Value) : null, row.ReviewedAt, row.RejectionReason)).ToList(),
+                !hasUnambiguousAmount,
+                sourceSettled, accountSettled, sourceWaived, accountWaived,
+                approvedRefundsAwaitingPayout.GetValueOrDefault(value.Id));
+        }).ToList();
+        return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> ReserveReturnEntitlementAsync(
+        Guid id,
+        ReturnEntitlementReservationRequest request,
+        PaymentsDbContext paymentsDbContext,
+        ICurrentUser currentUser,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        if (!IsReturnEntitlementFinanceActor(currentUser)) return Results.Forbid();
+        // A reservation without a linked reviewed Payments record is not a
+        // settlement workflow. Keep the legacy route closed to prevent callers
+        // from treating a held amount as paid.
+        return Results.Conflict(new { code = "return-entitlement-settlement-link-required", detail = "Create a settlement from the return entitlement so it enters the existing Finance review and payout workflow." });
+    }
+
+    private static async Task<IResult> ValueReturnEntitlementAsync(Guid id, ReturnEntitlementValuationRequest request, PaymentsDbContext paymentsDbContext, IdentityDbContext identityDbContext, PaymentIdempotencyService paymentIdempotencyService, ICurrentUser currentUser, IClock clock, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey, $"POST /api/v1/payments/return-entitlements/{id}/valuations", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsReturnEntitlementFinanceActor(currentUser)) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Forbid());
+        if (request.Amount <= 0m || string.IsNullOrWhiteSpace(request.VerbalPrincipalName) || string.IsNullOrWhiteSpace(request.Notes) || NormalizeReturnSettlementScope(request.Scope) is null)
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive valuation amount, explicit scope, principal name, and note are required."] }));
+        var actorId = currentUser.UserId ?? Guid.Empty;
+        ReturnEntitlementValuation? valuation = null;
+        IResult? failure = null;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            // The entitlement row lock remains held through cap calculation and
+            // insert, serializing concurrent valuation requests for this return.
+            var entitlement = await LoadReturnEntitlementForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (entitlement is null) { failure = Results.NotFound(); return; }
+            if (entitlement.NormalAmount <= 0m || IsLegacyReturnEntitlementAmbiguous(entitlement))
+            {
+                failure = Results.Conflict(new { code = "return-entitlement-legacy-review-required", detail = "This legacy return has no unambiguous recorded value and is held for Finance review." });
+                return;
+            }
+            var valuationScope = NormalizeReturnSettlementScope(request.Scope)!;
+            if ((valuationScope == "MerchantAccount" && (entitlement.BeneficiaryKind != "Merchant" || !entitlement.MerchantId.HasValue)) ||
+                (valuationScope == "OtherPayments" && entitlement.BeneficiaryKind != "Anonymous") || valuationScope == "SourceOperation")
+            {
+                failure = Results.Conflict(new { code = "return-entitlement-valuation-scope-invalid", detail = "MerchantAccount valuation is for merchant returns; OtherPayments valuation is for anonymous returns." });
+                return;
+            }
+            var maximum = entitlement.OriginalSaleOperationId.HasValue ? entitlement.ExceptionAmount : entitlement.NormalAmount + entitlement.ExceptionAmount;
+            var valued = await paymentsDbContext.ReturnEntitlementValuations.AsNoTracking().Where(value => value.ReturnEntitlementId == entitlement.Id && value.Scope == valuationScope).SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+            var reservedOrWaived = await paymentsDbContext.ReturnEntitlementWaivers.AsNoTracking()
+                .Where(value => value.ReturnEntitlementId == entitlement.Id && value.Scope == valuationScope && (value.Status == "Approved" || value.Status == "PendingReview"))
+                .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+            if (request.Amount > maximum - valued - reservedOrWaived)
+            {
+                failure = Results.Conflict(new { code = "return-entitlement-valuation-cap-exceeded", detail = "The valuation exceeds the remaining return amount for this scope." });
+                return;
+            }
+            var actor = await identityDbContext.Users.AsNoTracking().Where(value => value.Id == actorId).Select(value => new { value.FullName, value.Username }).SingleOrDefaultAsync(cancellationToken);
+            var principalName = string.IsNullOrWhiteSpace(actor?.FullName) ? actor?.Username : actor.FullName;
+            if (!string.Equals(principalName, request.VerbalPrincipalName.Trim(), StringComparison.Ordinal))
+            {
+                failure = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.VerbalPrincipalName)] = ["Verbal principal name must match the signed-in Finance actor."] });
+                return;
+            }
+            valuation = new ReturnEntitlementValuation { Id = Guid.NewGuid(), ReturnEntitlementId = entitlement.Id, Scope = valuationScope, Amount = request.Amount, PrincipalName = principalName!, Note = request.Notes.Trim(), ActorId = actorId, ValuedAt = clock.EgyptNow, IdempotencyKey = idempotencyKey?.Trim() };
+            paymentsDbContext.ReturnEntitlementValuations.Add(valuation);
+            entitlement.UpdatedAt = valuation.ValuedAt;
+            entitlement.UpdatedBy = actorId;
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+        }, cancellationToken);
+        if (failure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, failure);
+        return await paymentIdempotencyService.CompleteAsync(idempotency, valuation, StatusCodes.Status201Created, cancellationToken);
+    }
+
+    private static async Task<IResult> RequestReturnEntitlementWaiverAsync(Guid id, ReturnEntitlementWaiverRequest request,
+        PaymentsDbContext paymentsDbContext, ICurrentUser currentUser, PaymentIdempotencyService idempotencyService,
+        HttpContext httpContext, IClock clock, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await idempotencyService.StartAsync(idempotencyKey,
+            $"POST /api/v1/payments/return-entitlements/{id}/waivers", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsReturnEntitlementFinanceActor(currentUser)) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Forbid());
+        var scope = NormalizeReturnSettlementScope(request.Scope);
+        if (request.Amount <= 0m || string.IsNullOrWhiteSpace(request.Reason) || scope is null)
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive amount, explicit scope, and reason are required."] }));
+        var actorId = currentUser.UserId ?? Guid.Empty;
+        IResult? failure = null;
+        ReturnEntitlementWaiver? waiver = null;
+        var now = clock.EgyptNow;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            var entitlement = await LoadReturnEntitlementForUpdateAsync(id, paymentsDbContext, cancellationToken);
+            if (entitlement is null) { failure = Results.NotFound(); return; }
+            if (entitlement.NormalAmount <= 0m) { failure = Results.Conflict(new { code = "return-entitlement-legacy-review-required", detail = "This legacy return has no unambiguous recorded value and is held for Finance review." }); return; }
+            if (!IsReturnEntitlementScopeValid(entitlement, scope)) { failure = Results.Conflict(new { code = "return-entitlement-scope-invalid", scope, detail = "The selected waiver scope is not available for this return." }); return; }
+            var available = await GetReturnEntitlementScopeAvailableAsync(entitlement, scope, paymentsDbContext, cancellationToken);
+            if (request.Amount > available) { failure = Results.Conflict(new { code = "return-entitlement-waiver-cap-exceeded", scope, availableAmount = available }); return; }
+            waiver = new ReturnEntitlementWaiver
+            {
+                Id = Guid.NewGuid(), ReturnEntitlementId = id, Scope = scope, Amount = request.Amount,
+                Reason = request.Reason.Trim(), Status = "PendingReview", RequestedBy = actorId, RequestedAt = now,
+                IdempotencyKey = idempotencyKey?.Trim()
+            };
+            paymentsDbContext.ReturnEntitlementWaivers.Add(waiver);
+            entitlement.UpdatedBy = actorId;
+            entitlement.UpdatedAt = now;
+            AddPaymentWorkflowAudit(paymentsDbContext, "ReturnEntitlementWaiverRequested", entitlement.Status, "WaiverPendingReview",
+                entitlement.MerchantId, entitlement.ReturnOperationId, null, waiver.Id, actorId, now, request.Amount, scope,
+                request.Reason.Trim(), httpContext, idempotencyKey, new { entitlementId = entitlement.Id, waiverId = waiver.Id, scope });
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+        }, cancellationToken);
+        if (failure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, failure);
+        return await idempotencyService.CompleteAsync(idempotency, waiver, StatusCodes.Status201Created, cancellationToken);
+    }
+
+    private static async Task<IResult> ApproveReturnEntitlementWaiverAsync(Guid waiverId, PaymentsDbContext paymentsDbContext,
+        ICurrentUser currentUser, PaymentIdempotencyService idempotencyService, HttpContext httpContext, IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
+    {
+        await using var idempotency = await idempotencyService.StartAsync(idempotencyKey,
+            $"POST /api/v1/payments/return-entitlement-waivers/{waiverId}/approve", new { waiverId }, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsReturnEntitlementWaiverReviewer(currentUser)) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Forbid());
+        var actorId = currentUser.UserId ?? Guid.Empty;
+        ReturnEntitlementWaiver? waiver = null;
+        IResult? failure = null;
+        var now = clock.EgyptNow;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            waiver = paymentsDbContext.Database.IsRelational()
+                ? await paymentsDbContext.ReturnEntitlementWaivers.FromSqlInterpolated($"select * from payments.return_entitlement_waivers where id = {waiverId} for update").SingleOrDefaultAsync(cancellationToken)
+                : await paymentsDbContext.ReturnEntitlementWaivers.SingleOrDefaultAsync(value => value.Id == waiverId, cancellationToken);
+            if (waiver is null) { failure = Results.NotFound(); return; }
+            var entitlement = await LoadReturnEntitlementForUpdateAsync(waiver.ReturnEntitlementId, paymentsDbContext, cancellationToken);
+            if (entitlement is null) { failure = Results.NotFound(); return; }
+            if (waiver.Status != "PendingReview") { failure = Results.Conflict(new { code = "return-entitlement-waiver-already-decided", status = waiver.Status }); return; }
+            if (waiver.RequestedBy == actorId) { failure = Results.Forbid(); return; }
+            var available = await GetReturnEntitlementScopeAvailableAsync(entitlement, waiver.Scope, paymentsDbContext, cancellationToken, waiver.Id);
+            if (waiver.Amount > available) { failure = Results.Conflict(new { code = "return-entitlement-waiver-cap-changed", scope = waiver.Scope, availableAmount = available }); return; }
+            waiver.Status = "Approved";
+            waiver.ReviewedBy = actorId;
+            waiver.ReviewedAt = now;
+            entitlement.UpdatedBy = actorId;
+            entitlement.UpdatedAt = now;
+            AddPaymentWorkflowAudit(paymentsDbContext, "ReturnEntitlementWaiverApproved", "PendingReview", "Approved", entitlement.MerchantId,
+                entitlement.ReturnOperationId, null, waiver.Id, actorId, now, waiver.Amount, waiver.Scope, null, httpContext, idempotencyKey,
+                new { entitlementId = entitlement.Id, waiverId = waiver.Id, waiver.Scope, requesterId = waiver.RequestedBy });
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+        }, cancellationToken);
+        if (failure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, failure);
+        return await idempotencyService.CompleteAsync(idempotency, waiver, StatusCodes.Status200OK, cancellationToken);
+    }
+
+    private static async Task<IResult> RejectReturnEntitlementWaiverAsync(Guid waiverId, ReturnEntitlementWaiverDecisionRequest request,
+        PaymentsDbContext paymentsDbContext, ICurrentUser currentUser, PaymentIdempotencyService idempotencyService,
+        HttpContext httpContext, IClock clock, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await idempotencyService.StartAsync(idempotencyKey,
+            $"POST /api/v1/payments/return-entitlement-waivers/{waiverId}/reject", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsReturnEntitlementWaiverReviewer(currentUser)) return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Forbid());
+        if (string.IsNullOrWhiteSpace(request.Reason)) return await PaymentIdempotencyService.AbortAsync(idempotency,
+            Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Reason)] = ["A rejection reason is required."] }));
+        var actorId = currentUser.UserId ?? Guid.Empty;
+        ReturnEntitlementWaiver? waiver = null;
+        IResult? failure = null;
+        var now = clock.EgyptNow;
+        await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+        {
+            waiver = paymentsDbContext.Database.IsRelational()
+                ? await paymentsDbContext.ReturnEntitlementWaivers.FromSqlInterpolated($"select * from payments.return_entitlement_waivers where id = {waiverId} for update").SingleOrDefaultAsync(cancellationToken)
+                : await paymentsDbContext.ReturnEntitlementWaivers.SingleOrDefaultAsync(value => value.Id == waiverId, cancellationToken);
+            if (waiver is null) { failure = Results.NotFound(); return; }
+            var entitlement = await LoadReturnEntitlementForUpdateAsync(waiver.ReturnEntitlementId, paymentsDbContext, cancellationToken);
+            if (entitlement is null) { failure = Results.NotFound(); return; }
+            if (waiver.Status != "PendingReview") { failure = Results.Conflict(new { code = "return-entitlement-waiver-already-decided", status = waiver.Status }); return; }
+            if (waiver.RequestedBy == actorId) { failure = Results.Forbid(); return; }
+            waiver.Status = "Rejected";
+            waiver.ReviewedBy = actorId;
+            waiver.ReviewedAt = now;
+            waiver.RejectionReason = request.Reason.Trim();
+            entitlement.UpdatedBy = actorId;
+            entitlement.UpdatedAt = now;
+            AddPaymentWorkflowAudit(paymentsDbContext, "ReturnEntitlementWaiverRejected", "PendingReview", "Rejected", entitlement.MerchantId,
+                entitlement.ReturnOperationId, null, waiver.Id, actorId, now, waiver.Amount, waiver.Scope, request.Reason.Trim(), httpContext,
+                idempotencyKey, new { entitlementId = entitlement.Id, waiverId = waiver.Id, waiver.Scope, requesterId = waiver.RequestedBy });
+            await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+        }, cancellationToken);
+        if (failure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, failure);
+        return await idempotencyService.CompleteAsync(idempotency, waiver, StatusCodes.Status200OK, cancellationToken);
+    }
+
+    private static bool IsReturnEntitlementScopeValid(ReturnEntitlement entitlement, string scope) => scope switch
+    {
+        "SourceOperation" => entitlement.OriginalSaleOperationId.HasValue,
+        "MerchantAccount" => entitlement.BeneficiaryKind == "Merchant" && entitlement.MerchantId.HasValue,
+        "OtherPayments" => entitlement.BeneficiaryKind == "Anonymous",
+        _ => false
+    };
+
+    private static bool IsLegacyReturnEntitlementAmbiguous(ReturnEntitlement entitlement) =>
+        (entitlement.SettledAmount > 0m && entitlement.SourceSettledAmount == 0m && entitlement.MerchantAccountSettledAmount == 0m && entitlement.OtherPaymentsSettledAmount == 0m) ||
+        entitlement.AccountLevelSettledAmount != entitlement.MerchantAccountSettledAmount + entitlement.OtherPaymentsSettledAmount ||
+        (entitlement.ReservedAmount > 0m && string.IsNullOrWhiteSpace(entitlement.ReservedScope));
+
+    private static async Task<decimal> GetReturnEntitlementScopeAvailableAsync(ReturnEntitlement entitlement, string scope,
+        PaymentsDbContext paymentsDbContext, CancellationToken cancellationToken, Guid? excludingPendingWaiverId = null)
+    {
+        var valuations = await paymentsDbContext.ReturnEntitlementValuations.AsNoTracking()
+            .Where(value => value.ReturnEntitlementId == entitlement.Id).ToListAsync(cancellationToken);
+        var waiverQuery = paymentsDbContext.ReturnEntitlementWaivers.AsNoTracking()
+            .Where(value => value.ReturnEntitlementId == entitlement.Id);
+        if (excludingPendingWaiverId.HasValue) waiverQuery = waiverQuery.Where(value => value.Id != excludingPendingWaiverId.Value);
+        var waivers = await waiverQuery.ToListAsync(cancellationToken);
+        return BuildReturnEntitlementScopeAvailable(entitlement, scope, valuations, waivers);
+    }
+
+    private static decimal BuildReturnEntitlementScopeAvailable(ReturnEntitlement entitlement, string scope,
+        IReadOnlyCollection<ReturnEntitlementValuation> valuations, IReadOnlyCollection<ReturnEntitlementWaiver> waivers)
+    {
+        if (entitlement.NormalAmount <= 0m || IsLegacyReturnEntitlementAmbiguous(entitlement) || !IsReturnEntitlementScopeValid(entitlement, scope)) return 0m;
+        var pool = scope == "SourceOperation" ? entitlement.NormalAmount : valuations.Where(value => value.Scope == scope).Sum(value => value.Amount);
+        var settled = scope switch
+        {
+            "SourceOperation" => entitlement.SourceSettledAmount,
+            "MerchantAccount" => entitlement.MerchantAccountSettledAmount,
+            _ => entitlement.OtherPaymentsSettledAmount
+        };
+        var waived = waivers.Where(value => value.Scope == scope && value.Status is "Approved" or "PendingReview").Sum(value => value.Amount);
+        var reserved = entitlement.ReservedScope == scope ? entitlement.ReservedAmount : 0m;
+        return Math.Max(0m, pool - settled - waived - reserved);
+    }
+
+    private static async Task<IResult> CreateReturnEntitlementSettlementAsync(
+        Guid id,
+        ReturnEntitlementSettlementRequest request,
+        PaymentsDbContext paymentsDbContext,
+        OperationsDbContext operationsDbContext,
+        FinanceDbContext financeDbContext,
+        IdentityDbContext identityDbContext,
+        SharedDbContext sharedDbContext,
+        MerchantAccountService merchantAccountService,
+        PaymentIdempotencyService paymentIdempotencyService,
+        ICurrentUser currentUser,
+        HttpContext httpContext,
+        IClock clock,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await using var idempotency = await paymentIdempotencyService.StartAsync(
+            idempotencyKey, $"POST /api/v1/payments/return-entitlements/{id}/settlements", request, cancellationToken);
+        if (idempotency.Result is not null) return idempotency.Result;
+        if (!IsReturnEntitlementFinanceActor(currentUser)) return Results.Forbid();
+        if (request.Amount <= 0m)
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Settlement amount must be greater than zero."] }));
+
+        var method = NormalizeReturnSettlementMethod(request.SettlementMethod);
+        if (method is null)
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SettlementMethod)] = ["Choose BalanceReduction, CashRefund, CashHandToHand, BankTransfer, or Wallet."] }));
+        var settlementScope = NormalizeReturnSettlementScope(request.SettlementScope);
+        if (settlementScope is null)
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SettlementScope)] = ["An explicit scope is required: SourceOperation, MerchantAccount, or OtherPayments."] }));
+
+        if (method is "CashHandToHand" or "BankTransfer" or "Wallet")
+        {
+            var accountError = await ValidateReceivingAccountAsync(financeDbContext, request.FinanceAccountId, method, cancellationToken);
+            if (accountError is not null)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = [accountError] }));
+            if (MerchantAccountService.RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(request.TransactionReference))
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payout requires its transaction reference."] }));
+            if (ValidateRefundTransferFee(method, request.TransferFeeAmount) is { } feeError)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] }));
+        }
+        if (method == CashRefund)
+        {
+            var refundMethod = NormalizeMovementMethod(request.RefundPaymentMethod);
+            if (refundMethod is null)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.RefundPaymentMethod)] = ["Choose CashHandToHand, BankTransfer, or Wallet for the cash refund."] }));
+            var accountError = await ValidateReceivingAccountAsync(financeDbContext, request.FinanceAccountId, refundMethod, cancellationToken);
+            if (accountError is not null)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = [accountError.Replace("collection form", "cash refund")] }));
+            if (MerchantAccountService.RequiresTransactionReference(refundMethod) && string.IsNullOrWhiteSpace(request.TransactionReference))
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic cash refund requires its transaction reference."] }));
+            if (ValidateRefundTransferFee(refundMethod, request.TransferFeeAmount) is { } feeError)
+                return await PaymentIdempotencyService.AbortAsync(idempotency, Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] }));
+        }
+
+        ReturnEntitlement? entitlement = null;
+        FinancialAdjustment? adjustment = null;
+        CashRecord? cashRecord = null;
+        IResult? failure = null;
+        var now = clock.EgyptNow;
+        var actorId = currentUser.UserId ?? Guid.Empty;
+        try
+        {
+            await SharedDbTransaction.ExecuteAsync(paymentsDbContext, async () =>
+            {
+                entitlement = paymentsDbContext.Database.IsRelational()
+                    ? await paymentsDbContext.ReturnEntitlements.FromSqlInterpolated($"select * from payments.return_entitlements where id = {id} for update").SingleOrDefaultAsync(cancellationToken)
+                    : await paymentsDbContext.ReturnEntitlements.SingleOrDefaultAsync(value => value.Id == id, cancellationToken);
+                if (entitlement is null) { failure = Results.NotFound(); return; }
+                if (entitlement.Status is "Settled" or "Cancelled")
+                {
+                    failure = Results.Conflict(new { code = "return-entitlement-not-available", detail = "This return entitlement already has an active settlement or is closed." });
+                    return;
+                }
+                if (entitlement.NormalAmount + entitlement.ExceptionAmount <= 0m || IsLegacyReturnEntitlementAmbiguous(entitlement))
+                {
+                    failure = Results.Conflict(new { code = "return-entitlement-legacy-review-required", detail = "This legacy return has no unambiguous recorded value and is held for Finance review." });
+                    return;
+                }
+                var validScope = settlementScope switch
+                {
+                    "SourceOperation" => entitlement.OriginalSaleOperationId.HasValue,
+                    "MerchantAccount" => entitlement.BeneficiaryKind == "Merchant" && entitlement.MerchantId.HasValue,
+                    "OtherPayments" => entitlement.BeneficiaryKind == "Anonymous",
+                    _ => false
+                };
+                if (!validScope)
+                {
+                    failure = Results.Conflict(new { code = "return-entitlement-scope-invalid", detail = "The selected settlement scope is not available for this return beneficiary/source." });
+                    return;
+                }
+                var isGatewayRefundReview = string.Equals(entitlement.PaymentTrack, FailedDeliveryReturnFinanceRepairService.GatewayRefundReviewPaymentTrack, StringComparison.Ordinal);
+                if (isGatewayRefundReview)
+                {
+                    failure = Results.Conflict(new { code = "failed-delivery-gateway-refund-review-required", detail = "This failed delivery was paid through a gateway or wallet. Process the reversal against the original payment reference; a generic cash payout is not permitted." });
+                    return;
+                }
+                var waiverQuery = paymentsDbContext.ReturnEntitlementWaivers.AsNoTracking()
+                    .Where(value => value.ReturnEntitlementId == entitlement.Id);
+                var waived = await waiverQuery.Where(value => value.Status == "Approved" || value.Status == "PendingReview")
+                    .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+                var settled = entitlement.SourceSettledAmount + entitlement.MerchantAccountSettledAmount + entitlement.OtherPaymentsSettledAmount;
+                var recordedAmount = entitlement.NormalAmount + entitlement.ExceptionAmount;
+                // Every pending leg reserves its own portion.  The old model
+                // only remembered one reservation, which made a 40/60 refund
+                // and reduction impossible even though the return still had
+                // available value.
+                var eligible = Math.Max(0m, recordedAmount - settled - waived - entitlement.ReservedAmount);
+                if (request.Amount > eligible)
+                {
+                    failure = Results.Conflict(new { code = "return-entitlement-scope-cap-exceeded", scope = settlementScope, availableAmount = eligible, detail = $"Only {eligible:0.####} remains payable for this return." });
+                    return;
+                }
+                var source = entitlement.OriginalSaleOperationId is { } originalSaleOperationId
+                    ? await LoadOperationForUpdateAsync(originalSaleOperationId, operationsDbContext, cancellationToken)
+                    : null;
+                var isFailedDeliveryRefundReview = entitlement.PaymentTrack is FailedDeliveryReturnFinanceRepairService.RefundReviewPaymentTrack or FailedDeliveryReturnFinanceRepairService.GatewayRefundReviewPaymentTrack;
+                if (entitlement.OriginalSaleOperationId.HasValue && (source is null || source.IsDeleted ||
+                    (!IsFinalizedSaleForPayments(source) && !(isFailedDeliveryRefundReview && source.Status == "FailedDelivery"))))
+                {
+                    failure = Results.Conflict(new { code = "return-entitlement-source-ineligible", detail = "The original sale is not a completed eligible sale." });
+                    return;
+                }
+
+                MainPaymentLog? log = null;
+                if (entitlement.BeneficiaryKind == "Anonymous")
+                {
+                    if (source is null)
+                    {
+                        if (settlementScope != "OtherPayments")
+                        {
+                            failure = Results.Conflict(new { code = "return-entitlement-scope-required", detail = "An unlinked return must use the nonmerchant payout scope." });
+                            return;
+                        }
+                        log = await paymentsDbContext.MainPaymentLogs
+                            .FirstOrDefaultAsync(value => value.OperationId == entitlement.ReturnOperationId && !value.IsDeleted, cancellationToken);
+                        if (log is null)
+                        {
+                            log = new MainPaymentLog
+                            {
+                                Id = Guid.NewGuid(),
+                                OperationId = entitlement.ReturnOperationId,
+                                TotalAmount = entitlement.NormalAmount + entitlement.ExceptionAmount,
+                                AmountPaid = 0m,
+                                PaymentMethod = method,
+                                Status = PendingAdminReview,
+                                InitializedBy = actorId,
+                                InitializedAt = now,
+                                LastModifiedBy = actorId,
+                                LastModifiedAt = now,
+                                Notes = "Created from an unlinked return payout request. No source sale or payment was inferred."
+                            };
+                            paymentsDbContext.MainPaymentLogs.Add(log);
+                        }
+                    }
+                    else
+                    {
+                        var sourcePaymentLog = await paymentsDbContext.MainPaymentLogs.AsNoTracking()
+                            .FirstOrDefaultAsync(value => value.OperationId == source.Id && !value.IsDeleted, cancellationToken);
+                        if (sourcePaymentLog is null)
+                        {
+                            failure = Results.Conflict(new { code = "return-entitlement-payment-source-missing", detail = "The original sale has no Payments record to anchor this payout." });
+                            return;
+                        }
+                        log = await LoadPaymentLogForUpdateAsync(sourcePaymentLog.Id, paymentsDbContext, cancellationToken);
+                        if (log is null)
+                        {
+                            failure = Results.Conflict(new { code = "return-entitlement-payment-source-missing", detail = "The original sale has no Payments record to anchor this payout." });
+                            return;
+                        }
+                        if (entitlement.PaymentTrack == "GatewayOrWallet" && log.Status != PaymentCompleted)
+                        {
+                            failure = Results.Conflict(new { code = "original-payment-not-reconciled", detail = "Reconcile the original gateway or wallet payment before settling its return." });
+                            return;
+                        }
+                        if (entitlement.PaymentTrack == "COD" && log.Status != PaymentCompleted)
+                        {
+                            failure = Results.Conflict(new { code = "cod-collection-not-confirmed", detail = "Record and confirm the cash-on-delivery collection before issuing a refund." });
+                            return;
+                        }
+                    }
+                }
+
+                if (entitlement.BeneficiaryKind == "Merchant")
+                {
+                    if (!entitlement.MerchantId.HasValue || settlementScope is not ("SourceOperation" or "MerchantAccount") || method is not ("BalanceReduction" or "CashRefund"))
+                    {
+                        failure = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SettlementMethod)] = ["Merchant entitlements use BalanceReduction or CashRefund."] });
+                        return;
+                    }
+                    if (isFailedDeliveryRefundReview && method == CashRefund)
+                    {
+                        var capacity = await GetFailedDeliveryRefundCapacityAsync(paymentsDbContext, source!.Id, null, cancellationToken);
+                        if (request.Amount > Math.Min(eligible, capacity))
+                        {
+                            failure = Results.Conflict(new { code = "return-entitlement-payment-cap-exceeded", detail = "The requested refund exceeds the confirmed collection for the original failed delivery." });
+                            return;
+                        }
+                    }
+                    adjustment = new FinancialAdjustment
+                    {
+                        // Merchant reductions are obligations against the sold
+                        // order, never the physical return document.
+                        Id = Guid.NewGuid(), MerchantId = entitlement.MerchantId.Value, OperationId = settlementScope == "SourceOperation" ? entitlement.OriginalSaleOperationId : null,
+                        ReturnEntitlementId = entitlement.Id,
+                        ReturnSettlementScope = settlementScope,
+                        AdjustmentType = method, Amount = request.Amount, Status = PendingApproval,
+                        RefundFinanceAccountId = method == CashRefund ? request.FinanceAccountId : null,
+                        RefundPaymentMethod = method == CashRefund ? NormalizeMovementMethod(request.RefundPaymentMethod) : null,
+                        RefundTransactionReference = method == CashRefund ? request.TransactionReference?.Trim() : null,
+                        RefundTransferFeeAmount = method == CashRefund ? request.TransferFeeAmount : null,
+                        Notes = request.Notes?.Trim(), CreatedBy = actorId, CreatedAt = now, LineageKind = "SourceLinked"
+                    };
+                    paymentsDbContext.FinancialAdjustments.Add(adjustment);
+                }
+                else
+                {
+                    if (settlementScope is not ("SourceOperation" or "OtherPayments") || method is "BalanceReduction" or "CashRefund" or "GatewayRefund")
+                    {
+                        failure = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SettlementMethod)] = ["Anonymous returns require an outgoing cash, bank, or wallet payout method. Gateway refunds are not supported by the current provider integration and remain held."] });
+                        return;
+                    }
+                    if (MerchantAccountService.RequiresTransactionReference(method) && string.IsNullOrWhiteSpace(request.TransactionReference))
+                    {
+                        failure = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payout requires its transaction reference."] });
+                        return;
+                    }
+                    var capacity = source is null
+                        ? eligible
+                        : isFailedDeliveryRefundReview
+                            ? await GetFailedDeliveryRefundCapacityAsync(paymentsDbContext, source.Id, null, cancellationToken)
+                            : await GetReturnRefundCapacityAsync(paymentsDbContext, log!, null, cancellationToken);
+                    if (request.Amount > Math.Min(eligible, capacity))
+                    {
+                        failure = Results.Conflict(new { code = "return-entitlement-payment-cap-exceeded", detail = "The requested payout exceeds the normal entitlement or the original sale's refundable payment capacity." });
+                        return;
+                    }
+                    log!.AssignedTo ??= await SelectLeastLoadedAccountantAsync(identityDbContext, paymentsDbContext, cancellationToken);
+                    log.AssignedAt ??= log.AssignedTo.HasValue ? now : null;
+                    cashRecord = new CashRecord
+                    {
+                        Id = Guid.NewGuid(), OperationId = source?.Id ?? entitlement.ReturnOperationId, ReturnEntitlementId = entitlement.Id, ReturnSettlementScope = settlementScope,
+                        PaymentType = CashRefund, SubType = method,
+                        TransactionReference = method == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : request.TransactionReference!.Trim(),
+                        FinanceAccountId = request.FinanceAccountId, Amount = request.Amount, TransferFeeAmount = request.TransferFeeAmount,
+                        // Cash records use their own workflow constraint; unlike a
+                        // main payment log they cannot be PendingAdminReview.
+                        // PendingAccountant remains reviewable by the existing
+                        // approve/reject endpoint and satisfies chk_cash_status.
+                        Status = PendingAccountant, PaymentDate = now, CreatedBy = actorId, Notes = request.Notes?.Trim()
+                    };
+                    paymentsDbContext.CashRecords.Add(cashRecord);
+                    // Keep the original sale payment complete while the separate
+                    // return payout is held for review.
+                }
+
+                entitlement.ReservedAmount += request.Amount;
+                // Kept only as a backward-compatible display hint.  Multiple
+                // outstanding legs can legitimately have different scopes.
+                entitlement.ReservedScope = entitlement.ReservedScope is null || entitlement.ReservedScope == settlementScope ? settlementScope : "Multiple";
+                entitlement.Status = "Reserved";
+                entitlement.UpdatedBy = actorId;
+                entitlement.UpdatedAt = now;
+                entitlement.Notes = string.IsNullOrWhiteSpace(request.Notes) ? entitlement.Notes : request.Notes.Trim();
+                AddPaymentWorkflowAudit(paymentsDbContext, "ReturnEntitlementSettlementRequested", "Held", "Reserved", entitlement.MerchantId,
+                    source?.Id ?? entitlement.ReturnOperationId, log?.Id, null, actorId, now, request.Amount, method, null, httpContext, idempotencyKey,
+                    new { entitlement.Id, adjustmentId = adjustment?.Id, cashRecordId = cashRecord?.Id });
+                await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
+                await PersistenceBoundary.CommitAsync(identityDbContext, cancellationToken);
+            }, cancellationToken, operationsDbContext, financeDbContext, identityDbContext, sharedDbContext);
+
+            if (failure is not null) return await PaymentIdempotencyService.AbortAsync(idempotency, failure);
+            var response = new ReturnEntitlementSettlementResponse(
+                entitlement!.Id, entitlement.Status, entitlement.ReservedAmount, entitlement.SettledAmount,
+                adjustment?.Id, cashRecord?.Id, adjustment?.Status ?? cashRecord?.Status ?? entitlement!.Status);
+            return await paymentIdempotencyService.CompleteAsync(idempotency, response, StatusCodes.Status201Created, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new { code = "return-entitlement-settlement-concurrency-conflict", detail = "The return entitlement or original payment changed during settlement creation. Reload and retry." }));
+        }
+        catch (DbUpdateException)
+        {
+            return await PaymentIdempotencyService.AbortAsync(idempotency, Results.Conflict(new { code = "return-entitlement-settlement-save-conflict", detail = "A settlement is already linked or could not be saved." }));
+        }
     }
 
     private static async Task<IResult> CreateFinancialAdjustmentAsync(
@@ -2927,10 +3763,8 @@ public static class PaymentsEndpoints
                 return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["Operation must belong to the selected merchant."] });
             if (operation.OperationType is Change or Reserve)
                 return Results.Json(new { code = "operation-type-retired", detail = "Historical Change and representative-reserve operations cannot receive new financial adjustments." }, statusCode: StatusCodes.Status410Gone);
-            if (operation.OperationType == Return && operation.Status != Confirmed)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.OperationId)] = ["A Return must be confirmed before it can receive a financial adjustment."] });
-            if (operation.OperationType == Return && adjustmentType == AdditionalCharge)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AdjustmentType)] = ["A merchant Return can be settled through BalanceReduction or CashRefund."] });
+            if (operation.OperationType == Return)
+                return Results.Conflict(new { code = "return-entitlement-required", detail = "A return adjustment must be created from its held Payments return entitlement, never from a generic Return operation reference." });
         }
         else
         {
@@ -3055,10 +3889,25 @@ public static class PaymentsEndpoints
                 transactionResult = Results.NotFound();
                 return;
             }
+            if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
             if (adjustment.Status != PendingApproval)
             {
                 transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only pending adjustment requests can be approved." });
                 return;
+            }
+            ReturnEntitlement? returnEntitlement = null;
+            if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
+            {
+                returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
+                if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || adjustment.Amount > returnEntitlement.ReservedAmount)
+                {
+                    transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this adjustment." });
+                    return;
+                }
             }
             MainPaymentLog? paymentLog = null;
             if (adjustment.PaymentLogId is { } paymentLogId)
@@ -3076,7 +3925,7 @@ public static class PaymentsEndpoints
                     return;
                 }
             }
-            else if (adjustment.AdjustmentType == CashRefund)
+            else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is null)
             {
                 var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
                 if (adjustment.Amount > capacity)
@@ -3105,6 +3954,40 @@ public static class PaymentsEndpoints
                     return;
                 }
                 await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id, adjustment.OperationId, adjustment.Amount, "BalanceReduction", currentUser.UserId ?? Guid.Empty, now, adjustment.Notes, cancellationToken);
+                if (returnEntitlement is not null)
+                    ApplyReturnEntitlementSettlement(returnEntitlement, adjustment.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
+            }
+            else if (adjustment.AdjustmentType == CashRefund && returnEntitlement is not null)
+            {
+                // Approval turns the accepted return value into merchant
+                // credit and reserves it for this cash refund. The return
+                // entitlement, not unrelated prior credit, authorizes payout.
+                var account = await merchantAccountService.GetOrCreateForUpdateAsync(adjustment.MerchantId, currentUser.UserId ?? Guid.Empty, now, cancellationToken);
+                var existingReservation = await paymentsDbContext.MerchantRefundReservations
+                    .AnyAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
+                if (existingReservation)
+                {
+                    transactionResult = Results.Conflict(new { code = "return-refund-reservation-exists", detail = "This return refund already has an account reservation." });
+                    return;
+                }
+
+                await merchantAccountService.PostCreditForSourceAsync(adjustment.MerchantId, adjustment.Id,
+                    adjustment.OperationId, adjustment.Amount, "ReturnCredit", currentUser.UserId ?? Guid.Empty,
+                    now, adjustment.Notes, cancellationToken);
+                paymentsDbContext.MerchantRefundReservations.Add(new MerchantRefundReservation
+                {
+                    Id = Guid.NewGuid(),
+                    FinancialAdjustmentId = adjustment.Id,
+                    AccountId = account.Id,
+                    Amount = adjustment.Amount,
+                    PaidAmount = 0m,
+                    Status = "Approved",
+                    CreatedBy = adjustment.CreatedBy,
+                    CreatedAt = adjustment.CreatedAt,
+                    ApprovedBy = currentUser.UserId,
+                    ApprovedAt = now,
+                    Notes = adjustment.Notes
+                });
             }
 
             await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentApproved", paymentLog?.Id ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.LineageKind }, now, cancellationToken);
@@ -3158,21 +4041,11 @@ public static class PaymentsEndpoints
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Payout amount must be greater than zero."] });
         }
-        var paymentMethod = NormalizeMovementMethod(request.PaymentMethod);
-        if (paymentMethod is null)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Payment method is required and must be CashHandToHand, CashTransaction, BankTransfer, or Wallet."] });
-        }
-        if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(request.TransactionReference))
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
-        }
-        if (request.FinanceAccountId is null)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = ["A FinanceAccountId is required for a refund payout."] });
-        }
-
         FinancialAdjustment? adjustment = null;
+        string? paymentMethod = null;
+        Guid? financeAccountId = null;
+        string? transactionReference = null;
+        decimal? transferFeeAmount = null;
         IResult? transactionResult = null;
         try
         {
@@ -3184,9 +4057,41 @@ public static class PaymentsEndpoints
                 transactionResult = Results.NotFound();
                 return;
             }
+            if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
+            {
+                transactionResult = Results.Forbid();
+                return;
+            }
             if (adjustment.AdjustmentType != CashRefund || adjustment.Status != "Approved")
             {
                 transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only an approved cash refund can be paid out." });
+                return;
+            }
+            // New refund legs persist their payout instructions at request time.
+            // The request values remain a fallback for historical approvals.
+            paymentMethod = NormalizeMovementMethod(request.PaymentMethod ?? adjustment.RefundPaymentMethod);
+            financeAccountId = request.FinanceAccountId ?? adjustment.RefundFinanceAccountId;
+            transactionReference = request.TransactionReference?.Trim() ?? adjustment.RefundTransactionReference;
+            transferFeeAmount = request.TransferFeeAmount ?? adjustment.RefundTransferFeeAmount;
+            if (paymentMethod is null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.PaymentMethod)] = ["Choose CashHandToHand, BankTransfer, or Wallet for this refund payout."] });
+                return;
+            }
+            var accountError = await ValidateReceivingAccountAsync(financeDbContext, financeAccountId, paymentMethod, cancellationToken);
+            if (accountError is not null)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = [accountError.Replace("collection form", "cash refund")] });
+                return;
+            }
+            if (MerchantAccountService.RequiresTransactionReference(paymentMethod) && string.IsNullOrWhiteSpace(transactionReference))
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransactionReference)] = ["An electronic payment requires a transaction reference."] });
+                return;
+            }
+            if (ValidateRefundTransferFee(paymentMethod, transferFeeAmount) is { } feeError)
+            {
+                transactionResult = Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.TransferFeeAmount)] = [feeError] });
                 return;
             }
 
@@ -3199,7 +4104,27 @@ public static class PaymentsEndpoints
                 transactionResult = Results.Conflict(new { code = "refund-cap-exceeded", detail = $"Payout exceeds the remaining approved refund ({due:0.####})." });
                 return;
             }
-            if (adjustment.PaymentLogId is null)
+            ReturnEntitlement? returnEntitlement = null;
+            if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
+            {
+                returnEntitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
+                if (returnEntitlement is null || returnEntitlement.Status != "Reserved" || request.Amount > returnEntitlement.ReservedAmount)
+                {
+                    transactionResult = Results.Conflict(new { code = "return-entitlement-reservation-mismatch", detail = "The linked return entitlement is no longer reserved for this payout." });
+                    return;
+                }
+                if (returnEntitlement.PaymentTrack == FailedDeliveryReturnFinanceRepairService.RefundReviewPaymentTrack &&
+                    returnEntitlement.OriginalSaleOperationId is { } failedDeliverySourceId)
+                {
+                    var capacity = await GetFailedDeliveryRefundCapacityAsync(paymentsDbContext, failedDeliverySourceId, adjustment.Id, cancellationToken);
+                    if (request.Amount > capacity)
+                    {
+                        transactionResult = Results.Conflict(new { code = "failed-delivery-refund-cap-exceeded", detail = "Payout exceeds the confirmed collection remaining for the original failed delivery." });
+                        return;
+                    }
+                }
+            }
+            if (adjustment.PaymentLogId is null && returnEntitlement is null)
             {
                 var capacity = await CalculateUnlinkedCashRefundCapacityAsync(paymentsDbContext, merchantAccountService, adjustment.MerchantId, adjustment.Id, cancellationToken);
                 if (request.Amount > capacity)
@@ -3222,18 +4147,43 @@ public static class PaymentsEndpoints
                 MerchantId = adjustment.MerchantId,
                 PaymentType = CashRefund,
                 SubType = paymentMethod,
-                TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : request.TransactionReference!.Trim(),
+                TransactionReference = paymentMethod == "CashHandToHand" ? $"CASH-{Guid.NewGuid():N}" : transactionReference!,
                 Amount = request.Amount,
+                TransferFeeAmount = transferFeeAmount,
                 Status = PaymentCompleted,
                 PaymentDate = now,
                 CreatedBy = currentUser.UserId ?? Guid.Empty,
                 ConfirmedBy = currentUser.UserId ?? Guid.Empty,
                 ConfirmedAt = now,
                 Notes = string.IsNullOrWhiteSpace(request.Notes) ? adjustment.Notes : request.Notes.Trim(),
-                FinancialAdjustmentId = adjustment.Id
+                FinancialAdjustmentId = adjustment.Id,
+                FinanceAccountId = financeAccountId
             };
+            if (returnEntitlement is not null)
+            {
+                payout.ReturnEntitlementId = returnEntitlement.Id;
+            }
+            if (returnEntitlement is not null)
+                ApplyReturnEntitlementSettlement(returnEntitlement, request.Amount, adjustment.ReturnSettlementScope, now, currentUser.UserId ?? Guid.Empty);
             paymentsDbContext.CashRecords.Add(payout);
-            if (adjustment.PaymentLogId is null)
+            if (returnEntitlement is not null)
+            {
+                var reservation = paymentsDbContext.Database.IsRelational()
+                    ? await paymentsDbContext.MerchantRefundReservations
+                        .FromSqlInterpolated($"select * from payments.merchant_refund_reservations where financial_adjustment_id = {adjustment.Id} for update")
+                        .SingleOrDefaultAsync(cancellationToken)
+                    : await paymentsDbContext.MerchantRefundReservations
+                        .SingleOrDefaultAsync(value => value.FinancialAdjustmentId == adjustment.Id, cancellationToken);
+                if (reservation is null)
+                {
+                    transactionResult = Results.Conflict(new { code = "return-refund-reservation-missing", detail = "The approved return refund has no reserved merchant credit." });
+                    return;
+                }
+                await merchantAccountService.PostRefundPayoutAsync(adjustment.MerchantId, reservation.Id, payout.Id,
+                    request.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty,
+                    now, payout.Notes, cancellationToken);
+            }
+            else if (adjustment.PaymentLogId is null)
             {
                 await merchantAccountService.PostUnlinkedRefundPayoutAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, paymentMethod, payout.TransactionReference, currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
             }
@@ -3242,8 +4192,12 @@ public static class PaymentsEndpoints
                 await merchantAccountService.PostDebitForSourceAsync(adjustment.MerchantId, payout.Id, operationId, payout.Amount, "RefundPayout", currentUser.UserId ?? Guid.Empty, now, payout.Notes, cancellationToken);
             }
             await financeLedgerService.PostMovementAsync("RefundPayout", payout.Id, "MerchantAccount", paymentMethod,
-                payout.Amount, request.FinanceAccountId, payout.TransactionReference, "RefundPayout", FinanceLedgerService.Debit,
+                payout.Amount, financeAccountId, payout.TransactionReference, "RefundPayout", FinanceLedgerService.Debit,
                 currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
+            if (payout.TransferFeeAmount > 0m)
+                await financeLedgerService.PostMovementAsync("RefundTransferFee", payout.Id, "CompanyCost", paymentMethod,
+                    payout.TransferFeeAmount.Value, financeAccountId, null, "TransferFee", FinanceLedgerService.Debit,
+                    currentUser.UserId ?? Guid.Empty, DateOnly.FromDateTime(now), idempotencyKey, cancellationToken);
             if (request.Amount == due)
             {
                 adjustment.Status = PaymentCompleted;
@@ -3312,6 +4266,11 @@ public static class PaymentsEndpoints
                     transactionResult = Results.NotFound();
                     return;
                 }
+                if (adjustment.ReturnEntitlementId.HasValue && !IsReturnEntitlementFinanceActor(currentUser))
+                {
+                    transactionResult = Results.Forbid();
+                    return;
+                }
                 if (adjustment.Status != PendingApproval)
                 {
                     transactionResult = Results.Conflict(new { code = "transition-conflict", detail = "Only pending adjustment requests can be rejected." });
@@ -3322,6 +4281,17 @@ public static class PaymentsEndpoints
                 adjustment.ReviewedBy = currentUser.UserId;
                 adjustment.ReviewedAt = now;
                 adjustment.RejectionReason = request.Reason.Trim();
+                if (adjustment.ReturnEntitlementId is { } linkedEntitlementId)
+                {
+                    var entitlement = await LoadReturnEntitlementForUpdateAsync(linkedEntitlementId, paymentsDbContext, cancellationToken);
+                    if (entitlement is not null && entitlement.Status == "Reserved")
+                    {
+                        entitlement.ReservedAmount = Math.Max(0m, entitlement.ReservedAmount - adjustment.Amount);
+                        entitlement.Status = entitlement.ReservedAmount > 0m ? "Reserved" : "Held";
+                        entitlement.UpdatedBy = currentUser.UserId;
+                        entitlement.UpdatedAt = now;
+                    }
+                }
                 await AddPaymentAuditAsync(identityDbContext, currentUser, httpContext, "FinancialAdjustmentRejected", adjustment.PaymentLogId ?? adjustment.Id, new { adjustment.Id, adjustment.AdjustmentType, adjustment.Amount, adjustment.RejectionReason }, now, cancellationToken);
                 AddPaymentWorkflowAudit(paymentsDbContext, "FinancialAdjustmentRejected", PendingApproval, Rejected, adjustment.MerchantId, adjustment.OperationId, adjustment.PaymentLogId, null, currentUser.UserId ?? Guid.Empty, now, adjustment.Amount, null, adjustment.RejectionReason, httpContext, idempotencyKey, new { adjustment.Id, adjustment.AdjustmentType });
                 await PersistenceBoundary.CommitAsync(paymentsDbContext, cancellationToken);
@@ -3459,14 +4429,165 @@ public static class PaymentsEndpoints
         return Math.Max(0m, snapshot.RefundDue - reserved);
     }
 
+    private static async Task<decimal> GetReturnRefundCapacityAsync(
+        PaymentsDbContext paymentsDbContext,
+        MainPaymentLog log,
+        Guid? excludingCashRecordId,
+        CancellationToken cancellationToken)
+    {
+        // A merchandise return is refundable from money actually collected for
+        // the sale, not merely from an accidental overpayment (the generic
+        // payment-correction cap). MainPaymentLog.AmountPaid carries reconciled
+        // gateway totals; cash and installment event rows are included as an
+        // authoritative floor for manually reconciled collections.
+        var confirmedCash = await paymentsDbContext.CashRecords.AsNoTracking()
+            .Where(value => value.OperationId == log.OperationId && value.PaymentType == CashReceived && value.Status == PaymentCompleted)
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var confirmedInstallments = await paymentsDbContext.InstallmentSubLogs.AsNoTracking()
+            .Where(value => value.MainLogId == log.Id && value.SubLogStatus == ConfirmedPayment)
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var confirmedCollections = Math.Max(log.AmountPaid, confirmedCash + confirmedInstallments);
+
+        var refundRecords = await paymentsDbContext.CashRecords.AsNoTracking()
+            .Where(value => value.OperationId == log.OperationId && value.PaymentType == CashRefund &&
+                (value.Status == PaymentCompleted || value.Status == PendingAccountant || value.Status == PendingAdminReview))
+            .Select(value => new { value.Id, value.Amount })
+            .ToListAsync(cancellationToken);
+        var reservedRefunds = refundRecords
+            .Where(value => !excludingCashRecordId.HasValue || value.Id != excludingCashRecordId.Value)
+            .Sum(value => value.Amount);
+
+        var pendingAdjustments = await paymentsDbContext.FinancialAdjustments.AsNoTracking()
+            .Where(value => (value.PaymentLogId == log.Id || value.OperationId == log.OperationId) &&
+                value.AdjustmentType == CashRefund && (value.Status == PendingApproval || value.Status == "Approved"))
+            .Select(value => new { value.Id, value.Amount })
+            .ToListAsync(cancellationToken);
+        var adjustmentIds = pendingAdjustments.Select(value => value.Id).ToArray();
+        var recordedAgainstAdjustments = adjustmentIds.Length == 0
+            ? new Dictionary<Guid, decimal>()
+            : await paymentsDbContext.CashRecords.AsNoTracking()
+                .Where(value => value.FinancialAdjustmentId.HasValue && adjustmentIds.Contains(value.FinancialAdjustmentId.Value) &&
+                    value.PaymentType == CashRefund &&
+                    (value.Status == PaymentCompleted || value.Status == PendingAccountant || value.Status == PendingAdminReview))
+                .GroupBy(value => value.FinancialAdjustmentId!.Value)
+                .Select(group => new { Id = group.Key, Amount = group.Sum(value => value.Amount) })
+                .ToDictionaryAsync(value => value.Id, value => value.Amount, cancellationToken);
+        var outstandingAdjustments = pendingAdjustments.Sum(value => Math.Max(0m, value.Amount - recordedAgainstAdjustments.GetValueOrDefault(value.Id)));
+
+        return Math.Max(0m, confirmedCollections - reservedRefunds - outstandingAdjustments);
+    }
+
+    private static async Task<decimal> GetFailedDeliveryRefundCapacityAsync(
+        PaymentsDbContext paymentsDbContext,
+        Guid sourceOperationId,
+        Guid? excludingFinancialAdjustmentId,
+        CancellationToken cancellationToken)
+    {
+        // This special path intentionally does not read MainPaymentLog.AmountPaid
+        // or Operations.ExternalPaymentVerified.  Both can describe intended or
+        // operator-verified payment data; the completed payment events are the
+        // only evidence that money is available to refund.
+        var confirmedCollections = await FailedDeliveryReturnFinanceRepairService.GetConfirmedCollectionAsync(
+            paymentsDbContext, sourceOperationId, cancellationToken);
+        var entitlementIds = await paymentsDbContext.ReturnEntitlements.AsNoTracking()
+            .Where(value => value.OriginalSaleOperationId == sourceOperationId)
+            .Select(value => value.Id)
+            .ToArrayAsync(cancellationToken);
+        var activeOrCompletedRefunds = await paymentsDbContext.CashRecords.AsNoTracking()
+            .Where(value => (value.OperationId == sourceOperationId ||
+                    (value.ReturnEntitlementId.HasValue && entitlementIds.Contains(value.ReturnEntitlementId.Value))) &&
+                value.PaymentType == CashRefund &&
+                (value.Status == PaymentCompleted || value.Status == PendingAccountant || value.Status == PendingAdminReview))
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var pendingRefundAdjustments = await paymentsDbContext.FinancialAdjustments.AsNoTracking()
+            .Where(value => value.ReturnEntitlementId.HasValue && entitlementIds.Contains(value.ReturnEntitlementId.Value) &&
+                value.AdjustmentType == CashRefund &&
+                (value.Status == PendingApproval || value.Status == "Approved") &&
+                (!excludingFinancialAdjustmentId.HasValue || value.Id != excludingFinancialAdjustmentId.Value))
+            .Select(value => new { value.Id, value.Amount })
+            .ToListAsync(cancellationToken);
+        var adjustmentIds = pendingRefundAdjustments.Select(value => value.Id).ToArray();
+        var recordedAgainstAdjustments = adjustmentIds.Length == 0
+            ? new Dictionary<Guid, decimal>()
+            : await paymentsDbContext.CashRecords.AsNoTracking()
+                .Where(value => value.FinancialAdjustmentId.HasValue && adjustmentIds.Contains(value.FinancialAdjustmentId.Value) &&
+                    value.PaymentType == CashRefund &&
+                    (value.Status == PaymentCompleted || value.Status == PendingAccountant || value.Status == PendingAdminReview))
+                .GroupBy(value => value.FinancialAdjustmentId!.Value)
+                .Select(group => new { Id = group.Key, Amount = group.Sum(value => value.Amount) })
+                .ToDictionaryAsync(value => value.Id, value => value.Amount, cancellationToken);
+        var outstandingAdjustments = pendingRefundAdjustments.Sum(value => Math.Max(0m, value.Amount - recordedAgainstAdjustments.GetValueOrDefault(value.Id)));
+        return Math.Max(0m, confirmedCollections - activeOrCompletedRefunds - outstandingAdjustments);
+    }
+
+    private static async Task<ReturnEntitlement?> LoadReturnEntitlementForUpdateAsync(
+        Guid id,
+        PaymentsDbContext paymentsDbContext,
+        CancellationToken cancellationToken) =>
+        paymentsDbContext.Database.IsRelational()
+            ? await paymentsDbContext.ReturnEntitlements.FromSqlInterpolated($"select * from payments.return_entitlements where id = {id} for update").SingleOrDefaultAsync(cancellationToken)
+            : await paymentsDbContext.ReturnEntitlements.SingleOrDefaultAsync(value => value.Id == id, cancellationToken);
+
+    private static void ApplyReturnEntitlementSettlement(ReturnEntitlement entitlement, decimal amount, string? settlementScope, DateTime now, Guid actorId)
+    {
+        entitlement.SettledAmount += amount;
+        if (string.Equals(settlementScope, "SourceOperation", StringComparison.Ordinal))
+            entitlement.SourceSettledAmount += amount;
+        else if (string.Equals(settlementScope, "MerchantAccount", StringComparison.Ordinal))
+        {
+            entitlement.AccountLevelSettledAmount += amount;
+            entitlement.MerchantAccountSettledAmount += amount;
+        }
+        else if (string.Equals(settlementScope, "OtherPayments", StringComparison.Ordinal))
+        {
+            entitlement.AccountLevelSettledAmount += amount;
+            entitlement.OtherPaymentsSettledAmount += amount;
+        }
+        entitlement.ReservedAmount = Math.Max(0m, entitlement.ReservedAmount - amount);
+        if (entitlement.ReservedAmount == 0m) entitlement.ReservedScope = null;
+        var recorded = entitlement.NormalAmount + entitlement.ExceptionAmount;
+        entitlement.Status = entitlement.SettledAmount >= recorded ? "Settled"
+            : entitlement.ReservedAmount > 0m ? "Reserved" : "Held";
+        entitlement.UpdatedBy = actorId;
+        entitlement.UpdatedAt = now;
+    }
+
     private static bool IsPaymentEligible(OperationLog operation)
     {
         if (operation.IsDeleted || string.Equals(operation.RecordKind, "Reversal", StringComparison.OrdinalIgnoreCase)) return false;
-        return (operation.OperationType is WholesaleSale or RetailSale) && operation.Status == Completed;
+        return IsFinalizedSaleForPayments(operation);
     }
+
+    private static bool IsFinalizedSaleForPayments(OperationLog operation) =>
+        (operation.OperationType == WholesaleSale && operation.Status == Completed) ||
+        (operation.OperationType == RetailSale &&
+            (operation.Status == Completed || IsDeliveredOnlineSale(operation)));
+
+    private static bool IsDeliveredOnlineSale(OperationLog operation) =>
+        operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") && operation.Status == "Delivered";
 
     private static bool IsAdjustmentReviewer(ICurrentUser currentUser) =>
         LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.CLevel;
+
+    // Return entitlement settlement deliberately excludes C-Level and warehouse
+    // users. It is a Finance boundary, not an operational return permission.
+    private static bool IsReturnEntitlementFinanceActor(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Accountant or LenseeRoles.Admin or LenseeRoles.ERPAdmin;
+
+    private static bool IsReturnEntitlementWaiverReviewer(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
+
+    private static string? NormalizeReturnSettlementMethod(string? value) => value?.Trim() switch
+    {
+        "BalanceReduction" => "BalanceReduction",
+        "CashRefund" => "CashRefund",
+        "CashHandToHand" => "CashHandToHand",
+        "CashTransaction" => "BankTransfer",
+        "BankTransfer" => "BankTransfer",
+        "Wallet" => "Wallet",
+        "GatewayRefund" => "GatewayRefund",
+        _ => null
+    };
 
     // Collection review is deliberately narrower than adjustment review. C-Level retains
     // payment read access and adjustment authority, but does not approve collected cash.
@@ -3496,12 +4617,13 @@ public static class PaymentsEndpoints
         DateTime now,
         CancellationToken cancellationToken)
     {
-        if (operation.OperationType is not (WholesaleSale or RetailSale) || operation.Status != Completed)
+        if (!IsFinalizedSaleForPayments(operation))
         {
             return;
         }
 
-        var total = operation.OperationLines.Sum(line => line.LineTotal);
+        var total = operation.OperationLines.Sum(line => line.LineTotal) +
+            (operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") ? operation.CodCharge : 0m);
         if (total <= 0)
         {
             return;
@@ -3650,7 +4772,8 @@ public static class PaymentsEndpoints
     {
         if (operation.OperationType is WholesaleSale or RetailSale)
         {
-            return operation.OperationLines.Sum(line => line.LineTotal);
+            return operation.OperationLines.Sum(line => line.LineTotal) +
+                (operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") ? operation.CodCharge : 0m);
         }
         if (operation.OperationType == Change)
         {
@@ -3676,8 +4799,58 @@ public static class PaymentsEndpoints
 
         return await operationsDbContext.OperationLogs
             .Where(operation => ids.Contains(operation.Id))
-            .Select(operation => new PaymentOperationContext(operation.Id, operation.OperationNumber, operation.OperationType, operation.ClientId, operation.ClientName))
+            .Select(operation => new PaymentOperationContext(operation.Id, operation.OperationNumber, operation.OperationType, operation.ClientId, operation.ClientName, operation.FinancialClosureStatus))
             .ToDictionaryAsync(operation => operation.OperationId, cancellationToken);
+    }
+
+    private static async Task<Dictionary<Guid, MerchantPaymentProjection>> LoadMerchantPaymentProjectionsAsync(
+        IReadOnlyList<MainPaymentLog> logs,
+        IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup,
+        PaymentsDbContext paymentsDbContext,
+        CancellationToken cancellationToken)
+    {
+        var merchantOperationIds = logs
+            .Where(log => log.MerchantId.HasValue || operationLookup.GetValueOrDefault(log.OperationId)?.MerchantId.HasValue == true)
+            .Select(log => log.OperationId)
+            .Distinct()
+            .ToArray();
+        if (merchantOperationIds.Length == 0) return [];
+
+        var obligations = await paymentsDbContext.MerchantOperationObligations.AsNoTracking()
+            .Where(value => value.OperationId.HasValue && merchantOperationIds.Contains(value.OperationId.Value))
+            .ToListAsync(cancellationToken);
+        var obligationIds = obligations.Select(value => value.Id).ToArray();
+        if (obligationIds.Length == 0) return [];
+
+        var allocations = await paymentsDbContext.EffectiveCreditAllocations().AsNoTracking()
+            .Where(value => obligationIds.Contains(value.ObligationId) && value.Entry.CreditAmount > 0)
+            .GroupBy(value => value.ObligationId)
+            .Select(group => new
+            {
+                ObligationId = group.Key,
+                Settled = group.Sum(value => value.Amount),
+                Collected = group.Sum(value => value.Entry.EntryType == "Collection" ? value.Amount : 0m)
+            })
+            .ToDictionaryAsync(value => value.ObligationId, cancellationToken);
+        var entries = await paymentsDbContext.MerchantAccountEntries.AsNoTracking()
+            .Where(value => value.OperationId.HasValue && merchantOperationIds.Contains(value.OperationId.Value) && value.Status == "Posted")
+            .Select(value => new { OperationId = value.OperationId!.Value, value.EntryType, value.DebitAmount, value.CreditAmount })
+            .ToListAsync(cancellationToken);
+
+        return obligations
+            .Where(value => value.OperationId.HasValue)
+            .GroupBy(value => value.OperationId!.Value)
+            .ToDictionary(group => group.Key, group =>
+            {
+                var operationEntries = entries.Where(value => value.OperationId == group.Key).ToList();
+                var saleTotal = operationEntries.Where(value => value.EntryType == "SaleCharge").Sum(value => value.DebitAmount);
+                var charges = operationEntries.Where(value => value.EntryType is "AdditionalCharge" or "ExchangeSurcharge").Sum(value => value.DebitAmount);
+                var credits = operationEntries.Where(value => value.EntryType is "ReturnCredit" or "ExchangeCredit").Sum(value => value.CreditAmount);
+                var totalAmount = saleTotal > 0m ? Math.Max(saleTotal + charges - credits, 0m) : group.Sum(value => value.OriginalAmount);
+                var settled = group.Sum(value => allocations.GetValueOrDefault(value.Id)?.Settled ?? 0m);
+                var collected = group.Sum(value => allocations.GetValueOrDefault(value.Id)?.Collected ?? 0m);
+                return new MerchantPaymentProjection(totalAmount, collected, Math.Max(totalAmount - settled, 0m));
+            });
     }
 
     private static PaymentLogListResponse ToListResponse(
@@ -3685,7 +4858,8 @@ public static class PaymentsEndpoints
         IReadOnlyDictionary<Guid, User> userLookup,
         IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup,
         IReadOnlyList<CashRecord>? cashRecords = null,
-        IReadOnlyList<FinancialAdjustment>? adjustments = null)
+        IReadOnlyList<FinancialAdjustment>? adjustments = null,
+        MerchantPaymentProjection? merchantProjection = null)
     {
         operationLookup.TryGetValue(log.OperationId, out var operation);
         var effectiveMerchantId = log.MerchantId ?? operation?.MerchantId;
@@ -3693,6 +4867,9 @@ public static class PaymentsEndpoints
         var confirmedCollections = log.Status == PaymentCompleted
             ? Math.Max(balance.ConfirmedCollections, log.AmountPaid)
             : balance.ConfirmedCollections;
+        var totalAmount = merchantProjection?.TotalAmount ?? log.TotalAmount;
+        var amountPaid = merchantProjection?.CollectedAmount ?? confirmedCollections;
+        var remainingAmount = merchantProjection?.RemainingAmount ?? balance.RemainingAmount;
         return
         new(
             log.Id,
@@ -3701,9 +4878,9 @@ public static class PaymentsEndpoints
             operation?.OperationNumber,
             operation?.OperationType,
             operation?.BuyerName,
-            log.TotalAmount,
-            confirmedCollections,
-            balance.RemainingAmount,
+            totalAmount,
+            amountPaid,
+            remainingAmount,
             log.PaymentMethod,
             log.Status,
             log.AssignedTo,
@@ -3716,7 +4893,8 @@ public static class PaymentsEndpoints
             balance.AdditionalCharges,
             balance.BalanceReductions,
             balance.PendingCollections,
-            balance.CompletedRefunds);
+            balance.CompletedRefunds,
+            operation?.FinancialClosureStatus ?? "Open");
     }
 
     private static PaymentLogDetailResponse ToDetailResponse(
@@ -3724,7 +4902,8 @@ public static class PaymentsEndpoints
         IReadOnlyList<CashRecord> cashRecords,
         IReadOnlyList<FinancialAdjustment> adjustments,
         IReadOnlyDictionary<Guid, User> userLookup,
-        IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup)
+        IReadOnlyDictionary<Guid, PaymentOperationContext> operationLookup,
+        MerchantPaymentProjection? merchantProjection = null)
     {
         // Resolve legacy rows from their source operation before projecting
         // nested records so detail, list, and history agree on payment scope.
@@ -3735,7 +4914,7 @@ public static class PaymentsEndpoints
 
         return
         new(
-            ToListResponse(log, userLookup, operationLookup, cashRecords, adjustments),
+            ToListResponse(log, userLookup, operationLookup, cashRecords, adjustments, merchantProjection),
             log.InstallmentSubLogs.OrderByDescending(sub => sub.DraftedAt).Select(sub => new PaymentSubLogResponse(
                 sub.Id,
                 sub.Amount,
@@ -3768,7 +4947,8 @@ public static class PaymentsEndpoints
             MerchantId = merchantId,
             OperationNumber = operationNumber,
             Reference = $"CASH-{record.Id:N}"[..13].ToUpperInvariant(),
-            FinanceAccountId = record.FinanceAccountId
+            FinanceAccountId = record.FinanceAccountId,
+            ReturnEntitlementId = record.ReturnEntitlementId
         };
 
     private static string? NormalizePaymentMethod(string? value)
@@ -3780,6 +4960,7 @@ public static class PaymentsEndpoints
 
         var trimmed = value.Trim();
         if (string.Equals(trimmed, "Installlaugment", StringComparison.OrdinalIgnoreCase)) return "MerchantAccount";
+        if (string.Equals(trimmed, "CashTransaction", StringComparison.OrdinalIgnoreCase)) return "BankTransfer";
         return PaymentMethods.FirstOrDefault(method => string.Equals(method, trimmed, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -3787,7 +4968,24 @@ public static class PaymentsEndpoints
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         var trimmed = value.Trim();
+        if (string.Equals(trimmed, "CashTransaction", StringComparison.OrdinalIgnoreCase)) return "BankTransfer";
         return MerchantAccountService.IsMovementMethod(trimmed) ? trimmed : null;
+    }
+
+    private static string? NormalizeReturnSettlementScope(string? value) => value?.Trim() switch
+    {
+        "SourceOperation" => "SourceOperation",
+        "MerchantAccount" => "MerchantAccount",
+        "OtherPayments" => "OtherPayments",
+        _ => null
+    };
+
+    private static string? ValidateRefundTransferFee(string paymentMethod, decimal? transferFeeAmount)
+    {
+        if (paymentMethod == "CashHandToHand") return transferFeeAmount.HasValue ? "Cash hand-to-hand refunds cannot include a transfer fee." : null;
+        if (paymentMethod is "BankTransfer" or "Wallet")
+            return !transferFeeAmount.HasValue ? "An electronic refund requires transferFeeAmount; zero is allowed." : transferFeeAmount < 0m ? "Transfer fee cannot be negative." : null;
+        return transferFeeAmount.HasValue ? "Transfer fee is valid only for a refund movement method." : null;
     }
 
     private static async Task<string?> ValidateReceivingAccountAsync(
@@ -3853,7 +5051,7 @@ public static class PaymentsEndpoints
     }
 
     private static FinancialAdjustmentResponse ToAdjustmentResponse(FinancialAdjustment adjustment, IReadOnlyDictionary<Guid, User> userLookup, string? operationNumber = null) =>
-        new(adjustment.Id, adjustment.MerchantId, adjustment.OperationId, adjustment.AdjustmentType, adjustment.Amount, adjustment.Status, adjustment.Notes, adjustment.CreatedBy, GetUserDisplayName(adjustment.CreatedBy, userLookup), adjustment.CreatedAt, operationNumber, adjustment.ReviewedBy, GetUserDisplayName(adjustment.ReviewedBy, userLookup), adjustment.ReviewedAt, adjustment.RejectionReason);
+        new(adjustment.Id, adjustment.MerchantId, adjustment.OperationId, adjustment.AdjustmentType, adjustment.Amount, adjustment.Status, adjustment.Notes, adjustment.CreatedBy, GetUserDisplayName(adjustment.CreatedBy, userLookup), adjustment.CreatedAt, operationNumber, adjustment.ReviewedBy, GetUserDisplayName(adjustment.ReviewedBy, userLookup), adjustment.ReviewedAt, adjustment.RejectionReason, adjustment.ReturnEntitlementId);
 
     private static IReadOnlyList<PaymentStageResponse> BuildPaymentStages(
         MainPaymentLog log,
@@ -4455,7 +5653,7 @@ public static class PaymentsEndpoints
     private static string DescribeMovementMethod(string? method) => method switch
     {
         "CashHandToHand" => "Cash in hand",
-        "CashTransaction" => "Cash transaction",
+        "CashTransaction" => "Bank transfer",
         "BankTransfer" => "Bank transfer",
         "Wallet" => "Wallet",
         _ => "-"
@@ -4476,6 +5674,30 @@ public sealed record CashRecordRequest(string? OperationId, string? PaymentType,
 
 public sealed record FinancialAdjustmentRequest(Guid MerchantId, string? OperationId, string AdjustmentType, decimal Amount, string? Notes);
 
+public sealed record ReturnEntitlementReservationRequest(decimal Amount, string? SettlementMethod, string? Notes);
+public sealed record ReturnEntitlementValuationRequest(decimal Amount, string? VerbalPrincipalName, string? Notes, string? Scope = null);
+public sealed record ReturnEntitlementWaiverRequest(string? Scope, decimal Amount, string? Reason);
+public sealed record ReturnEntitlementWaiverDecisionRequest(string? Reason);
+public sealed record ReturnEntitlementWaiverResponse(Guid Id, string Scope, decimal Amount, string Reason, string Status, Guid RequestedById, string? RequestedByName, DateTime RequestedAt, Guid? ReviewedById, string? ReviewedByName, DateTime? ReviewedAt, string? RejectionReason);
+public sealed record ReturnEntitlementSettlementRequest(decimal Amount, string? SettlementMethod, string? Notes, Guid? FinanceAccountId = null, string? TransactionReference = null, string? SettlementScope = null, decimal? TransferFeeAmount = null, string? RefundPaymentMethod = null);
+public sealed record ReturnEntitlementSettlementResponse(Guid ReturnEntitlementId, string EntitlementStatus, decimal ReservedAmount, decimal SettledAmount, Guid? FinancialAdjustmentId, Guid? CashRecordId, string SettlementStatus);
+
+public sealed record ReturnEntitlementResponse(
+    Guid Id, Guid ReturnOperationId, Guid? OriginalSaleOperationId, Guid? MerchantId,
+    string BeneficiaryKind, string? BuyerName, string? PaymentTrack, string? OriginalPaymentReference,
+    decimal NormalAmount, decimal ExceptionAmount, decimal ReservedAmount, decimal SettledAmount,
+    decimal RemainingAmount, string Status, string? Notes, DateTime CreatedAt,
+    decimal SettleableAmount = 0m, decimal ExceptionHeldAmount = 0m,
+    string? OriginalPaymentStatus = null, decimal? OriginalPaymentRemainingAmount = null,
+    decimal SourcePayableAmount = 0m, decimal AccountLevelApprovedAmount = 0m,
+    decimal AccountLevelPayableAmount = 0m, decimal UnvaluedExceptionAmount = 0m,
+    decimal SourceAvailable = 0m, decimal ValuationAvailable = 0m, decimal ActiveReservedAmount = 0m,
+    decimal TotalSettledAmount = 0m, decimal TotalWaivedAmount = 0m, decimal PendingWaiverAmount = 0m,
+    string? ReservedScope = null, IReadOnlyList<ReturnEntitlementWaiverResponse>? Waivers = null, bool RequiresFinanceReview = false,
+    decimal SourceSettledAmount = 0m, decimal ValuationSettledAmount = 0m,
+    decimal SourceWaivedAmount = 0m, decimal ValuationWaivedAmount = 0m,
+    decimal ApprovedRefundAwaitingPayoutAmount = 0m);
+
 public sealed record PaymentOperationResolutionResponse(
     Guid OperationId,
     string OperationNumber,
@@ -4487,11 +5709,14 @@ public sealed record PaymentOperationResolutionResponse(
     string Scope,
     string? PaymentReference,
     string CurrentStatus,
-    IReadOnlyList<string> PermittedNextActions);
+    IReadOnlyList<string> PermittedNextActions,
+    decimal? TotalAmount = null,
+    decimal? AmountPaid = null,
+    decimal? RemainingAmount = null);
 
-public sealed record CashRefundPayoutRequest(decimal Amount, string? Notes, string? PaymentMethod = null, string? TransactionReference = null, Guid? FinanceAccountId = null);
+public sealed record CashRefundPayoutRequest(decimal Amount, string? Notes, string? PaymentMethod = null, string? TransactionReference = null, Guid? FinanceAccountId = null, decimal? TransferFeeAmount = null);
 
-public sealed record PaymentLogListResponse(Guid Id, Guid OperationId, Guid? MerchantId, string? OperationNumber, string? OperationType, string? BuyerName, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string PaymentMethod, string Status, Guid? AssignedTo, DateTime LastModifiedAt, string? InitializedByName, string? AssignedToName, string? LastModifiedByName, decimal RefundDue, decimal AdjustedAmount, decimal AdditionalCharges, decimal BalanceReductions, decimal PendingCollections, decimal CompletedRefunds)
+public sealed record PaymentLogListResponse(Guid Id, Guid OperationId, Guid? MerchantId, string? OperationNumber, string? OperationType, string? BuyerName, decimal TotalAmount, decimal AmountPaid, decimal RemainingAmount, string PaymentMethod, string Status, Guid? AssignedTo, DateTime LastModifiedAt, string? InitializedByName, string? AssignedToName, string? LastModifiedByName, decimal RefundDue, decimal AdjustedAmount, decimal AdditionalCharges, decimal BalanceReductions, decimal PendingCollections, decimal CompletedRefunds, string FinancialClosureStatus = "Open")
 {
     public string Scope => MerchantId.HasValue ? "MerchantAccount" : "OtherPayments";
 }
@@ -4521,6 +5746,7 @@ public sealed record CashRecordResponse(Guid Id, Guid? OperationId, string Payme
     public string? OperationNumber { get; init; }
     public string? Reference { get; init; }
     public Guid? FinanceAccountId { get; init; }
+    public Guid? ReturnEntitlementId { get; init; }
     public string MovementMethod => SubType ?? "";
     public IReadOnlyList<string> PermittedActions => Status switch
     {
@@ -4529,7 +5755,7 @@ public sealed record CashRecordResponse(Guid Id, Guid? OperationId, string Payme
     };
 }
 
-public sealed record FinancialAdjustmentResponse(Guid Id, Guid MerchantId, Guid? OperationId, string AdjustmentType, decimal Amount, string Status, string? Notes, Guid CreatedBy, string? CreatedByName, DateTime CreatedAt, string? OperationNumber = null, Guid? ReviewedBy = null, string? ReviewedByName = null, DateTime? ReviewedAt = null, string? RejectionReason = null);
+public sealed record FinancialAdjustmentResponse(Guid Id, Guid MerchantId, Guid? OperationId, string AdjustmentType, decimal Amount, string Status, string? Notes, Guid CreatedBy, string? CreatedByName, DateTime CreatedAt, string? OperationNumber = null, Guid? ReviewedBy = null, string? ReviewedByName = null, DateTime? ReviewedAt = null, string? RejectionReason = null, Guid? ReturnEntitlementId = null);
 
 public sealed record PaymentHistoryResponse(Guid Id, string RecordType, Guid? OperationId, string? OperationNumber, string? OperationType, Guid? MerchantId, string? MerchantName, string? BuyerName, string? PaymentMethod, decimal Amount, string Status, DateTime HappenedAt, string? ActorName, string? Notes)
 {
@@ -4551,7 +5777,8 @@ public sealed record MerchantAccountStatementResponse(
     DateTime PostedAt,
     Guid PostedBy);
 
-internal sealed record PaymentOperationContext(Guid OperationId, string OperationNumber, string OperationType, Guid? MerchantId, string? BuyerName);
+internal sealed record PaymentOperationContext(Guid OperationId, string OperationNumber, string OperationType, Guid? MerchantId, string? BuyerName, string FinancialClosureStatus);
+internal sealed record MerchantPaymentProjection(decimal TotalAmount, decimal CollectedAmount, decimal RemainingAmount);
 
 public sealed record MerchantCollectionRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, IReadOnlyList<MerchantAllocationInput>? Allocations, string? Notes, bool SubmitForReview = true, Guid? SourceOperationId = null, Guid? FinanceAccountId = null);
 public sealed record CollectionWorkspaceRequest(string Scope, decimal Amount, string? PaymentMethod, string? TransactionReference, Guid? MerchantId = null, Guid? OperationId = null, DateOnly? DateReceived = null, IReadOnlyList<MerchantAllocationInput>? Allocations = null, string? Notes = null, bool SubmitForReview = true, Guid? FinanceAccountId = null);
@@ -4571,7 +5798,7 @@ public sealed record PaymentAuditEventResponse(Guid Id, string Action, string? P
 internal sealed record PaymentAuditOperationContext(Guid Id, string OperationNumber, string? BuyerName);
 internal sealed record PaymentAuditActorContext(Guid Id, string Name, string Role);
 public sealed record MerchantRefundRequest(decimal Amount, string? Notes);
-public sealed record MerchantRefundPayoutRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, string? Notes, Guid? FinanceAccountId = null);
+public sealed record MerchantRefundPayoutRequest(decimal Amount, string? PaymentMethod, string? TransactionReference, string? Notes, Guid? FinanceAccountId = null, decimal? TransferFeeAmount = null);
 public sealed record MerchantAccountListResponse(Guid MerchantId, string BusinessName, decimal AmountDue, decimal CreditAvailable, decimal ReservedRefunds, decimal ConfirmedCollections, decimal NetCollected, DateTime OpenedAt, MerchantAccountClassification Classification);
 public sealed record MerchantAccountDetailResponse(Guid MerchantId, string BusinessName, MerchantAccountSnapshot Balance, MerchantAccountFinancialBreakdown? Breakdown, decimal NetCollected, MerchantAccountClassification Classification, MerchantOpeningBalanceSummary? OpeningBalance = null, MerchantAccountProfileResponse? Profile = null);
 public sealed record MerchantAccountProfileResponse(string ContactPersonName, IReadOnlyList<string> PhoneNumbers, string? Email, string? Address, string BusinessType, string Status);

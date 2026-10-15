@@ -15,6 +15,15 @@ public partial class StockTransaction
 
     public int QuantityChange { get; set; }
 
+    // Null is reserved for pre-unit historical rows. All new rows must set Pack or Piece.
+    public string? QuantityUnit { get; set; }
+
+    // Links a pack-opening conversion to the actual piece issue it enabled.
+    public Guid? RelatedTransactionId { get; set; }
+
+    // Snapshot captured only for PackOpen conversions; never derive history from current SKU settings.
+    public int? ConversionPiecesPerPack { get; set; }
+
     public Guid? ReferenceOperationId { get; set; }
 
     public Guid UserId { get; set; }

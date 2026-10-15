@@ -37,6 +37,10 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<int?>("ConversionPiecesPerPack")
+                        .HasColumnType("integer")
+                        .HasColumnName("conversion_pieces_per_pack");
+
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
@@ -48,6 +52,12 @@ namespace Lensee.Modules.Inventory.Migrations
                     b.Property<DateOnly?>("ExpiryDate")
                         .HasColumnType("date")
                         .HasColumnName("expiry_date");
+
+                    b.Property<bool>("IsQuarantined")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_quarantined");
 
                     b.Property<Guid>("LocationId")
                         .HasColumnType("uuid")
@@ -371,6 +381,15 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("quantity_change");
 
+                    b.Property<string>("QuantityUnit")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("quantity_unit");
+
+                    b.Property<Guid?>("RelatedTransactionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("related_transaction_id");
+
                     b.Property<Guid?>("ReferenceOperationId")
                         .HasColumnType("uuid")
                         .HasColumnName("reference_operation_id");
@@ -404,7 +423,8 @@ namespace Lensee.Modules.Inventory.Migrations
 
                     b.ToTable("stock_transactions", "inventory", t =>
                         {
-                            t.HasCheckConstraint("chk_txn_type", "transaction_type in ('Receipt','Sale','ReserveInWarehouse','ReserveWithRep','ReserveReleaseInWarehouse','ReserveReleaseWithRep','WriteOff','SupplyOut','SupplyIn','StocktakeAdjustment','ChangeOut','ChangeIn','ReturnIn')");
+                            t.HasCheckConstraint("chk_txn_quantity_unit", "quantity_unit is null or (quantity_unit in ('Pack','Piece') and quantity_change <> 0)");
+                            t.HasCheckConstraint("chk_txn_type", "transaction_type in ('Receipt','Sale','ReserveInWarehouse','ReserveWithRep','ReserveReleaseInWarehouse','ReserveReleaseWithRep','WriteOff','SupplyOut','SupplyIn','StocktakeAdjustment','ChangeOut','ChangeIn','ReturnIn','ReturnRestore','PackOpen','QuarantineIn','QuarantineRelease','QuarantineWriteOff')");
                         });
                 });
 

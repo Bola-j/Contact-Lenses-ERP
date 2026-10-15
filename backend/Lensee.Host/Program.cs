@@ -47,6 +47,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddReportingDocuments(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.ConfigureHttpJsonOptions(options => ApiDateJsonOptions.AddConverters(options.SerializerOptions));
 
 var otlpEndpoint = builder.Configuration["Telemetry:OtlpEndpoint"];
 builder.Services.AddOpenTelemetry()
@@ -273,6 +274,7 @@ builder.Services.AddScoped<CategoryTreeService>();
 builder.Services.AddScoped<SkuCodeGenerator>();
 builder.Services.AddScoped<CatalogMutationTransaction>();
 builder.Services.AddScoped<FinanceLedgerService>();
+builder.Services.AddScoped<DailyFinanceMetricsService>();
 builder.Services.AddScoped<SupplyFinanceLogService>();
 builder.Services.AddScoped<ReconciliationImportService>();
 if (builder.Environment.IsEnvironment("Testing"))
@@ -291,9 +293,11 @@ builder.Services.AddScoped<PaymentIdempotencyService>();
 builder.Services.AddScoped<StocktakeBalanceLockService>();
 builder.Services.AddScoped<MerchantBalanceService>();
 builder.Services.AddScoped<MerchantAccountService>();
+builder.Services.AddScoped<DocumentExportJobService>();
 builder.Services.AddScoped<OperationCompletionService>();
 builder.Services.AddScoped<MerchantBatchHistoryService>();
 builder.Services.AddScoped<MerchantExpiryRecallService>();
+builder.Services.AddScoped<IReturnWorkflowPersistenceService, ReturnWorkflowPersistenceService>();
 builder.Services.AddScoped<TargetReplenishmentService>();
 builder.Services.AddScoped<OperationCorrectionService>();
 builder.Services.AddScoped<OutboxOperationsService>();
@@ -303,6 +307,7 @@ builder.Services.AddSingleton<NavigationReferenceService>();
 if (!builder.Environment.IsEnvironment("Testing"))
 {
     builder.Services.AddHostedService<OutboxWorker>();
+    builder.Services.AddHostedService<DocumentExportJobWorker>();
 }
 builder.Services.AddOptions<ShopifyOptions>()
     .Bind(builder.Configuration.GetSection("Shopify"))
@@ -509,7 +514,7 @@ builder.Services.AddAuthorization(options =>
         policy.RequireClaim("permission", LenseePermissions.ReportsRead));
 
     options.AddPolicy("reports.financial.read", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.ReportsRead));
 
     options.AddPolicy("audit.read", policy =>
@@ -648,6 +653,7 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors("Spa");
+app.UseMiddleware<ApiDateQueryNormalizationMiddleware>();
 app.Use(async (context, next) =>
 {
     var isUnsafeMethod = !HttpMethods.IsGet(context.Request.Method) &&
@@ -824,6 +830,15 @@ static async Task RunDatabaseMigrationsWithAdvisoryLockAsync(WebApplication app)
         await services.GetRequiredService<ReportingDbContext>().Database.MigrateAsync();
 
         await DatabaseCompatibility.EnsureSchemaAsync(services);
+        var repairedFailedDeliveryClaims = await FailedDeliveryReturnFinanceRepairService.RepairHistoricalUnpaidClaimsAsync(
+            services.GetRequiredService<OperationsDbContext>(),
+            services.GetRequiredService<PaymentsDbContext>(),
+            services.GetRequiredService<IClock>(),
+            CancellationToken.None);
+        if (repairedFailedDeliveryClaims > 0)
+        {
+            logger.LogInformation("Cancelled {Count} historic failed-delivery return entitlement(s) with no confirmed collection.", repairedFailedDeliveryClaims);
+        }
         await ValidateShopifyStartupConfigurationAsync(services);
     }
     finally

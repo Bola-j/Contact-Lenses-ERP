@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Lensee.Modules.Reporting.Application.Models;
 
 public enum DocumentTemplateKind
@@ -99,6 +101,17 @@ public sealed record TableColumn(
 
 public sealed record TableRow(IReadOnlyList<DocumentCell> Cells);
 
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
+[JsonDerivedType(typeof(DocumentCell.Text), "text")]
+[JsonDerivedType(typeof(DocumentCell.Code), "code")]
+[JsonDerivedType(typeof(DocumentCell.Integer), "integer")]
+[JsonDerivedType(typeof(DocumentCell.Number), "number")]
+[JsonDerivedType(typeof(DocumentCell.Decimal), "decimal")]
+[JsonDerivedType(typeof(DocumentCell.Money), "money")]
+[JsonDerivedType(typeof(DocumentCell.Percentage), "percentage")]
+[JsonDerivedType(typeof(DocumentCell.Date), "date")]
+[JsonDerivedType(typeof(DocumentCell.DateTimeValue), "dateTime")]
+[JsonDerivedType(typeof(DocumentCell.Boolean), "boolean")]
 public abstract record DocumentCell
 {
     private DocumentCell() { }

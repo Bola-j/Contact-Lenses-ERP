@@ -7,6 +7,8 @@ public sealed class SupplyReceivingLine
     public Guid ReceivingSessionId { get; set; }
     public Guid ShipmentLineId { get; set; }
     public int ReceivedQuantity { get; set; }
+    /// <summary>Supply receiving is sealed-pack only.</summary>
+    public string QuantityUnit { get; set; } = "Pack";
     public string? LotNumber { get; set; }
     public DateOnly? ExpiryDate { get; set; }
     public string? Notes { get; set; }

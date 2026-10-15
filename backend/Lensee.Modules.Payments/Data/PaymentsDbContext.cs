@@ -17,6 +17,12 @@ public partial class PaymentsDbContext : DbContext
 
     public virtual DbSet<FinancialAdjustment> FinancialAdjustments { get; set; }
 
+    public virtual DbSet<ReturnEntitlement> ReturnEntitlements { get; set; }
+
+    public virtual DbSet<ReturnEntitlementValuation> ReturnEntitlementValuations { get; set; }
+
+    public virtual DbSet<ReturnEntitlementWaiver> ReturnEntitlementWaivers { get; set; }
+
     public virtual DbSet<PaymentIdempotencyKey> PaymentIdempotencyKeys { get; set; }
 
     public virtual DbSet<MainPaymentLog> MainPaymentLogs { get; set; }
@@ -28,6 +34,7 @@ public partial class PaymentsDbContext : DbContext
     public virtual DbSet<MerchantOperationObligation> MerchantOperationObligations { get; set; }
 
     public virtual DbSet<MerchantOpeningBalanceCharge> MerchantOpeningBalanceCharges { get; set; }
+
 
     public virtual DbSet<MerchantEntryAllocation> MerchantEntryAllocations { get; set; }
     public virtual DbSet<MerchantAllocationReconciliation> MerchantAllocationReconciliations { get; set; }
@@ -45,6 +52,114 @@ public partial class PaymentsDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<ReturnEntitlement>(entity =>
+        {
+            entity.ToTable("return_entitlements", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_return_entitlement_status", "status in ('PendingValuation','Held','Reserved','Settled','Cancelled')");
+                table.HasCheckConstraint("chk_return_entitlement_amounts", "normal_amount >= 0 and exception_amount >= 0 and reserved_amount >= 0 and settled_amount >= 0 and reserved_amount + settled_amount <= normal_amount + exception_amount");
+                table.HasCheckConstraint("chk_return_entitlement_beneficiary", "beneficiary_kind in ('Merchant','Anonymous')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.ReturnOperationId).IsUnique();
+            entity.HasIndex(x => new { x.MerchantId, x.Status }).HasFilter("(merchant_id IS NOT NULL)");
+            entity.HasIndex(x => x.IdempotencyKey).IsUnique().HasFilter("(idempotency_key IS NOT NULL)");
+            entity.Property(x => x.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(x => x.ReturnOperationId).HasColumnName("return_operation_id");
+            entity.Property(x => x.OriginalSaleOperationId).HasColumnName("original_sale_operation_id");
+            entity.Property(x => x.MerchantId).HasColumnName("merchant_id");
+            entity.Property(x => x.BeneficiaryKind).HasColumnName("beneficiary_kind").HasMaxLength(20).IsRequired();
+            entity.Property(x => x.BuyerName).HasColumnName("buyer_name").HasMaxLength(255);
+            entity.Property(x => x.PaymentTrack).HasColumnName("payment_track").HasMaxLength(50);
+            entity.Property(x => x.OriginalPaymentReference).HasColumnName("original_payment_reference").HasMaxLength(255);
+            entity.Property(x => x.NormalAmount).HasColumnName("normal_amount").HasPrecision(18, 4);
+            entity.Property(x => x.ExceptionAmount).HasColumnName("exception_amount").HasPrecision(18, 4);
+            entity.Property(x => x.ReservedAmount).HasColumnName("reserved_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.SettledAmount).HasColumnName("settled_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.SourceSettledAmount).HasColumnName("source_settled_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.AccountLevelSettledAmount).HasColumnName("account_level_settled_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.MerchantAccountSettledAmount).HasColumnName("merchant_account_settled_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.OtherPaymentsSettledAmount).HasColumnName("other_payments_settled_amount").HasPrecision(18, 4).HasDefaultValue(0);
+            entity.Property(x => x.ReservedScope).HasColumnName("reserved_scope").HasMaxLength(30);
+            entity.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).HasDefaultValue("Held");
+            entity.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
+            entity.Property(x => x.CreatedBy).HasColumnName("created_by");
+            entity.Property(x => x.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone").HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(x => x.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(x => x.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamp without time zone");
+            entity.Property(x => x.Notes).HasColumnName("notes");
+        });
+
+        modelBuilder.Entity<ReturnEntitlementValuation>(entity =>
+        {
+            entity.ToTable("return_entitlement_valuations", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_return_entitlement_valuation_amount", "amount > 0");
+            });
+            entity.HasKey(value => value.Id);
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.ReturnEntitlementId).HasColumnName("return_entitlement_id");
+            entity.Property(value => value.Scope).HasColumnName("scope").HasMaxLength(30);
+            entity.Property(value => value.Amount).HasColumnName("amount").HasPrecision(18, 4);
+            entity.Property(value => value.PrincipalName).HasColumnName("principal_name").HasMaxLength(200);
+            entity.Property(value => value.Note).HasColumnName("note").HasMaxLength(2000);
+            entity.Property(value => value.ActorId).HasColumnName("actor_id");
+            entity.Property(value => value.ValuedAt).HasColumnName("valued_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
+            entity.HasIndex(value => new { value.ReturnEntitlementId, value.IdempotencyKey }).IsUnique()
+                .HasFilter("idempotency_key is not null");
+        });
+
+        modelBuilder.Entity<ReturnEntitlementWaiver>(entity =>
+        {
+            entity.ToTable("return_entitlement_waivers", "payments", table =>
+            {
+                table.HasCheckConstraint("chk_return_entitlement_waiver_amount", "amount > 0");
+                table.HasCheckConstraint("chk_return_entitlement_waiver_scope", "scope in ('SourceOperation','MerchantAccount','OtherPayments')");
+                table.HasCheckConstraint("chk_return_entitlement_waiver_status", "status in ('PendingReview','Approved','Rejected')");
+            });
+            entity.HasKey(value => value.Id);
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.ReturnEntitlementId).HasColumnName("return_entitlement_id");
+            entity.Property(value => value.Scope).HasColumnName("scope").HasMaxLength(30).IsRequired();
+            entity.Property(value => value.Amount).HasColumnName("amount").HasPrecision(18, 4);
+            entity.Property(value => value.Reason).HasColumnName("reason").IsRequired();
+            entity.Property(value => value.Status).HasColumnName("status").HasMaxLength(20).IsRequired();
+            entity.Property(value => value.RequestedBy).HasColumnName("requested_by");
+            entity.Property(value => value.RequestedAt).HasColumnName("requested_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(value => value.ReviewedAt).HasColumnName("reviewed_at").HasColumnType("timestamp without time zone");
+            entity.Property(value => value.RejectionReason).HasColumnName("rejection_reason");
+            entity.Property(value => value.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
+            entity.HasIndex(value => new { value.ReturnEntitlementId, value.IdempotencyKey }).IsUnique()
+                .HasFilter("idempotency_key is not null");
+            entity.HasIndex(value => new { value.ReturnEntitlementId, value.Scope, value.Status });
+            entity.HasOne<ReturnEntitlement>().WithMany().HasForeignKey(value => value.ReturnEntitlementId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<FinancialAdjustment>(entity =>
+        {
+            entity.Property(x => x.ReturnEntitlementId).HasColumnName("return_entitlement_id");
+            entity.Property(x => x.ReturnSettlementScope).HasColumnName("return_settlement_scope").HasMaxLength(30);
+            entity.Property(x => x.RefundFinanceAccountId).HasColumnName("refund_finance_account_id");
+            entity.Property(x => x.RefundPaymentMethod).HasColumnName("refund_payment_method").HasMaxLength(50);
+            entity.Property(x => x.RefundTransactionReference).HasColumnName("refund_transaction_reference").HasMaxLength(200);
+            entity.Property(x => x.RefundTransferFeeAmount).HasColumnName("refund_transfer_fee_amount").HasPrecision(18, 4);
+            // A return entitlement can have sequential settlement attempts (for
+            // example partial balance reductions or a rejected request followed
+            // by a corrected request). The entitlement row lock/state is the
+            // single-active-reservation guard; historical adjustment rows remain.
+            entity.HasIndex(x => x.ReturnEntitlementId).HasFilter("(return_entitlement_id IS NOT NULL)");
+        });
+
+        modelBuilder.Entity<CashRecord>(entity =>
+        {
+            entity.Property(x => x.ReturnEntitlementId).HasColumnName("return_entitlement_id");
+            entity.Property(x => x.ReturnSettlementScope).HasColumnName("return_settlement_scope").HasMaxLength(30);
+            entity.Property(x => x.TransferFeeAmount).HasColumnName("transfer_fee_amount").HasPrecision(18, 4);
+            entity.HasIndex(x => x.ReturnEntitlementId).HasFilter("(return_entitlement_id IS NOT NULL)");
+        });
 
         modelBuilder.Entity<MerchantFinancialClosureProposal>(entity =>
         {
@@ -208,6 +323,8 @@ public partial class PaymentsDbContext : DbContext
 
             entity.HasIndex(e => e.OperationId, "idx_financial_adjustments_operation").HasFilter("(operation_id IS NOT NULL)");
 
+            entity.HasIndex(e => e.CreatedAt, "idx_financial_adjustments_created_at").IsDescending();
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -308,6 +425,14 @@ public partial class PaymentsDbContext : DbContext
                 .HasFilter("(is_deleted = false)");
 
             entity.HasIndex(e => e.Status, "idx_main_payment_status").HasFilter("(is_deleted = false)");
+
+            entity.HasIndex(e => e.LastModifiedAt, "idx_main_payment_active_last_modified")
+                .IsDescending()
+                .HasFilter("(is_deleted = false)");
+
+            entity.HasIndex(e => e.LastModifiedAt, "idx_main_payment_open_queue_last_modified")
+                .IsDescending()
+                .HasFilter("(is_deleted = false AND status <> 'Completed' AND status <> 'Rejected')");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -553,6 +678,8 @@ public partial class PaymentsDbContext : DbContext
                 table.HasCheckConstraint("chk_merchant_refund_reservation_paid_amount", "paid_amount >= 0 and paid_amount <= amount");
             });
             entity.HasIndex(value => new { value.AccountId, value.Status });
+            entity.HasIndex(value => value.FinancialAdjustmentId).IsUnique().HasFilter("financial_adjustment_id IS NOT NULL");
+            entity.Property(value => value.FinancialAdjustmentId).HasColumnName("financial_adjustment_id");
             entity.Property(value => value.AccountId).HasColumnName("account_id");
             entity.Property(value => value.Amount).HasPrecision(18, 4).HasColumnName("amount");
             entity.Property(value => value.PaidAmount).HasPrecision(18, 4).HasDefaultValue(0m).HasColumnName("paid_amount");
@@ -563,6 +690,7 @@ public partial class PaymentsDbContext : DbContext
             entity.Property(value => value.ApprovedAt).HasColumnType("timestamp without time zone").HasColumnName("approved_at");
             entity.Property(value => value.PayoutEntryId).HasColumnName("payout_entry_id");
             entity.Property(value => value.Notes).HasColumnName("notes");
+            entity.HasOne<FinancialAdjustment>().WithMany().HasForeignKey(value => value.FinancialAdjustmentId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<MerchantAccountClassificationSnapshot>(entity =>

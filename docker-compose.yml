@@ -66,7 +66,7 @@ services:
       RateLimiting__AuthenticatedPermitLimit: ${RATE_LIMITING_AUTHENTICATED_PERMIT_LIMIT:-600}
       RateLimiting__WindowSeconds: ${RATE_LIMITING_WINDOW_SECONDS:-60}
       RateLimiting__QueueLimit: ${RATE_LIMITING_QUEUE_LIMIT:-0}
-      Reporting__MaxExportRows: ${REPORTING_MAX_EXPORT_ROWS:-10000}
+      Reporting__MaxExportRows: ${REPORTING_MAX_EXPORT_ROWS:-100000}
       Reporting__QuestPdfLicense: ${REPORTING_QUESTPDF_LICENSE:-Community}
       Reporting__Branding__CompanyNameArabic: ${REPORTING_COMPANY_NAME_AR:-لينسي}
       Reporting__Branding__CompanyNameEnglish: ${REPORTING_COMPANY_NAME_EN:-Lensee}

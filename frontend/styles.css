@@ -239,6 +239,47 @@ h3 {
   white-space: nowrap;
 }
 
+.return-approval-panel {
+  border-inline-start: 4px solid var(--color-warning, #d97706);
+  background: color-mix(in srgb, var(--surface-raised, #fff) 88%, #f59e0b 12%);
+}
+
+.return-approval-panel.status-ok {
+  border-inline-start-color: var(--color-success, #15803d);
+}
+
+.return-approval-panel.status-muted {
+  border-inline-start-color: var(--text-muted, #64748b);
+}
+
+.return-approval-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.return-approval-lines {
+  display: grid;
+  gap: .5rem;
+  margin: .75rem 0 0;
+  padding-inline-start: 1.25rem;
+}
+
+.return-approval-lines li {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+}
+
+.return-approval-review {
+  margin-block: .9rem;
+  padding: .9rem;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: .5rem;
+  background: var(--surface-raised, #fff);
+}
+
 .status-ok {
   color: var(--success);
 }
@@ -1091,6 +1132,7 @@ html[dir="rtl"] .supply-line-row .op-line-search-results {
   gap: 20px;
   align-items: start;
   margin-top: 18px;
+  min-width: 0;
 }
 
 .report-register,
@@ -1111,11 +1153,21 @@ html[dir="rtl"] .supply-line-row .op-line-search-results {
 
 .report-filter-register {
   display: grid;
-  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid #c8d3dd;
+}
+
+.report-filter-register > .field {
+  min-width: 0;
+}
+
+.report-filter-register .input,
+.report-filter-register select {
+  width: 100%;
+  min-width: 0;
 }
 
 .ledger-section-title,
@@ -1173,15 +1225,10 @@ html[dir="rtl"] .supply-line-row .op-line-search-results {
   top: 18px;
   padding: 18px;
   border: 1px solid #2f5f8f;
-  border-left-width: 5px;
+  border-inline-start-width: 5px;
   background: #172331;
   color: #f6f8fa;
   box-shadow: 0 12px 28px rgba(23, 35, 49, 0.16);
-}
-
-html[dir="rtl"] .export-docket {
-  border-left-width: 1px;
-  border-right-width: 5px;
 }
 
 .export-docket h3 {
@@ -1247,6 +1294,26 @@ html[dir="rtl"] .export-docket {
   .report-filter-register {
     grid-template-columns: 1fr;
   }
+}
+
+.not-found-page {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  max-width: 760px;
+  margin-inline: auto;
+  padding: clamp(24px, 5vw, 52px);
+  border-inline-start: 4px solid #2f5f8f;
+}
+
+.not-found-page > * {
+  margin-block: 0;
+}
+
+.not-found-page .eyebrow {
+  color: #2f5f8f;
+  font-weight: 800;
+  letter-spacing: 0.12em;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2277,6 +2344,15 @@ td strong.sku-code + .status-pill {
   box-shadow: var(--shadow);
 }
 
+/* Return settlement includes the selected scope and a clear money breakdown.
+   Keep every control reachable on shorter workstations instead of letting the
+   final confirmation action fall below the viewport. */
+.return-settlement-dialog {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .confirm-dialog {
   width: min(760px, 100%);
 }
@@ -2557,6 +2633,7 @@ html[dir="rtl"] .nav-badge {
 }
 
 html[dir="rtl"] input[type="date"],
+html[dir="rtl"] input[data-date-input],
 html[dir="rtl"] input[type="number"],
 html[dir="rtl"] [data-ltr],
 html[dir="rtl"] code {

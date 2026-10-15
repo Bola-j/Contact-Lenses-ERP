@@ -51,6 +51,12 @@ public sealed class DocumentRendererTests
     }
 
     [Fact]
+    public void UnavailableDocumentReference_IsLocalizedInArabic()
+    {
+        Assert.Equal("غير متاح", DocumentTranslations.Arabic("Unavailable"));
+    }
+
+    [Fact]
     public async Task Csv_UsesBomInvariantTypedValuesAndProtectsUntrustedText()
     {
         var renderer = new CsvDocumentRenderer();
@@ -65,7 +71,7 @@ public sealed class DocumentRendererTests
         Assert.Equal([0xEF, 0xBB, 0xBF], bytes[..3]);
         Assert.Contains("\"'=SUM(A1:A2)\"", text);
         Assert.Contains("\"-125.50\"", text);
-        Assert.Contains("\"2026-09-09\"", text);
+        Assert.Contains("\"09/09/2026\"", text);
         Assert.Contains("عدسة 1", text);
     }
 

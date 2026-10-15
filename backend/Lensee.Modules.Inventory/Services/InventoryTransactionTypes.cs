@@ -15,6 +15,11 @@ public static class InventoryTransactionTypes
     public const string ChangeOut = "ChangeOut";
     public const string ChangeIn = "ChangeIn";
     public const string ReturnIn = "ReturnIn";
+    public const string ReturnRestore = "ReturnRestore";
+    public const string PackOpen = "PackOpen";
+    public const string QuarantineIn = "QuarantineIn";
+    public const string QuarantineRelease = "QuarantineRelease";
+    public const string QuarantineWriteOff = "QuarantineWriteOff";
 
     private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -30,7 +35,12 @@ public static class InventoryTransactionTypes
         StocktakeAdjustment,
         ChangeOut,
         ChangeIn,
-        ReturnIn
+        ReturnIn,
+        ReturnRestore,
+        PackOpen,
+        QuarantineIn,
+        QuarantineRelease,
+        QuarantineWriteOff
     };
 
     public static bool IsValid(string value) => Allowed.Contains(value);

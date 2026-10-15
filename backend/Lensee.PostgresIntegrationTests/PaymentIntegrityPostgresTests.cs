@@ -106,14 +106,14 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await using var factory = new PostgresApplicationFactory(_postgres.GetConnectionString());
         using var client = factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, actor, LenseePermissions.ExecutiveSummaryRead);
-        using var response = await client.GetAsync("/api/v1/reports/executive-summary?period=daily&date=2040-02-03");
+        using var response = await client.GetAsync("/api/v1/reports/executive-summary?date=2040-02-03");
         Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var flows = json.RootElement.GetProperty("flows");
         Assert.Equal(100m, flows.GetProperty("actualCollections").GetDecimal());
         Assert.Equal(20m, flows.GetProperty("paidExpenses").GetDecimal());
         Assert.Equal(80m, flows.GetProperty("netExternalCashMovement").GetDecimal());
-        Assert.Equal(0, json.RootElement.GetProperty("units").GetProperty("paidPiecesSold").GetInt32());
+        Assert.Equal(0, json.RootElement.GetProperty("units").GetProperty("nonBonusPiecesSold").GetInt32());
     }
 
     [PostgreSqlIntegrationFact]
@@ -166,6 +166,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
                     Section = "Standard",
                     EntryMode = "Packs",
                     Quantity = 3,
+                    NormalQuantity = 3,
+                    ExceptionQuantity = 0,
                     UnitPrice = 100m,
                     LineTotal = 300m
                 },
@@ -180,6 +182,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
                     EntryMode = "Packs",
                     Quantity = 1,
                     BonusQuantity = 1,
+                    NormalQuantity = 1,
+                    ExceptionQuantity = 0,
                     UnitPrice = 0m,
                     LineTotal = 0m
                 },
@@ -194,6 +198,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
                     EntryMode = "Packs",
                     PiecesPerPackSnapshot = 2,
                     Quantity = 1,
+                    NormalQuantity = 1,
+                    ExceptionQuantity = 0,
                     UnitPrice = 100m,
                     LineTotal = 100m
                 });
@@ -216,24 +222,24 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         }
         using var client = factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, actor, LenseePermissions.ExecutiveSummaryRead);
-        using var response = await client.GetAsync("/api/v1/reports/executive-summary?period=daily&date=2041-03-05");
+        using var response = await client.GetAsync("/api/v1/reports/executive-summary?date=2041-03-05");
         Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(200m, json.RootElement.GetProperty("flows").GetProperty("netSales").GetDecimal());
         var units = json.RootElement.GetProperty("units");
-        Assert.Equal(4, units.GetProperty("paidPiecesSold").GetInt32());
+        Assert.Equal(4, units.GetProperty("nonBonusPiecesSold").GetInt32());
         Assert.Equal(2, units.GetProperty("bonusPieces").GetInt32());
         Assert.True(units.GetProperty("estimated").GetBoolean());
         Assert.Equal(0, units.GetProperty("unresolvedPackLines").GetInt32());
-        using var monthly = await client.GetAsync("/api/v1/reports/executive-summary?period=monthly&date=2041-03-15");
+        using var monthly = await client.GetAsync("/api/v1/reports/executive-summary?from=2041-03-01&to=2041-03-31");
         Assert.True(monthly.IsSuccessStatusCode, await monthly.Content.ReadAsStringAsync());
         using var monthlyJson = JsonDocument.Parse(await monthly.Content.ReadAsStringAsync());
-        Assert.Equal(4, monthlyJson.RootElement.GetProperty("units").GetProperty("paidPiecesSold").GetInt32());
+        Assert.Equal(4, monthlyJson.RootElement.GetProperty("units").GetProperty("nonBonusPiecesSold").GetInt32());
         Assert.Equal("2041-04-01", monthlyJson.RootElement.GetProperty("endExclusive").GetString());
-        using var nextDay = await client.GetAsync("/api/v1/reports/executive-summary?period=daily&date=2041-03-06");
+        using var nextDay = await client.GetAsync("/api/v1/reports/executive-summary?date=2041-03-06");
         Assert.True(nextDay.IsSuccessStatusCode, await nextDay.Content.ReadAsStringAsync());
         using var nextDayJson = JsonDocument.Parse(await nextDay.Content.ReadAsStringAsync());
-        Assert.Equal(0, nextDayJson.RootElement.GetProperty("units").GetProperty("paidPiecesSold").GetInt32());
+        Assert.Equal(0, nextDayJson.RootElement.GetProperty("units").GetProperty("nonBonusPiecesSold").GetInt32());
     }
 
     [PostgreSqlIntegrationFact]
@@ -542,7 +548,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await using var shared = CreateSharedContext(connection);
         await using var operations = CreateOperationsContext(connection);
         await using var finance = CreateFinanceContext(connection);
-        var service = new MerchantAccountService(payments, shared, operations);
+        var service = new MerchantAccountService(payments, shared, operations, finance);
         var original = new MerchantOpeningBalanceCharge { Id = Guid.NewGuid(), MerchantId = merchantId, Amount = 10000m, AsOfDate = DateOnly.FromDateTime(now), Description = "Historical debt", Status = "PendingReview", CreatedBy = actorId, CreatedAt = now, CorrelationId = Guid.NewGuid().ToString("N") };
         payments.MerchantOpeningBalanceCharges.Add(original);
         await payments.SaveChangesAsync();
@@ -566,8 +572,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         var merchantId = Guid.NewGuid(); var actorId = Guid.NewGuid();
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync();
-        await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-        var service = new MerchantAccountService(payments, shared, operations);
+        await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+        var service = new MerchantAccountService(payments, shared, operations, finance);
         var original = new MerchantOpeningBalanceCharge { Id = Guid.NewGuid(), MerchantId = merchantId, Amount = 10000m, AsOfDate = DateOnly.FromDateTime(now), Description = "Historical debt", Status = "PendingReview", CreatedBy = actorId, CreatedAt = now, CorrelationId = Guid.NewGuid().ToString("N") };
         payments.MerchantOpeningBalanceCharges.Add(original); await payments.SaveChangesAsync();
         await service.PostOpeningBalanceAsync(original, actorId, now, CancellationToken.None);
@@ -586,16 +592,16 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Guid obligationId;
         await using (var setup = new NpgsqlConnection(_postgres.GetConnectionString()))
         {
-            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup);
-            var service = new MerchantAccountService(payments, shared, operations);
+            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup); await using var finance = CreateFinanceContext(setup);
+            var service = new MerchantAccountService(payments, shared, operations, finance);
             obligationId = (await service.PostSaleAsync(merchantId, Guid.NewGuid(), 100m, actor, now, null, CancellationToken.None)).Id;
         }
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task Attempt(Guid paymentId)
         {
             await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync();
-            await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-            var service = new MerchantAccountService(payments, shared, operations);
+            await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+            var service = new MerchantAccountService(payments, shared, operations, finance);
             await service.PostCollectionAsync(merchantId, paymentId, 100m, "CashHandToHand", null, actor, now, [new MerchantAllocationInput(obligationId, 100m)], null, CancellationToken.None);
         }
         var first = Attempt(Guid.NewGuid()); var second = Attempt(Guid.NewGuid()); gate.SetResult();
@@ -617,7 +623,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await using var payments = CreatePaymentsContext(connection);
         await using var shared = CreateSharedContext(connection);
         await using var operations = CreateOperationsContext(connection);
-        var service = new MerchantAccountService(payments, shared, operations);
+        await using var finance = CreateFinanceContext(connection);
+        var service = new MerchantAccountService(payments, shared, operations, finance);
         var oldest = await service.PostSaleAsync(merchantId, oldestOperationId, 100m, actor, now, null, CancellationToken.None);
         var selected = await service.PostSaleAsync(merchantId, selectedOperationId, 100m, actor, now.AddMinutes(1), null, CancellationToken.None);
 
@@ -658,16 +665,16 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         Guid obligationId;
         await using (var setup = new NpgsqlConnection(_postgres.GetConnectionString()))
         {
-            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup);
-            obligationId = (await new MerchantAccountService(payments, shared, operations).PostSaleAsync(merchantId, Guid.NewGuid(), 100m, actor, now, null, CancellationToken.None)).Id;
+            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup); await using var finance = CreateFinanceContext(setup);
+            obligationId = (await new MerchantAccountService(payments, shared, operations, finance).PostSaleAsync(merchantId, Guid.NewGuid(), 100m, actor, now, null, CancellationToken.None)).Id;
         }
         var paymentId = Guid.NewGuid(); var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task Attempt()
         {
             await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync();
-            await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
+            await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
             await using var transaction = await payments.Database.BeginTransactionAsync();
-            await new MerchantAccountService(payments, shared, operations).PostCollectionAsync(merchantId, paymentId, 100m, "CashHandToHand", null, actor, now, [new MerchantAllocationInput(obligationId, 100m)], null, CancellationToken.None);
+            await new MerchantAccountService(payments, shared, operations, finance).PostCollectionAsync(merchantId, paymentId, 100m, "CashHandToHand", null, actor, now, [new MerchantAllocationInput(obligationId, 100m)], null, CancellationToken.None);
             await transaction.CommitAsync();
         }
         var first = Attempt(); var second = Attempt(); gate.SetResult();
@@ -703,8 +710,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         var original = await CreatePostedOpeningAsync(merchantId, 100m, actor, now);
         await using (var setup = new NpgsqlConnection(_postgres.GetConnectionString()))
         {
-            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup);
-            await new MerchantAccountService(payments, shared, operations).PostCollectionAsync(merchantId, Guid.NewGuid(), 40m, "CashHandToHand", null, actor, now, null, "Historical settlement", CancellationToken.None);
+            await setup.OpenAsync(); await using var payments = CreatePaymentsContext(setup); await using var shared = CreateSharedContext(setup); await using var operations = CreateOperationsContext(setup); await using var finance = CreateFinanceContext(setup);
+            await new MerchantAccountService(payments, shared, operations, finance).PostCollectionAsync(merchantId, Guid.NewGuid(), 40m, "CashHandToHand", null, actor, now, null, "Historical settlement", CancellationToken.None);
         }
         await using var factory = new PostgresApplicationFactory(_postgres.GetConnectionString()); await factory.SeedUserAsync(actor);
         HttpClient Client() { var c = factory.CreateClient(); c.AuthorizeAs(LenseeRoles.Admin, actor, LenseePermissions.PaymentsAdjustmentsRequest); c.DefaultRequestHeaders.Add("Idempotency-Key", key.ToString()); return c; }
@@ -731,8 +738,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     {
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified); var merchantId = Guid.NewGuid(); var actor = Guid.NewGuid();
         var original = await CreatePostedOpeningAsync(merchantId, 100m, actor, now);
-        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-        var service = new MerchantAccountService(payments, shared, operations);
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+        var service = new MerchantAccountService(payments, shared, operations, finance);
         await service.PostCollectionAsync(merchantId, Guid.NewGuid(), collected, "CashHandToHand", null, actor, now, null, null, CancellationToken.None);
         var replacement = await service.CorrectOpeningBalanceAsync(original, corrected, DateOnly.FromDateTime(now), "Corrected", actor, now.AddMinutes(1), CancellationToken.None);
         var obligation = await payments.MerchantOperationObligations.SingleAsync(value => value.SourceId == replacement.Id);
@@ -747,8 +754,8 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     {
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified); var merchantId = Guid.NewGuid(); var actor = Guid.NewGuid();
         var original = await CreatePostedOpeningAsync(merchantId, 100m, actor, now);
-        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-        var service = new MerchantAccountService(payments, shared, operations); await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 40m, "CashHandToHand", null, actor, now, null, null, CancellationToken.None);
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+        var service = new MerchantAccountService(payments, shared, operations, finance); await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 40m, "CashHandToHand", null, actor, now, null, null, CancellationToken.None);
         var replacement = await service.CorrectOpeningBalanceAsync(original, 100m, DateOnly.FromDateTime(now), "Reconcile capacity", actor, now.AddMinutes(1), CancellationToken.None);
         var replacementObligation = await payments.MerchantOperationObligations.SingleAsync(value => value.SourceId == replacement.Id);
         await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 60m, "CashHandToHand", null, actor, now.AddMinutes(2), [new MerchantAllocationInput(replacementObligation.Id, 60m)], null, CancellationToken.None);
@@ -765,22 +772,22 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task Correct()
         {
-            await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
+            await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
             var charge = await payments.MerchantOpeningBalanceCharges.SingleAsync(value => value.Id == original.Id);
-            await new MerchantAccountService(payments, shared, operations).CorrectOpeningBalanceAsync(charge, 80m, DateOnly.FromDateTime(now), "Concurrent correction", actor, now.AddMinutes(1), CancellationToken.None);
+            await new MerchantAccountService(payments, shared, operations, finance).CorrectOpeningBalanceAsync(charge, 80m, DateOnly.FromDateTime(now), "Concurrent correction", actor, now.AddMinutes(1), CancellationToken.None);
         }
         async Task Collect()
         {
-            await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-            await new MerchantAccountService(payments, shared, operations).PostCollectionAsync(merchantId, collectionSource, 50m, "CashHandToHand", null, actor, now.AddMinutes(1), null, "Concurrent settlement", CancellationToken.None);
+            await gate.Task; await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+            await new MerchantAccountService(payments, shared, operations, finance).PostCollectionAsync(merchantId, collectionSource, 50m, "CashHandToHand", null, actor, now.AddMinutes(1), null, "Concurrent settlement", CancellationToken.None);
         }
         var correction = Correct(); var collection = Collect(); gate.SetResult();
         await Task.WhenAll(correction, collection);
         await using var verifyConnection = new NpgsqlConnection(_postgres.GetConnectionString()); await verifyConnection.OpenAsync(); await using var verify = CreatePaymentsContext(verifyConnection);
         if (!await verify.MerchantAccountEntries.AnyAsync(value => value.SourceId == collectionSource && value.EntryType == "Collection"))
         {
-            await using var retryShared = CreateSharedContext(verifyConnection); await using var retryOperations = CreateOperationsContext(verifyConnection);
-            await new MerchantAccountService(verify, retryShared, retryOperations).PostCollectionAsync(merchantId, collectionSource, 50m, "CashHandToHand", null, actor, now.AddMinutes(2), null, "Collection retry", CancellationToken.None);
+            await using var retryShared = CreateSharedContext(verifyConnection); await using var retryOperations = CreateOperationsContext(verifyConnection); await using var retryFinance = CreateFinanceContext(verifyConnection);
+            await new MerchantAccountService(verify, retryShared, retryOperations, retryFinance).PostCollectionAsync(merchantId, collectionSource, 50m, "CashHandToHand", null, actor, now.AddMinutes(2), null, "Collection retry", CancellationToken.None);
         }
         var replacement = await verify.MerchantOpeningBalanceCharges.SingleAsync(value => value.ReversesChargeId == original.Id);
         var replacementObligation = await verify.MerchantOperationObligations.SingleAsync(value => value.SourceId == replacement.Id);
@@ -796,13 +803,13 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified); var merchantId = Guid.NewGuid(); var actor = Guid.NewGuid(); var operationId = Guid.NewGuid();
         async Task PostSale()
         {
-            await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection);
-            await new MerchantAccountService(payments, shared, operations).PostSaleAsync(merchantId, operationId, 100m, actor, now, "Immediate merchant sale", CancellationToken.None);
+            await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
+            await new MerchantAccountService(payments, shared, operations, finance).PostSaleAsync(merchantId, operationId, 100m, actor, now, "Immediate merchant sale", CancellationToken.None);
         }
         await PostSale(); await PostSale();
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString()); await connection.OpenAsync(); await using var payments = CreatePaymentsContext(connection); await using var shared = CreateSharedContext(connection); await using var operations = CreateOperationsContext(connection); await using var finance = CreateFinanceContext(connection);
         var obligation = await payments.MerchantOperationObligations.SingleAsync(value => value.OperationId == operationId); var paymentId = Guid.NewGuid();
-        var merchant = new MerchantAccountService(payments, shared, operations);
+        var merchant = new MerchantAccountService(payments, shared, operations, finance);
         await merchant.PostCollectionAsync(merchantId, paymentId, 100m, "CashHandToHand", null, actor, now, [new MerchantAllocationInput(obligation.Id, 100m)], "Immediate settlement", CancellationToken.None);
         await merchant.PostCollectionAsync(merchantId, paymentId, 100m, "CashHandToHand", null, actor, now, [new MerchantAllocationInput(obligation.Id, 100m)], "Immediate settlement retry", CancellationToken.None);
         var account = new FinanceAccount { Id = Guid.NewGuid(), Name = "Immediate retry cash", Type = FinanceLedgerService.CashOnHand, IsActive = true, CreatedBy = actor, CreatedAt = now }; finance.FinanceAccounts.Add(account); await finance.SaveChangesAsync();
@@ -1240,6 +1247,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         await using var payments = CreatePaymentsContext(connection);
         await using var shared = CreateSharedContext(connection);
         await using var operations = CreateOperationsContext(connection);
+        await using var finance = CreateFinanceContext(connection);
         var charge = new MerchantOpeningBalanceCharge
         {
             Id = Guid.NewGuid(),
@@ -1254,7 +1262,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         };
         payments.MerchantOpeningBalanceCharges.Add(charge);
         await payments.SaveChangesAsync();
-        await new MerchantAccountService(payments, shared, operations).PostOpeningBalanceAsync(charge, actorId, now, CancellationToken.None);
+        await new MerchantAccountService(payments, shared, operations, finance).PostOpeningBalanceAsync(charge, actorId, now, CancellationToken.None);
         return charge;
     }
 

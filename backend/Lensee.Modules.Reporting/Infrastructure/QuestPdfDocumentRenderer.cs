@@ -93,10 +93,10 @@ public abstract class QuestPdfTemplateBase : IQuestPdfTemplate
             column.Item().PaddingTop(5).Element(container => RenderOverviewPanel(container, overviewFacts, arabic));
         }
 
-        var metrics = document.SummaryMetrics.Concat(document.Totals?.Values ?? []).ToArray();
-        if (metrics.Length > 0)
+        var metrics = document.SummaryMetrics;
+        if (metrics.Count > 0)
         {
-            column.Item().PaddingTop(8).Element(container => RenderFactGrid(container, metrics, arabic, Math.Min(4, metrics.Length), false));
+            column.Item().PaddingTop(8).Element(container => RenderFactGrid(container, metrics, arabic, Math.Min(4, metrics.Count), false));
         }
 
         // Merchant statements are dossiers rather than single-page receipts. Put
@@ -132,6 +132,15 @@ public abstract class QuestPdfTemplateBase : IQuestPdfTemplate
         foreach (var note in document.Notes)
         {
             column.Item().PaddingTop(8).Element(container => RenderNote(container, note, language));
+        }
+
+        // Keep the aggregate block after every repeated-header table.  In a
+        // long document this makes it a true final grand-total block instead
+        // of a preview that can be separated from the final data page.
+        if (document.Totals is { Values.Count: > 0 })
+        {
+            column.Item().PaddingTop(10).Element(container => RenderSectionHeading(container, TemplateText("totals", language), arabic));
+            column.Item().PaddingTop(5).Element(container => RenderFactGrid(container, document.Totals.Values, arabic, Math.Min(4, document.Totals.Values.Count), false));
         }
 
         if (!signaturesOnFirstPage && document.Signatures is { Labels.Count: > 0 })
@@ -620,6 +629,7 @@ public abstract class QuestPdfTemplateBase : IQuestPdfTemplate
         true => key switch
         {
             "overview" => "بيانات المستند",
+            "totals" => "الإجماليات النهائية",
             "internal document" => "نظام لينسي - مستند أعمال داخلي",
             "payment type" => "نوع الدفع",
             "cash hand to hand" => "تسليم نقدي باليد",
@@ -631,6 +641,7 @@ public abstract class QuestPdfTemplateBase : IQuestPdfTemplate
         _ => key switch
         {
             "overview" => "OVERVIEW",
+            "totals" => "FINAL TOTALS",
             "internal document" => "LENSEE ERP - INTERNAL BUSINESS DOCUMENT",
             "payment type" => "PAYMENT TYPE",
             "cash hand to hand" => "CASH HAND-TO-HAND",

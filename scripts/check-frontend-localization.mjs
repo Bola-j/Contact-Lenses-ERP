@@ -9,6 +9,7 @@ const app = fs.readFileSync(appPath, "utf8");
 const html = fs.readFileSync(htmlPath, "utf8");
 const enKeys = Object.keys(en);
 const arKeys = Object.keys(ar);
+const semanticKeyPattern = /^(?:common|navigation|routes|route|customer|payment|catalog|openingBalance|payments|finance|dashboard|app|pagination|reports|supply|inventory|crm|stocktake|notifications|audit|admin|integrations|errors|locations)\.[A-Za-z0-9_.-]+$/;
 const semanticDictionaryDuplicates = ["en", "ar"].flatMap((language) => {
   const source = fs.readFileSync(`frontend/i18n/${language}.js`, "utf8");
   const keys = [...source.matchAll(/^\s*,?"([^"]+)"\s*:/gm)].map((match) => match[1]);
@@ -18,11 +19,18 @@ const semanticDictionaryDuplicates = ["en", "ar"].flatMap((language) => {
 const missingArabicKeys = enKeys.filter((key) => !(key in ar));
 const extraArabicKeys = arKeys.filter((key) => !(key in en));
 const foundationKeys = new Set(enKeys);
-const foundationKeyUses = [
-  ...[...app.matchAll(/\bfoundationT\(\s*["']([^"']+)["']/g)].map((match) => match[1]),
+const foundationKeyUses = new Set([
+  ...[...app.matchAll(/\bfoundationT\(\s*["']([^"'`$]+)["']/g)].map((match) => match[1]),
+  ...[...app.matchAll(/["']([^"'`$]+)["']/g)].map((match) => match[1]).filter((value) => semanticKeyPattern.test(value)),
   ...[...html.matchAll(/data-i18n(?:-[\w-]+)?="([^"]+)"/g)].map((match) => match[1])
-];
-const unknownFoundationKeys = [...new Set(foundationKeyUses.filter((key) => !foundationKeys.has(key)))];
+]);
+for (const match of app.matchAll(/\b(paymentT|financeT|reportsT)\(\s*["']([^"'`$]+)["']/g)) {
+  const prefixes = { paymentT: "payments", financeT: "finance", reportsT: "reports" };
+  foundationKeyUses.delete(match[2]);
+  foundationKeyUses.add(`${prefixes[match[1]]}.${match[2]}`);
+}
+const unknownFoundationEnglishKeys = [...foundationKeyUses].filter((key) => !(key in en));
+const unknownFoundationArabicKeys = [...foundationKeyUses].filter((key) => !(key in ar));
 const foundationEnglishValues = new Set(Object.values(en));
 const staticUiTextValues = [...new Set([...app.matchAll(/\buiText\(\s*["']([^"']+)["']\s*\)/g)].map((match) => match[1]))];
 const literalPromptTitles = [...applicationPromptTitles(app)];
@@ -138,7 +146,7 @@ const missing = [...candidates]
 const requiredSemanticKeys = ["pagination.pageOf", "payments.pageOf"];
 const missingSemanticKeys = requiredSemanticKeys.filter((key) => !applicationSource.includes(`foundationT("${key}"`));
 
-if (missing.length || missingSemanticKeys.length || unmigratedStaticUiText.length || literalPromptTitles.length || literalConfirmTitles.length || literalFormErrors.length || duplicates.length || semanticDictionaryDuplicates.length || optionsWithoutCanonicalValue.length || canonicalContractFailures.length || applicationSource.includes("systemValueAliases") || missingArabicKeys.length || extraArabicKeys.length || unknownFoundationKeys.length) {
+if (missing.length || missingSemanticKeys.length || unmigratedStaticUiText.length || literalPromptTitles.length || literalConfirmTitles.length || literalFormErrors.length || duplicates.length || semanticDictionaryDuplicates.length || optionsWithoutCanonicalValue.length || canonicalContractFailures.length || applicationSource.includes("systemValueAliases") || missingArabicKeys.length || extraArabicKeys.length || unknownFoundationEnglishKeys.length || unknownFoundationArabicKeys.length) {
   console.error("Frontend localization check failed.");
   if (missing.length) {
     console.error("English UI text without an Arabic translation:");
@@ -162,7 +170,8 @@ if (missing.length || missingSemanticKeys.length || unmigratedStaticUiText.lengt
   if (applicationSource.includes("systemValueAliases")) console.error("Arabic-to-English system value aliases are not allowed.");
   if (missingArabicKeys.length) console.error(`Missing Arabic foundation keys: ${missingArabicKeys.join(", ")}`);
   if (extraArabicKeys.length) console.error(`Unexpected Arabic foundation keys: ${extraArabicKeys.join(", ")}`);
-  if (unknownFoundationKeys.length) console.error(`Unknown foundation translation keys: ${unknownFoundationKeys.join(", ")}`);
+  if (unknownFoundationEnglishKeys.length) console.error(`Unknown English foundation translation keys: ${unknownFoundationEnglishKeys.join(", ")}`);
+  if (unknownFoundationArabicKeys.length) console.error(`Unknown Arabic foundation translation keys: ${unknownFoundationArabicKeys.join(", ")}`);
   process.exit(1);
 }
 

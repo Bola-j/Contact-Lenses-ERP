@@ -34,9 +34,25 @@ public partial class OperationLine
 
     public decimal LineTotal { get; set; }
 
+    // FullPrice, Promotion50, or PromotionFree for sales. Historical lines
+    // remain readable through the default FullPrice/legacy IsBonus mapping.
+    public string? PricingMode { get; set; }
+
+    // Canonical sale pricing category. Nullable so historical records remain untouched.
+    public string? LineType { get; set; }
+
+    // A return can consume only part of a source sale line. The remainder is
+    // an explicit exception, never a fake source allocation.
+    public int NormalQuantity { get; set; }
+    public int ExceptionQuantity { get; set; }
+    public decimal NormalValue { get; set; }
+    public decimal ExceptionValue { get; set; }
+
     public string? WriteOffReason { get; set; }
 
     public string? WriteOffReasonText { get; set; }
+
+    public string? ReturnDisposition { get; set; }
 
     public DateOnly? ExpiryDate { get; set; }
 
@@ -61,4 +77,5 @@ public partial class OperationLine
     public virtual OperationLog Operation { get; set; } = null!;
 
     public virtual ICollection<OperationLineSourceAllocation> SourceAllocations { get; set; } = new List<OperationLineSourceAllocation>();
+    public virtual ICollection<OperationLinePieceAllocation> PieceAllocations { get; set; } = new List<OperationLinePieceAllocation>();
 }

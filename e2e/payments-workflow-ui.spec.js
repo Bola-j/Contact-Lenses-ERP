@@ -6,6 +6,8 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   const financeAccountId = "66666666-6666-6666-6666-666666666666";
   let rejectionBody = null;
   let collectionSubmitted = false;
+  let closureSubmitted = false;
+  let closurePayload = null;
   let refundPayload = null;
   let failMerchantRefresh = true;
   await page.route("**/*", async (route) => {
@@ -42,6 +44,21 @@ test("payments: one collection workspace shows reconciled merchant figures and r
     });
     if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}/statement`) return json([]);
     if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}/orders`) return json([]);
+    if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/eligible`) return json([{
+      id: "55555555-5555-5555-5555-555555555555",
+      operationNumber: "OP-20260912-001",
+      settlementAmount: 1000,
+      allocatedAmount: 1000,
+      remainingAmount: 0
+    }]);
+    if (url.pathname === `/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`) {
+      if (method === "POST") {
+        closureSubmitted = true;
+        closurePayload = JSON.parse(route.request().postData() || "{}");
+        return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "99999999-9999-9999-9999-999999999999", status: "PendingAdminReview", items: [] }) });
+      }
+      return json([]);
+    }
     if (url.pathname === "/api/v1/payments/collection-work") return json([{
       id: collectionId,
       reference: "COL-333333333333",
@@ -105,6 +122,14 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   await expect(page.locator("#merchant-payment-rows")).not.toContainText("CashHandToHand");
   await expect(page.locator("#merchant-payment-rows")).toContainText("Wholesale sale");
   await expect(page.locator("#merchant-payment-rows")).not.toContainText("WholesaleSale");
+  await expect(page.locator("#merchant-financial-closure")).toBeVisible();
+  await expect(page.locator("#merchant-closure-submit")).toBeDisabled();
+  await page.locator("[data-closure-operation]").check();
+  await expect(page.locator("#merchant-closure-submit")).toBeEnabled();
+  await page.locator("#merchant-closure-submit").click();
+  await expect.poll(() => closureSubmitted).toBe(true);
+  expect(closurePayload.operationIds).toEqual(["55555555-5555-5555-5555-555555555555"]);
+  await expect(page.locator("#merchant-closure-feedback")).toContainText("Financial closure request submitted for review");
   await page.getByRole("tab", { name: "Other payments" }).click();
   await expect(page.locator("#merchant-payment-section")).toBeHidden();
   await expect(page.locator("#payment-queue-section")).toBeVisible();

@@ -4,9 +4,10 @@ import {
   contextualReference,
   findVisibleUuidLeaks,
   sanitizeVisibleText
-} from "./localization.js?v=20260927-supply-receiving";
-import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20260927-supply-receiving";
-import enMessages from "./i18n/en.js?v=20260927-supply-receiving";
+} from "./localization.js?v=20261002-sale-line-kinds";
+import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20261014-cod-settings-history-v2";
+import enMessages from "./i18n/en.js?v=20261014-cod-settings-history-v2";
+import { formatDateOnly as renderDateOnly, formatDateTime as renderDateTime, isValidDateOnly, isValidDateTime, parseDateOnly } from "./date-format.js?v=20261014-date-format";
 
 // Keep API calls same-origin. Deployment-specific routing belongs to the reverse proxy.
 let apiBase = "";
@@ -24,6 +25,68 @@ const ngrokSkipHeader = "ngrok-skip-browser-warning";
 const requestMarkerHeader = "X-Lensee-Request";
 const mutationEventName = "lensee:data-mutated";
 const authEventName = "lensee:auth-changed";
+
+function validateDateField(input) {
+  if (!input?.matches?.("[data-date-input]")) return true;
+  const valid = input.dataset.dateInput === "datetime" ? isValidDateTime(input.value) : isValidDateOnly(input.value);
+  input.setCustomValidity(valid || !input.value.trim()
+    ? ""
+    : currentLanguage === "ar" ? "أدخل تاريخًا صحيحًا بصيغة يوم/شهر/سنة." : "Enter a valid date in dd/MM/yyyy format.");
+  input.setAttribute("aria-invalid", valid || !input.value.trim() ? "false" : "true");
+  return valid;
+}
+
+function prepareDateFields(root = document) {
+  const inputs = [...(root.matches?.('input[type="date"], input[type="datetime-local"]') ? [root] : []), ...(root.querySelectorAll?.('input[type="date"], input[type="datetime-local"]') || [])];
+  inputs.forEach((input) => {
+    const wasDateTime = input.type === "datetime-local";
+    const value = input.value || input.getAttribute("value") || "";
+    input.type = "text";
+    input.dataset.dateInput = wasDateTime ? "datetime" : "date";
+    input.inputMode = "numeric";
+    input.placeholder = wasDateTime ? "dd/mm/yyyy hh:mm:ss" : "dd/mm/yyyy";
+    input.autocomplete = "off";
+    input.pattern = wasDateTime
+      ? "(?:[0-3][0-9]/[01][0-9]/[0-9]{4} [0-2][0-9]:[0-5][0-9]:[0-5][0-9])?"
+      : "(?:[0-3][0-9]/[01][0-9]/[0-9]{4})?";
+    input.value = wasDateTime ? formatDateTime(value) : renderDateOnly(value);
+    input.addEventListener("input", () => validateDateField(input));
+    input.addEventListener("change", () => validateDateField(input));
+    input.addEventListener("blur", () => validateDateField(input));
+    validateDateField(input);
+  });
+}
+
+function formatTemporalText(node) {
+  if (node?.nodeType !== Node.TEXT_NODE || !node.textContent) return;
+  const text = node.textContent.trim();
+  if (/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(text)) {
+    node.textContent = formatDateTime(text);
+  }
+}
+
+document.addEventListener("change", (event) => {
+  if (event.target?.matches?.("[data-date-input]") && !validateDateField(event.target)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.target.reportValidity();
+  }
+}, true);
+
+const dateFieldObserver = new MutationObserver((records) => {
+  for (const record of records) {
+    if (record.type === "characterData") formatTemporalText(record.target);
+    record.addedNodes.forEach((node) => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        prepareDateFields(node);
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) formatTemporalText(walker.currentNode);
+      } else formatTemporalText(node);
+    });
+  }
+});
+dateFieldObserver.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
+prepareDateFields();
 
 let catalogCategories = [];
 let categoryTree = [];
@@ -91,6 +154,9 @@ let reportStocktakeRows = [];
 let reportSupplyRows = [];
 let reportCatalogEntries = [];
 let reportPageState = { stock: 1, operations: 1, payments: 1, supply: 1, merchantBalances: 1 };
+let reportPageSize = 50;
+let dailyFinanceMetricsPageState = { dashboard: 1, finance: 1 };
+let financeMetricAreas = [];
 let selectedMerchantId = null;
 let auditPageState = { page: 1, pageSize: 50 };
 let notificationPageState = { page: 1, pageSize: 10 };
@@ -267,10 +333,11 @@ const arabicTranslations = Object.freeze({
   "Rejected": "مرفوض",
   "Approved": "معتمد",
   "Cash hand to hand": "نقدي مباشر",
-  "Cash transaction": "تحويل أو إيداع نقدي",
+  "Cash transaction": "تحويل بنكي",
   "Merchant account": "حساب التاجر",
   "MerchantAccount": "حساب التاجر",
   "Account details": "تفاصيل الحساب",
+  "Settlement": "التسوية",
   "Account health": "حالة الحساب",
   "Account notes": "ملاحظات الحساب",
   "Excellent": "ممتاز",
@@ -377,7 +444,7 @@ const arabicTranslations = Object.freeze({
   "Stocktake sessions": "جلسات الجرد",
   "No users found.": "لم يتم العثور على مستخدمين.",
   "No merchants yet.": "لا يوجد تجار بعد.",
-  "Show completed/received/cancelled history": "إظهار سجل العمليات المكتملة والمستلمة والملغاة",
+  "Show final-state history": "إظهار سجل العمليات في حالتها النهائية",
   "Username": "اسم المستخدم",
   "Password": "كلمة المرور",
   "Show password": "إظهار كلمة المرور",
@@ -563,6 +630,9 @@ const arabicTranslations = Object.freeze({
   "Category": "التصنيف",
   "Toggle": "توسيع أو طي",
   "Pack": "العبوة",
+  "Piece": "قطعة",
+  "PackOpen": "فتح عبوة",
+  "ReturnRestore": "إرجاع قطع إلى الدفعة المفتوحة",
   "Writable": "قابل للتعديل",
   "Read only": "للقراءة فقط",
   "Product detail": "تفاصيل المنتج",
@@ -844,7 +914,6 @@ const arabicTranslations = Object.freeze({
   "Representative reserve": "حجز للمندوب",
   "WriteOff": "إعدام / تسوية مخزون",
   "CashHandToHand": "نقدي مباشر",
-  "CashTransaction": "تحويل أو إيداع نقدي",
   "BankTransfer": "تحويل بنكي",
   "Wallet": "محفظة إلكترونية",
   "Remove": "حذف",
@@ -1460,6 +1529,31 @@ function uiText(english) {
   return (language === "ar" ? (arabicTranslations[value] || value) : value).trim();
 }
 
+function humanizeSystemName(value) {
+  return String(value ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim();
+}
+
+function systemValueLabel(value, fallback = "-") {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  const translated = uiText(raw);
+  return translated && translated !== raw ? translated : humanizeSystemName(raw) || fallback;
+}
+
+function operationStatusLabel(status) {
+  const key = {
+    Draft: "payments.draft", Confirmed: "payments.confirmed", Reserved: "app.inline.reserved",
+    Shipped: "app.inline.shipped", Received: "reports.received", Completed: "payments.completed",
+    Cancelled: "payments.cancelled", Dispatched: "app.inline.dispatched",
+    Delivered: "app.inline.delivered", FailedDelivery: "app.inline.failedDelivery"
+  }[status];
+  return key ? foundationT(key) : systemValueLabel(status);
+}
+
 function applyLanguage(root = document.body) {
   if (applyingLanguage) return;
   applyingLanguage = true;
@@ -1530,7 +1624,6 @@ function applyStaticShellLanguage() {
     const element = document.querySelector(selector);
     if (!element) return;
     if (element.matches("button")) {
-      element.textContent = foundationT(key);
       element.setAttribute("aria-label", foundationT(key));
       element.setAttribute("title", foundationT(key));
     }
@@ -1910,6 +2003,57 @@ async function downloadFile(path, fileName) {
   return serverFileName || fileName;
 }
 
+function reportJobIdempotencyKey(path) {
+  const storageKey = `lensee.report-job:${path}`;
+  const existing = sessionStorage.getItem(storageKey);
+  if (existing) return existing;
+  const value = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  sessionStorage.setItem(storageKey, value);
+  return value;
+}
+
+async function downloadReportJobAware(path, fileName, onQueued) {
+  const key = reportJobIdempotencyKey(path);
+  const response = await fetchWithAuth(path, { headers: { "Idempotency-Key": key } });
+  if (response.status !== 202) {
+    if (!response.ok) {
+      const body = await response.text();
+      const error = new Error(body || response.statusText);
+      error.status = response.status;
+      throw error;
+    }
+    const blob = await response.blob();
+    const serverFileName = getContentDispositionFileName(response.headers.get("content-disposition"));
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = serverFileName || fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    sessionStorage.removeItem(`lensee.report-job:${path}`);
+    return serverFileName || fileName;
+  }
+
+  const job = await response.json();
+  onQueued?.(job);
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await delay(1000);
+    const status = await request(`/api/v1/reports/document-jobs/${encodeURIComponent(job.id)}`, { notify: false });
+    if (status.status === "Ready") {
+      const completedName = await downloadFile(`/api/v1/reports/document-jobs/${encodeURIComponent(job.id)}/file`, fileName);
+      sessionStorage.removeItem(`lensee.report-job:${path}`);
+      return completedName;
+    }
+    if (status.status === "Failed") {
+      throw new Error(status.error || "The report could not be generated.");
+    }
+    onQueued?.(status);
+  }
+  throw new Error("The report is still being prepared. Please try again shortly.");
+}
+
 function getContentDispositionFileName(headerValue) {
   if (!headerValue) return null;
   const encoded = headerValue.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -2065,7 +2209,7 @@ async function renderRoute() {
   const path = currentPath();
   const route = routes[path];
   if (!route) {
-    location.hash = auth ? "/dashboard" : "/login";
+    renderNotFound(auth);
     return;
   }
   document.body.classList.toggle("auth-page", path === "/login" && !auth);
@@ -2103,6 +2247,7 @@ async function renderRoute() {
     const operationForm = document.getElementById("operation-form");
     if (operationForm) operationForm.scrollIntoView({ behavior: "smooth", block: "start" });
     applyLanguage(document.body);
+    prepareDateFields(document.body);
     return;
   }
   if (route.roles.length > 0 && auth && !route.roles.includes(auth.user.role)) {
@@ -2136,6 +2281,7 @@ async function renderRoute() {
   applyLanguage(document.body);
   applyStaticShellLanguage();
   applyLanguage(view);
+  prepareDateFields(view);
   sanitizeVisibleIdentifiers(view);
   scheduleRouteRefresh(path);
   await applyNotificationFocus();
@@ -2334,6 +2480,7 @@ function promptDialog({ title, label, defaultValue = "", inputType = "text", req
         </div>
       </form>`;
     document.body.appendChild(overlay);
+    sanitizeVisibleIdentifiers(overlay);
     const input = overlay.querySelector(".dialog-input");
     input.focus();
     input.select?.();
@@ -2419,6 +2566,7 @@ function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel =
         </div>
       </section>`;
     document.body.appendChild(overlay);
+    sanitizeVisibleIdentifiers(overlay);
     const close = (value) => {
       document.removeEventListener("keydown", onKeyDown);
       overlay.remove();
@@ -2443,8 +2591,8 @@ function confirmDialog({ title, message, confirmLabel = "Confirm", cancelLabel =
   });
 }
 
-async function confirmFinalAction({ action, title, message, confirmLabel = "Confirm", reasonLabel, control = null, key, execute }) {
-  const needsReason = action === "reject" || action === "cancel";
+async function confirmFinalAction({ action, title, message, confirmLabel = "Confirm", reasonLabel, requiresReason = false, control = null, key, execute }) {
+  const needsReason = requiresReason || action === "reject" || action === "cancel";
   const resolvedTitle = title || foundationT("app.confirm.finalAction", { action });
   const resolvedMessage = message || foundationT("app.confirm.finalActionMessage", { action });
   if (action === "reject") {
@@ -2661,6 +2809,70 @@ async function checkLoginHealth() {
   }
 }
 
+function dailyFinanceMetricsMarkup(surface) {
+  const prefix = `daily-finance-${surface}`;
+  return `<section class="workspace-panel daily-finance-metrics" aria-live="polite">
+    <div class="section-head"><div><p class="ledger-kicker">${escapeHtml(financeT("dailyMetrics.kicker"))}</p><h3>${escapeHtml(financeT("dailyMetrics.title"))}</h3><p class="muted-text">${escapeHtml(financeT("dailyMetrics.help"))}</p></div>
+      <div class="form-grid compact-form daily-finance-controls"><label>${escapeHtml(financeT("businessDate"))}<input id="${prefix}-date" class="input" type="date"></label><label>${escapeHtml(financeT("dailyMetrics.area"))}<select id="${prefix}-area" class="select"><option value="">${escapeHtml(financeT("dailyMetrics.allAreas"))}</option></select></label><button id="${prefix}-refresh" class="button secondary" type="button">${escapeHtml(foundationT("common.refresh"))}</button></div></div>
+    <div id="${prefix}-content">${escapeHtml(foundationT("common.loading"))}</div>
+  </section>`;
+}
+
+function wireDailyFinanceMetrics(surface) {
+  const prefix = `daily-finance-${surface}`;
+  const date = document.getElementById(`${prefix}-date`);
+  if (date && !date.value) date.value = financeBusinessDateInputValue();
+  date?.addEventListener("change", () => { dailyFinanceMetricsPageState[surface] = 1; void loadDailyFinanceMetrics(surface); });
+  document.getElementById(`${prefix}-area`)?.addEventListener("change", () => { dailyFinanceMetricsPageState[surface] = 1; void loadDailyFinanceMetrics(surface); });
+  document.getElementById(`${prefix}-refresh`)?.addEventListener("click", () => void loadDailyFinanceMetrics(surface));
+  void loadDailyFinanceMetrics(surface);
+}
+
+function metricTile(label, value) {
+  return `<article class="scenario-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatMoney(value))}</strong></article>`;
+}
+
+function renderDailyFinanceAreaOptions(select, areas, selectedId) {
+  if (!select) return;
+  replaceMarkup(select, `<option value="">${escapeHtml(financeT("dailyMetrics.allAreas"))}</option>${areas.map((area) => `<option value="${escapeHtml(area.id)}">${escapeHtml(area.name)} · ${escapeHtml(area.locationType)}</option>`).join("")}`);
+  select.value = areas.some((area) => area.id === selectedId) ? selectedId : "";
+}
+
+async function loadDailyFinanceMetrics(surface) {
+  const prefix = `daily-finance-${surface}`;
+  const target = document.getElementById(`${prefix}-content`);
+  if (!target) return;
+  const date = document.getElementById(`${prefix}-date`)?.value || financeBusinessDateInputValue();
+  const selectedArea = document.getElementById(`${prefix}-area`)?.value || "";
+  const page = Math.max(1, dailyFinanceMetricsPageState[surface] || 1);
+  const query = new URLSearchParams({ date, page: String(page), pageSize: "8" });
+  if (selectedArea) query.set("locationId", selectedArea);
+  try {
+    const summary = await request(`/api/v1/finance/daily-metrics?${query}`);
+    financeMetricAreas = summary.areas || [];
+    renderDailyFinanceAreaOptions(document.getElementById(`${prefix}-area`), financeMetricAreas, selectedArea);
+    const warning = "";
+    const unassigned = Number(summary.unassignedFinance?.inflow || 0) !== 0 || Number(summary.unassignedFinance?.outflow || 0) !== 0
+      ? `<p class="muted-text">${escapeHtml(financeT("dailyMetrics.companyWideFinance"))}: ${escapeHtml(formatMoney(summary.unassignedFinance.net || 0))}</p>` : "";
+    const rows = summary.items || [];
+    const totalPages = Math.max(1, Number(summary.totalPages || 1));
+    replaceMarkup(target, `${warning}<div class="scenario-grid daily-finance-card-grid">${[
+      metricTile(financeT("dailyMetrics.grossSales"), summary.sales?.grossSales || 0),
+      metricTile(financeT("dailyMetrics.returns"), summary.sales?.returns || 0),
+      metricTile(financeT("dailyMetrics.netSales"), summary.sales?.netSales || 0),
+      metricTile(financeT("dailyMetrics.inflow"), summary.finance?.inflow || 0),
+      metricTile(financeT("dailyMetrics.outflow"), summary.finance?.outflow || 0),
+      metricTile(financeT("dailyMetrics.netFinance"), summary.finance?.net || 0)
+    ].join("")}</div>${unassigned}<div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(financeT("dailyMetrics.area"))}</th><th>${escapeHtml(financeT("dailyMetrics.netSales"))}</th><th>${escapeHtml(financeT("dailyMetrics.inflow"))}</th><th>${escapeHtml(financeT("dailyMetrics.outflow"))}</th><th>${escapeHtml(financeT("dailyMetrics.netFinance"))}</th></tr></thead><tbody>${rows.length ? rows.map((row) => `<tr><td>${escapeHtml(row.locationName)}<span class="muted-cell">${escapeHtml(row.locationType)}</span></td><td>${escapeHtml(formatMoney(row.netSales))}</td><td>${escapeHtml(formatMoney(row.financeInflow))}</td><td>${escapeHtml(formatMoney(row.financeOutflow))}</td><td>${escapeHtml(formatMoney(row.netFinance))}</td></tr>`).join("") : `<tr><td colspan="5">${escapeHtml(financeT("empty"))}</td></tr>`}</tbody></table></div><div class="form-actions pagination-actions" ${Number(summary.totalCount || 0) <= Number(summary.pageSize || 8) ? "hidden" : ""}><button class="button secondary" type="button" data-daily-finance-page="previous" ${page <= 1 ? "disabled" : ""}>${escapeHtml(financeT("dailyMetrics.previous"))}</button><span class="muted-text">${escapeHtml(financeT("dailyMetrics.page", { page, pages: totalPages }))}</span><button class="button secondary" type="button" data-daily-finance-page="next" ${page >= totalPages ? "disabled" : ""}>${escapeHtml(financeT("dailyMetrics.next"))}</button></div>`);
+    target.querySelectorAll("[data-daily-finance-page]").forEach((button) => button.addEventListener("click", () => {
+      dailyFinanceMetricsPageState[surface] = button.dataset.dailyFinancePage === "next" ? Math.min(totalPages, page + 1) : Math.max(1, page - 1);
+      void loadDailyFinanceMetrics(surface);
+    }));
+  } catch (error) {
+    replaceMarkup(target, `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(error))}</div>`);
+  }
+}
+
 function renderDashboard() {
   const auth = getAuth();
   const currentRole = auth?.user?.role || "";
@@ -2686,7 +2898,7 @@ function renderDashboard() {
     .join("");
 
   document.getElementById("view").innerHTML = `
-    ${["Admin", "CLevel"].includes(currentRole) ? `<section class="workspace-panel"><div class="section-head"><h3>${financeT("executive.title")}</h3><div class="form-grid compact-form"><label>${financeT("executive.period")}<select id="finance-summary-period" class="select"><option value="daily">${financeT("executive.daily")}</option><option value="monthly">${financeT("executive.monthly")}</option></select></label><label>${financeT("businessDate")}<input id="finance-summary-date" class="input" type="date"></label></div></div><div id="finance-executive-summary">${foundationT("common.loading")}</div></section>` : ""}
+    ${["Admin", "CLevel"].includes(currentRole) ? `<section class="workspace-panel"><div class="section-head"><h3>${financeT("executive.title")}</h3><div class="form-grid compact-form"><label>${financeT("fromDate")}<input id="finance-summary-from" class="input" type="date"></label><label>${financeT("toDate")}<input id="finance-summary-to" class="input" type="date"></label></div></div><div id="finance-executive-summary">${foundationT("common.loading")}</div></section>${dailyFinanceMetricsMarkup("dashboard")}` : ""}
     <section class="command-grid">
       <a class="command-tile command-tile-daily" href="#/operations">
         <span>${foundationT("dashboard.dailyWork")}</span>
@@ -2717,8 +2929,9 @@ function renderDashboard() {
 
   if (["Admin", "CLevel"].includes(currentRole)) {
     loadFinanceExecutiveSummary();
-    document.getElementById("finance-summary-period")?.addEventListener("change", loadFinanceExecutiveSummary);
-    document.getElementById("finance-summary-date")?.addEventListener("change", loadFinanceExecutiveSummary);
+    document.getElementById("finance-summary-from")?.addEventListener("change", loadFinanceExecutiveSummary);
+    document.getElementById("finance-summary-to")?.addEventListener("change", loadFinanceExecutiveSummary);
+    wireDailyFinanceMetrics("dashboard");
   }
 }
 
@@ -3080,7 +3293,7 @@ async function loadCatalogProducts() {
       ? `<tr><td colspan="${canWrite ? 7 : 6}">${escapeHtml(foundationT("app.catalogNoProducts"))}</td></tr>`
       : result.items.map((product) => `
         <tr class="click-row ${product.id === selectedProductId ? "selected-row" : ""}" data-product-id="${escapeHtml(product.id)}">
-          <td>${escapeHtml(product.name)}</td><td>${escapeHtml(uiText(product.productType))}</td><td>${escapeHtml(product.brandName)}</td>
+          <td>${escapeHtml(product.name)}</td><td>${escapeHtml(systemValueLabel(product.productType))}</td><td>${escapeHtml(product.brandName)}</td>
           <td>${escapeHtml(product.categoryName)}</td><td>${formatPackHint(product)}</td>
           <td><span class="status-pill ${product.isActive ? "status-ok" : "status-muted"}">${escapeHtml(uiText(product.isActive ? "Active" : "Inactive"))}</span></td>
           ${canWrite ? `<td><button class="button secondary table-action" type="button" data-product-edit="${escapeHtml(product.id)}">${escapeHtml(foundationT("app.catalogEdit"))}</button></td>` : ""}
@@ -3123,10 +3336,10 @@ async function loadCatalogDetail(productId) {
         </div>
       </div>
       <div class="detail-grid">
-        <div><span>${escapeHtml(foundationT("payments.type"))}</span><strong>${escapeHtml(uiText(product.productType))}</strong></div>
-        <div><span>${escapeHtml(foundationT("app.sellMode"))}</span><strong>${escapeHtml(product.sellMode ? uiText(product.sellMode) : foundationT("app.notSet"))}</strong></div>
+        <div><span>${escapeHtml(foundationT("payments.type"))}</span><strong>${escapeHtml(systemValueLabel(product.productType))}</strong></div>
+        <div><span>${escapeHtml(foundationT("app.sellMode"))}</span><strong>${escapeHtml(product.sellMode ? systemValueLabel(product.sellMode) : foundationT("app.notSet"))}</strong></div>
         <div><span>${escapeHtml(foundationT("app.piecesPerPack"))}</span><strong>${escapeHtml(product.piecesPerPack || foundationT("app.notSet"))}</strong></div>
-        <div><span>${escapeHtml(foundationT("app.catalogExpiry"))}</span><strong>${escapeHtml(product.expiryType ? uiText(product.expiryType) : foundationT("app.notSet"))}</strong></div>
+        <div><span>${escapeHtml(foundationT("app.catalogExpiry"))}</span><strong>${escapeHtml(product.expiryType ? systemValueLabel(product.expiryType) : foundationT("app.notSet"))}</strong></div>
         <div><span>${escapeHtml(foundationT("app.catalogOpeningValidity"))}</span><strong>${escapeHtml(formatOpeningValidity(product))}</strong></div>
       </div>
       <p class="muted-text">${escapeHtml(foundationT("app.catalogBatchExpiryHelp"))}</p>
@@ -3160,6 +3373,7 @@ function renderSkuSection(product, canWrite) {
           <div class="field"><label for="sku-color">${escapeHtml(foundationT("app.inline.color"))}</label><input id="sku-color" class="input"></div>
           <div class="field"><label for="sku-size">${escapeHtml(foundationT("app.inline.size"))}</label><input id="sku-size" class="input"></div>
           <div class="field"><label for="sku-barcode">${escapeHtml(foundationT("app.inline.barcode"))}</label><input id="sku-barcode" class="input"></div>
+          <label class="field checkbox-field"><span>${escapeHtml(foundationT("app.inline.skuSellable"))}</span><input id="sku-sellable" type="checkbox" checked></label>
         </div>
         <div class="form-actions"><button class="button" type="submit">${escapeHtml(foundationT("app.inline.saveSKU"))}</button><button class="button secondary" id="sku-reset" type="button">${escapeHtml(foundationT("app.inline.clear"))}</button></div>
       </form>` : ""}
@@ -3450,7 +3664,8 @@ function readSkuForm() {
     powerValue: powerValue ? Number(powerValue) : null,
     colorName: document.getElementById("sku-color").value || null,
     size: document.getElementById("sku-size").value || null,
-    barcode: document.getElementById("sku-barcode").value || null
+    barcode: document.getElementById("sku-barcode").value || null,
+    isSellable: document.getElementById("sku-sellable").checked
   };
 }
 
@@ -3462,6 +3677,7 @@ function fillSkuForm(sku) {
   document.getElementById("sku-color").value = sku.colorName || "";
   document.getElementById("sku-size").value = sku.size || "";
   document.getElementById("sku-barcode").value = sku.barcode || "";
+  document.getElementById("sku-sellable").checked = sku.isSellable !== false;
   document.getElementById("sku-power-sign").focus();
 }
 
@@ -3469,6 +3685,7 @@ function resetSkuForm() {
   ["sku-id", "sku-power-sign", "sku-power-value", "sku-color", "sku-size", "sku-barcode"].forEach((id) => {
     document.getElementById(id).value = "";
   });
+  document.getElementById("sku-sellable").checked = true;
   const preview = document.getElementById("sku-code-preview");
   if (preview) {
     preview.textContent = foundationT("app.inline.derivedAfterSave");
@@ -3645,6 +3862,7 @@ function clearFormError(id) {
 function renderInventory() {
   const auth = getAuth();
   const canWrite = isSystemAdminRole(auth?.user.role);
+  const canInspectQuarantine = isSystemAdminRole(auth?.user.role);
   document.getElementById("view").innerHTML = `
     <section class="catalog-hero">
       <div>
@@ -3708,7 +3926,7 @@ function renderInventory() {
         <section class="catalog-detail-grid">
           <section class="band">
             <div class="section-head"><h2>${escapeHtml(foundationT("app.inventoryBatches"))}</h2><span id="inventory-batch-count" class="muted-text">${escapeHtml(foundationT("common.loading"))}</span></div>
-            <div class="table-wrap"><table><thead><tr><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.inventoryLocation"))}</th><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.expiryDate"))}</th><th>${escapeHtml(foundationT("payments.notes"))}</th></tr></thead><tbody id="inventory-batches"><tr><td colspan="6">${escapeHtml(foundationT("app.inline.loadingBatches"))}</td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.inventoryLocation"))}</th><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.expiryDate"))}</th><th>${escapeHtml(foundationT("payments.notes"))}</th>${canInspectQuarantine ? `<th>${escapeHtml(foundationT("payments.actions"))}</th>` : ""}</tr></thead><tbody id="inventory-batches"><tr><td colspan="${canInspectQuarantine ? 7 : 6}">${escapeHtml(foundationT("app.inline.loadingBatches"))}</td></tr></tbody></table></div>
           </section>
           <section class="band">
             <div class="section-head"><h2>${escapeHtml(foundationT("app.inventoryTransactions"))}</h2><span id="inventory-transaction-count" class="muted-text">${escapeHtml(foundationT("common.loading"))}</span></div>
@@ -3831,7 +4049,7 @@ async function loadInventoryLocations() {
     select.disabled = Boolean(getAuth()?.user.locationId);
     list.innerHTML = inventoryLocations.length === 0
       ? `<span class="muted-text">${escapeHtml(foundationT("app.inventoryNoLocations"))}</span>`
-      : inventoryLocations.map((location) => `<button class="reference-item" type="button" data-location-id="${escapeHtml(location.id)}"><strong>${escapeHtml(location.name)}</strong><span>${escapeHtml(uiText(location.locationType))} ${escapeHtml(uiText(location.isActive ? "Active" : "Inactive"))}</span></button>`).join("");
+      : inventoryLocations.map((location) => `<button class="reference-item" type="button" data-location-id="${escapeHtml(location.id)}"><strong>${escapeHtml(location.name)}</strong><span>${escapeHtml(systemValueLabel(location.locationType))} ${escapeHtml(systemValueLabel(location.isActive ? "Active" : "Inactive"))}</span></button>`).join("");
     list.querySelectorAll("[data-location-id]").forEach((button) => button.addEventListener("click", () => {
       selectedInventoryLocationId = (button.dataset.locationId || "").trim();
       select.value = selectedInventoryLocationId;
@@ -3916,18 +4134,20 @@ function merchantSalesVarianceDialog(gate) {
       <tr>
         <td><strong class="sku-code">${escapeHtml(warning.skuCode || "SKU")}</strong><div class="muted-cell">${escapeHtml(warning.productName || "-")}</div></td>
         <td>${escapeHtml(warning.lotNumber || "-")}</td>
-        <td>${escapeHtml(warning.expiryDate || "-")}</td>
+        <td>${escapeHtml(renderDateOnly(warning.expiryDate || "-"))}</td>
         <td>${escapeHtml(String(warning.soldQuantity ?? 0))}</td>
         <td>${escapeHtml(String(warning.returnedQuantity ?? 0))}</td>
         <td>${escapeHtml(String(warning.requestedQuantity ?? 0))}</td>
-        <td><strong>${escapeHtml(String(warning.excessQuantity ?? 0))}</strong></td>
+        <td><strong>${escapeHtml(String((warning.excessQuantity ?? 0) * Math.max(1, Number(warning.piecesPerPack || 1))))}</strong> ${escapeHtml(foundationT("app.inline.pieces"))}<div class="muted-cell">${escapeHtml(warning.message || "")}</div></td>
       </tr>`).join("");
     overlay.innerHTML = `
       <form class="dialog-card confirm-dialog confirm-dialog-warning sales-variance-dialog" role="dialog" aria-modal="true" aria-labelledby="merchant-sales-variance-title">
+        <div class="status-pill status-danger" role="alert" style="font-size:1.05rem;padding:.7rem 1rem;margin-bottom:1rem;text-align:center">⚠ ${escapeHtml(foundationT("app.inline.excessDetected"))}</div>
         <div class="section-head tight-head"><div><h2 id="merchant-sales-variance-title">${escapeHtml(uiText(gate.title || foundationT("app.inline.recordedSalesWarning")))}</h2><p class="muted-text">${escapeHtml(uiText(gate.detail || foundationT("app.inline.reviewRecordedMerchantSalesBeforeContinuing")))}</p></div></div>
-        <div class="table-wrap sales-variance-dialog-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.catalogExpiry"))}</th><th>${escapeHtml(foundationT("app.inline.soldToMerchant"))}</th><th>${escapeHtml(foundationT("app.inline.alreadyReturned"))}</th><th>${escapeHtml(foundationT("app.inline.requestedNow"))}</th><th>${escapeHtml(foundationT("app.inline.aboveRecordedBalance"))}</th></tr></thead><tbody>${warningRows}</tbody></table></div>
+        <div class="table-wrap sales-variance-dialog-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.catalogExpiry"))}</th><th>${escapeHtml(foundationT("app.inline.soldQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.alreadyReturned"))}</th><th>${escapeHtml(foundationT("app.inline.requestedNow"))}</th><th>${escapeHtml(foundationT("app.inline.aboveRecordedBalance"))}</th></tr></thead><tbody>${warningRows}</tbody></table></div>
         ${gate.canBypass ? `
           <div class="field"><label for="merchant-sales-variance-reason">${escapeHtml(foundationT("app.inline.exceptionReason"))}</label><textarea id="merchant-sales-variance-reason" class="input" rows="3" maxlength="500" placeholder="${escapeHtml(foundationT("app.attribute.explainWhyThisReturnShouldContinue"))}" required></textarea></div>
+          <div class="field"><label for="merchant-sales-variance-authorizer">${escapeHtml(foundationT("app.inline.verbalAuthorizer"))}</label><input id="merchant-sales-variance-authorizer" class="input" maxlength="160" autocomplete="off" required></div>
           <div class="form-error" data-variance-error hidden></div>` : `<p class="form-error">${escapeHtml(foundationT("app.inline.thisAccountCanReviewTheWarningButCannotBypass"))}</p>`}
         <div class="form-actions">
           ${gate.canBypass ? `<button class="button primary" type="submit" data-dialog-confirm>${escapeHtml(foundationT("app.inline.confirmWithException"))}</button>` : ""}
@@ -3945,14 +4165,15 @@ function merchantSalesVarianceDialog(gate) {
       overlay.querySelector("form").addEventListener("submit", (event) => {
         event.preventDefault();
         const value = reason.value.trim();
+        const authorizer = overlay.querySelector("#merchant-sales-variance-authorizer")?.value.trim();
         const error = overlay.querySelector("[data-variance-error]");
-        if (!value) {
-          error.textContent = foundationT("app.message.exceptionReasonIsRequired");
+        if (!value || !authorizer) {
+          error.textContent = foundationT(!value ? "app.message.exceptionReasonIsRequired" : "app.inline.verbalAuthorizerRequired");
           error.hidden = false;
           applyLanguage();
           return;
         }
-        close({ acknowledgeSalesVariance: true, salesVarianceReason: value });
+        close({ acknowledgeSalesVariance: true, salesVarianceReason: value, verbalAuthorizer: authorizer });
       });
     }
   });
@@ -4223,20 +4444,42 @@ async function loadInventoryBatches(generation = inventoryRefreshGeneration) {
     if (generation !== inventoryRefreshGeneration) return;
     count.textContent = foundationT(result.totalCount === 1 ? "app.count.batch" : "app.count.batches", { count: result.totalCount });
     tbody.innerHTML = result.items.length === 0
-      ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inventoryNoBatches"))}</td></tr>`
+      ? `<tr><td colspan="${isSystemAdminRole(getAuth()?.user.role) ? 7 : 6}">${escapeHtml(foundationT("app.inventoryNoBatches"))}</td></tr>`
       : result.items.map((batch) => `
         <tr>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
           <td>${escapeHtml(batch.locationName)}</td>
           <td><strong class="sku-code">${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong>${skuStatusBadge(batch.skuIsActive)}<span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
-          <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
+          <td>${batch.displayQuantity ? `<strong>${escapeHtml(batch.displayQuantity)}</strong>` : quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
-          <td>${escapeHtml(batch.notes || "-")}</td>
+          <td>${batch.isQuarantined ? `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.quarantined"))}</span>` : ""}${escapeHtml(batch.notes || "-")}</td>
+          ${isSystemAdminRole(getAuth()?.user.role) ? `<td>${batch.isQuarantined && batch.packQuantity > 0 ? `<button class="button secondary table-action" type="button" data-quarantine-action="release" data-batch-id="${escapeHtml(batch.id)}" data-batch-quantity="${escapeHtml(batch.packQuantity)}">${escapeHtml(foundationT("app.inline.releaseQuarantine"))}</button> <button class="button secondary table-action" type="button" data-quarantine-action="write-off" data-batch-id="${escapeHtml(batch.id)}" data-batch-quantity="${escapeHtml(batch.packQuantity)}">${escapeHtml(foundationT("app.inline.writeOffQuarantine"))}</button>` : "-"}</td>` : ""}
         </tr>`).join("");
+    tbody.querySelectorAll("[data-quarantine-action]").forEach((button) => button.addEventListener("click", () => actOnQuarantinedBatch(button)));
     renderInventoryPager(tbody, "batches", result, loadInventoryBatches);
   } catch (exception) {
     count.textContent = foundationT("payments.failed");
-    tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`;
+    replaceMarkup(tbody, `<tr><td colspan="${isSystemAdminRole(getAuth()?.user.role) ? 7 : 6}">${escapeHtml(getFriendlyInventoryError(exception))}</td></tr>`);
+  }
+}
+
+async function actOnQuarantinedBatch(button) {
+  const quantityText = window.prompt(foundationT("app.inline.quarantineQuantity"), button.dataset.batchQuantity || "");
+  if (quantityText === null) return;
+  const quantity = Number(quantityText);
+  const reason = window.prompt(foundationT("app.inline.quarantineReason"), "")?.trim();
+  if (!Number.isInteger(quantity) || quantity <= 0 || !reason) {
+    notice(foundationT("app.inline.quarantineReasonRequired"), "error");
+    return;
+  }
+  try {
+    await request(`/api/v1/inventory/batches/${encodeURIComponent(button.dataset.batchId)}/quarantine/${button.dataset.quarantineAction}`, {
+      method: "POST", body: JSON.stringify({ quantity, reason })
+    });
+    notice(foundationT(button.dataset.quarantineAction === "release" ? "app.inline.quarantineReleased" : "app.inline.quarantineWrittenOff"), "success");
+    await refreshInventoryTables();
+  } catch (exception) {
+    notice(getFriendlyInventoryError(exception), "error");
   }
 }
 
@@ -4263,7 +4506,7 @@ async function loadTransferBlockedBatches(generation = inventoryRefreshGeneratio
           <td>${escapeHtml(batch.locationName)}</td>
           <td><strong class="sku-code">${escapeHtml(batch.skuCode || uiText("Unknown SKU"))}</strong><span class="muted-cell">${escapeHtml(batch.productName || shortId(batch.skuId, "SKU"))}</span></td>
           <td>${escapeHtml(batch.lotNumber || "-")}</td>
-          <td>${quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
+          <td>${batch.displayQuantity ? `<strong>${escapeHtml(batch.displayQuantity)}</strong>` : quantityStack(batch.packQuantity, batch.pieceQuantity, batch.locationType)}</td>
           <td>${expiryBadge(batch.expiryDate)}</td>
           <td><span class="status-pill status-warn">${escapeHtml(uiText(batch.reason || "Blocked"))}</span></td>
         </tr>`).join("");
@@ -4288,10 +4531,10 @@ async function loadInventoryTransactions(generation = inventoryRefreshGeneration
       ? `<tr><td colspan="5">${escapeHtml(foundationT("app.inventoryNoTransactions"))}</td></tr>`
       : result.items.map((transaction) => `
         <tr>
-          <td>${escapeHtml(uiText(transaction.transactionType))}</td>
+          <td>${escapeHtml(systemValueLabel(transaction.transactionType))}</td>
           <td>${escapeHtml(transaction.locationName)}</td>
           <td><strong class="sku-code">${escapeHtml(transaction.skuCode || foundationT("supply.unknownSKU"))}</strong>${skuStatusBadge(transaction.skuIsActive)}<span class="muted-cell">${escapeHtml(transaction.productName || shortId(transaction.skuId, "SKU"))}</span></td>
-          <td>${quantityStack(transaction.packChange, transaction.pieceChange, transaction.locationType)}</td>
+          <td>${transactionQuantityChange(transaction)}</td>
           <td>${escapeHtml(formatDateTime(transaction.createdAt))}</td>
         </tr>`).join("");
     renderInventoryPager(tbody, "transactions", result, loadInventoryTransactions);
@@ -4342,6 +4585,18 @@ function quantityStack(packs, pieces, locationType) {
   return `<strong>${escapeHtml(packText)}</strong><span class="muted-cell">${escapeHtml(pieceText)}</span>`;
 }
 
+function transactionQuantityChange(transaction) {
+  const quantity = Number(transaction.quantityChange || 0);
+  const sign = quantity > 0 ? "+" : "";
+  if (transaction.quantityUnit === "Pack") {
+    return `<strong>${escapeHtml(`${sign}${quantity} ${foundationT("app.inline.packs")}`)}</strong>`;
+  }
+  if (transaction.quantityUnit === "Piece") {
+    return `<strong>${escapeHtml(`${sign}${quantity} ${foundationT("app.inline.pieces")}`)}</strong>`;
+  }
+  return `<strong>${escapeHtml(String(quantity))}</strong><span class="muted-cell">${escapeHtml(foundationT("app.inline.legacyUnitUnknown"))}</span>`;
+}
+
 function quantityText(packs, pieces, locationType) {
   const packText = foundationT("app.inline.packCount", { count: packs });
   if (locationType === "MainWarehouse" || pieces === null || pieces === undefined) {
@@ -4362,16 +4617,19 @@ function expiryBadge(expiryDate) {
   if (!expiryDate) {
     return `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.noExpiry"))}</span>`;
   }
+  const dateParts = parseDateOnly(expiryDate);
+  if (!dateParts) return `<span class="status-pill status-warn">${escapeHtml(expiryDate)}</span>`;
   const today = new Date();
-  const expiry = new Date(`${expiryDate}T00:00:00`);
+  const expiry = new Date(dateParts.year, dateParts.month - 1, dateParts.day);
+  const displayExpiry = renderDateOnly(expiryDate);
   const days = Math.ceil((expiry - today) / 86400000);
   if (days < 0) {
-    return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.expiryDateExpired", { date: expiryDate }))}</span>`;
+    return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.expiryDateExpired", { date: displayExpiry }))}</span>`;
   }
   if (days <= 90) {
-    return `<span class="status-pill status-warn">${escapeHtml(expiryDate)}</span>`;
+    return `<span class="status-pill status-warn">${escapeHtml(displayExpiry)}</span>`;
   }
-  return `<span class="status-pill status-ok">${escapeHtml(expiryDate)}</span>`;
+  return `<span class="status-pill status-ok">${escapeHtml(displayExpiry)}</span>`;
 }
 
 function inventoryParams() {
@@ -4513,8 +4771,8 @@ async function loadMerchants(search = "") {
         <td>${escapeHtml(merchant.businessName)}</td>
         <td>${escapeHtml(merchant.contactPersonName)}</td>
         <td>${escapeHtml((merchant.phoneNumbers || []).join(", ") || "-")}</td>
-        <td>${escapeHtml(uiText(merchant.businessType))}</td>
-        <td><span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(uiText(merchant.status))}</span></td>
+        <td>${escapeHtml(systemValueLabel(merchant.businessType))}</td>
+        <td><span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(systemValueLabel(merchant.status))}</span></td>
         <td>
           <button class="button secondary table-action" type="button" data-view-merchant="${escapeHtml(merchant.id)}">${escapeHtml(foundationT("app.inline.detail"))}</button>
           <button class="button secondary table-action" type="button" data-print-report="merchant-statement" data-print-id="${escapeHtml(merchant.id)}" data-print-code="${escapeHtml(merchant.businessName)}">${escapeHtml(foundationT("payments.print"))}</button>
@@ -4655,7 +4913,7 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
     panel.innerHTML = `
       <div class="section-head tight-head">
         <div><h3>${escapeHtml(merchant.businessName)}</h3><p>${escapeHtml(merchant.contactPersonName)} ${merchant.phoneNumbers?.length ? `- ${escapeHtml(merchant.phoneNumbers.join(", "))}` : ""}</p></div>
-        <span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(uiText(merchant.status))}</span>
+        <span class="status-pill ${merchant.status === "Active" ? "status-ok" : "status-muted"}">${escapeHtml(systemValueLabel(merchant.status))}</span>
       </div>
       ${merchant.notes ? `<p class="muted-text"><strong>${escapeHtml(foundationT("common.notes"))}:</strong> ${escapeHtml(merchant.notes)}</p>` : ""}
       <div class="operation-detail-grid">
@@ -4668,8 +4926,8 @@ async function showMerchantDetail(merchantId, existingDetail = null) {
         ? `<tr><td colspan="8">${escapeHtml(foundationT("app.inline.noOperationsForThisMerchantYet"))}</td></tr>`
         : operations.map((operation) => `<tr>
             <td><strong>${escapeHtml(operation.operationNumber)}</strong></td>
-            <td>${escapeHtml(uiText(operation.operationType))}</td>
-            <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(uiText(operation.status))}</span>${operation.financialClosureStatus === "FinanciallyClosed" ? `<div><span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span></div>` : ""}</td>
+            <td>${escapeHtml(operationTypeLabel(operation.operationType))}</td>
+            <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(systemValueLabel(operation.status))}</span>${operation.financialClosureStatus === "FinanciallyClosed" ? `<div><span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span></div>` : ""}</td>
             <td>${escapeHtml(movementMethodLabel(operation.paymentMethod))}</td>
             <td>${escapeHtml(operation.quantity || 0)}</td>
             <td>${escapeHtml(operation.bonusQuantity || 0)}</td>
@@ -4741,7 +4999,9 @@ async function addMerchantNote(merchantId) {
 async function renderOperations() {
   const auth = getAuth();
   const canWrite = ["Admin", "ERPAdmin", "WarehouseClerk"].includes(auth?.user.role);
-  const userOperationTypes = ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "WriteOff"];
+  const userOperationTypes = auth?.user.role === "WarehouseClerk"
+    ? ["InventoryReceipt", "Return"]
+    : ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "WriteOff"];
   operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : "WarehouseTransfer";
   document.getElementById("view").innerHTML = `
     ${pageIntro({
@@ -4755,6 +5015,14 @@ async function renderOperations() {
       `
     })}
     <section class="operations-workspace">
+        ${["Admin", "ERPAdmin"].includes(auth?.user?.role) ? `
+          <section class="band operations-settings" aria-labelledby="cod-charge-settings-title">
+            <div class="section-head tight-head"><div><h2 id="cod-charge-settings-title">${escapeHtml(foundationT("app.inline.codChargeSettings"))}</h2><p class="muted-text">${escapeHtml(foundationT("app.inline.codChargeSettingsHelp"))}</p></div></div>
+            <form id="cod-charge-settings-form" class="form grid-form">
+              <div class="field"><label for="cod-charge-default">${escapeHtml(foundationT("app.inline.defaultCodCharge"))}</label><input id="cod-charge-default" class="input" type="number" min="0" step="0.01" inputmode="decimal"><small id="cod-charge-settings-status" class="muted-text" role="status"></small></div>
+              <div class="form-actions"><button id="cod-charge-settings-save" class="button secondary" type="submit">${escapeHtml(foundationT("common.save"))}</button></div>
+            </form>
+          </section>` : ""}
       ${canWrite ? `
         <form id="operation-form" class="form operation-form-layout" novalidate>
           <aside class="workflow-rail">
@@ -4765,14 +5033,29 @@ async function renderOperations() {
               </div>
               <span id="operation-editor-mode" class="status-pill status-muted">${escapeHtml(foundationT("app.inline.create"))}</span>
             </div>
-          <div class="field"><label for="op-type">${escapeHtml(foundationT("payments.type"))}</label><select id="op-type" class="select"><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("app.inline.retailOnlineSale"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></div>
+            <div class="field"><label for="op-type">${escapeHtml(foundationT("payments.type"))}</label><select id="op-type" class="select">${userOperationTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(operationTypeLabel(type))}</option>`).join("")}</select></div>
+            <div class="field op-operation-reference-field" hidden><label for="op-operation-reference">${escapeHtml(foundationT("app.inline.operationReference"))}</label><input id="op-operation-reference" class="input" maxlength="200" autocomplete="off"><small class="muted-text">${escapeHtml(foundationT("app.inline.operationReferenceHelp"))}</small></div>
+            <div class="field op-sales-channel-field" hidden><label for="op-sales-channel">${escapeHtml(foundationT("app.inline.salesChannel"))}</label><select id="op-sales-channel" class="select"><option value="Manual">${escapeHtml(foundationT("app.inline.retailCheckout"))}</option><option value="Online">${escapeHtml(foundationT("app.inline.onlineOrder"))}</option></select></div>
             <div class="field"><label for="op-source">${escapeHtml(foundationT("app.inline.sourceLocation"))}</label><select id="op-source" class="select"></select></div>
             <div class="field"><label for="op-destination">${escapeHtml(foundationT("app.inline.destinationLocation"))}</label><select id="op-destination" class="select"></select></div>
             <div class="field op-merchant-field"><label for="op-merchant">${escapeHtml(foundationT("customer.merchant"))}</label><select id="op-merchant" class="select"></select></div>
             <div class="field op-return-source-field" hidden><label for="op-return-source">${escapeHtml(foundationT("app.inline.originalSale"))}</label><select id="op-return-source" class="select"></select></div>
             <div class="field op-buyer-field"><label for="op-buyer">${escapeHtml(foundationT("customer.buyerName"))}</label><input id="op-buyer" class="input" autocomplete="off"></div>
             <div class="field op-buyer-field"><label for="op-buyer-phone">${escapeHtml(foundationT("customer.buyerPhone"))}</label><input id="op-buyer-phone" class="input" autocomplete="off"></div>
-            <div class="field op-payment-field"><label for="op-payment">${escapeHtml(foundationT("payments.paymentMethod"))} <span aria-hidden="true">*</span></label><select id="op-payment" class="select"><option value="">${escapeHtml(foundationT("app.inline.chooseMethod"))}</option><option value="CashHandToHand">${escapeHtml(foundationT("payments.cashInHand"))}</option><option value="CashTransaction">${escapeHtml(foundationT("payments.cashTransaction"))}</option><option value="BankTransfer">${escapeHtml(foundationT("payments.bankTransfer"))}</option><option value="Wallet">${escapeHtml(foundationT("payments.wallet"))}</option><option value="MerchantAccount">${escapeHtml(paymentT("merchantAccount"))}</option></select></div>
+            <div class="field op-online-field" hidden><label for="op-shipping-address">${escapeHtml(foundationT("app.inline.shippingAddress"))}</label><textarea id="op-shipping-address" class="input" rows="2"></textarea></div>
+            <div class="field op-online-field" hidden><label for="op-delivery-fee">${escapeHtml(foundationT("app.inline.deliveryFee"))}</label><input id="op-delivery-fee" class="input" type="number" min="0" step="0.01" value="0"><small class="muted-text">${escapeHtml(foundationT("app.inline.deliveryFeePassThrough"))}</small></div>
+            <div class="field op-online-field" hidden><label for="op-online-payment">${escapeHtml(foundationT("app.inline.onlinePaymentStatus"))}</label><select id="op-online-payment" class="select"><option value="COD">${escapeHtml(foundationT("app.inline.cashOnDelivery"))}</option><option value="Gateway">${escapeHtml(foundationT("app.inline.gatewayOrWallet"))}</option></select></div>
+            <div class="field op-online-payment-proof-field" hidden><label for="op-online-provider">${escapeHtml(foundationT("app.inline.paymentProvider"))}</label><input id="op-online-provider" class="input" autocomplete="off"></div>
+            <div class="field op-online-payment-proof-field" hidden><label for="op-online-reference">${escapeHtml(foundationT("app.inline.paymentReference"))}</label><input id="op-online-reference" class="input" autocomplete="off"></div>
+            <label class="check-field op-online-field" hidden><input id="op-buyer-contact-verified" type="checkbox"><span>${escapeHtml(foundationT("app.inline.buyerPhoneAddressVerified"))}</span></label>
+            <label class="check-field op-online-payment-proof-field" hidden><input id="op-online-payment-verified" type="checkbox"><span>${escapeHtml(foundationT("app.inline.paymentReferenceOperatorVerified"))}</span></label>
+            <p class="muted-text op-cod-only-field" hidden>${escapeHtml(foundationT("app.inline.codChargeConfiguredAtConfirmation"))}</p>
+            ${["Admin", "ERPAdmin"].includes(auth?.user?.role) ? `
+              <div class="field op-cod-override-field" hidden><label for="op-cod-charge-override">${escapeHtml(foundationT("app.inline.orderCodChargeOverride"))}</label><input id="op-cod-charge-override" class="input" type="number" min="0" step="0.01" inputmode="decimal"></div>
+              <div class="field op-cod-override-field" hidden><label for="op-cod-charge-override-reason">${escapeHtml(foundationT("app.inline.codChargeOverrideReason"))}</label><input id="op-cod-charge-override-reason" class="input" maxlength="500" autocomplete="off"></div>` : ""}
+            <p id="op-return-guidance" class="muted-text full-span" hidden>${escapeHtml(foundationT("app.inline.returnPaymentsGuidance"))}</p>
+            <p id="op-unlinked-return-guidance" class="muted-text full-span" role="status" hidden>${escapeHtml(foundationT("app.inline.unlinkedReturnCannotHaveNormalQuantity"))}</p>
+            <div class="field op-payment-field"><label for="op-payment">${escapeHtml(foundationT("payments.paymentMethod"))} <span aria-hidden="true">*</span></label><select id="op-payment" class="select"><option value="">${escapeHtml(foundationT("app.inline.chooseMethod"))}</option><option value="CashHandToHand">${escapeHtml(foundationT("payments.cashInHand"))}</option><option value="BankTransfer">${escapeHtml(foundationT("payments.bankTransfer"))}</option><option value="Wallet">${escapeHtml(foundationT("payments.wallet"))}</option><option value="MerchantAccount">${escapeHtml(paymentT("merchantAccount"))}</option></select></div>
             <div class="field"><label for="op-supplier">${escapeHtml(foundationT("supply.supplier"))}</label><input id="op-supplier" class="input" autocomplete="off" placeholder="${escapeHtml(foundationT("app.attribute.receiptOnly"))}"></div>
             <div class="field"><label for="op-invoice">${escapeHtml(foundationT("app.inline.invoice"))}</label><input id="op-invoice" class="input" autocomplete="off" placeholder="${escapeHtml(foundationT("app.attribute.usedForReceiptFlows"))}"></div>
             <div class="field"><label for="op-notes">${escapeHtml(foundationT("payments.notes"))}</label><input id="op-notes" class="input" autocomplete="off"></div>
@@ -4796,7 +5079,7 @@ async function renderOperations() {
       <div class="toolbar">
         <label class="field"><span>${escapeHtml(foundationT("app.catalogSearch"))}</span><input id="operations-search" class="input" type="search" placeholder="${escapeHtml(foundationT("app.attribute.operationMerchantBuyerSKUOrPaymentReference"))}"></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.type"))}</span><select id="operations-type" class="select"><option value="">${escapeHtml(foundationT("reports.allTypes"))}</option><option value="InventoryReceipt">${escapeHtml(foundationT("payments.inventoryReceipt"))}</option><option value="WarehouseTransfer">${escapeHtml(foundationT("payments.warehouseTransfer"))}</option><option value="WholesaleSale">${escapeHtml(foundationT("payments.wholesaleSale"))}</option><option value="RetailSale">${escapeHtml(foundationT("payments.retailSale"))}</option><option value="Return">${escapeHtml(foundationT("payments.return"))}</option><option value="WriteOff">${escapeHtml(foundationT("payments.writeOff"))}</option></select></label>
-        <label class="field"><span>${escapeHtml(foundationT("payments.status"))}</span><select id="operations-status" class="select"><option value="">${escapeHtml(foundationT("reports.allStatuses"))}</option><option value="Draft">${escapeHtml(foundationT("payments.draft"))}</option><option value="Confirmed">${escapeHtml(foundationT("payments.confirmed"))}</option><option value="Reserved">${escapeHtml(foundationT("app.inline.reserved"))}</option><option value="Shipped">${escapeHtml(foundationT("app.inline.shipped"))}</option><option value="Received">${escapeHtml(foundationT("reports.received"))}</option><option value="Completed">${escapeHtml(foundationT("payments.completed"))}</option><option value="Cancelled">${escapeHtml(foundationT("payments.cancelled"))}</option></select></label>
+        <label class="field"><span>${escapeHtml(foundationT("payments.status"))}</span><select id="operations-status" class="select"><option value="">${escapeHtml(foundationT("reports.allStatuses"))}</option><option value="Draft">${escapeHtml(foundationT("payments.draft"))}</option><option value="PendingApproval">${escapeHtml(operationStatusLabel("PendingApproval"))}</option><option value="Approved">${escapeHtml(operationStatusLabel("Approved"))}</option><option value="Rejected">${escapeHtml(operationStatusLabel("Rejected"))}</option><option value="Confirmed">${escapeHtml(foundationT("payments.confirmed"))}</option><option value="Reserved">${escapeHtml(foundationT("app.inline.reserved"))}</option><option value="Shipped">${escapeHtml(foundationT("app.inline.shipped"))}</option><option value="Received">${escapeHtml(foundationT("reports.received"))}</option><option value="Dispatched">${escapeHtml(foundationT("app.inline.dispatched"))}</option><option value="Delivered">${escapeHtml(foundationT("app.inline.delivered"))}</option><option value="FailedDelivery">${escapeHtml(foundationT("app.inline.failedDelivery"))}</option><option value="Completed">${escapeHtml(foundationT("payments.completed"))}</option><option value="Cancelled">${escapeHtml(foundationT("payments.cancelled"))}</option></select></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.from"))}</span><input id="operations-from" class="input" type="date"></label>
         <label class="field"><span>${escapeHtml(foundationT("payments.to"))}</span><input id="operations-to" class="input" type="date"></label>
         <label class="field"><span>${escapeHtml(foundationT("app.inline.rows"))}</span><select id="operations-page-size" class="select"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option></select></label>
@@ -4831,7 +5114,15 @@ async function renderOperations() {
         });
       }
     });
+    document.getElementById("op-sales-channel")?.addEventListener("change", () => syncOperationTypeControls());
+    document.getElementById("op-online-payment")?.addEventListener("change", () => syncOnlineSalesControls());
     document.getElementById("op-source").addEventListener("change", () => {
+      if (document.getElementById("op-type")?.value === "WarehouseTransfer") {
+        const warehouses = operationLocations.filter((location) => ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
+        const destination = document.getElementById("op-destination");
+        const selectedDestination = destination.value;
+        setSelectOptionsPreservingValue(destination, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouses.filter((location) => location.id !== document.getElementById("op-source").value).map((location) => ({ value: location.id, label: location.name }))], selectedDestination);
+      }
       lockOperationRouteIfSelected();
       void refreshOperationSkuAvailability();
       primeAllOperationStockOptions();
@@ -4841,14 +5132,21 @@ async function renderOperations() {
       primeAllOperationStockOptions();
     });
     document.getElementById("op-merchant").addEventListener("change", () => {
+      syncOperationPaymentOptions();
       primeAllOperationStockOptions();
       const sourceSelect = document.getElementById("op-return-source");
       if (sourceSelect) sourceSelect.value = "";
       operationReturnSourceLines = [];
-      operationEditorLines.forEach((line) => { line.sourceOperationId = null; line.sourceOperationLineId = null; line.sourceBatchId = null; });
+      if (document.getElementById("op-type")?.value === "Change") {
+        operationEditorLines.forEach((line) => { line.sourceOperationId = null; line.sourceOperationLineId = null; line.sourceBatchId = null; });
+      }
+      syncUnlinkedReturnGuidance();
       void hydrateOperationReturnSources();
     });
-    document.getElementById("op-return-source")?.addEventListener("change", () => void hydrateOperationReturnSourceLines());
+    document.getElementById("op-return-source")?.addEventListener("change", () => {
+      syncUnlinkedReturnGuidance();
+      if (document.getElementById("op-type")?.value === "Change") void hydrateOperationReturnSourceLines();
+    });
     document.getElementById("op-add-line").addEventListener("click", async () => {
       await hydrateOperationSkus();
       addOperationLine();
@@ -4862,6 +5160,10 @@ async function renderOperations() {
     syncOperationTypeControls();
     applyOperationEditorMode();
     document.getElementById("operation-form").addEventListener("submit", submitOperationEditor);
+    if (["Admin", "ERPAdmin"].includes(auth?.user?.role)) {
+      document.getElementById("cod-charge-settings-form")?.addEventListener("submit", saveCodChargeSettings);
+      void loadCodChargeSettings();
+    }
   }
   const operationQuery = currentRouteQuery();
   for (const [id, key] of [["operations-search", "search"], ["operations-type", "operationType"], ["operations-status", "status"], ["operations-from", "createdFrom"], ["operations-to", "createdTo"], ["operations-page-size", "pageSize"]]) {
@@ -4883,7 +5185,33 @@ async function renderOperations() {
   await loadOperations();
 }
 
-async function hydrateOperationLocations() {
+  async function loadCodChargeSettings() {
+    const form = document.getElementById("cod-charge-settings-form");
+    if (!form) return;
+    const amount = form.querySelector("#cod-charge-default");
+    const save = form.querySelector("#cod-charge-settings-save");
+    const status = form.querySelector("#cod-charge-settings-status");
+    try {
+      const [settings, users] = await Promise.all([request("/api/v1/operations/cod-charge-settings"), request("/api/v1/users")]);
+      const currentUserId = getAuth()?.user?.userId;
+      const isPrimaryAdmin = Array.isArray(users) && users.some((user) => user.id === currentUserId && user.isPrimaryAdmin && user.isActive);
+      amount.value = settings?.configured && settings.flatAmount != null ? String(settings.flatAmount) : "";
+      amount.disabled = !isPrimaryAdmin; save.disabled = !isPrimaryAdmin;
+      status.textContent = isPrimaryAdmin ? (settings?.configured ? foundationT("app.inline.codChargeConfigured") : foundationT("app.inline.codChargeNeedsConfiguration")) : foundationT("app.inline.primaryAdminOnlySetting");
+    } catch (exception) { amount.disabled = true; save.disabled = true; status.textContent = getFriendlyWorkspaceError(exception); }
+  }
+
+  async function saveCodChargeSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget; const amountInput = form.querySelector("#cod-charge-default"); const save = form.querySelector("#cod-charge-settings-save"); const status = form.querySelector("#cod-charge-settings-status");
+    const flatAmount = amountInput.value.trim() === "" ? null : Number(amountInput.value);
+    if (flatAmount != null && (!Number.isFinite(flatAmount) || flatAmount < 0 || Math.round(flatAmount * 100) !== flatAmount * 100)) { status.textContent = foundationT("app.inline.codChargeAmountInvalid"); amountInput.focus(); return; }
+    save.disabled = true;
+    try { const saved = await request("/api/v1/operations/cod-charge-settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ flatAmount }) }); amountInput.value = saved?.configured && saved.flatAmount != null ? String(saved.flatAmount) : ""; status.textContent = saved?.configured ? foundationT("app.inline.codChargeConfigured") : foundationT("app.inline.codChargeNeedsConfiguration"); notice(foundationT("app.inline.codChargeSettingsSaved"), "success"); }
+    catch (exception) { status.textContent = getFriendlyWorkspaceError(exception); } finally { save.disabled = false; }
+  }
+
+  async function hydrateOperationLocations() {
   operationLocations = await request("/api/v1/inventory/locations");
   for (const id of ["op-source", "op-destination"]) {
     const select = document.getElementById(id);
@@ -4963,13 +5291,14 @@ async function hydrateOperationReturnSources() {
   field.hidden = !isReturnFlow;
   if (!isReturnFlow) return;
   const merchantId = document.getElementById("op-merchant")?.value;
-  select.required = !merchantId;
+  select.required = false;
   const sourceLabel = document.querySelector('label[for="op-return-source"]');
-  if (sourceLabel) sourceLabel.textContent = merchantId
-    ? `${foundationT("app.inline.originalSale")} (${foundationT("app.inline.optionalSaleLink")})`
-    : foundationT("app.inline.originalSale");
-  const preferredSourceOperationId = select.value || operationEditorLines.find((line) => line.sourceOperationId)?.sourceOperationId || "";
-  select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSale"))}</option>`;
+  const isReturn = type === "Return";
+  if (sourceLabel) sourceLabel.textContent = isReturn
+    ? `${foundationT("app.inline.returnOperationReference")} (${foundationT("app.inline.optionalSaleLink")})`
+    : `${foundationT("app.inline.originalSale")} (${foundationT("app.inline.optionalSaleLink")})`;
+  const preferredSourceOperationId = select.value || (!isReturn ? operationEditorLines.find((line) => line.sourceOperationId)?.sourceOperationId : null) || "";
+  select.innerHTML = `<option value="">${escapeHtml(foundationT(isReturn ? "app.inline.selectReturnOperationReference" : "app.inline.selectOriginalSale"))}</option>`;
   operationReturnSourceLines = [];
   renderOperationEditorPage();
   try {
@@ -4987,12 +5316,12 @@ async function hydrateOperationReturnSources() {
         page += 1;
       } while (page <= (result.totalPages || 1));
     }
-    select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSale"))}</option>${sales.map((sale) => `<option value="${escapeHtml(sale.id)}">${escapeHtml(sale.operationNumber)} / ${escapeHtml(formatDateTime(sale.createdAt))}</option>`).join("")}`;
+    select.innerHTML = `<option value="">${escapeHtml(foundationT(isReturn ? "app.inline.selectReturnOperationReference" : "app.inline.selectOriginalSale"))}</option>${sales.map((sale) => `<option value="${escapeHtml(sale.id)}">${escapeHtml(sale.operationNumber)} / ${escapeHtml(formatDateTime(sale.createdAt))}</option>`).join("")}`;
     select.value = sales.some((sale) => sale.id === preferredSourceOperationId) ? preferredSourceOperationId : "";
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
-  await hydrateOperationReturnSourceLines();
+  if (!isReturn) await hydrateOperationReturnSourceLines();
 }
 
 async function hydrateOperationReturnSourceLines() {
@@ -5016,6 +5345,7 @@ function addOperationLine(line = {}, target = null) {
   if (!container) {
     return;
   }
+  const operationType = document.getElementById("op-type")?.value || operationsUiState.operationType;
 
   const model = {
     _clientId: line._clientId || line.operationLineId || createUuid(),
@@ -5027,6 +5357,7 @@ function addOperationLine(line = {}, target = null) {
     pieceQuantity: line.pieceQuantity ?? null,
     unitPrice: line.unitPrice ?? 0,
     isBonus: Boolean(line.isBonus),
+    lineType: line.lineType || legacySaleLineType(line.pricingMode, line.isBonus ? 1 : 0),
     lotNumber: line.lotNumber || null,
     expiryDate: line.expiryDate || null,
     notes: line.notes || null,
@@ -5036,7 +5367,14 @@ function addOperationLine(line = {}, target = null) {
     sourceOpenedPieceLotId: line.sourceOpenedPieceLotId || null,
     remainingEligibleQuantity: line.remainingEligibleQuantity ?? null,
     skuCode: line.skuCode || null,
-    productName: line.productName || null
+    productName: line.productName || null,
+    returnDisposition: line.returnDisposition || "Sellable",
+    // A new return has no eligible source-line quantity. Its manually entered
+    // physical quantity and requested value are deliberately tracked as excess
+    // and must pass the approval pipeline.
+    normalQuantity: line.normalQuantity ?? (operationType === "Return" ? 0 : null),
+    normalValue: line.normalValue ?? (operationType === "Return" ? 0 : null),
+    exceptionValue: line.exceptionValue ?? 0
   };
   if (!line._fromModel) {
     syncCurrentOperationPage();
@@ -5059,20 +5397,25 @@ function addOperationLine(line = {}, target = null) {
     <div class="field"><label>${escapeHtml(foundationT("app.inline.color"))}</label><select class="select op-line-color" required><option value="">${escapeHtml(foundationT("app.inline.color"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("app.inline.package"))}</label><select class="select op-line-size"><option value="">${escapeHtml(foundationT("app.inline.package"))}</option></select></div>
     <div class="op-line-resolved full-span"><span class="muted-text">${escapeHtml(foundationT("app.inline.selectProductAttributesToResolveSKU"))}</span></div>
-    <div class="field op-line-source-line-field" hidden><label>${escapeHtml(foundationT("app.inline.originalSaleLine"))}</label><select class="select op-line-source-line"><option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option></select></div>
+    ${operationType === "Change" ? `<div class="field op-line-source-line-field" hidden><label>${escapeHtml(foundationT("app.inline.originalSaleLine"))}</label><select class="select op-line-source-line"><option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option></select></div>` : ""}
     <div class="field op-line-section-field"><label>${escapeHtml(foundationT("app.inline.side"))}</label><select class="select op-line-section"><option value="ChangeOut">${escapeHtml(foundationT("app.returned"))}</option><option value="ChangeIn">${escapeHtml(foundationT("app.inline.replacement"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("app.inline.mode"))}</label><select class="select op-line-entry-mode"><option value="Packs">${escapeHtml(foundationT("app.inline.packs"))}</option><option value="Pieces">${escapeHtml(foundationT("app.inline.pieces"))}</option></select></div>
-    <div class="field"><label>${escapeHtml(foundationT("reports.sortQuantity"))}</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.packQuantity || line.pieceQuantity || 1)}" required></div>
-    <div class="field op-line-sale-field"><label>${escapeHtml(foundationT("supply.unitPrice"))}</label><input class="input op-line-price" type="number" min="0" step="0.01" value="${escapeHtml(line.unitPrice || 0)}"></div>
-    <label class="check-field op-line-sale-field"><input class="op-line-bonus" type="checkbox" ${line.isBonus ? "checked" : ""}><span>${escapeHtml(foundationT("app.inline.bonus"))}</span></label>
+    <div class="field"><label>${escapeHtml(foundationT("reports.sortQuantity"))}</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.packQuantity || line.pieceQuantity || 1)}" required><small class="muted-text op-line-pack-opening-hint" hidden></small></div>
+    <div class="field op-line-sale-field"><label>${escapeHtml(foundationT("app.inline.lineType"))}</label><select class="select op-line-type"><option value="Paid">${escapeHtml(foundationT("app.inline.lineTypePaid"))}</option><option value="Bonus">${escapeHtml(foundationT("app.inline.lineTypeBonus"))}</option><option value="Offer">${escapeHtml(foundationT("app.inline.lineTypeOffer"))}</option></select><small class="muted-text">${escapeHtml(foundationT("app.inline.lineTypeHelp"))}</small></div>
+    <div class="field op-line-sale-field"><label>${escapeHtml(foundationT("supply.unitPrice"))}</label><input class="input op-line-price" type="number" min="0" step="0.01" value="${escapeHtml(line.unitPrice || 0)}"><small class="muted-text op-line-price-hint"></small></div>
+  <div class="field op-line-return-disposition-field" hidden><label>${escapeHtml(foundationT("app.inline.returnDisposition"))}</label><select class="select op-line-return-disposition"><option value="Sellable">${escapeHtml(foundationT("app.inline.returnSellable"))}</option><option value="WriteOff">${escapeHtml(foundationT("app.inline.returnWriteOff"))}</option></select></div>
+    <div class="field op-line-return-disposition-field" hidden><label>${escapeHtml(foundationT("app.inline.exceptionReturnValue"))}</label><input class="input op-line-exception-value" type="number" min="0" step="0.01" value="${escapeHtml(line.exceptionValue ?? 0)}"></div>
     <div class="field op-line-stock-field"><label>${escapeHtml(foundationT("app.inline.batchExpiry"))}</label><select class="select op-line-stock-option"><option value="">${escapeHtml(foundationT("app.inline.selectSourceAndSKU"))}</option></select></div>
     <div class="field op-line-receipt-field"><label>${escapeHtml(foundationT("app.lot"))}</label><input class="input op-line-lot" maxlength="100" value="${escapeHtml(line.lotNumber || "")}"></div>
     <div class="field op-line-receipt-field"><label>${escapeHtml(foundationT("app.batchExpiry"))}</label><input class="input op-line-expiry" type="date" value="${escapeHtml(line.expiryDate || "")}"></div>
     <button class="icon-button op-remove-line" type="button" title="${escapeHtml(foundationT("supply.removeLine"))}">x</button>`;
   populateOperationProductOptions(row);
   row.querySelector(".op-line-section").value = line.section || "ChangeOut";
-  row.querySelector(".op-line-source-line").value = line.sourceOperationLineId || "";
+  const sourceLineSelect = row.querySelector(".op-line-source-line");
+  if (sourceLineSelect) sourceLineSelect.value = line.sourceOperationLineId || "";
   row.querySelector(".op-line-entry-mode").value = line.entryMode || "Packs";
+  row.querySelector(".op-line-return-disposition").value = line.returnDisposition || "Sellable";
+  row.querySelector(".op-line-type").value = line.lineType || legacySaleLineType(line.pricingMode, line.isBonus ? 1 : 0);
   (target || container).appendChild(row);
   if (line.skuId) {
     seedOperationLineSkuSelection(row, line.skuId);
@@ -5086,13 +5429,22 @@ function addOperationLine(line = {}, target = null) {
   refreshOperationSourceLineOptions(row);
   if (line.lotNumber !== undefined || line.expiryDate !== undefined) {
     row.querySelector(".op-line-lot").value = line.lotNumber || "";
-    row.querySelector(".op-line-expiry").value = line.expiryDate || "";
+    row.querySelector(".op-line-expiry").value = renderDateOnly(line.expiryDate || "");
     primeOperationStockOption(row);
   }
 }
 
 function isOperationStockConsumingType(type) {
   return ["WarehouseTransfer", "WholesaleSale", "RetailSale", "WriteOff"].includes(type);
+}
+
+function operationRequiresPacks(type) {
+  if (type === "InventoryReceipt") return true;
+  if (type !== "WarehouseTransfer") return false;
+  const sourceId = document.getElementById("op-source")?.value;
+  const destinationId = document.getElementById("op-destination")?.value;
+  return [sourceId, destinationId].some((locationId) =>
+    operationLocations.find((location) => location.id === locationId)?.locationType === "MainWarehouse");
 }
 
 function isOperationBatchSelectionType(type) {
@@ -5103,8 +5455,15 @@ function readOperationLineRow(row) {
   const mode = row.querySelector(".op-line-entry-mode").value;
   const skuId = row.querySelector(".op-line-sku").value;
   const existing = operationEditorLineById.get(row.dataset.operationLineKey);
-  const sourceSaleLine = operationReturnSourceLines.find((source) => source.sourceOperationLineId === row.querySelector(".op-line-source-line")?.value);
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const sourceSaleLine = type === "Change"
+    ? operationReturnSourceLines.find((source) => source.sourceOperationLineId === row.querySelector(".op-line-source-line")?.value)
+    : null;
   const selectedStock = row.querySelector(".op-line-stock-option")?.value;
+  // A selected stock option can be temporarily replaced by the loading
+  // placeholder while an editor refresh is in flight. Preserve the resolved
+  // batch metadata as the source of truth through that synchronization.
+  const stockOptionSelected = Boolean((selectedStock && selectedStock !== "__new_batch__") || (existing?.lotNumber && existing?.expiryDate));
   let selectedSourceBatchId = sourceSaleLine?.sourceBatches?.[0]?.sourceBatchId || null;
   if (sourceSaleLine && selectedStock) {
     try {
@@ -5117,6 +5476,10 @@ function readOperationLineRow(row) {
     }
   }
   const selectedSku = operationSkuOptions.find((value) => value.id === skuId);
+  const quantity = mode === "Pieces"
+    ? Number(row.querySelector(".op-line-qty").value || 0)
+    : Number(row.querySelector(".op-line-qty").value || 0);
+  const unitPrice = Number(row.querySelector(".op-line-price").value || 0);
   return {
     operationLineId: row.dataset.operationLineId || null,
     skuId,
@@ -5124,16 +5487,26 @@ function readOperationLineRow(row) {
     pieceQuantity: mode === "Pieces" ? Number(row.querySelector(".op-line-qty").value) : null,
     entryMode: mode,
     section: row.querySelector(".op-line-section").value,
-    unitPrice: Number(row.querySelector(".op-line-price").value || 0),
-    isBonus: row.querySelector(".op-line-bonus").checked,
+    unitPrice,
+    normalValue: type === "Return" ? unitPrice * quantity : unitPrice,
+    lineType: row.querySelector(".op-line-type")?.value || "Paid",
+    isSellable: selectedSku?.isSellable !== false,
+    returnDisposition: row.querySelector(".op-line-return-disposition").value || "Sellable",
+    normalQuantity: type === "Return" ? 0 : null,
+    exceptionValue: type === "Return" ? Number(row.querySelector(".op-line-exception-value")?.value || 0) : 0,
+    isBonus: (row.querySelector(".op-line-type")?.value || "Paid") === "Bonus",
     lotNumber: row.querySelector(".op-line-lot").value.trim() || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null,
+    stockOptionSelected,
     notes: existing?.notes || null,
-    sourceOperationId: sourceSaleLine?.sourceOperationId || null,
-    sourceOperationLineId: sourceSaleLine?.sourceOperationLineId || null,
-    sourceBatchId: selectedSourceBatchId,
+    sourceOperationId: type === "Change" ? (sourceSaleLine?.sourceOperationId || existing?.sourceOperationId || null) : null,
+    sourceOperationLineId: type === "Change" ? (sourceSaleLine?.sourceOperationLineId || existing?.sourceOperationLineId || null) : null,
+    availableLoosePieces: row.dataset.availableLoosePieces === "" || row.dataset.availableLoosePieces === undefined
+      ? null
+      : Number(row.dataset.availableLoosePieces),
+    sourceBatchId: type === "Change" ? selectedSourceBatchId : null,
     sourceOpenedPieceLotId: null,
-    remainingEligibleQuantity: sourceSaleLine?.remainingEligibleQuantity ?? null,
+    remainingEligibleQuantity: sourceSaleLine?.remainingEligibleQuantity ?? existing?.remainingEligibleQuantity ?? null,
     skuCode: selectedSku?.skuCode || (existing?.skuId === skuId ? existing?.skuCode : null),
     productName: selectedSku?.productName || (existing?.skuId === skuId ? existing?.productName : null)
   };
@@ -5145,16 +5518,26 @@ function refreshOperationSourceLineOptions(row) {
   const field = row.querySelector(".op-line-source-line-field");
   const select = row.querySelector(".op-line-source-line");
   if (!field || !select) return;
-  const isReturnedLine = type === "Return" || (type === "Change" && section === "ChangeOut");
-  const hasMerchant = Boolean(document.getElementById("op-merchant")?.value);
+  const isReturnedLine = type === "Change" && section === "ChangeOut";
   const hasSelectedSale = Boolean(document.getElementById("op-return-source")?.value);
-  const showSourceLine = isReturnedLine && (!hasMerchant || hasSelectedSale);
+  const showSourceLine = ["Return", "Change"].includes(type) && isReturnedLine && hasSelectedSale;
   field.hidden = !showSourceLine;
-  select.required = isReturnedLine && !hasMerchant;
-  if (!showSourceLine) return;
+  select.required = false;
+  if (!showSourceLine) {
+    if (isReturnedLine) {
+      const model = operationEditorLineById.get(row.dataset.operationLineKey);
+      if (model) {
+        model.sourceOperationId = null;
+        model.sourceOperationLineId = null;
+        model.sourceBatchId = null;
+        model.sourceOpenedPieceLotId = null;
+      }
+    }
+    return;
+  }
   const current = select.value || operationEditorLineById.get(row.dataset.operationLineKey)?.sourceOperationLineId || "";
-  const candidates = operationReturnSourceLines.filter((line) => line.remainingEligibleQuantity > 0);
-  select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option>${candidates.map((line) => `<option value="${escapeHtml(line.sourceOperationLineId)}">${escapeHtml(line.skuCode)} / ${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")} / ${escapeHtml(foundationT("app.inline.eligibleQuantity", { count: line.remainingEligibleQuantity }))}</option>`).join("")}`;
+  const candidates = operationReturnSourceLines;
+  select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option>${candidates.map((line) => `<option value="${escapeHtml(line.sourceOperationLineId)}">${escapeHtml(line.skuCode)} / ${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(renderDateOnly(line.expiryDate || "-"))} / ${escapeHtml(foundationT("app.inline.eligibleQuantity", { count: line.remainingEligibleQuantity }))}</option>`).join("")}`;
   select.value = candidates.some((line) => line.sourceOperationLineId === current) ? current : "";
 }
 
@@ -5168,6 +5551,10 @@ function applyOperationSourceLine(row) {
   model.sourceBatchId = source.sourceBatches?.[0]?.sourceBatchId || null;
   model.sourceOpenedPieceLotId = null;
   model.remainingEligibleQuantity = source.remainingEligibleQuantity;
+  const requestedQuantity = Number(row.querySelector(".op-line-qty")?.value || 0);
+  model.normalQuantity = Math.min(requestedQuantity, Number(source.remainingEligibleQuantity || 0));
+  const normalQuantityInput = row.querySelector(".op-line-normal-return-qty");
+  if (normalQuantityInput) normalQuantityInput.value = String(model.normalQuantity);
   if (row.querySelector(".op-line-sku").value !== source.skuId) seedOperationLineSkuSelection(row, source.skuId);
   void refreshOperationStockOptions(row);
   syncCurrentOperationPage();
@@ -5471,21 +5858,35 @@ function clearOperationLineStockFields(row) {
   row.querySelector(".op-line-expiry").value = "";
 }
 
+function syncUnlinkedReturnGuidance() {
+  const guidance = document.getElementById("op-unlinked-return-guidance");
+  if (guidance) {
+    guidance.hidden = canonicalSelectValue("op-type", "operationType") !== "Return"
+      || Boolean(document.getElementById("op-return-source")?.value);
+  }
+}
+
 function syncOperationTypeControls() {
   const type = canonicalSelectValue("op-type", "operationType");
   operationsUiState.operationType = type;
+  syncOnlineSalesControls();
+  const returnGuidance = document.getElementById("op-return-guidance");
+  if (returnGuidance) returnGuidance.hidden = type !== "Return";
+  syncUnlinkedReturnGuidance();
   const source = document.getElementById("op-source");
   const destination = document.getElementById("op-destination");
   const previousSource = source.value;
   const previousDestination = destination.value;
-  const main = operationLocations.find((location) => location.locationType === "MainWarehouse");
-  const nonMain = operationLocations.filter((location) => location.locationType !== "MainWarehouse");
+  const warehouses = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
+  const salesChannelField = document.querySelector(".op-sales-channel-field");
+  if (salesChannelField) salesChannelField.hidden = type !== "RetailSale";
+  const warehouseOptions = warehouses.map((location) => ({ value: location.id, label: location.name }));
 
   if (type === "InventoryReceipt") {
     setSelectOptionsPreservingValue(source, [{ value: "", label: foundationT("app.inline.externalSupplier") }], previousSource);
-    setSelectOptionsPreservingValue(destination, main ? [{ value: main.id, label: main.name }] : [{ value: "", label: foundationT("app.inline.mainWarehouseUnavailable") }], previousDestination);
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouseOptions], previousDestination);
     source.disabled = true;
-    destination.disabled = true;
+    destination.disabled = false;
     document.getElementById("op-supplier").disabled = false;
     document.getElementById("op-invoice").disabled = false;
     setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: true });
@@ -5494,9 +5895,9 @@ function syncOperationTypeControls() {
     return;
   }
 
-  setSelectOptionsPreservingValue(source, main ? [{ value: main.id, label: main.name }] : [{ value: "", label: foundationT("app.inline.mainWarehouseUnavailable") }], previousSource);
-  setSelectOptionsPreservingValue(destination, [{ value: "", label: "Select destination" }, ...nonMain.map((location) => ({ value: location.id, label: location.name }))], previousDestination);
-  source.disabled = true;
+  setSelectOptionsPreservingValue(source, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouseOptions], previousSource);
+  setSelectOptionsPreservingValue(destination, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouseOptions.filter((location) => location.value !== source.value)], previousDestination);
+  source.disabled = false;
   destination.disabled = false;
   document.getElementById("op-supplier").disabled = true;
   document.getElementById("op-invoice").disabled = true;
@@ -5509,7 +5910,7 @@ function syncOperationTypeControls() {
     return;
   }
   if (type === "WholesaleSale") {
-    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    setSelectOptionsPreservingValue(source, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouses.map((location) => ({ value: location.id, label: location.name }))], previousSource);
     setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
     source.disabled = false;
     destination.disabled = true;
@@ -5520,7 +5921,10 @@ function syncOperationTypeControls() {
     return;
   }
   if (type === "RetailSale") {
-    const retailLocations = operationLocations.filter((location) => ["SubWarehouse", "Online", "Retail"].includes(location.locationType) || /retail|online/i.test(location.name));
+    const isOnline = document.getElementById("op-sales-channel")?.value === "Online";
+    const retailLocations = operationLocations.filter((location) => location.isActive !== false && (isOnline
+      ? location.locationType === "SubWarehouse"
+      : ["SubWarehouse", "Retail"].includes(location.locationType)));
     setSelectOptionsPreservingValue(source, [{ value: "", label: "Select source" }, ...retailLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
     setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
     source.disabled = false;
@@ -5532,11 +5936,14 @@ function syncOperationTypeControls() {
     return;
   }
   if (type === "Return" || type === "Change") {
-    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select receiving/issuing location" }, ...operationLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
+    const correctionLocations = type === "Return"
+      ? operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse"].includes(location.locationType))
+      : operationLocations;
+    setSelectOptionsPreservingValue(source, [{ value: "", label: "Select receiving/issuing location" }, ...correctionLocations.map((location) => ({ value: location.id, label: location.name }))], previousSource);
     setSelectOptionsPreservingValue(destination, [{ value: "", label: "No destination" }], previousDestination);
     source.disabled = false;
     destination.disabled = true;
-    setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: false, payment: true, receipt: false });
+    setOperationFieldGroupVisibility({ merchant: true, rep: false, buyer: type === "Return", payment: type === "Change", receipt: false });
     setSingleFieldState(document.getElementById("op-return-source"), true);
     void hydrateOperationReturnSources();
     applyOperationEditorMode();
@@ -5551,6 +5958,33 @@ function syncOperationTypeControls() {
     setSingleFieldState(document.getElementById("op-return-source"), false);
   }
   applyOperationEditorMode();
+}
+
+function syncOnlineSalesControls() {
+  const isOnline = document.getElementById("op-type")?.value === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online";
+  document.querySelectorAll(".op-online-field").forEach((field) => { field.hidden = !isOnline; });
+  const isCod = isOnline && document.getElementById("op-online-payment")?.value === "COD";
+  document.querySelectorAll(".op-cod-only-field").forEach((field) => { field.hidden = !isCod; });
+  document.querySelectorAll(".op-cod-override-field").forEach((field) => { field.hidden = !isCod; });
+  const isGateway = isOnline && document.getElementById("op-online-payment")?.value === "Gateway";
+  const paymentField = document.getElementById("op-payment")?.closest(".field");
+  if (paymentField && isOnline) paymentField.hidden = !isGateway;
+  const paymentSelect = document.getElementById("op-payment");
+  if (paymentSelect) {
+    for (const option of paymentSelect.options) {
+      if (option.value === "MerchantAccount") option.hidden = isOnline;
+      if (option.value === "CashHandToHand") option.hidden = isGateway;
+    }
+    if (isOnline && ["MerchantAccount", "CashHandToHand"].includes(paymentSelect.value) && isGateway) paymentSelect.value = "";
+    if (isGateway && !paymentSelect.value) paymentSelect.value = "BankTransfer";
+  }
+  document.querySelectorAll(".op-online-payment-proof-field").forEach((field) => { field.hidden = !isGateway; });
+  const source = document.getElementById("op-source");
+  if (isOnline && source) {
+    const subwarehouses = operationLocations.filter((location) => location.isActive !== false && location.locationType === "SubWarehouse");
+    const selected = source.value;
+    setSelectOptionsPreservingValue(source, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...subwarehouses.map((location) => ({ value: location.id, label: location.name }))], selected);
+  }
 }
 
 function setSelectOptionsPreservingValue(select, options, preferredValue) {
@@ -5594,6 +6028,27 @@ function setOperationFieldGroupVisibility({ merchant, rep, buyer, payment, recei
   setRequiredWhenVisible(document.getElementById("op-payment"), payment);
   setSingleFieldState(document.getElementById("op-supplier"), receipt);
   setSingleFieldState(document.getElementById("op-invoice"), receipt);
+  syncOperationReferenceVisibility();
+  syncOperationPaymentOptions();
+}
+
+function syncOperationPaymentOptions() {
+  const payment = document.getElementById("op-payment");
+  if (!payment) return;
+  const merchantAccount = payment.querySelector('option[value="MerchantAccount"]');
+  const hasMerchant = Boolean(document.getElementById("op-merchant")?.value);
+  if (merchantAccount) merchantAccount.hidden = !hasMerchant;
+  if (!hasMerchant && payment.value === "MerchantAccount") payment.value = "";
+}
+
+function syncOperationReferenceVisibility() {
+  const type = document.getElementById("op-type")?.value;
+  const visible = ["WholesaleSale", "RetailSale", "Return"].includes(type);
+  document.querySelectorAll(".op-operation-reference-field").forEach((field) => {
+    field.hidden = !visible;
+    const input = field.querySelector("input");
+    if (input) input.disabled = !visible;
+  });
 }
 
 function setFieldGroupState(selector, visible) {
@@ -5632,24 +6087,33 @@ function setRequiredWhenVisible(control, required) {
   control.setAttribute("aria-required", "true");
 }
 
-function syncOperationLineControls(type) {
+function syncOperationLineControls(type, { refreshSkuAvailability = true } = {}) {
   const isSale = ["WholesaleSale", "RetailSale"].includes(type);
   const isFinancialShell = ["Return", "Change"].includes(type);
+  const isReturn = type === "Return";
   document.querySelectorAll(".line-editor-row").forEach((row) => {
     const entryMode = row.querySelector(".op-line-entry-mode");
+    const selectedSku = operationSkuOptions.find((sku) => sku.id === row.querySelector(".op-line-sku")?.value);
+    const sealedPackOnly = selectedSku?.sellMode === "SealedPackOnly";
+    const allowsSealedPieceMultiples = sealedPackOnly && ["WholesaleSale", "Return"].includes(type);
+    const requiresPacks = operationRequiresPacks(type) || (sealedPackOnly && !allowsSealedPieceMultiples);
+    const piecesOption = Array.from(entryMode.options).find((option) => option.value === "Pieces");
+    if (piecesOption) {
+      piecesOption.hidden = requiresPacks;
+      piecesOption.disabled = requiresPacks;
+    }
+    if (requiresPacks) entryMode.value = "Packs";
     const price = row.querySelector(".op-line-price");
-    const bonus = row.querySelector(".op-line-bonus");
-    const bonusField = bonus.closest(".op-line-sale-field");
+    const lineType = row.querySelector(".op-line-type");
+    const pricingField = lineType.closest(".op-line-sale-field");
     const priceField = price.closest(".op-line-sale-field");
     const sectionField = row.querySelector(".op-line-section-field");
     const section = row.querySelector(".op-line-section");
     const stockField = row.querySelector(".op-line-stock-field");
     const stockSelect = row.querySelector(".op-line-stock-option");
+    row.querySelector(".op-line-return-disposition-field").hidden = !isReturn;
 
-    entryMode.disabled = type !== "RetailSale";
-    if (type !== "RetailSale") {
-      entryMode.value = "Packs";
-    }
+    entryMode.disabled = requiresPacks;
     sectionField.hidden = type !== "Change";
     section.disabled = type !== "Change";
     if (type !== "Change") {
@@ -5660,25 +6124,51 @@ function syncOperationLineControls(type) {
     stockSelect.disabled = false;
     syncOperationBatchEntryFields(row);
 
+    pricingField.hidden = !isSale;
     priceField.hidden = !isSale && !isFinancialShell;
-    bonusField.hidden = !isSale;
-    price.disabled = (!isSale && !isFinancialShell) || bonus.checked;
-    bonus.disabled = !isSale;
+    const priceLabel = priceField.querySelector("label");
+    if (priceLabel) priceLabel.textContent = isReturn
+      ? foundationT("app.inline.enteredReturnValue")
+      : foundationT("supply.unitPrice");
+    const currentLineType = lineType.value || "Paid";
+    const previousLineType = lineType.dataset.previousValue || currentLineType;
+    if (isSale && currentLineType !== previousLineType) {
+      if (currentLineType === "Bonus") price.value = 0;
+      else if (previousLineType === "Bonus" && Number(price.value) === 0) price.value = "";
+    }
+    lineType.dataset.previousValue = currentLineType;
+    price.disabled = (!isSale && !isFinancialShell) || (isSale && currentLineType === "Bonus");
+    lineType.disabled = !isSale;
     if (!isSale && !isFinancialShell) {
       price.value = 0;
-      bonus.checked = false;
-    } else if (bonus.checked) {
+      lineType.value = "Paid";
+    } else if (isSale && currentLineType === "Bonus") {
       price.value = 0;
     }
+    const hint = row.querySelector(".op-line-price-hint");
+    if (hint) {
+      if (isSale && currentLineType === "Bonus") {
+        hint.textContent = foundationT("app.inline.bonusPriceZero");
+      } else if (isSale && currentLineType === "Offer") {
+        hint.textContent = foundationT("app.inline.offerPriceFixed");
+      } else {
+        hint.textContent = "";
+      }
+    }
   });
-  if (isOperationBatchSelectionType(type)) {
+  if (isOperationBatchSelectionType(type) && refreshSkuAvailability) {
     void refreshOperationSkuAvailability();
-  } else {
+  } else if (!isOperationBatchSelectionType(type)) {
     operationAvailableSkuIds = null;
     document.querySelectorAll(".line-editor-row").forEach((row) => {
+      const currentSkuId = row.querySelector(".op-line-sku")?.value;
       populateOperationProductOptions(row);
       populateOperationAttributeOptions(row);
-      resolveOperationLineSku(row, { preserveStock: true });
+      if (currentSkuId && operationSkuOptions.some((sku) => sku.id === currentSkuId)) {
+        seedOperationLineSkuSelection(row, currentSkuId);
+      } else {
+        resolveOperationLineSku(row, { preserveStock: true });
+      }
     });
   }
 }
@@ -5695,7 +6185,7 @@ function primeOperationStockOption(row) {
   select.replaceChildren();
   const option = document.createElement("option");
   option.value = current;
-  option.textContent = current ? `${expiryDate || foundationT("app.inline.noExpiry")} / ${lotNumber || foundationT("app.inline.noLot")}` : foundationT("app.inline.openToLoadAvailableBatches");
+  option.textContent = current ? `${renderDateOnly(expiryDate || foundationT("app.inline.noExpiry"))} / ${lotNumber || foundationT("app.inline.noLot")}` : foundationT("app.inline.openToLoadAvailableBatches");
   select.appendChild(option);
 }
 
@@ -5796,12 +6286,12 @@ function applyOperationEditorMode() {
 function applyShopifyCommercialLocks() {
   const form = document.getElementById("operation-form");
   const locked = operationsUiState.mode === "edit" && form?.dataset.shopifyDraft === "true";
-  ["op-source", "op-destination", "op-merchant", "op-buyer", "op-buyer-phone", "op-payment", "op-supplier", "op-invoice", "op-notes", "op-add-line"].forEach((id) => {
+  ["op-destination", "op-merchant", "op-buyer", "op-buyer-phone", "op-payment", "op-sales-channel", "op-shipping-address", "op-delivery-fee", "op-online-payment", "op-online-provider", "op-online-reference", "op-buyer-contact-verified", "op-online-payment-verified", "op-supplier", "op-invoice", "op-notes", "op-operation-reference", "op-add-line"].forEach((id) => {
     const control = document.getElementById(id);
     if (control) control.disabled = locked;
   });
   document.querySelectorAll(".line-editor-row").forEach((row) => {
-    row.querySelectorAll(".op-line-search, .op-line-product, .op-line-power, .op-line-color, .op-line-size, .op-line-section, .op-line-entry-mode, .op-line-qty, .op-line-price, .op-line-bonus, .op-remove-line").forEach((control) => {
+    row.querySelectorAll(".op-line-search, .op-line-product, .op-line-power, .op-line-color, .op-line-size, .op-line-section, .op-line-entry-mode, .op-line-qty, .op-line-price, .op-line-type, .op-remove-line").forEach((control) => {
       control.disabled = locked;
     });
   });
@@ -5860,6 +6350,10 @@ function seedOperationEditor(detail, mode) {
   form.reset();
   form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
   document.getElementById("op-type").value = detail.operationType;
+  const operationReference = document.getElementById("op-operation-reference");
+  if (operationReference) operationReference.value = detail.externalReference || "";
+  const channel = document.getElementById("op-sales-channel");
+  if (channel) channel.value = detail.salesChannel === "Online" || detail.salesChannel === "Shopify" ? "Online" : "Manual";
   syncOperationTypeControls();
   // Inventory receipts have no source location; their persisted warehouse is
   // the destination. Restore it only after the receipt-specific options exist.
@@ -5894,6 +6388,24 @@ function seedOperationEditor(detail, mode) {
   if (notes) {
     notes.value = detail.notes || "";
   }
+  const shippingAddress = document.getElementById("op-shipping-address");
+  if (shippingAddress) shippingAddress.value = detail.shippingAddress || "";
+  const deliveryFee = document.getElementById("op-delivery-fee");
+  if (deliveryFee) deliveryFee.value = String(detail.deliveryFee ?? 0);
+  const buyerVerified = document.getElementById("op-buyer-contact-verified");
+  if (buyerVerified) buyerVerified.checked = Boolean(detail.buyerContactVerified);
+  const onlinePayment = document.getElementById("op-online-payment");
+  if (onlinePayment) onlinePayment.value = detail.paymentStatus === "DueOnDelivery" ? "COD" : "Gateway";
+  const onlineProvider = document.getElementById("op-online-provider");
+  if (onlineProvider) onlineProvider.value = detail.externalPaymentProvider || "";
+  const onlineReference = document.getElementById("op-online-reference");
+  if (onlineReference) onlineReference.value = detail.externalPaymentReference || "";
+  const onlinePaymentVerified = document.getElementById("op-online-payment-verified");
+  if (onlinePaymentVerified) onlinePaymentVerified.checked = Boolean(detail.externalPaymentVerified);
+  const codOverrideAmount = document.getElementById("op-cod-charge-override");
+  if (codOverrideAmount) codOverrideAmount.value = detail.codChargeOverrideReason ? String(detail.codCharge ?? "") : "";
+  const codOverrideReason = document.getElementById("op-cod-charge-override-reason");
+  if (codOverrideReason) codOverrideReason.value = detail.codChargeOverrideReason || "";
   const supplier = document.getElementById("op-supplier");
   const invoice = document.getElementById("op-invoice");
   if (supplier && detail.receipt?.supplierName) {
@@ -5912,6 +6424,7 @@ function seedOperationEditor(detail, mode) {
     packQuantity: line.entryMode === "Pieces" ? null : getOperationLinePrefillQuantity(line),
     unitPrice: line.unitPrice,
     isBonus: (line.bonusQuantity || 0) > 0,
+    lineType: line.lineType || legacySaleLineType(line.pricingMode, line.bonusQuantity || 0),
     lotNumber: line.lotNumber,
     expiryDate: line.expiryDate,
     section: line.section,
@@ -5923,6 +6436,9 @@ function seedOperationEditor(detail, mode) {
     skuCode: line.skuCode,
     productName: line.productName,
     lineTotal: line.lineTotal,
+    returnDisposition: line.returnDisposition || "Sellable",
+    normalQuantity: line.normalQuantity ?? (line.sourceOperationLineId ? Number(line.remainingEligibleQuantity || 0) : 0),
+    exceptionValue: line.exceptionValue ?? 0,
     merchantNameSnapshot: line.merchantNameSnapshot,
     representativeNameSnapshot: line.representativeNameSnapshot,
     shopifyLineItemId: line.shopifyLineItemId,
@@ -5954,7 +6470,7 @@ function getOperationLinePrefillQuantity(line) {
 async function startOperationEditorMode(operationId, mode) {
   try {
     const detail = await request(`/api/v1/operations/${operationId}/editor`);
-    if (detail.operationType === "Return" || detail.operationType === "Change") {
+    if (detail.operationType === "Change") {
       const allocations = await request(`/api/v1/operations/${operationId}/source-allocations`);
       for (const line of detail.lines || []) {
         const allocation = allocations.find((value) => value.targetOperationLineId === line.id);
@@ -5983,7 +6499,12 @@ async function startOperationEditorMode(operationId, mode) {
       if (skuId) seedOperationLineSkuSelection(row, skuId);
     });
     primeAllOperationStockOptions();
-    if (detail.operationType === "Return" || detail.operationType === "Change") await hydrateOperationReturnSources();
+    if (detail.operationType === "Return" || detail.operationType === "Change") {
+      await hydrateOperationReturnSources();
+      if (detail.operationType === "Return" && detail.returnReferenceOperationId) {
+        document.getElementById("op-return-source").value = detail.returnReferenceOperationId;
+      }
+    }
     notice(mode === "edit" ? "Draft loaded into the editor." : "Operation loaded for revision.", "success");
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
@@ -6004,7 +6525,10 @@ async function refreshOperationStockOptions(row) {
   const merchantId = document.getElementById("op-merchant")?.value;
   const skuId = row.querySelector(".op-line-sku")?.value;
   const sourceLineId = row.querySelector(".op-line-source-line")?.value || "";
-  const entryMode = type === "RetailSale" ? row.querySelector(".op-line-entry-mode").value : "Packs";
+  // The selected entry mode determines the available quantity shown for every
+  // stock-consuming operation. Wholesale sealed-pack lines may now be entered
+  // in pieces (only as whole packs), so do not silently query pack-only stock.
+  const entryMode = row.querySelector(".op-line-entry-mode")?.value || "Packs";
   const current = encodeStockOption({
     lotNumber: row.querySelector(".op-line-lot").value || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null
@@ -6012,7 +6536,8 @@ async function refreshOperationStockOptions(row) {
   const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}|${sourceLineId}`;
   if (select.dataset.lookupKey === lookupKey && select.options.length > 1) return;
 
-  if (!skuId || !locationId || (batchSource === "merchant-inbound" && !merchantId)) {
+  const isGenericReturn = type === "Return";
+  if (!skuId || !locationId || (batchSource === "merchant-inbound" && !merchantId && !isGenericReturn)) {
     select.innerHTML = `<option value="">${escapeHtml(foundationT(batchSource === "merchant-inbound" ? "app.inline.selectMerchantAndSKU" : "app.inline.selectLocationAndSKU"))}</option>`;
     syncOperationBatchEntryFields(row);
     return;
@@ -6040,7 +6565,7 @@ async function refreshOperationStockOptions(row) {
       options = sourceSaleLine.sourceBatches.map((batch) => ({
         lotNumber: batch.lotNumber,
         expiryDate: batch.expiryDate,
-        label: `${batch.expiryDate || "-"} / ${batch.lotNumber || "-"}`
+        label: `${renderDateOnly(batch.expiryDate || "-")} / ${batch.lotNumber || "-"}`
       }));
     } else if (batchSource === "merchant-inbound") {
       const result = await loadCached(async () => {
@@ -6058,7 +6583,7 @@ async function refreshOperationStockOptions(row) {
       options = result.filter((option) => option.lotNumber && option.expiryDate).map((option) => ({
         lotNumber: option.lotNumber,
         expiryDate: option.expiryDate,
-        label: `${option.expiryDate} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
+        label: `${renderDateOnly(option.expiryDate)} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
       }));
     } else if (batchSource === "inventory-inbound") {
       const result = await loadCached(() => request(`/api/v1/inventory/batches?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&includeEmpty=true&pageSize=100`, { signal }));
@@ -6067,7 +6592,7 @@ async function refreshOperationStockOptions(row) {
         .map((option) => ({
           lotNumber: option.lotNumber,
           expiryDate: option.expiryDate,
-          label: `${option.expiryDate} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
+          label: `${renderDateOnly(option.expiryDate)} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
         }));
     } else {
       options = await loadCached(() => request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}`, { signal }));
@@ -6086,8 +6611,8 @@ async function refreshOperationStockOptions(row) {
         ? foundationT("app.inline.pieceCount", { count: option.pieceQuantity })
         : foundationT("app.inline.packCount", { count: option.packQuantity });
       const loose = batchSource === "inventory-outbound" && entryMode === "Pieces" && option.loosePieceQuantity > 0 ? `, ${foundationT("app.inline.loosePieceCount", { count: option.loosePieceQuantity })}` : "";
-      const label = option.label || `${option.expiryDate} / ${option.lotNumber} / ${quantity}${loose}`;
-      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+      const label = option.label || `${renderDateOnly(option.expiryDate)} / ${option.lotNumber} / ${quantity}${loose}`;
+      return `<option value="${escapeHtml(value)}" data-loose-piece-quantity="${escapeHtml(String(option.loosePieceQuantity || 0))}">${escapeHtml(label)}</option>`;
     }).join("")}${createNewOption}`;
     if (current && Array.from(select.options).some((option) => option.value === current)) {
       select.value = current;
@@ -6097,7 +6622,7 @@ async function refreshOperationStockOptions(row) {
       row.querySelector(".op-line-lot").value = "";
       row.querySelector(".op-line-expiry").value = "";
     }
-    syncOperationBatchEntryFields(row);
+    applySelectedStockOption(row);
   } catch (exception) {
     if (exception?.name === "AbortError") return;
     select.innerHTML = `<option value="">${escapeHtml(foundationT("app.inline.failedToLoadBatches"))}</option>${isInboundOperationLine(type, row) ? `<option value="__new_batch__">${escapeHtml(foundationT("app.inline.createNewBatch"))}</option>` : ""}`;
@@ -6108,10 +6633,12 @@ async function refreshOperationStockOptions(row) {
 
 function applySelectedStockOption(row) {
   const select = row.querySelector(".op-line-stock-option");
+  row.dataset.availableLoosePieces = select?.selectedOptions?.[0]?.dataset?.loosePieceQuantity || "";
   if (select?.value === "__new_batch__") {
     row.querySelector(".op-line-lot").value = "";
     row.querySelector(".op-line-expiry").value = "";
     syncOperationBatchEntryFields(row);
+    syncOperationLinePackOpeningHint(row);
     row.querySelector(".op-line-lot").focus();
     return;
   }
@@ -6119,18 +6646,52 @@ function applySelectedStockOption(row) {
     row.querySelector(".op-line-lot").value = "";
     row.querySelector(".op-line-expiry").value = "";
     syncOperationBatchEntryFields(row);
+    syncOperationLinePackOpeningHint(row);
     return;
   }
 
   try {
     const option = JSON.parse(decodeURIComponent(select.value));
     row.querySelector(".op-line-lot").value = option.lotNumber || "";
-    row.querySelector(".op-line-expiry").value = option.expiryDate || "";
+    row.querySelector(".op-line-expiry").value = renderDateOnly(option.expiryDate || "");
   } catch {
     row.querySelector(".op-line-lot").value = "";
     row.querySelector(".op-line-expiry").value = "";
   }
   syncOperationBatchEntryFields(row);
+  syncOperationLinePackOpeningHint(row);
+}
+
+function syncOperationLinePackOpeningHint(row) {
+  const hint = row.querySelector(".op-line-pack-opening-hint");
+  if (!hint) return;
+
+  const type = document.getElementById("op-type")?.value || operationsUiState.operationType;
+  const entryMode = row.querySelector(".op-line-entry-mode")?.value;
+  const sku = operationSkuOptions.find((value) => value.id === row.querySelector(".op-line-sku")?.value);
+  const requestedPieces = Number(row.querySelector(".op-line-qty")?.value || 0);
+  const loosePieces = Number(row.dataset.availableLoosePieces || 0);
+  const piecesPerPack = Number(sku?.piecesPerPack || 0);
+
+  // Use the loose pieces in the selected lot, never quantity modulo pack
+  // size. A sealed pack opens only for what the loose stock cannot cover.
+  const canOpenSelectedPack = ["WholesaleSale", "RetailSale"].includes(type) &&
+    entryMode === "Pieces" && sku?.sellMode !== "SealedPackOnly" &&
+    Number.isInteger(requestedPieces) && requestedPieces > 0 && piecesPerPack > 0;
+  const remainingPieces = canOpenSelectedPack ? Math.max(0, requestedPieces - loosePieces) : 0;
+  if (remainingPieces === 0) {
+    hint.hidden = true;
+    hint.textContent = "";
+    return;
+  }
+
+  hint.hidden = false;
+  hint.textContent = foundationT("operations.packOpeningRequired", {
+    loosePieces,
+    remainingPieces,
+    packsToOpen: Math.ceil(remainingPieces / piecesPerPack),
+    piecesPerPack
+  });
 }
 
 function encodeStockOption(option) {
@@ -6174,16 +6735,16 @@ async function loadOperations() {
     count.textContent = foundationT(showCompleted ? "app.count.operations" : "app.count.activeOperations", { count: result.totalCount });
     tbody.innerHTML = items.length === 0 ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inline.noActiveOperations"))}</td></tr>` : items.map((operation) => `
       <tr data-operation-id="${escapeHtml(operation.id)}" data-operation-number="${escapeHtml(operation.operationNumber)}" data-operation-type="${escapeHtml(operation.operationType)}" data-operation-status="${escapeHtml(operation.status)}">
-        <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.financialClosureStatus === "FinanciallyClosed" ? `<span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span>` : ""}${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.allocationPending"))}</span>` : ""}</td>
-        <td>${escapeHtml(uiText(operation.operationType))}</td>
-        <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(uiText(operation.status))}</span></td>
+        <td><strong>${escapeHtml(operation.operationNumber)}</strong>${operation.externalReference ? `<div class="muted-cell">${escapeHtml(foundationT("app.inline.operationReference"))}: ${escapeHtml(operation.externalReference)}</div>` : ""}${operation.financialClosureStatus === "FinanciallyClosed" ? `<span class="status-pill status-ok">${escapeHtml(foundationT("payments.financiallyClosed"))}</span>` : ""}${operation.salesChannel === "Shopify" ? `<span class="status-pill status-warn">Shopify${operation.shopifyOrderNumber ? ` ${escapeHtml(operation.shopifyOrderNumber)}` : ""}</span>` : ""}${operation.allocationPending ? `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.allocationPending"))}</span>` : ""}</td>
+        <td>${escapeHtml(operationTypeLabel(operation.operationType))}</td>
+        <td><span class="status-pill ${operationStatusClass(operation.status)}">${escapeHtml(operationStatusLabel(operation.status))}</span></td>
         <td>${escapeHtml(formatOperationRoute(operation))}</td>
         <td>${escapeHtml(formatDateTime(operation.createdAt))}</td>
         <td>${renderOperationActions(operation, canWrite)}</td>
       </tr>
       <tr class="operation-detail-row" id="operation-detail-${escapeHtml(operation.id)}" hidden><td colspan="6"><div class="operation-detail">${escapeHtml(foundationT("common.loading"))}</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-op-toggle]").forEach((button) => button.addEventListener("click", () => toggleOperationDetails(button.dataset.opId, button)));
-    tbody.querySelectorAll("[data-op-action]").forEach((button) => button.addEventListener("click", () => runOperationAction(button.dataset.opAction, button.dataset.opId, button)));
+    tbody.querySelectorAll("[data-op-action]").forEach((button) => button.addEventListener("click", () => runOperationAction(button.dataset.opAction, button.dataset.opId, button, { requiresReason: button.dataset.opRequiresReason === "true" })));
     tbody.querySelectorAll("[data-op-edit]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opEdit, "edit")));
     tbody.querySelectorAll("[data-op-revise]").forEach((button) => button.addEventListener("click", () => startOperationEditorMode(button.dataset.opRevise, "revise")));
     bindPrintReportButtons(tbody);
@@ -6209,6 +6770,20 @@ async function loadOperations() {
 
 async function submitOperationEditor(event) {
   event.preventDefault();
+  const form = event.currentTarget;
+  if (!form || form.dataset.submitting === "true") return;
+  form.dataset.submitting = "true";
+  const submitButton = document.getElementById("operation-submit-button");
+  if (submitButton) submitButton.disabled = true;
+  try {
+    await submitOperationEditorCore();
+  } finally {
+    delete form.dataset.submitting;
+    if (submitButton?.isConnected) submitButton.disabled = false;
+  }
+}
+
+async function submitOperationEditorCore() {
   const type = canonicalSelectValue("op-type", "operationType");
   const lines = readOperationLines(type);
   const isShopifyDraft = operationsUiState.mode === "edit" && document.getElementById("operation-form")?.dataset.shopifyDraft === "true";
@@ -6218,10 +6793,15 @@ async function submitOperationEditor(event) {
       notice(foundationT("app.message.selectABatchAndExpiryForEveryShopifyLine"), "error");
       return;
     }
+    const sourceLocationId = document.getElementById("op-source")?.value || null;
+    if (!operationLocations.some((location) => location.id === sourceLocationId && location.isActive !== false && location.locationType === "SubWarehouse")) {
+      notice(foundationT("app.inline.selectOnlineSubWarehouse"), "error");
+      return;
+    }
     try {
       await request(`/api/v1/operations/${operationsUiState.operationId}/shopify-allocation`, {
         method: "PUT",
-        body: JSON.stringify({ expectedVersion: operationsUiState.concurrencyVersion, lines: lines.map((line) => ({ operationLineId: line.operationLineId, lotNumber: line.lotNumber, expiryDate: line.expiryDate })) })
+        body: JSON.stringify({ expectedVersion: operationsUiState.concurrencyVersion, sourceLocationId, lines: lines.map((line) => ({ operationLineId: line.operationLineId, lotNumber: line.lotNumber, expiryDate: line.expiryDate })) })
       });
       notice(foundationT("app.message.shopifyBatchAllocationSaved"), "success");
       resetOperationEditorMode();
@@ -6239,20 +6819,42 @@ async function submitOperationEditor(event) {
   }
   const payloadLines = lines.map(({ stockOptionSelected, ...line }) => line);
 
-  const selectedPaymentMethod = ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type)
+  const onlineSale = type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online";
+  const onlinePaymentKind = document.getElementById("op-online-payment")?.value;
+  const selectedPaymentMethod = onlineSale && onlinePaymentKind === "COD"
+    ? "CashHandToHand"
+    : ["WholesaleSale", "RetailSale", "Change"].includes(type)
     ? canonicalSelectValue("op-payment", "paymentMethod", { allowEmpty: true }) || null
     : null;
   const isMerchantAccountPayment = selectedPaymentMethod === "MerchantAccount";
   const body = {
     operationType: type,
+    externalReference: ["WholesaleSale", "RetailSale", "Return"].includes(type) ? document.getElementById("op-operation-reference")?.value?.trim() || null : null,
+    returnReferenceOperationId: type === "Return" ? document.getElementById("op-return-source")?.value || null : null,
     sourceLocationId: document.getElementById("op-source").value || null,
     destinationLocationId: document.getElementById("op-destination").value || null,
     merchantId: ["WholesaleSale", "RetailSale", "Return", "Change"].includes(type) ? document.getElementById("op-merchant").value || null : null,
     representativeId: null,
-    buyerName: type === "RetailSale" ? document.getElementById("op-buyer").value || null : null,
-    buyerPhone: type === "RetailSale" ? document.getElementById("op-buyer-phone").value || null : null,
+    buyerName: ["RetailSale", "Return"].includes(type) ? document.getElementById("op-buyer").value || null : null,
+    buyerPhone: ["RetailSale", "Return"].includes(type) ? document.getElementById("op-buyer-phone").value || null : null,
     paymentMethod: selectedPaymentMethod,
+    returnReferenceOperationId: type === "Return" ? document.getElementById("op-return-source")?.value || null : null,
     notes: document.getElementById("op-notes").value || null,
+    salesChannel: type === "RetailSale" ? (document.getElementById("op-sales-channel")?.value || "Manual") : null,
+    shippingAddress: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" ? document.getElementById("op-shipping-address")?.value?.trim() || null : null,
+    deliveryFee: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" ? Number(document.getElementById("op-delivery-fee")?.value || 0) : null,
+    codCharge: onlineSale && onlinePaymentKind === "COD" && document.getElementById("op-cod-charge-override")?.value?.trim()
+      ? Number(document.getElementById("op-cod-charge-override").value)
+      : null,
+    codChargeOverrideReason: onlineSale && onlinePaymentKind === "COD"
+      ? document.getElementById("op-cod-charge-override-reason")?.value?.trim() || null
+      : null,
+    paymentStatus: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online"
+      ? (document.getElementById("op-online-payment")?.value === "COD" ? "DueOnDelivery" : "PaidAwaitingReconciliation") : null,
+    buyerContactVerified: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" ? Boolean(document.getElementById("op-buyer-contact-verified")?.checked) : null,
+    externalPaymentProvider: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" && document.getElementById("op-online-payment")?.value === "Gateway" ? document.getElementById("op-online-provider")?.value?.trim() || null : null,
+    externalPaymentReference: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" && document.getElementById("op-online-payment")?.value === "Gateway" ? document.getElementById("op-online-reference")?.value?.trim() || null : null,
+    externalPaymentVerified: type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" && document.getElementById("op-online-payment")?.value === "Gateway" ? Boolean(document.getElementById("op-online-payment-verified")?.checked) : null,
     receipt: type === "InventoryReceipt" ? { supplierName: document.getElementById("op-supplier").value || "Supplier", invoiceNumber: document.getElementById("op-invoice").value || null } : null,
     lines: payloadLines,
     expectedVersion: ["edit", "revise"].includes(operationsUiState.mode) ? operationsUiState.concurrencyVersion : null
@@ -6300,7 +6902,16 @@ function findInvalidOperationLineIndex(type, lines) {
     const line = lines[index];
     const quantity = line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity;
     if (!line.skuId || !line.stockOptionSelected || !line.lotNumber || !line.expiryDate || !Number.isInteger(quantity) || quantity < 1) return index;
-    if (["WholesaleSale", "RetailSale"].includes(type) && !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) return index;
+    const sku = operationSkuOptions.find((value) => value.id === line.skuId);
+    const sealedPackPieceMultiple = line.entryMode === "Pieces" && sku?.sellMode === "SealedPackOnly" && ["WholesaleSale", "Return"].includes(type);
+    if (line.entryMode === "Pieces" && (operationRequiresPacks(type) || (sku?.sellMode === "SealedPackOnly" && !sealedPackPieceMultiple))) return index;
+    if (sealedPackPieceMultiple && (!Number.isInteger(sku?.piecesPerPack) || sku.piecesPerPack <= 0 || quantity % sku.piecesPerPack !== 0 || (type === "Return" && Number.isInteger(line.normalQuantity) && line.normalQuantity % sku.piecesPerPack !== 0))) return index;
+    if (["WholesaleSale", "RetailSale"].includes(type)) {
+      const kind = line.lineType || legacySaleLineType(line.pricingMode, line.isBonus ? 1 : 0);
+      if (kind !== "Bonus" && (line.unitPrice <= 0 && line.isSellable)) return index;
+      if (kind === "Bonus" && line.unitPrice !== 0) return index;
+      if (line.unitPrice < 0) return index;
+    }
     const key = operationLineUniquenessKey(type, line);
     if (keys.has(key)) return index;
     keys.set(key, index);
@@ -6318,15 +6929,25 @@ function navigateToInvalidOperationLine(index) {
 
 function readOperationLines(type) {
   syncCurrentOperationPage();
-  return operationEditorLines.map((line) => ({
+  return operationEditorLines.map((line) => {
+    const lineType = line.lineType || legacySaleLineType(line.pricingMode, line.isBonus ? 1 : 0);
+    return ({
     operationLineId: line.operationLineId || null,
     skuId: line.skuId,
     packQuantity: line.entryMode === "Pieces" ? 0 : Number(line.packQuantity),
     pieceQuantity: line.entryMode === "Pieces" ? Number(line.pieceQuantity) : null,
-    entryMode: type === "RetailSale" ? canonicalSystemValue(line.entryMode, "entryMode") : "Packs",
+    entryMode: canonicalSystemValue(line.entryMode, "entryMode"),
     section: type === "Change" ? canonicalSystemValue(line.section, "lineSection") : null,
-    unitPrice: line.isBonus ? 0 : Number(line.unitPrice || 0),
-    isBonus: ["WholesaleSale", "RetailSale"].includes(type) ? line.isBonus : false,
+    unitPrice: lineType === "Bonus" ? 0 : Number(line.unitPrice || 0),
+    isSellable: operationSkuOptions.find((sku) => sku.id === line.skuId)?.isSellable !== false,
+    returnDisposition: type === "Return" ? (line.returnDisposition || "Sellable") : null,
+    normalQuantity: type === "Return" ? Number(line.normalQuantity || 0) : null,
+    normalValue: type === "Return"
+      ? Number(line.normalValue || (Number(line.unitPrice || 0) * (line.entryMode === "Pieces" ? Number(line.pieceQuantity || 0) : Number(line.packQuantity || 0))))
+      : null,
+    exceptionValue: type === "Return" ? Number(line.exceptionValue || 0) : null,
+    isBonus: ["WholesaleSale", "RetailSale"].includes(type) ? lineType === "Bonus" : false,
+    lineType: ["WholesaleSale", "RetailSale"].includes(type) ? lineType : null,
     stockOptionSelected: Boolean(line.lotNumber || line.expiryDate),
     expiryDate: line.expiryDate || null,
     lotNumber: line.lotNumber || null,
@@ -6335,14 +6956,26 @@ function readOperationLines(type) {
     sourceOperationLineId: line.sourceOperationLineId || null,
     sourceBatchId: line.sourceBatchId || null,
     sourceOpenedPieceLotId: line.sourceOpenedPieceLotId || null,
-    remainingEligibleQuantity: line.remainingEligibleQuantity ?? null
-  }));
+    remainingEligibleQuantity: line.remainingEligibleQuantity ?? null,
+    availableLoosePieces: line.availableLoosePieces ?? null
+  });
+  });
+}
+
+function legacySaleLineType(pricingMode, bonusQuantity = 0) {
+  if (pricingMode === "PromotionFree" || Number(bonusQuantity) > 0) return "Bonus";
+  if (pricingMode === "Promotion50") return "Offer";
+  return "Paid";
+}
+
+function saleLineBatchKey(line) {
+  return `${line.skuId || ""}:${line.sourceBatchId || ""}:${line.lotNumber || ""}:${line.expiryDate || ""}`;
 }
 
 function validateOperationForm(type, lines) {
   const source = document.getElementById("op-source").value;
   const destination = document.getElementById("op-destination").value;
-  const main = operationLocations.find((location) => location.locationType === "MainWarehouse");
+  const warehouses = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
 
   if (lines.length === 0) {
     return "Add at least one operation line.";
@@ -6350,11 +6983,26 @@ function validateOperationForm(type, lines) {
   if (lines.some((line) => !line.skuId)) {
     return "Select a SKU for every line.";
   }
+  const sealedPackLine = lines.find((line) => {
+    const sku = operationSkuOptions.find((value) => value.id === line.skuId);
+    const quantity = line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity;
+    return line.entryMode === "Pieces" && sku?.sellMode === "SealedPackOnly" && ["WholesaleSale", "Return"].includes(type) &&
+      (!Number.isInteger(sku.piecesPerPack) || sku.piecesPerPack <= 0 || quantity % sku.piecesPerPack !== 0 || (type === "Return" && Number.isInteger(line.normalQuantity) && line.normalQuantity % sku.piecesPerPack !== 0));
+  });
+  if (sealedPackLine) {
+    const sku = operationSkuOptions.find((value) => value.id === sealedPackLine.skuId);
+    return `SKU ${sku?.skuCode || ""} is sealed-pack only. Enter a piece quantity divisible by ${sku?.piecesPerPack || "the configured pack size"}.`;
+  }
+  if (operationRequiresPacks(type) && lines.some((line) => line.entryMode === "Pieces")) {
+    return type === "WarehouseTransfer"
+      ? "Transfers involving the Main Warehouse use Packs only. Edit the highlighted line."
+      : `${type} uses Packs only. Edit the highlighted line.`;
+  }
   if (lines.some((line) => !line.stockOptionSelected || !line.lotNumber || !line.expiryDate)) {
     return foundationT("app.message.selectBatchExpiryEveryOperationLine");
   }
   if (new Set(lines.map((line) => operationLineUniquenessKey(type, line))).size !== lines.length) {
-    return "Each SKU can appear once per side. Sales may use one paid line and one bonus line for the same SKU.";
+    return foundationT("app.inline.saleLineLimit");
   }
   if (lines.some((line) => {
     const quantity = line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity;
@@ -6362,14 +7010,14 @@ function validateOperationForm(type, lines) {
   })) {
     return "Every pack quantity must be a whole number greater than zero.";
   }
-  if (["InventoryReceipt", "WarehouseTransfer"].includes(type) && !main) {
-    return "MainWarehouse must exist before operations can be created.";
+  if (["InventoryReceipt", "WarehouseTransfer"].includes(type) && warehouses.length === 0) {
+    return foundationT("app.inline.noWarehouseAvailable");
   }
-  if (type === "InventoryReceipt" && destination !== main.id) {
-    return "Inventory receipt destination must be MainWarehouse.";
+  if (type === "InventoryReceipt" && !warehouses.some((location) => location.id === destination)) {
+    return foundationT("app.inline.selectValidWarehouse");
   }
-  if (type === "WarehouseTransfer" && (source !== main.id || !destination || destination === main.id)) {
-    return "Warehouse transfer must move packs from MainWarehouse to a non-main destination.";
+  if (type === "WarehouseTransfer" && (!warehouses.some((location) => location.id === source) || !warehouses.some((location) => location.id === destination) || source === destination)) {
+    return foundationT("app.inline.chooseDifferentWarehouses");
   }
   if (isOperationStockConsumingType(type) && !source) {
     return "Select a source location before choosing stock.";
@@ -6377,24 +7025,31 @@ function validateOperationForm(type, lines) {
   if (type === "WholesaleSale" && !document.getElementById("op-merchant").value) {
     return "Wholesale sale requires a merchant.";
   }
+  const isOnlineSale = type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online";
+  if (isOnlineSale) {
+    if (!operationLocations.some((location) => location.id === source && location.isActive !== false && location.locationType === "SubWarehouse")) return foundationT("app.inline.selectOnlineSubWarehouse");
+    if (!document.getElementById("op-buyer")?.value.trim() || !document.getElementById("op-buyer-phone")?.value.trim() || !document.getElementById("op-shipping-address")?.value.trim()) return foundationT("app.inline.onlineBuyerFieldsRequired");
+    if (!document.getElementById("op-buyer-contact-verified")?.checked) return foundationT("app.inline.verifyBuyerContactBeforeConfirm");
+    if (document.getElementById("op-online-payment")?.value === "Gateway" && !document.getElementById("op-payment")?.value) return foundationT("app.inline.chooseGatewayPaymentMethod");
+    if (document.getElementById("op-online-payment")?.value === "Gateway" && (!document.getElementById("op-online-provider")?.value.trim() || !document.getElementById("op-online-reference")?.value.trim() || !document.getElementById("op-online-payment-verified")?.checked)) return foundationT("app.inline.verifyPaymentReferenceBeforeConfirm");
+  }
   const paymentMethod = document.getElementById("op-payment")?.value;
-  if (["WholesaleSale", "RetailSale"].includes(type) && lines.some((line) => !line.isBonus && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0))) {
-    return "Sale line unit price must be greater than zero unless the line is marked as bonus.";
+  if (["WholesaleSale", "RetailSale"].includes(type)) {
+    if (lines.some((line) => line.unitPrice < 0 || !Number.isFinite(line.unitPrice))) {
+      return "Sale and offer prices cannot be negative; zero is allowed for free or discounted items.";
+    }
   }
   const hasMerchant = Boolean(document.getElementById("op-merchant")?.value);
-  const sourceSaleId = document.getElementById("op-return-source")?.value;
   const returnedLines = type === "Return" ? lines : type === "Change" ? lines.filter((line) => line.section === "ChangeOut") : [];
-  if (returnedLines.length > 0 && !hasMerchant && !sourceSaleId) {
-    return foundationT("app.message.selectOriginalSaleForNonMerchantReturn");
-  }
   const linkedReturnedLines = returnedLines.filter((line) => line.sourceOperationId || line.sourceOperationLineId || line.sourceBatchId || line.sourceOpenedPieceLotId);
-  if ((!hasMerchant && returnedLines.some((line) => !line.sourceOperationId || !line.sourceOperationLineId || !line.sourceBatchId)) ||
-      linkedReturnedLines.some((line) => !line.sourceOperationId || !line.sourceOperationLineId || !line.sourceBatchId)) {
+  if (linkedReturnedLines.some((line) => !line.sourceOperationId || !line.sourceOperationLineId || !line.sourceBatchId)) {
     return foundationT("app.message.selectOriginalSaleLineEveryReturnedLine");
   }
-  if (linkedReturnedLines.some((line) => Number(line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity) > Number(line.remainingEligibleQuantity ?? 0))) {
-    return foundationT("app.message.returnQuantityExceedsEligible");
-  }
+  if (returnedLines.some((line) => Number(line.normalQuantity || 0) > Number(line.entryMode === "Pieces" ? line.pieceQuantity : line.packQuantity))) return foundationT("app.inline.normalReturnQuantityInvalid");
+  const onlineCod = type === "RetailSale" && document.getElementById("op-sales-channel")?.value === "Online" && document.getElementById("op-online-payment")?.value === "COD";
+  const codOverrideAmount = document.getElementById("op-cod-charge-override")?.value?.trim() || "";
+  const codOverrideReason = document.getElementById("op-cod-charge-override-reason")?.value?.trim() || "";
+  if (onlineCod && Boolean(codOverrideAmount) !== Boolean(codOverrideReason)) return foundationT("app.inline.codChargeOverridePairRequired");
   if (type === "Change") {
     if (!lines.some((line) => line.section === "ChangeOut") || !lines.some((line) => line.section === "ChangeIn")) {
       return "Change needs at least one returned line and one replacement line.";
@@ -6406,46 +7061,36 @@ function validateOperationForm(type, lines) {
 
 function operationLineUniquenessKey(type, line) {
   const section = type === "Change" ? line.section || "ChangeOut" : "Standard";
-  const bonus = ["WholesaleSale", "RetailSale"].includes(type) && line.isBonus === true ? "Bonus" : "Paid";
-  return `${line.skuId}:${section}:${bonus}:${line.entryMode}:${line.lotNumber || ""}:${line.expiryDate || ""}`;
+  const pricingSlot = ["WholesaleSale", "RetailSale"].includes(type)
+    ? (line.lineType || legacySaleLineType(line.pricingMode, line.isBonus ? 1 : 0))
+    : "Standard";
+  return `${line.skuId}:${section}:${pricingSlot}:${line.entryMode}:${line.lotNumber || ""}:${line.expiryDate || ""}`;
 }
 
 function renderOperationActions(operation, canWrite) {
   const detailButton = `<button class="button secondary table-action" type="button" data-op-toggle="details" data-op-id="${escapeHtml(operation.id)}">${escapeHtml(foundationT("payments.details"))}</button>`;
   const printButton = `<button class="button secondary table-action" type="button" data-print-report="operation-bill" data-print-id="${escapeHtml(operation.id)}" data-print-code="${escapeHtml(operation.operationNumber)}">${escapeHtml(foundationT("payments.print"))}</button>`;
-  if (!canWrite) {
-    return `${detailButton} ${printButton}`;
-  }
-  // Legacy Change and representative-reserve rows remain inspectable, but
-  // their workflow actions are retired and must not be offered again.
-  if (["Change", "Reserve"].includes(operation.operationType)) {
-    return `${detailButton} ${printButton}`;
-  }
-  const actions = [];
-  if (operation.status === "Draft") {
-    actions.push(["edit-draft", "Edit"]);
-  } else if (getAuth()?.user?.role === "Admin" && operation.status !== "Cancelled" && operation.salesChannel !== "Shopify") {
-    actions.push(["revise", "Revise"]);
-  }
-  const shippingOperationTypes = ["WarehouseTransfer", "WholesaleSale", "RetailSale"];
-  if (operation.status === "Draft") {
-    actions.push(["confirm", "Confirm"], ["cancel", "Cancel"]);
-  } else if (shippingOperationTypes.includes(operation.operationType) && operation.status === "Reserved") {
-    actions.push(["ship", "Ship"], [operation.operationType === "WholesaleSale" || operation.operationType === "RetailSale" ? "complete" : "receive", operation.operationType === "WarehouseTransfer" ? "Receive" : "Complete"], ["cancel", "Cancel"]);
-  } else if (shippingOperationTypes.includes(operation.operationType) && operation.status === "Shipped") {
-    actions.push([operation.operationType === "WholesaleSale" || operation.operationType === "RetailSale" ? "complete" : "receive", operation.operationType === "WarehouseTransfer" ? "Receive" : "Complete"]);
-  }
-
+  const actions = canWrite && !["Change", "Reserve"].includes(operation.operationType)
+    ? operation.workflow?.actions || []
+    : [];
   return actions.length === 0
     ? `${detailButton} ${printButton}`
-    : `${detailButton} ${printButton} ${actions.map(([action, label]) => {
+    : `${detailButton} ${printButton} ${actions.map((item) => {
+      const action = item.key;
       if (action === "edit-draft") {
-        return `<button class="button secondary table-action" type="button" data-op-edit="${escapeHtml(operation.id)}">${escapeHtml(uiText(label))}</button>`;
+        return `<button class="button secondary table-action" type="button" data-op-edit="${escapeHtml(operation.id)}">${escapeHtml(foundationT("common.edit"))}</button>`;
       }
-      if (action === "revise") {
-        return `<button class="button secondary table-action" type="button" data-op-revise="${escapeHtml(operation.id)}">${escapeHtml(uiText(label))}</button>`;
-      }
-      return `<button class="button secondary table-action" type="button" data-op-action="${action}" data-op-id="${escapeHtml(operation.id)}">${escapeHtml(uiText(label))}</button>`;
+      const actionKey = {
+        "submit-approval": "app.inline.submitReturnApproval",
+        approve: "app.inline.approveReturn",
+        reject: "app.inline.rejectReturn",
+        confirm: operation.operationType === "Return" ? "app.inline.confirmReturn" : null,
+        cancel: operation.operationType === "Return" ? "app.inline.cancelReturn" : null
+      }[action];
+      const actionLabel = actionKey ? foundationT(actionKey) : action === "dispatch" ? foundationT("app.inline.dispatch") : action === "delivered" ? foundationT("app.inline.delivered") : action === "failed-delivery" ? foundationT("app.inline.failedDelivery") : systemValueLabel(action);
+      const disabled = item.disabledExplanation ? " disabled" : "";
+      const title = item.disabledExplanation ? ` title="${escapeHtml(item.disabledExplanation)}"` : "";
+      return `<button class="button secondary table-action" type="button" data-op-action="${escapeHtml(action)}" data-op-id="${escapeHtml(operation.id)}" data-op-requires-reason="${item.requiresReason ? "true" : "false"}"${title}${disabled}>${escapeHtml(actionLabel)}</button>`;
     }).join(" ")}`;
 }
 
@@ -6491,7 +7136,19 @@ async function loadOperationDetailPage(operationId, target, page) {
     detail.lines = lineResult.items || [];
     detail.allocations = allocationResult.items || [];
     detail.versions = versionResult.items || [];
-    target.innerHTML = renderOperationDetail(detail);
+    let returnEntitlement = null;
+    let returnSourceAllocations = [];
+    if (detail.operationType === "Return") {
+      try {
+        const entitlements = await request("/api/v1/payments/return-entitlements");
+        returnEntitlement = (Array.isArray(entitlements) ? entitlements : entitlements.items || []).find((item) => item.returnOperationId === operationId) || null;
+      } catch { /* Finance visibility may be restricted for this role. */ }
+      try {
+        const sourceAllocations = await request(`/api/v1/operations/${operationId}/source-allocations`);
+        returnSourceAllocations = Array.isArray(sourceAllocations) ? sourceAllocations : [];
+      } catch { /* Trace visibility may be restricted for this role. */ }
+    }
+    replaceMarkup(target, renderOperationDetail(detail, returnEntitlement, returnSourceAllocations));
     const pages = Math.max(1, lineResult.totalPages || 1);
     if (pages > 1) {
       const pager = document.createElement("div");
@@ -6501,16 +7158,17 @@ async function loadOperationDetailPage(operationId, target, page) {
     }
 }
 
-function renderOperationDetail(detail) {
+function renderOperationDetail(detail, returnEntitlement = null, returnSourceAllocations = []) {
   const lines = detail.lines || [];
   const allocations = dedupeOperationAllocations(detail.allocations || []);
   const versions = detail.versions || [];
   return `
     <div class="operation-detail-grid">
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.operationCode"))}</span><strong>${escapeHtml(detail.operationNumber)}</strong></div>
-      <div class="metric"><span>${escapeHtml(foundationT("payments.status"))}</span><strong>${escapeHtml(uiText(detail.status))}</strong></div>
+      ${detail.externalReference ? `<div class="metric"><span>${escapeHtml(foundationT("app.inline.operationReference"))}</span><strong>${escapeHtml(detail.externalReference)}</strong></div>` : ""}
+      <div class="metric"><span>${escapeHtml(foundationT("payments.status"))}</span><strong>${escapeHtml(operationStatusLabel(detail.status))}</strong></div>
       <div class="metric"><span>${escapeHtml(paymentT("financialClosure"))}</span><strong>${escapeHtml(detail.financialClosureStatus === "FinanciallyClosed" ? paymentT("financiallyClosed") : paymentT("financiallyOpen"))}</strong></div>
-      <div class="metric"><span>${escapeHtml(foundationT("payments.type"))}</span><strong>${escapeHtml(uiText(detail.operationType))}</strong></div>
+      <div class="metric"><span>${escapeHtml(foundationT("payments.type"))}</span><strong>${escapeHtml(operationTypeLabel(detail.operationType))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("app.created"))}</span><strong>${escapeHtml(formatDateTime(detail.createdAt))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.confirmed"))}</span><strong>${escapeHtml(formatDateTime(detail.confirmedAt) || "-")}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.createdBy"))}</span><strong>${escapeHtml(detail.createdByName || detail.createdBy || "-")}</strong></div>
@@ -6524,19 +7182,33 @@ function renderOperationDetail(detail) {
       ${detail.shippingAddress ? `<div class="metric"><span>${escapeHtml(foundationT("app.inline.shippingAddress"))}</span><strong>${escapeHtml(detail.shippingAddress)}</strong></div>` : ""}
       ${detail.allocationPending ? `<div class="metric"><span>${escapeHtml(foundationT("payments.allocation"))}</span><strong><span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.batchAllocationPending"))}</span></strong></div>` : ""}
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.currentVersion"))}</span><strong>${escapeHtml(detail.currentVersionNumber || "-")}</strong></div>
+      ${returnEntitlement ? `<div class="metric"><span>${escapeHtml(foundationT("app.inline.returnEntitlement"))}</span><strong>${escapeHtml(operationStatusLabel(returnEntitlement.status))} · ${escapeHtml(formatMoney(returnEntitlement.remainingAmount || 0))} ${escapeHtml(foundationT("app.inline.remaining"))}</strong></div>` : ""}
+      ${detail.operationType === "Return" && !returnEntitlement ? `<div class="metric"><span>${escapeHtml(foundationT("app.inline.returnEntitlement"))}</span><strong>${escapeHtml(foundationT("app.inline.entitlementStatusUnavailable"))}</strong></div>` : ""}
     </div>
+    ${detail.operationType === "Return" ? `<section class="return-summary"><h3>${escapeHtml(foundationT("app.inline.returnAssessment"))}</h3><p>${escapeHtml(foundationT("app.inline.normalValue"))}: ${escapeHtml(formatMoney(detail.returnNormalValue || 0))} · ${escapeHtml(foundationT("app.inline.exceptionValue"))}: ${escapeHtml(formatMoney(detail.returnExceptionValue || 0))}</p>${detail.returnFinancialOutcome === "NoRefundDue" ? `<p class="muted-text"><strong>${escapeHtml(foundationT("app.inline.returnFinance"))}:</strong> ${escapeHtml(foundationT("app.inline.failedDeliveryNoRefundDue"))}</p>` : ""}${detail.returnFinancialOutcome === "RefundReviewRequired" ? `<p class="muted-text"><strong>${escapeHtml(foundationT("app.inline.returnFinance"))}:</strong> ${escapeHtml(foundationT("app.inline.failedDeliveryRefundReviewRequired"))}</p>` : ""}${detail.returnExceptionReason ? `<p><strong>${escapeHtml(foundationT("app.inline.exceptionReason"))}:</strong> ${escapeHtml(detail.returnExceptionReason)}</p>` : ""}${detail.returnVerbalAuthorizer ? `<p><strong>${escapeHtml(foundationT("app.inline.verbalAuthorizer"))}:</strong> ${escapeHtml(detail.returnVerbalAuthorizer)}</p>` : ""}</section>
+      <section class="return-lineage detail-panel" aria-labelledby="return-lineage-title"><h3 id="return-lineage-title">${escapeHtml(foundationT("app.inline.returnLifecycle"))}</h3>
+        <ol class="return-lifecycle-rail"><li>${escapeHtml(foundationT("app.inline.linkedSaleAndBatch"))}<strong>${returnSourceAllocations.length ? returnSourceAllocations.map((allocation) => `${escapeHtml(allocation.sourceOperationNumber)} · ${escapeHtml(allocation.lotNumber || shortId(allocation.sourceBatchId, "BATCH"))}`).join("; ") : escapeHtml(foundationT("app.inline.noSourceAllocationTrace"))}</strong></li>
+        <li>${escapeHtml(foundationT("app.inline.receivedDisposition"))}<strong>${lines.length ? lines.map((line) => `${escapeHtml(line.skuCode)} · ${escapeHtml(returnDispositionLabel(line.returnDisposition || "Sellable"))}`).join("; ") : "-"}</strong></li>
+        <li>${escapeHtml(foundationT("app.inline.normalExceptionSplit"))}<strong>${escapeHtml(formatMoney(detail.returnNormalValue || 0))} / ${escapeHtml(formatMoney(detail.returnExceptionValue || 0))}</strong></li>
+        <li>${escapeHtml(foundationT("app.inline.returnEntitlement"))}<strong>${returnEntitlement ? `${escapeHtml(operationStatusLabel(returnEntitlement.status))} · ${escapeHtml(formatMoney(returnEntitlement.remainingAmount || 0))} ${escapeHtml(foundationT("app.inline.remaining"))}` : escapeHtml(foundationT("app.inline.entitlementStatusUnavailable"))}</strong></li></ol>
+      </section>` : ""}
+    ${renderReturnApprovalPanel(detail)}
     ${detail.notes ? `<p class="muted-text">${escapeHtml(detail.notes)}</p>` : ""}
     ${detail.correctionReason ? `<p class="muted-text"><strong>${escapeHtml(foundationT("operations.correctionReason"))}:</strong> ${escapeHtml(detail.correctionReason)}</p>` : ""}
-    <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.product"))}</th><th>${escapeHtml(foundationT("app.inline.shopifyLine"))}</th><th>${escapeHtml(foundationT("app.wearCycle"))}</th><th>${escapeHtml(foundationT("app.inline.side"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.bonus"))}</th><th>${escapeHtml(foundationT("supply.unitPrice"))}</th><th>${escapeHtml(foundationT("payments.total"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.batchExpiry"))}</th><th>${escapeHtml(foundationT("payments.notes"))}</th></tr></thead><tbody>${lines.length === 0
-      ? `<tr><td colspan="12">${escapeHtml(foundationT("app.inline.noLines"))}</td></tr>`
+    <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.product"))}</th><th>${escapeHtml(foundationT("app.inline.shopifyLine"))}</th><th>${escapeHtml(foundationT("app.wearCycle"))}</th><th>${escapeHtml(foundationT("app.inline.side"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.returnDisposition"))}</th><th>${escapeHtml(foundationT("app.inline.normalReturnQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.exceptionReturnQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.valueSplit"))}</th><th>${escapeHtml(foundationT("app.inline.lineType"))}</th><th>${escapeHtml(foundationT("supply.unitPrice"))}</th><th>${escapeHtml(foundationT("payments.total"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.batchExpiry"))}</th><th>${escapeHtml(foundationT("payments.notes"))}</th></tr></thead><tbody>${lines.length === 0
+      ? `<tr><td colspan="16">${escapeHtml(foundationT("app.inline.noLines"))}</td></tr>`
       : lines.map((line) => `<tr>
           <td><strong>${escapeHtml(line.skuCode)}</strong></td>
           <td>${escapeHtml(line.productName)}</td>
           <td>${renderShopifyLineMetadata(line)}</td>
           <td>${renderWearCycle(line.wearCycle, line.wearDuration)}</td>
           <td>${escapeHtml(formatOperationLineSection(line.section))}</td>
-          <td>${escapeHtml(line.quantity)} ${escapeHtml(uiText(line.entryMode || "Packs"))}</td>
-          <td>${line.bonusQuantity ? `<span class="status-pill status-warn">${escapeHtml(line.bonusQuantity)}</span>` : "-"}</td>
+          <td>${escapeHtml(line.displayQuantity || `${line.quantity} ${systemValueLabel(line.entryMode || "Packs")}`)}</td>
+          <td>${line.returnDisposition ? escapeHtml(returnDispositionLabel(line.returnDisposition)) : "-"}</td>
+          <td>${detail.operationType === "Return" ? escapeHtml(String(line.normalQuantity || 0)) : "-"}</td>
+          <td>${detail.operationType === "Return" ? escapeHtml(String(line.entryMode === "Pieces" ? (line.exceptionQuantity || 0) : (line.exceptionQuantity || 0) * Math.max(1, Number(line.piecesPerPack || 1))) + " pieces") : "-"}</td>
+          <td>${detail.operationType === "Return" ? `${escapeHtml(formatMoney(line.normalValue || 0))} / ${escapeHtml(formatMoney(line.exceptionValue || 0))}` : "-"}</td>
+          <td>${["WholesaleSale", "RetailSale"].includes(detail.operationType) ? escapeHtml(foundationT(`app.inline.lineType${line.lineType || legacySaleLineType(line.pricingMode, line.bonusQuantity)}`)) : "-"}</td>
           <td>${escapeHtml(formatMoney(line.unitPrice || 0))}</td>
           <td>${escapeHtml(formatMoney(line.lineTotal || 0))}</td>
           <td>${escapeHtml(line.lotNumber || "-")}</td>
@@ -6554,6 +7226,29 @@ function renderOperationDetail(detail) {
     <div class="operation-version-list">${versions.length === 0
       ? `<span class="muted-text">${escapeHtml(foundationT("app.inline.noVersions"))}</span>`
       : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} - ${escapeHtml(formatDateTime(version.editedAt))} - ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
+}
+
+function renderReturnApprovalPanel(detail) {
+  if (detail.operationType !== "Return" || !["PendingApproval", "Rejected", "Approved"].includes(detail.status)) return "";
+  const approvalLines = detail.returnApprovalLines || [];
+  const varianceLines = approvalLines.filter((line) => line.mismatchType && line.mismatchType !== "ApprovalRequired");
+  const hasVariance = varianceLines.length > 0;
+  const lineTable = (detail.lines || []).length ? `<div class="${hasVariance ? "return-excess-alert" : "return-approval-review"}"${hasVariance ? ' role="alert"' : ""}><strong>${hasVariance ? "⚠ " : ""}${escapeHtml(foundationT(hasVariance ? "app.inline.excessApprovalReview" : "app.inline.returnApprovalReview"))}</strong>${!hasVariance ? `<p class="muted-text">${escapeHtml(foundationT("app.inline.noReturnVariance"))}</p>` : ""}<div class="table-wrap"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.inline.expiryDate"))}</th><th>${escapeHtml(foundationT("reports.sortQuantity"))}</th><th>${escapeHtml(foundationT("app.inline.normalPieces"))}</th><th>${escapeHtml(foundationT("app.inline.exceptionPieces"))}</th><th>${escapeHtml(foundationT("app.inline.value"))}</th></tr></thead><tbody>${detail.lines.map((line) => { const pieces = Number(line.piecesPerPack || 1); const exceptionPieces = line.entryMode === "Pieces" ? Number(line.exceptionQuantity || 0) : Number(line.exceptionQuantity || 0) * pieces; const normalPieces = line.entryMode === "Pieces" ? Number(line.normalQuantity || 0) : Number(line.normalQuantity || 0) * pieces; return `<tr><td>${escapeHtml(line.skuCode || "-")}</td><td>${escapeHtml(line.lotNumber || "-")}</td><td>${line.expiryDate ? expiryBadge(line.expiryDate) : "-"}</td><td>${escapeHtml(line.displayQuantity || String(line.quantity || 0))}</td><td>${normalPieces}</td><td>${exceptionPieces}</td><td>${escapeHtml(formatMoney(line.normalValue || 0))} / ${escapeHtml(formatMoney(line.exceptionValue || 0))}</td></tr>`; }).join("")}</tbody></table></div></div>` : "";
+  const alerts = hasVariance ? `<div><strong>${escapeHtml(foundationT("app.inline.returnAffectedLines"))}</strong><ul class="return-approval-lines">${varianceLines.map((line) => `<li><span class="status-pill status-warn">${escapeHtml(returnApprovalMismatchLabel(line.mismatchType))}</span><span><strong>${escapeHtml(shortId(line.skuId, "SKU"))}</strong> · ${escapeHtml(line.batchName || "-")} · ${escapeHtml(renderDateOnly(line.expiryDate || "-"))} · ${escapeHtml(line.detail || "-")}</span></li>`).join("")}</ul></div>` : "";
+  return `<section class="return-approval-panel detail-panel ${escapeHtml(operationStatusClass(detail.status))}" aria-live="polite"><div class="return-approval-heading"><h3>${escapeHtml(foundationT("app.inline.returnApproval"))}</h3><span class="status-pill ${escapeHtml(operationStatusClass(detail.status))}">${escapeHtml(operationStatusLabel(detail.status))}</span></div><p><strong>${escapeHtml(foundationT("app.inline.returnApprovalStatus"))}:</strong> ${escapeHtml(operationStatusLabel(detail.status))}</p>${detail.returnApprovalReason ? `<p><strong>${escapeHtml(foundationT("app.inline.returnApprovalReason"))}:</strong> ${escapeHtml(detail.returnApprovalReason)}</p>` : ""}${lineTable}${alerts}</section>`;
+}
+
+function returnApprovalMismatchLabel(type) {
+  const labels = {
+    SkuMismatch: "app.inline.returnSkuMismatch",
+    BatchMismatch: "app.inline.returnBatchMismatch",
+    ExpiryMismatch: "app.inline.returnExpiryMismatch",
+    BatchExpiryMismatch: "app.inline.returnBatchExpiryMismatch",
+    QuantityExcess: "app.inline.returnQuantityExcess",
+    ValueExcess: "app.inline.returnValueExcess",
+    ApprovalRequired: "app.inline.returnApprovalRequired"
+  };
+  return foundationT(labels[type] || "app.inline.returnMismatch");
 }
 
 function renderShopifyLineMetadata(line) {
@@ -6580,6 +7275,11 @@ function formatOperationLineSection(section) {
   return "-";
 }
 
+function returnDispositionLabel(disposition) {
+  const key = { Sellable: "app.inline.returnSellable", Quarantine: "app.inline.returnQuarantine", WriteOff: "app.inline.returnWriteOff" }[disposition];
+  return key ? foundationT(key) : systemValueLabel(disposition);
+}
+
 function dedupeOperationAllocations(allocations) {
   const grouped = new Map();
   for (const allocation of allocations) {
@@ -6595,13 +7295,22 @@ function dedupeOperationAllocations(allocations) {
 }
 
 function operationStatusClass(status) {
-  if (status === "Received" || status === "Completed" || status === "Confirmed") {
+  if (status === "Received" || status === "Delivered" || status === "Completed" || status === "Confirmed") {
     return "status-ok";
+  }
+  if (status === "Approved") {
+    return "status-ok";
+  }
+  if (status === "PendingApproval") {
+    return "status-warn";
+  }
+  if (status === "Rejected") {
+    return "status-muted";
   }
   if (status === "Cancelled") {
     return "status-muted";
   }
-  if (status === "Reserved" || status === "Shipped") {
+  if (status === "Reserved" || status === "Shipped" || status === "Dispatched" || status === "FailedDelivery") {
     return "status-warn";
   }
   return "status-muted";
@@ -6617,11 +7326,12 @@ function formatOperationRoute(operation) {
 
 async function runOperationAction(action, operationId, button, options = {}) {
   return confirmFinalAction({
-    action: action === "cancel" ? "cancel" : "confirm",
+    action: action === "cancel" ? "cancel" : action,
     title: `Operation ${action}`,
     message: `Are you sure you want to ${action} this operation?`,
     confirmLabel: action === "cancel" ? "Cancel operation" : action,
     reasonLabel: foundationT("app.confirm.reason"),
+    requiresReason: options.requiresReason === true,
     control: button,
     key: `operation:${operationId}:${action}`,
     execute: async (reason) => {
@@ -6673,22 +7383,23 @@ async function renderPayments() {
   const isAdmin = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
   const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
-  const merchantResult = await loadPaymentMerchants({ includeStatus: true });
-  const merchants = merchantResult.items;
-  paymentMerchants = merchants;
-  const accountantResult = isAdmin ? await loadPaymentAccountants({ includeStatus: true }) : { items: [], error: null };
-  paymentAccountants = accountantResult.items;
-  const financeAccountResult = canDraft || canApproveAdjustments ? await loadPaymentFinanceAccounts({ includeStatus: true }) : { items: [], error: null };
-  const financeAccounts = financeAccountResult.items;
-  paymentFinanceAccounts = financeAccounts;
-  const accountantOptions = paymentAccountants.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName || user.username)} (${escapeHtml(user.username)})</option>`).join("");
-  const financeAccountOptions = financeAccounts.map((account) => `<option value="${escapeHtml(account.id)}" data-account-type="${escapeHtml(account.type)}">${escapeHtml(account.name)} (${escapeHtml(financeValueLabel("accountType", account.type))})</option>`).join("");
+  // The queue a user opened is the only data allowed to compete for the
+  // first paint. Reference lists, KPIs, and review-only work are hydrated
+  // after that queue is visible.
+  const loadPaymentDependencies = () => Promise.all([
+    loadPaymentMerchants({ includeStatus: true }),
+    isAdmin ? loadPaymentAccountants({ includeStatus: true }) : Promise.resolve({ items: [], error: null }),
+    canDraft || canApproveAdjustments ? loadPaymentFinanceAccounts({ includeStatus: true }) : Promise.resolve({ items: [], error: null })
+  ]);
+  const merchants = [];
+  const accountantOptions = "";
+  const financeAccountOptions = "";
   const dependencyMessage = (result, emptyKey) => result.error
     ? result.error.status === 403 ? paymentT("dependencyForbidden") : `${paymentT("dependencyLoadFailed")} ${getFriendlyWorkspaceError(result.error)}`
     : result.items.length ? "" : paymentT(emptyKey);
-  const merchantDependencyMessage = dependencyMessage(merchantResult, "noMerchantsAvailable");
-  const accountantDependencyMessage = dependencyMessage(accountantResult, "noAccountantsAvailable");
-  const financeDependencyMessage = dependencyMessage(financeAccountResult, "noFinanceAccountsAvailable");
+  const merchantDependencyMessage = paymentT("loading");
+  const accountantDependencyMessage = paymentT("loading");
+  const financeDependencyMessage = paymentT("loading");
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: paymentT("eyebrow"),
@@ -6732,14 +7443,20 @@ async function renderPayments() {
       ${canApproveAdjustments ? `<section class="band payment-tool-card" id="financial-adjustment-inbox">
         <div class="section-head"><div><h2>${paymentT("financialAdjustment")}</h2><p>${paymentT("adjustmentHelp")}</p></div><button id="financial-adjustment-refresh" class="button secondary" type="button">${paymentT("refreshInbox")}</button></div>
         <div class="toolbar" id="refund-payout-options">
-          <label class="inline-field"><span>${paymentT("receivedMethod")}</span><select id="adjustment-refund-payment-method" class="select"><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="CashTransaction">${paymentT("cashTransaction")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></label>
+          <label class="inline-field"><span>${paymentT("receivedMethod")}</span><select id="adjustment-refund-payment-method" class="select"><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></label>
           <label class="inline-field"><span>${paymentT("financeAccount")}</span><select id="adjustment-refund-finance-account" class="select"><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select></label>
           <label class="inline-field"><span>${paymentT("transactionReference")}</span><input id="adjustment-refund-reference" class="input" placeholder="${paymentT("electronicReferenceRequired")}"></label>
+          <label class="inline-field" id="adjustment-refund-transfer-fee-field" hidden><span>${paymentT("transferFeeAmount")}</span><input id="adjustment-refund-transfer-fee" class="input" type="number" min="0" step="0.01" value="0"></label>
         </div>
         <div class="table-wrap"><table><thead><tr><th>${paymentT("operationNumber")}</th><th>${paymentT("type")}</th><th>${paymentT("amount")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody id="financial-adjustment-rows"><tr><td colspan="7">${paymentT("loading")}</td></tr></tbody></table></div>
       </section>` : ""}
+      <section class="band payment-tool-card" id="return-entitlement-inbox">
+        <div class="section-head"><div><h2>${paymentT("returnEntitlements")}</h2><p>${paymentT("returnEntitlementHelp")}</p></div><button id="return-entitlement-refresh" class="button secondary" type="button">${paymentT("refreshInbox")}</button></div>
+        <p class="muted-text">${paymentT("returnEntitlementReviewPath")}</p>
+        <div class="table-wrap"><table><thead><tr><th>${paymentT("beneficiary")}</th><th>${paymentT("returnOperation")}</th><th>${paymentT("originalSale")}</th><th>${paymentT("sourcePayment")}</th><th>${paymentT("settlementAmount")}</th><th>${paymentT("reservedAmount")}</th><th>${paymentT("settledAmount")}</th><th>${paymentT("status")}</th><th>${paymentT("action")}</th></tr></thead><tbody id="return-entitlement-rows"><tr><td colspan="9">${paymentT("loading")}</td></tr></tbody></table></div>
+      </section>
     </section>
-    <section id="payment-ledger-section" data-payment-panel="other ledger" class="band payment-ledger-band payment-scope-band">
+    <section id="payment-ledger-section" data-payment-panel="ledger" class="band payment-ledger-band payment-scope-band">
       <div class="section-head">
         <div><h2>${paymentT("otherHistory")}</h2><p>${paymentT("directStages")}</p></div>
       </div>
@@ -6753,11 +7470,11 @@ async function renderPayments() {
           <div class="form-error full-span" id="unified-collection-error" hidden></div>
           <div class="field"><label for="collection-source-kind">${paymentT("collectToward")}</label><select id="collection-source-kind" class="select" required><option value="OtherPayments">${paymentT("operationPayment")}</option><option value="MerchantAccount">${paymentT("merchantAccount")}</option></select></div>
           <div class="field" id="collection-payment-type-field" hidden><label for="collection-payment-type">${paymentT("movementType")}</label><select id="collection-payment-type" class="select"><option value="CashReceived">${paymentT("cashReceipt")}</option><option value="CashRefund">${paymentT("cashRefund")}</option></select></div>
-          <div class="field" id="collection-source-reference-field"><label for="collection-source-reference">${paymentT("operationReference")}</label><input id="collection-source-reference" class="input" placeholder="${paymentT("referencePlaceholder")}"></div>
+          <div class="field" id="collection-source-reference-field"><label for="collection-source-reference">${paymentT("operationReference")}</label><input id="collection-source-reference" class="input" placeholder="${paymentT("referencePlaceholder")}"><p id="collection-operation-preview" class="muted-text" role="status" hidden></p></div>
           <input id="collection-source-operation-id" type="hidden">
           <div class="field" id="collection-merchant-field" hidden><label for="collection-merchant">${paymentT("merchant")} *</label><select id="collection-merchant" class="select"><option value="">${paymentT("chooseMerchant")}</option>${merchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("")}</select></div>
           <div class="field"><label for="collection-amount">${paymentT("amountReceived")}</label><input id="collection-amount" class="input" type="number" min="0.01" step="0.01" required></div>
-          <div class="field"><label for="collection-method">${paymentT("receivedMethod")}</label><select id="collection-method" class="select" required><option value="">${paymentT("chooseMethod")}</option><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="CashTransaction">${paymentT("cashTransaction")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></div>
+          <div class="field"><label for="collection-method">${paymentT("receivedMethod")}</label><select id="collection-method" class="select" required><option value="">${paymentT("chooseMethod")}</option><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></div>
           <div class="field"><label for="collection-finance-account">${paymentT("financeAccount")} *</label><select id="collection-finance-account" class="select" required><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select><p id="payment-finance-account-load-status" class="muted-text" role="status" ${financeDependencyMessage ? "" : "hidden"}>${escapeHtml(financeDependencyMessage)}</p></div>
           <div class="field"><label for="collection-transaction-reference">${paymentT("transactionReference")}</label><input id="collection-transaction-reference" class="input" placeholder="${paymentT("electronicReferenceRequired")}"></div>
           <div class="field"><label for="collection-date">${paymentT("dateReceived")}</label><input id="collection-date" class="input" type="date"></div>
@@ -6802,6 +7519,7 @@ async function renderPayments() {
       <section class="merchant-financial-closure" id="merchant-financial-closure" hidden>
         <div class="section-head tight-head"><div><h3>${paymentT("financialClosure")}</h3><p>${paymentT("financialClosureHelp")}</p></div><button id="merchant-closure-submit" class="button primary" type="button" hidden>${paymentT("sendFinancialClosure")}</button></div>
         <div class="table-wrap"><table><thead><tr><th>${paymentT("select")}</th><th>${paymentT("operationNumber")}</th><th>${paymentT("saleValue")}</th><th>${paymentT("settled")}</th><th>${paymentT("remaining")}</th></tr></thead><tbody id="merchant-closure-rows"><tr><td colspan="5">${paymentT("noEligibleSales")}</td></tr></tbody></table></div>
+        <p id="merchant-closure-feedback" class="form-error" role="status" hidden></p>
         <div id="merchant-closure-review" hidden></div>
       </section>
       <div class="section-head merchant-activity-head"><div><h3>${paymentT("recentActivity")}</h3><p>${paymentT("activityHelp")}</p></div></div>
@@ -6819,7 +7537,7 @@ async function renderPayments() {
   const statementTo = document.getElementById("merchant-statement-to");
   if (statementFrom && statementTo) {
     const today = new Date();
-    const iso = (value) => value.toISOString().slice(0, 10);
+    const iso = (value) => renderDateOnly(value.toISOString().slice(0, 10));
     statementTo.value = iso(today);
     statementFrom.value = iso(new Date(today.getFullYear(), today.getMonth(), 1));
   }
@@ -6843,6 +7561,12 @@ async function renderPayments() {
   document.getElementById("payments-refresh").addEventListener("click", () => loadPayments("other"));
   bindTransactionReferenceField("collection-method", "collection-transaction-reference");
   document.getElementById("collection-source-kind")?.addEventListener("change", syncUnifiedCollectionSource);
+  document.getElementById("collection-source-reference")?.addEventListener("change", () => void resolveCollectionOperationReference());
+  document.getElementById("collection-source-reference")?.addEventListener("blur", () => void resolveCollectionOperationReference());
+  document.getElementById("collection-source-reference")?.addEventListener("input", (event) => {
+    const reference = event.currentTarget?.value?.trim() || "";
+    if (reference.length >= 8) void resolveCollectionOperationReference(reference, { showError: false });
+  });
   document.getElementById("merchant-collection-toggle")?.addEventListener("click", () => {
     openUnifiedCollectionForm("MerchantAccount", document.getElementById("payment-merchant")?.value || "");
   });
@@ -6867,10 +7591,44 @@ async function renderPayments() {
   document.getElementById("load-merchant-balance").addEventListener("click", loadMerchantBalance);
   document.getElementById("payment-audit-refresh")?.addEventListener("click", loadPaymentAudit);
   document.getElementById("payment-review-refresh")?.addEventListener("click", loadCollectionWorkInbox);
+  document.getElementById("return-entitlement-refresh")?.addEventListener("click", loadReturnEntitlements);
+  const hydratePaymentDependencies = async () => {
+    const [merchantResult, accountantResult, financeAccountResult] = await loadPaymentDependencies();
+    paymentMerchants = merchantResult.items;
+    paymentAccountants = accountantResult.items;
+    paymentFinanceAccounts = financeAccountResult.items;
+    const setOptions = (id, placeholder, options) => {
+      const select = document.getElementById(id);
+      if (!select) return;
+      const selected = select.value;
+      select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>${options}`;
+      if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+    };
+    const merchantOptions = paymentMerchants.map((merchant) => `<option value="${escapeHtml(merchant.id)}">${escapeHtml(merchant.businessName)}</option>`).join("");
+    const accountantOptions = paymentAccountants.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName || user.username)} (${escapeHtml(user.username)})</option>`).join("");
+    const financeOptions = paymentFinanceAccounts.map((account) => `<option value="${escapeHtml(account.id)}" data-account-type="${escapeHtml(account.type)}">${escapeHtml(account.name)} (${escapeHtml(financeValueLabel("accountType", account.type))})</option>`).join("");
+    setOptions("collection-merchant", paymentT("chooseMerchant"), merchantOptions);
+    setOptions("payment-merchant", "", merchantOptions);
+    setOptions("payment-accountant", `${paymentT("assignTo")}...`, accountantOptions);
+    setOptions("collection-finance-account", paymentT("chooseFinanceAccount"), financeOptions);
+    setOptions("adjustment-refund-finance-account", paymentT("chooseFinanceAccount"), financeOptions);
+    const setStatus = (id, result, emptyKey) => {
+      const status = document.getElementById(id);
+      if (!status) return;
+      const message = dependencyMessage(result, emptyKey);
+      status.textContent = message;
+      status.hidden = !message;
+    };
+    setStatus("payment-merchant-load-status", merchantResult, "noMerchantsAvailable");
+    setStatus("payment-accountant-load-status", accountantResult, "noAccountantsAvailable");
+    setStatus("payment-finance-account-load-status", financeAccountResult, "noFinanceAccountsAvailable");
+    syncCollectionFinanceAccounts();
+    syncRefundPayoutFields();
+  };
   loadedPaymentPanels.clear();
-  void loadPaymentKpis();
-  if (canDraft || canApproveAdjustments) void loadFinancialAdjustmentInbox();
   await loadPaymentViewPanel("merchant");
+  void hydratePaymentDependencies();
+  void loadPaymentKpis();
 }
 
 async function loadPaymentKpis() {
@@ -6898,7 +7656,7 @@ async function loadFinancialAdjustmentInbox() {
     const canApprove = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user?.role);
     const merchantId = document.getElementById("payment-merchant")?.value || "";
     const query = canApprove
-      ? "?pendingOnly=true"
+      ? "?actionableOnly=true"
       : merchantId ? `?merchantId=${encodeURIComponent(merchantId)}` : "";
     const result = await request(`/api/v1/payments/adjustments${query}`);
     const items = Array.isArray(result) ? result : [];
@@ -6921,26 +7679,668 @@ async function loadFinancialAdjustmentInbox() {
   }
 }
 
+async function loadReturnEntitlements() {
+  const rows = document.getElementById("return-entitlement-rows");
+  if (!rows) return;
+  const canSettle = ["Accountant", "Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+  rows.replaceChildren(paymentEmptyTableRow(9, paymentT("loading")));
+  try {
+    const result = await request("/api/v1/payments/return-entitlements");
+    const items = Array.isArray(result) ? result : result.items || [];
+    if (!items.length) {
+      rows.replaceChildren(paymentEmptyTableRow(9, paymentT("noReturnEntitlements")));
+      return;
+    }
+    const renderedRows = items.map((item) => {
+      const merchant = item.beneficiaryKind === "Merchant";
+      const merchantProfile = merchant ? paymentMerchants.find((entry) => entry.id === item.merchantId) : null;
+      const beneficiary = merchant ? (item.merchantName || merchantProfile?.businessName || item.merchantId || paymentT("merchant")) : `${paymentT("anonymousBuyer")}${item.buyerName ? ` · ${item.buyerName}` : ""}`;
+      const failedDeliveryRefundReview = item.paymentTrack === "FailedDeliveryRefundReview" || item.paymentTrack === "FailedDeliveryGatewayRefundReview";
+      const gatewayRefundReview = item.paymentTrack === "FailedDeliveryGatewayRefundReview";
+      const failedDeliveryReconciliation = item.paymentTrack === "FailedDeliveryReconciliationRequired";
+      const sourcePayment = [failedDeliveryReconciliation ? paymentT("failedDeliveryReconciliationRequired") : failedDeliveryRefundReview ? paymentT(gatewayRefundReview ? "failedDeliveryGatewayRefundReview" : "failedDeliveryRefundReview") : item.paymentTrack, item.originalPaymentReference, item.originalPaymentStatus ? systemValueLabel(item.originalPaymentStatus) : null].filter(Boolean).join(" · ") || "-";
+      const sourcePayable = Number(item.sourceAvailable ?? item.sourcePayableAmount ?? item.settleableAmount ?? 0);
+      const accountPayable = Number(item.valuationAvailable ?? item.accountLevelPayableAmount ?? 0);
+      const unvaluedException = Number(item.unvaluedHeld ?? item.unvaluedExceptionAmount ?? item.exceptionHeldAmount ?? 0);
+      const payable = sourcePayable + accountPayable;
+      const reserved = Number(item.reservedAmount || 0);
+      const settled = Number(item.settledAmount || 0);
+      const waived = Number(item.waivedAmount || 0);
+      const approvedRefundAwaitingPayout = Number(item.approvedRefundAwaitingPayoutAmount || 0);
+      const canStart = canSettle && !gatewayRefundReview && !failedDeliveryReconciliation && (sourcePayable > 0 || accountPayable > 0);
+      const heldNote = failedDeliveryReconciliation ? paymentT("failedDeliveryReconciliationRequired") : gatewayRefundReview ? paymentT("failedDeliveryGatewayRefundReviewHelp") : unvaluedException > 0 ? paymentT("awaitingValuation") : !item.originalSaleOperationId && !accountPayable ? paymentT("unlinkedEntitlementHeld") : "";
+      const row = document.createElement("tr");
+      row.dataset.returnEntitlementId = item.id;
+      const appendCell = (text) => {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        row.append(cell);
+        return cell;
+      };
+      appendCell(beneficiary);
+      appendCell(shortId(item.returnOperationId, "RET"));
+      appendCell(item.originalSaleOperationId ? shortId(item.originalSaleOperationId, "SALE") : paymentT("noOriginalSale"));
+      appendCell(sourcePayment);
+      const payableCell = appendCell(formatMoney(payable));
+      if (heldNote) {
+        const note = document.createElement("div");
+        note.className = "muted-cell";
+        note.textContent = heldNote;
+        payableCell.append(note);
+      }
+      const reservedCell = appendCell(formatMoney(reserved));
+      if (item.reservedScope) {
+        const reservedScope = document.createElement("div");
+        reservedScope.className = "muted-cell";
+        reservedScope.textContent = paymentT(item.reservedScope === "SourceOperation" ? "sourceOperationScope" : item.reservedScope === "MerchantAccount" ? "merchantAccountScope" : "otherPaymentsScope");
+        reservedCell.append(reservedScope);
+      }
+      appendCell(formatMoney(settled));
+      const statusCell = document.createElement("td");
+      const status = document.createElement("span");
+      status.className = `status-pill ${paymentHistoryStatusClass(item.status)}`;
+      status.textContent = approvedRefundAwaitingPayout > 0
+        ? paymentT("approvedRefundPayoutPending")
+        : paymentWorkflowStatusLabel(item.status);
+      const state = document.createElement("div");
+      state.className = "muted-cell";
+      state.textContent = approvedRefundAwaitingPayout > 0
+        ? `${paymentT("recordPayout")}: ${formatMoney(approvedRefundAwaitingPayout)}`
+        : `${paymentT("settlementState")}: ${paymentWorkflowStatusLabel(item.status)}`;
+      statusCell.append(status, state);
+      row.append(statusCell);
+      const actionCell = document.createElement("td");
+      if (canStart) {
+        const button = document.createElement("button");
+        button.className = "button secondary table-action";
+        button.type = "button";
+        button.dataset.settleReturnEntitlement = item.id;
+        button.textContent = failedDeliveryRefundReview ? paymentT("failedDeliveryRefundReview") : paymentT("createReturnSettlement");
+        button.addEventListener("click", () => void openReturnEntitlementSettlementDialog(item));
+        actionCell.append(button);
+      } else {
+        const availabilityNote = document.createElement("div");
+        availabilityNote.className = "muted-cell";
+        availabilityNote.textContent = !canSettle ? paymentT("financeRoleOnly") : heldNote || paymentT("noPayableAmount");
+        actionCell.append(availabilityNote);
+      }
+      // Anonymous cash refunds are reviewed in the approval inbox, not in the
+      // merchant-only Financial adjustment table. Give a reserved return a
+      // direct, visible path to that queue so the reservation is not mistaken
+      // for a terminal settlement.
+      if (!merchant && item.status === "Reserved" && reserved > 0) {
+        const review = document.createElement("button");
+        review.className = "button secondary table-action";
+        review.type = "button";
+        review.textContent = paymentT("approvalInbox");
+        review.addEventListener("click", () => {
+          applyPaymentsView("review");
+          void loadPaymentViewPanel("review");
+          document.getElementById("payment-review-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        actionCell.append(document.createTextNode(" "), review);
+      }
+      row.append(actionCell);
+      return row;
+    });
+    rows.replaceChildren(...renderedRows);
+  } catch (exception) {
+      rows.replaceChildren(paymentEmptyTableRow(9, getFriendlyWorkspaceError(exception)));
+  }
+}
+
+function openReturnEntitlementWaiverDialog(entitlement, sourceAvailable, valuationAvailable) {
+  const overlay = document.createElement("div");
+  overlay.className = "dialog-overlay";
+  const form = document.createElement("form");
+  form.className = "dialog-card return-settlement-dialog";
+  form.setAttribute("role", "dialog");
+  form.setAttribute("aria-modal", "true");
+  const title = document.createElement("h2");
+  title.textContent = paymentT("requestWaiver");
+  const scope = document.createElement("select");
+  scope.id = "return-waiver-scope";
+  scope.className = "select";
+  scope.required = true;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = paymentT("chooseSettlementScope");
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  scope.append(placeholder);
+  if (entitlement.originalSaleOperationId && sourceAvailable > 0) scope.append(new Option(paymentT("sourceOperationScope"), "SourceOperation"));
+  const merchant = entitlement.beneficiaryKind === "Merchant";
+  if (valuationAvailable > 0) scope.append(new Option(merchant ? paymentT("merchantAccountScope") : paymentT("otherPaymentsScope"), merchant ? "MerchantAccount" : "OtherPayments"));
+  const amount = document.createElement("input");
+  amount.id = "return-waiver-amount";
+  amount.className = "input";
+  amount.type = "number";
+  amount.min = "0.01";
+  amount.step = "0.01";
+  amount.required = true;
+  const reason = document.createElement("textarea");
+  reason.id = "return-waiver-reason";
+  reason.className = "input";
+  reason.rows = 3;
+  reason.required = true;
+  const error = document.createElement("div");
+  error.className = "form-error";
+  error.hidden = true;
+  const field = (labelText, control) => {
+    const wrapper = document.createElement("label");
+    wrapper.className = "field";
+    wrapper.textContent = labelText;
+    wrapper.append(control);
+    form.append(wrapper);
+  };
+  form.append(title, document.createTextNode(paymentT("waiverRequestHelp")));
+  field(paymentT("settlementScope"), scope);
+  field(paymentT("waiverAmount"), amount);
+  field(paymentT("waiverReason"), reason);
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  const submit = document.createElement("button");
+  submit.className = "button primary";
+  submit.type = "submit";
+  submit.textContent = paymentT("submitWaiverRequest");
+  const cancel = document.createElement("button");
+  cancel.className = "button secondary";
+  cancel.type = "button";
+  cancel.textContent = paymentT("cancel");
+  actions.append(submit, cancel);
+  form.append(error, actions);
+  overlay.append(form);
+  document.body.append(overlay);
+  const capacity = () => scope.value === "SourceOperation" ? sourceAvailable : valuationAvailable;
+  scope.addEventListener("change", () => { amount.max = String(capacity()); });
+  cancel.addEventListener("click", () => overlay.remove());
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = Number(amount.value);
+    if (!scope.value || !Number.isFinite(value) || value <= 0 || value > capacity() || !reason.value.trim()) {
+      error.textContent = paymentT("waiverRequestRequired");
+      error.hidden = false;
+      return;
+    }
+    submit.disabled = true;
+    try {
+      await request(`/api/v1/payments/return-entitlements/${encodeURIComponent(entitlement.id)}/waivers`, {
+        method: "POST", headers: { "Idempotency-Key": createUuid() },
+        body: JSON.stringify({ scope: scope.value, amount: value, reason: reason.value.trim() })
+      });
+      overlay.remove();
+      notice(paymentT("waiverSubmitted"), "success");
+      await loadReturnEntitlements();
+    } catch (exception) {
+      error.textContent = getFriendlyWorkspaceError(exception);
+      error.hidden = false;
+      submit.disabled = false;
+    }
+  });
+}
+
+async function reviewReturnEntitlementWaiver(waiverId, approve) {
+  const reason = approve ? null : window.prompt(paymentT("waiverRejectionReason"));
+  if (!approve && !reason?.trim()) return;
+  try {
+    await request(`/api/v1/payments/return-entitlement-waivers/${encodeURIComponent(waiverId)}/${approve ? "approve" : "reject"}`, {
+      method: "POST",
+      ...(approve ? {} : { body: JSON.stringify({ reason: reason.trim() }) })
+    });
+    notice(approve ? paymentT("waiverApproved") : paymentT("waiverRejected"), "success");
+    await loadReturnEntitlements();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+  }
+}
+
+function openReturnEntitlementValuationDialog(entitlement, maximumAmount) {
+  const overlay = document.createElement("div");
+  overlay.className = "dialog-overlay";
+  const form = document.createElement("form");
+  form.className = "dialog-card return-settlement-dialog";
+  form.setAttribute("role", "dialog");
+  const title = document.createElement("h2");
+  title.textContent = paymentT("recordExceptionValuation");
+  const help = document.createElement("p");
+  help.className = "muted-text";
+  help.textContent = `${paymentT("unvaluedExceptionHeld")}: ${formatMoney(maximumAmount)}. ${paymentT("merchantValuationHelp")}`;
+  const amount = document.createElement("input");
+  amount.id = "return-valuation-amount";
+  amount.className = "input";
+  amount.type = "number";
+  amount.min = "0.01";
+  amount.max = String(maximumAmount);
+  amount.step = "0.01";
+  amount.value = String(maximumAmount);
+  amount.required = true;
+  const scope = document.createElement("select");
+  scope.id = "return-valuation-scope";
+  scope.className = "select";
+  scope.required = true;
+  const isMerchant = entitlement.beneficiaryKind === "Merchant";
+  const valuationScope = isMerchant ? "MerchantAccount" : "OtherPayments";
+  scope.append(new Option(paymentT(isMerchant ? "merchantAccountScope" : "otherPaymentsScope"), valuationScope, true, true));
+  const principal = document.createElement("input");
+  principal.id = "return-valuation-principal";
+  principal.className = "input";
+  principal.required = true;
+  const notes = document.createElement("textarea");
+  notes.id = "return-valuation-notes";
+  notes.className = "input";
+  notes.required = true;
+  notes.rows = 3;
+  const error = document.createElement("div");
+  error.className = "form-error";
+  error.hidden = true;
+  const field = (labelText, control) => {
+    const wrapper = document.createElement("label");
+    wrapper.className = "field";
+    wrapper.textContent = labelText;
+    wrapper.append(control);
+    form.append(wrapper);
+  };
+  form.append(title, help);
+  field(paymentT("settlementScope"), scope);
+  field(paymentT("valuationAmount"), amount);
+  field(paymentT("verbalPrincipalName"), principal);
+  field(paymentT("valuationNotesRequired"), notes);
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  const submit = document.createElement("button");
+  submit.className = "button primary";
+  submit.type = "submit";
+  submit.textContent = paymentT("submitMerchantValuation");
+  const cancel = document.createElement("button");
+  cancel.className = "button secondary";
+  cancel.type = "button";
+  cancel.textContent = paymentT("cancel");
+  actions.append(submit, cancel);
+  form.append(error, actions);
+  overlay.append(form);
+  document.body.append(overlay);
+  cancel.addEventListener("click", () => overlay.remove());
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = Number(amount.value);
+    if (!Number.isFinite(value) || value <= 0 || value > maximumAmount || !principal.value.trim() || !notes.value.trim()) {
+      error.textContent = paymentT("merchantValuationRequired");
+      error.hidden = false;
+      return;
+    }
+    submit.disabled = true;
+    try {
+      await request(`/api/v1/payments/return-entitlements/${encodeURIComponent(entitlement.id)}/valuations`, {
+        method: "POST",
+        headers: { "Idempotency-Key": createUuid() },
+        body: JSON.stringify({ scope: scope.value, amount: value, verbalPrincipalName: principal.value.trim(), notes: notes.value.trim() })
+      });
+      overlay.remove();
+      notice(paymentT("merchantValuationRecorded"), "success");
+      try {
+        await Promise.all([loadReturnEntitlements(), loadFinancialAdjustmentInbox(), loadCollectionWorkInbox()]);
+      } catch (refreshError) {
+        notice(paymentT("settlementSavedRefreshFailed"), "warning");
+      }
+    } catch (exception) {
+      error.textContent = getFriendlyWorkspaceError(exception);
+      error.hidden = false;
+      submit.disabled = false;
+    }
+  });
+}
+
+function openReturnEntitlementSettlementDialog(entitlement) {
+  if (!["Accountant", "Admin", "ERPAdmin"].includes(getAuth()?.user?.role)) return;
+  const isMerchant = entitlement.beneficiaryKind === "Merchant";
+  const sourcePayable = Number(entitlement.sourceAvailable ?? entitlement.sourcePayableAmount ?? entitlement.settleableAmount ?? 0);
+  const accountPayable = Number(entitlement.valuationAvailable ?? entitlement.accountLevelPayableAmount ?? 0);
+  const unvaluedException = Number(entitlement.unvaluedHeld ?? entitlement.unvaluedExceptionAmount ?? entitlement.exceptionHeldAmount ?? 0);
+  const outgoingMethods = [["CashHandToHand", paymentT("cashInHand")], ["BankTransfer", paymentT("bankTransfer")], ["Wallet", paymentT("wallet")]];
+  const overlay = document.createElement("div");
+  overlay.className = "dialog-overlay";
+  const form = document.createElement("form");
+  form.className = "dialog-card return-settlement-dialog";
+  form.setAttribute("role", "dialog");
+  form.setAttribute("aria-modal", "true");
+  form.setAttribute("aria-labelledby", "return-settlement-title");
+  const head = document.createElement("div");
+  head.className = "section-head tight-head";
+  const headContent = document.createElement("div");
+  const title = document.createElement("h2");
+  title.id = "return-settlement-title";
+  const failedDeliveryRefundReview = entitlement.paymentTrack === "FailedDeliveryRefundReview";
+  title.textContent = failedDeliveryRefundReview ? paymentT("failedDeliveryRefundReview") : paymentT("createReturnSettlement");
+  const summary = document.createElement("p");
+  summary.className = "muted-text";
+  summary.textContent = `${paymentT("sourceBackedPayable")}: ${formatMoney(sourcePayable)} · ${paymentT("accountLevelPayable")}: ${formatMoney(accountPayable)} · ${paymentT("unvaluedExceptionHeld")}: ${formatMoney(unvaluedException)}`;
+  headContent.append(title, summary);
+  head.append(headContent);
+  form.append(head);
+
+  const facts = document.createElement("p");
+  facts.className = "muted-text";
+  facts.append(
+    document.createTextNode(`${paymentT("beneficiary")}: ${isMerchant ? entitlement.merchantName || shortId(entitlement.merchantId, "CRM") : entitlement.buyerName || paymentT("anonymousBuyer")}`),
+    document.createElement("br"),
+    document.createTextNode(`${paymentT("originalSale")}: ${shortId(entitlement.originalSaleOperationId, "SALE")}`),
+    document.createElement("br"),
+    document.createTextNode(`${paymentT("sourcePayment")}: ${[failedDeliveryRefundReview ? paymentT("failedDeliveryRefundReview") : entitlement.paymentTrack, entitlement.originalPaymentReference, entitlement.originalPaymentStatus ? systemValueLabel(entitlement.originalPaymentStatus) : null].filter(Boolean).join(" · ") || "-"}`)
+  );
+  form.append(facts);
+  if (failedDeliveryRefundReview) {
+    const reviewHelp = document.createElement("p");
+    reviewHelp.className = "muted-text";
+    reviewHelp.textContent = paymentT("failedDeliveryRefundReviewHelp");
+    form.append(reviewHelp);
+  }
+
+  const addField = (labelText, id, control, className = "field") => {
+    const field = document.createElement("div");
+    field.className = className;
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    label.textContent = labelText;
+    field.append(label, control);
+    form.append(field);
+    return field;
+  };
+  const scope = document.createElement("select");
+  scope.id = "return-settlement-scope";
+  scope.className = "select";
+  scope.required = true;
+  const scopePlaceholder = document.createElement("option");
+  scopePlaceholder.value = "";
+  scopePlaceholder.textContent = paymentT("chooseSettlementScope");
+  scopePlaceholder.disabled = true;
+  scopePlaceholder.selected = true;
+  scope.append(scopePlaceholder);
+  if (sourcePayable > 0 && entitlement.originalSaleOperationId) {
+    const sourceOption = document.createElement("option");
+    sourceOption.value = "SourceOperation";
+    sourceOption.textContent = paymentT("sourceOperationScope");
+    scope.append(sourceOption);
+  }
+  if (isMerchant && accountPayable > 0) {
+    const accountOption = document.createElement("option");
+    accountOption.value = "MerchantAccount";
+    accountOption.textContent = paymentT("merchantAccountScope");
+    scope.append(accountOption);
+  }
+  if (!isMerchant && accountPayable > 0) {
+    const otherOption = document.createElement("option");
+    otherOption.value = "OtherPayments";
+    otherOption.textContent = paymentT("otherPaymentsScope");
+    scope.append(otherOption);
+  }
+  // This is the return's existing operational scope, not an extra decision the
+  // employee has to make.  Preselect it so a recorded return can be settled
+  // immediately.
+  scope.value = entitlement.originalSaleOperationId ? "SourceOperation" : isMerchant ? "MerchantAccount" : "OtherPayments";
+  addField(paymentT("settlementScope"), scope.id, scope);
+
+  const amountInput = document.createElement("input");
+  amountInput.id = "return-settlement-amount";
+  amountInput.className = "input";
+  amountInput.type = "number";
+  amountInput.min = "0";
+  amountInput.max = String(sourcePayable || accountPayable || 0);
+  amountInput.step = "0.01";
+  amountInput.value = String(sourcePayable || accountPayable || 0);
+  amountInput.required = true;
+  addField(paymentT("settlementAmount"), amountInput.id, amountInput);
+
+  const method = document.createElement("select");
+  method.id = "return-settlement-method";
+  method.className = "select";
+  method.required = true;
+  addField(paymentT("settlementMethod"), method.id, method);
+
+  const account = document.createElement("select");
+  account.id = "return-settlement-finance-account";
+  account.className = "select";
+  const emptyAccount = document.createElement("option");
+  emptyAccount.value = "";
+  emptyAccount.textContent = paymentT("chooseFinanceAccount");
+  account.append(emptyAccount);
+  for (const financeAccount of paymentFinanceAccounts) {
+    const option = document.createElement("option");
+    option.value = financeAccount.id;
+    option.dataset.accountType = financeAccount.type;
+    option.textContent = `${financeAccount.name} (${financeValueLabel("accountType", financeAccount.type)})`;
+    account.append(option);
+  }
+  const accountField = addField(paymentT("financeAccount"), account.id, account, "field return-settlement-finance-account-field");
+  accountField.hidden = isMerchant;
+
+  // CashRefund is the settlement kind; the actual money movement still needs
+  // its own method.  This used to be hidden for merchants and later read from
+  // the unrelated Financial adjustment toolbar during payout.
+  const refundMovement = document.createElement("select");
+  refundMovement.id = "return-settlement-refund-payment-method";
+  refundMovement.className = "select";
+  for (const [value, label] of outgoingMethods) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    refundMovement.append(option);
+  }
+  const refundMovementField = addField(paymentT("paymentMethod"), refundMovement.id, refundMovement, "field return-settlement-refund-method-field");
+  refundMovementField.hidden = true;
+
+  const reference = document.createElement("input");
+  reference.id = "return-settlement-reference";
+  reference.className = "input";
+  reference.autocomplete = "off";
+  const referenceField = addField(paymentT("transactionReference"), reference.id, reference, "field return-settlement-reference-field");
+  referenceField.hidden = true;
+
+  const fee = document.createElement("input");
+  fee.id = "return-settlement-fee";
+  fee.className = "input";
+  fee.type = "number";
+  fee.min = "0";
+  fee.step = "0.01";
+  fee.value = "0";
+  const feeField = addField(paymentT("transferFeeAmount"), fee.id, fee, "field return-settlement-fee-field");
+  feeField.hidden = true;
+
+  const mathStrip = document.createElement("div");
+  mathStrip.className = "metric-grid return-settlement-math";
+  mathStrip.id = "return-settlement-math";
+  form.append(mathStrip);
+
+  const notes = document.createElement("textarea");
+  notes.id = "return-settlement-notes";
+  notes.className = "input";
+  notes.rows = 2;
+  addField(paymentT("notes"), notes.id, notes);
+
+  const reviewNote = document.createElement("p");
+  reviewNote.className = "muted-text";
+  reviewNote.textContent = paymentT("returnSettlementReviewNote");
+  form.append(reviewNote);
+  const errorMessage = document.createElement("div");
+  errorMessage.className = "form-error";
+  errorMessage.dataset.settlementError = "";
+  errorMessage.hidden = true;
+  form.append(errorMessage);
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  const submitButton = document.createElement("button");
+  submitButton.className = "button primary";
+  submitButton.type = "submit";
+  submitButton.textContent = paymentT("submitSettlement");
+  const cancelButton = document.createElement("button");
+  cancelButton.className = "button secondary";
+  cancelButton.type = "button";
+  cancelButton.dataset.settlementCancel = "";
+  cancelButton.textContent = paymentT("cancel");
+  actions.append(submitButton, cancelButton);
+  form.append(actions);
+  overlay.append(form);
+  document.body.appendChild(overlay);
+  const renderSettlementMath = () => {
+    const current = method.value;
+    const isCashRefund = current === "CashRefund";
+    const movement = isCashRefund ? refundMovement.value : current;
+    const needsAccount = !isMerchant || isCashRefund;
+    const needsReference = ["BankTransfer", "Wallet"].includes(movement);
+    const refund = Number(amountInput.value) || 0;
+    const transferFee = Number(fee.value) || 0;
+    replaceMarkup(mathStrip, `<div class="metric"><span>${escapeHtml(paymentT("customerRefund"))}</span><strong>${escapeHtml(formatMoney(refund))}</strong></div><div class="metric"><span>${escapeHtml(paymentT("companyTransferFee"))}</span><strong>${escapeHtml(formatMoney(needsReference ? transferFee : 0))}</strong></div><div class="metric"><span>${escapeHtml(paymentT("totalAccountDebit"))}</span><strong>${escapeHtml(formatMoney(needsAccount ? refund + (needsReference ? transferFee : 0) : 0))}</strong></div>`);
+  };
+  const syncFields = () => {
+    const sourceScope = scope.value === "SourceOperation";
+    const allowedMethods = isMerchant
+      ? [["BalanceReduction", paymentT("remainingReduction")], ["CashRefund", paymentT("cashRefund")]]
+      : outgoingMethods;
+    const selectedMethod = method.value;
+    method.replaceChildren(...allowedMethods.map(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }));
+    if (allowedMethods.some(([value]) => value === selectedMethod)) method.value = selectedMethod;
+    const current = method.value;
+    amountInput.disabled = false;
+    amountInput.required = true;
+    const isCashRefund = current === "CashRefund";
+    const needsAccount = !isMerchant || isCashRefund;
+    accountField.hidden = !needsAccount;
+    refundMovementField.hidden = !isCashRefund;
+    if (needsAccount) {
+      const movement = isCashRefund ? refundMovement.value : current;
+      const expectedType = financeAccountTypeForMovementMethod(movement);
+      for (const option of account.options) {
+        if (!option.value) continue;
+        option.hidden = Boolean(expectedType && option.dataset.accountType !== expectedType);
+      }
+      if (account.value && account.selectedOptions[0]?.hidden) account.value = "";
+    }
+    const movementForDetails = isCashRefund ? refundMovement.value : current;
+    const needsReference = ["BankTransfer", "Wallet"].includes(movementForDetails);
+    referenceField.hidden = !needsReference;
+    reference.required = needsReference;
+    reference.disabled = !needsReference;
+    if (!needsReference) reference.value = "";
+    feeField.hidden = !needsReference;
+    fee.required = needsReference;
+    fee.disabled = !needsReference;
+    if (!needsReference) fee.value = "0";
+    const capacity = !scope.value ? 0 : sourceScope ? sourcePayable : accountPayable;
+    amountInput.max = String(capacity);
+    amountInput.disabled = !scope.value || capacity <= 0;
+    amountInput.required = Boolean(scope.value && capacity > 0);
+    if (Number(amountInput.value) > capacity) amountInput.value = String(capacity);
+    renderSettlementMath();
+  };
+  scope.addEventListener("change", syncFields);
+  method.addEventListener("change", syncFields);
+  refundMovement.addEventListener("change", syncFields);
+  amountInput.addEventListener("input", syncFields);
+  // Editing the fee must not rebuild the settlement controls or submit the
+  // form.  It only changes the displayed total.
+  fee.addEventListener("input", renderSettlementMath);
+  fee.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") event.preventDefault();
+  });
+  syncFields();
+  cancelButton.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    // A numeric field's Enter key is a browser form submit.  A settlement is
+    // an external financial workflow, so it must be explicitly submitted by
+    // its button and never by changing a fee/reference field.
+    if (event.submitter !== submitButton) return;
+    const error = errorMessage;
+    const amount = Number(amountInput.value);
+    if (!scope.value) {
+      error.textContent = paymentT("settlementScopeRequired");
+      error.hidden = false;
+      return;
+    }
+    const scopeCapacity = scope.value === "SourceOperation" ? sourcePayable : accountPayable;
+    const transferFeeAmount = Number(fee.value);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > scopeCapacity) {
+      error.textContent = paymentT("settlementAmountMustBeWithinNormalValue");
+      error.hidden = false;
+      return;
+    }
+    if ((!isMerchant || method.value === "CashRefund") && !account.value) {
+      error.textContent = paymentT("financeAccountRequired");
+      error.hidden = false;
+      return;
+    }
+    const payoutMovement = method.value === "CashRefund" ? refundMovement.value : method.value;
+    if (["BankTransfer", "Wallet"].includes(payoutMovement) && (!Number.isFinite(transferFeeAmount) || transferFeeAmount < 0)) {
+      error.textContent = paymentT("transferFeeInvalid");
+      error.hidden = false;
+      return;
+    }
+    const payload = {
+      amount,
+      settlementMethod: method.value,
+      settlementScope: scope.value,
+      financeAccountId: account.value || null,
+      refundPaymentMethod: method.value === "CashRefund" ? refundMovement.value : null,
+      transactionReference: reference.value.trim() || null,
+      transferFeeAmount: ["BankTransfer", "Wallet"].includes(payoutMovement) ? transferFeeAmount : null,
+      notes: notes.value.trim() || null
+    };
+    const submit = submitButton;
+    submit.disabled = true;
+    try {
+      await request(`/api/v1/payments/return-entitlements/${encodeURIComponent(entitlement.id)}/settlements`, {
+        method: "POST",
+        headers: { "Idempotency-Key": createUuid() },
+        body: JSON.stringify(payload)
+      });
+      overlay.remove();
+      notice(paymentT("returnSettlementRequested"), "success");
+      try {
+        await Promise.all([loadReturnEntitlements(), loadFinancialAdjustmentInbox(), loadCollectionWorkInbox()]);
+      } catch (refreshError) {
+        notice(paymentT("settlementSavedRefreshFailed"), "warning");
+      }
+    } catch (exception) {
+      error.textContent = getFriendlyWorkspaceError(exception);
+      error.hidden = false;
+      submit.disabled = false;
+    }
+  });
+}
+
 function syncRefundPayoutFields() {
   const method = canonicalSelectValue("adjustment-refund-payment-method", "movementMethod", { allowEmpty: true });
   const accountSelect = document.getElementById("adjustment-refund-finance-account");
   const reference = document.getElementById("adjustment-refund-reference");
-  const requiredAccountType = method === "BankTransfer" ? "BankAccount" : method === "Wallet" ? "Wallet" : "CashOnHand";
+  const fee = document.getElementById("adjustment-refund-transfer-fee");
+  const feeField = document.getElementById("adjustment-refund-transfer-fee-field");
+  const requiredAccountType = financeAccountTypeForMovementMethod(method);
   if (accountSelect) {
     const previous = accountSelect.value;
     const options = [...accountSelect.options];
     for (const option of options) {
       if (!option.value) continue;
       const account = paymentFinanceAccounts.find(value => value.id === option.value);
-      option.hidden = !account || account.type !== requiredAccountType;
+      option.hidden = !account || Boolean(requiredAccountType && account.type !== requiredAccountType);
     }
     if (previous && accountSelect.selectedOptions[0]?.hidden) accountSelect.value = "";
   }
   if (reference) {
-    const requiresReference = ["CashTransaction", "BankTransfer", "Wallet"].includes(method);
+    const requiresReference = ["BankTransfer", "Wallet"].includes(method);
     reference.required = requiresReference;
     reference.disabled = !requiresReference;
     if (!requiresReference) reference.value = "";
+    if (fee && feeField) {
+      feeField.hidden = !requiresReference;
+      fee.required = requiresReference;
+      fee.disabled = !requiresReference;
+      if (!requiresReference) fee.value = "0";
+    }
   }
 }
 
@@ -6948,21 +8348,31 @@ function syncCollectionFinanceAccounts() {
   const method = canonicalSelectValue("collection-method", "movementMethod", { allowEmpty: true });
   const select = document.getElementById("collection-finance-account");
   if (!select) return;
-  const requiredType = method === "BankTransfer" ? "BankAccount" : method === "Wallet" ? "Wallet" : "CashOnHand";
+  const requiredType = financeAccountTypeForMovementMethod(method);
   for (const option of select.options) {
     if (option.value) option.hidden = Boolean(method && option.dataset.accountType !== requiredType);
   }
   if (select.selectedOptions[0]?.hidden) select.value = "";
 }
 
+function financeAccountTypeForMovementMethod(method) {
+  return {
+    CashHandToHand: "CashOnHand",
+    BankTransfer: "BankAccount",
+    Wallet: "Wallet"
+  }[method] || null;
+}
+
 async function loadPaymentViewPanel(view) {
   if (!document.getElementById("merchant-payment-rows")) return;
+  if (loadedPaymentPanels.has(view)) return;
   try {
     if (view === "merchant") await loadPayments("merchant");
     else if (view === "other") await loadPayments("other");
     else if (view === "ledger") await loadPaymentHistory();
-    else if (view === "review") await loadCollectionWorkInbox();
+    else if (view === "review") await Promise.all([loadCollectionWorkInbox(), loadReturnEntitlements(), loadFinancialAdjustmentInbox()]);
     else if (view === "audit") await loadPaymentAudit();
+    loadedPaymentPanels.add(view);
   } catch {
     // The panel renderer owns the visible error state.
   }
@@ -7014,19 +8424,31 @@ async function loadPayments(scope = null) {
       count.textContent = paymentT("openConfirmations", { count: result.totalCount });
       tbody.innerHTML = queueItems.length === 0
         ? `<tr><td colspan="9">${escapeHtml(paymentT(queue.emptyKey))}</td></tr>`
-        : queueItems.map((log) => `
+        : queueItems.map((log) => {
+          const isMerchantOperation = Boolean(log.merchantId);
+          const isFinanciallyClosed = log.financialClosureStatus === "FinanciallyClosed";
+          const isSettled = isMerchantOperation && Number(log.remainingAmount) <= 0.0001;
+          const settlementLabel = isFinanciallyClosed
+            ? paymentT("financiallyClosed")
+            : isSettled
+              ? paymentT("settledAwaitingFinancialClosure")
+              : paymentWorkflowStatusLabel(log.status);
+          const settlementClass = isFinanciallyClosed || isSettled || log.status === "Completed" ? "status-ok" : "status-warn";
+          const canUse = canDraft && !isFinanciallyClosed && Number(log.remainingAmount) > 0.0001;
+          return `
         <tr data-payment-id="${escapeHtml(log.id)}" data-payment-operation-id="${escapeHtml(log.operationId)}" data-payment-operation-number="${escapeHtml(log.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(log.merchantId || "")}" data-payment-method="${escapeHtml(log.paymentMethod)}" data-payment-status="${escapeHtml(log.status)}">
-          <td>${canDraft ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}" data-payment-use-scope="${log.merchantId ? "MerchantAccount" : "OtherPayments"}" data-payment-use-merchant="${escapeHtml(log.merchantId || "")}">${paymentT("use")}</button>` : ""}<strong>${escapeHtml(paymentReference(log))}</strong></td>
+          <td>${canUse ? `<button class="button secondary table-action" type="button" data-payment-use="${escapeHtml(log.id)}" data-payment-use-scope="${log.merchantId ? "MerchantAccount" : "OtherPayments"}" data-payment-use-merchant="${escapeHtml(log.merchantId || "")}">${paymentT("use")}</button>` : ""}<strong>${escapeHtml(paymentReference(log))}</strong></td>
           <td><strong dir="auto">${escapeHtml(log.buyerName || paymentT("unknownBuyer"))}</strong></td>
           <td><strong>${escapeHtml(operationReference(log))}</strong><div class="muted-cell">${escapeHtml(operationTypeLabel(log.operationType))}</div></td>
           <td>${escapeHtml(movementMethodLabel(log.paymentMethod))}</td>
           <td>${escapeHtml(formatMoney(log.totalAmount))}</td>
           <td>${escapeHtml(formatMoney(log.amountPaid))}</td>
           <td>${escapeHtml(formatMoney(log.remainingAmount))}</td>
-          <td><span class="status-pill ${log.status === "Completed" ? "status-ok" : "status-warn"}">${escapeHtml(paymentWorkflowStatusLabel(log.status))}</span><div class="muted-cell">${escapeHtml(paymentT("by", { name: log.initializedByName || log.lastModifiedByName || "-" }))}</div></td>
-          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">${paymentT("details")}</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(paymentReference(log))}">${paymentT("print")}</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">${paymentT("assign")}</button>` : ""}${isAdmin && log.paymentMethod === "CashHandToHand" && log.status === "PendingAccountant" ? `<button class="button secondary table-action" type="button" data-cash-approve="${escapeHtml(log.id)}">${paymentT("approveCash")}</button>` : ""}</td>
+          <td><span class="status-pill ${settlementClass}">${escapeHtml(settlementLabel)}</span><div class="muted-cell">${escapeHtml(paymentT("by", { name: log.initializedByName || log.lastModifiedByName || "-" }))}</div></td>
+          <td><button class="button secondary table-action" type="button" data-payment-detail="${escapeHtml(log.id)}">${paymentT("details")}</button><button class="button secondary table-action" type="button" data-print-report="${log.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(log.id)}" data-print-code="${escapeHtml(paymentReference(log))}">${paymentT("print")}</button>${isAdmin && log.status !== "Completed" ? `<button class="button secondary table-action" type="button" data-payment-assign="${escapeHtml(log.id)}">${paymentT("assign")}</button>` : ""}</td>
         </tr>
-        <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">${paymentT("loadingDetails")}</div></td></tr>`).join("");
+        <tr class="operation-detail-row" id="payment-detail-${escapeHtml(log.id)}" hidden><td colspan="9"><div class="operation-detail">${paymentT("loadingDetails")}</div></td></tr>`;
+        }).join("");
       tbody.querySelectorAll("[data-payment-use]").forEach((button) => button.addEventListener("click", () => {
       const scope = button.dataset.paymentUseScope || "OtherPayments";
       const operationId = button.closest("tr")?.dataset.paymentOperationId || "";
@@ -7034,7 +8456,6 @@ async function loadPayments(scope = null) {
       }));
       tbody.querySelectorAll("[data-payment-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentDetails(button.dataset.paymentDetail, button)));
       tbody.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", () => assignPaymentLog(button.dataset.paymentAssign)));
-      tbody.querySelectorAll("[data-cash-approve]").forEach((button) => button.addEventListener("click", () => approveCashReceipt(button.dataset.cashApprove)));
       bindPrintReportButtons(tbody);
       renderPaymentPager(queue.pagerId, result, (page) => {
         paymentPageState[queue.key] = page;
@@ -7055,24 +8476,24 @@ async function loadPaymentHistory() {
   }
 
   try {
-    const result = await request(`/api/v1/payments/other-payments/history?page=${paymentPageState.history}&pageSize=50`);
+    const result = await request(`/api/v1/payments/other-payments/history?page=${paymentPageState.history}&pageSize=25`);
     paymentHistoryRows = result.items || [];
     count.textContent = paymentT("records", { count: result.totalCount });
     tbody.innerHTML = paymentHistoryRows.length === 0
       ? `<tr><td colspan="9">${paymentT("noHistory")}</td></tr>`
       : paymentHistoryRows.map((row) => `
         <tr data-payment-id="${escapeHtml(row.id)}" data-payment-operation-id="${escapeHtml(row.operationId)}" data-payment-operation-number="${escapeHtml(row.operationNumber || "")}" data-payment-merchant-id="${escapeHtml(row.merchantId || "")}" data-payment-method="${escapeHtml(row.paymentMethod || "")}" data-payment-status="${escapeHtml(row.status || "")}">
-          <td>${escapeHtml(formatDateTime(row.lastModifiedAt))}</td>
+          <td>${escapeHtml(formatDateTime(row.happenedAt))}</td>
           <td><strong>${escapeHtml(paymentReference(row))}</strong><div class="muted-cell">${escapeHtml(paymentWorkflowStatusLabel(row.status))}</div></td>
           <td><strong dir="auto">${escapeHtml(row.merchantName || row.buyerName || paymentT("unknownBuyer"))}</strong></td>
           <td><strong>${escapeHtml(operationReference(row))}</strong><div class="muted-cell">${escapeHtml(operationTypeLabel(row.operationType))}</div></td>
           <td>${escapeHtml(movementMethodLabel(row.paymentMethod))}</td>
-          <td>${escapeHtml(formatMoney(row.totalAmount))}</td>
+          <td>${escapeHtml(formatMoney(row.amount))}</td>
           <td><span class="status-pill ${paymentHistoryStatusClass(row.status)}">${escapeHtml(paymentWorkflowStatusLabel(row.status))}</span></td>
-          <td>${escapeHtml(row.lastModifiedByName || row.initializedByName || "-")}</td>
-          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.id)}">${paymentT("details")}</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(paymentReference(row))}">${paymentT("print")}</button></td>
+          <td>${escapeHtml(row.actorName || "-")}</td>
+          <td><button class="button secondary table-action" type="button" data-payment-history-detail="${escapeHtml(row.operationId || "")}">${paymentT("details")}</button><button class="button secondary table-action" type="button" data-print-report="${row.paymentMethod === "CashHandToHand" ? "cash-receipt" : "payment-receipt"}" data-print-id="${escapeHtml(row.id)}" data-print-code="${escapeHtml(paymentReference(row))}">${paymentT("print")}</button></td>
         </tr>
-        <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.id)}" hidden><td colspan="9"><div class="operation-detail">${paymentT("loadingDetails")}</div></td></tr>`).join("");
+        <tr class="operation-detail-row" id="payment-history-detail-${escapeHtml(row.operationId || row.id)}" hidden><td colspan="9"><div class="operation-detail">${paymentT("loadingDetails")}</div></td></tr>`).join("");
     tbody.querySelectorAll("[data-payment-history-detail]").forEach((button) => button.addEventListener("click", () => togglePaymentHistoryDetails(button.dataset.paymentHistoryDetail, button)));
     bindPrintReportButtons(tbody);
     renderPaymentPager("payment-history-pagination", result, (page) => {
@@ -7096,13 +8517,13 @@ function paymentHistoryStatusClass(status) {
 }
 
 function movementMethodLabel(method) {
-  const keys = { CashHandToHand: "cashInHand", CashTransaction: "cashTransaction", BankTransfer: "bankTransfer", Wallet: "wallet", MerchantAccount: "merchantAccount", Installment: "merchantAccount", Installlaugment: "merchantAccount" };
-  return keys[method] ? paymentT(keys[method]) : method || "-";
+  const keys = { CashHandToHand: "cashInHand", CashTransaction: "bankTransfer", BankTransfer: "bankTransfer", Wallet: "wallet", MerchantAccount: "merchantAccount", Installment: "merchantAccount", Installlaugment: "merchantAccount" };
+  return keys[method] ? paymentT(keys[method]) : systemValueLabel(method);
 }
 
 function operationTypeLabel(type) {
   const keys = { WholesaleSale: "wholesaleSale", RetailSale: "retailSale", Return: "return", Change: "exchange", InventoryReceipt: "inventoryReceipt", WarehouseTransfer: "warehouseTransfer", WriteOff: "writeOff" };
-  return keys[type] ? paymentT(keys[type]) : type || "-";
+  return keys[type] ? paymentT(keys[type]) : systemValueLabel(type);
 }
 
 async function togglePaymentDetails(id, button) {
@@ -7125,7 +8546,6 @@ async function togglePaymentDetails(id, button) {
     target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
-    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
@@ -7150,12 +8570,15 @@ async function togglePaymentHistoryDetails(id, button) {
   const target = row.querySelector(".operation-detail");
   target.innerHTML = `<span class="muted-text">${paymentT("loadingPaymentDetails")}</span>`;
   try {
-    const detail = await request(`/api/v1/payments/${id}`);
+    if (!id) throw new Error(paymentT("paymentNotFound"));
+    const paymentRows = await request(`/api/v1/payments/other-payments?operationId=${encodeURIComponent(id)}&pageSize=1`);
+    const paymentId = paymentRows?.items?.[0]?.id;
+    if (!paymentId) throw new Error(paymentT("paymentNotFound"));
+    const detail = await request(`/api/v1/payments/${paymentId}`);
     target.innerHTML = renderPaymentDetail(detail);
     target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
-    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
@@ -7202,7 +8625,7 @@ function renderPaymentDetail(detail) {
     : subLogs.map((sub) => `<tr>
         <td>${escapeHtml(formatMoney(sub.amount))}</td>
         <td>${escapeHtml(movementMethodLabel(sub.paymentMethod))}</td>
-        <td>${escapeHtml(sub.dateReceived || "-")}</td>
+        <td>${escapeHtml(renderDateOnly(sub.dateReceived || "-"))}</td>
         <td><span class="status-pill ${sub.status === "Confirmed" ? "status-ok" : sub.status === "Rejected" ? "status-muted" : "status-warn"}">${escapeHtml(paymentWorkflowStatusLabel(sub.status))}</span></td>
         <td>${escapeHtml(formatDateTime(sub.draftedAt))}<div class="muted-cell">${escapeHtml(sub.draftedByName || "-")}</div></td>
         <td>${escapeHtml(sub.rejectionReason || formatDateTime(sub.confirmedAt) || "-")}<div class="muted-cell">${escapeHtml(sub.confirmedByName || "-")}</div>${sub.notes ? `<div class="muted-cell">${escapeHtml(sub.notes)}</div>` : ""}</td>
@@ -7215,14 +8638,14 @@ function renderPaymentDetail(detail) {
     <div class="table-wrap compact-table"><table><thead><tr><th>${paymentT("cashRecord")}</th><th>${paymentT("amount")}</th><th>${paymentT("date")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody>${cashRecords.length === 0
     ? `<tr><td colspan="7">${paymentT("noCashRecords")}</td></tr>`
     : cashRecords.map((record) => `<tr>
-        <td>${escapeHtml(uiText(record.paymentType || "-"))}<div class="muted-cell">${escapeHtml(uiText(record.subType || "-"))}</div></td>
+        <td>${escapeHtml(systemValueLabel(record.paymentType))}<div class="muted-cell">${escapeHtml(systemValueLabel(record.subType))}</div></td>
         <td>${escapeHtml(formatMoney(record.amount))}</td>
         <td>${escapeHtml(formatDateTime(record.paymentDate))}</td>
         <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(paymentWorkflowStatusLabel(record.status))}</span></td>
         <td>${escapeHtml(record.createdByName || "-")}</td>
         <td>${escapeHtml(record.notes || "-")}${!record.financeAccountId && ["PendingAccountant", "PendingAdminReview"].includes(record.status) ? `<div class="status-danger">${escapeHtml(paymentT("legacyReceiptMissingAccount"))}</div>` : ""}</td>
         <td>${isAdmin && ["PendingAccountant", "PendingAdminReview"].includes(record.status)
-          ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-approve="${escapeHtml(record.id)}">${paymentT("approve")}</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">${paymentT("reject")}</button>`
+          ? `<button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">${paymentT("reject")}</button>`
           : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
     <div class="table-wrap compact-table"><table><thead><tr><th>${paymentT("adjustment")}</th><th>${paymentT("amount")}</th><th>${paymentT("date")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody>${adjustments.length === 0
@@ -7254,7 +8677,7 @@ function paymentStageLabel(stageType) {
     BalanceReduction: "remainingReduction",
     CashRefund: "financialCashRefund"
   };
-  return keys[stageType] ? paymentT(keys[stageType]) : stageType || "-";
+  return keys[stageType] ? paymentT(keys[stageType]) : systemValueLabel(stageType);
 }
 
 function openUnifiedCollectionForm(scope = "OtherPayments", merchantId = "", operationId = "", reference = "") {
@@ -7271,6 +8694,7 @@ function openUnifiedCollectionForm(scope = "OtherPayments", merchantId = "", ope
   if (operation) operation.value = operationId;
   if (sourceReference && scope === "OtherPayments") sourceReference.value = reference;
   syncUnifiedCollectionSource();
+  if (operationId || reference) void resolveCollectionOperationReference(reference || operationId, { showError: false });
   document.getElementById("unified-collection-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -7282,14 +8706,58 @@ function syncUnifiedCollectionSource() {
   const merchantField = document.getElementById("collection-merchant-field");
   const reference = document.getElementById("collection-source-reference");
   const merchant = document.getElementById("collection-merchant");
-  if (referenceField) referenceField.hidden = isMerchantAccount;
+  const operation = document.getElementById("collection-source-operation-id");
+  const amount = document.getElementById("collection-amount");
+  if (referenceField) referenceField.hidden = false;
   if (merchantField) merchantField.hidden = !isMerchantAccount;
   if (reference) reference.required = !isMerchantAccount;
   if (merchant) merchant.required = isMerchantAccount;
+  if (!isMerchantAccount && amount) amount.removeAttribute("max");
   const help = document.getElementById("collection-workflow-help");
   if (help) help.textContent = isMerchantAccount
-    ? paymentT("merchantCollectionHelp")
+    ? paymentT(operation?.value ? "merchantOperationCollectionHelp" : "merchantCollectionHelp")
     : paymentT("paymentCollectionHelp");
+}
+
+async function resolveCollectionOperationReference(explicitReference = "", { showError = true } = {}) {
+  const source = document.getElementById("collection-source-kind");
+  const referenceInput = document.getElementById("collection-source-reference");
+  const operationInput = document.getElementById("collection-source-operation-id");
+  const merchantInput = document.getElementById("collection-merchant");
+  const amountInput = document.getElementById("collection-amount");
+  const preview = document.getElementById("collection-operation-preview");
+  const reference = String(explicitReference || referenceInput?.value || operationInput?.value || "").trim();
+  if (!reference) return null;
+
+  try {
+    const operation = await request(`/api/v1/payments/operations/resolve?reference=${encodeURIComponent(reference)}`);
+    if (operationInput) operationInput.value = operation.operationId || "";
+    if (referenceInput) referenceInput.value = operation.operationNumber || reference;
+    if (operation.merchantId) {
+      if (source) source.value = "MerchantAccount";
+      if (merchantInput) merchantInput.value = operation.merchantId;
+      const remaining = Number(operation.remainingAmount);
+      if (Number.isFinite(remaining) && remaining >= 0) {
+        if (amountInput) {
+          amountInput.max = String(remaining);
+          if (!amountInput.value) amountInput.value = String(remaining);
+        }
+        if (preview) {
+          preview.textContent = paymentT("collectionOperationPreview", { operation: operation.operationNumber || reference, remaining: formatMoney(remaining) });
+          preview.hidden = false;
+        }
+      }
+      syncUnifiedCollectionSource();
+    } else if (preview) {
+      preview.hidden = true;
+      preview.textContent = "";
+    }
+    clearFormError("unified-collection-error");
+    return operation;
+  } catch (exception) {
+    if (showError) showFormError("unified-collection-error", getFriendlyWorkspaceError(exception));
+    return null;
+  }
 }
 
 function resolveCollectionPaymentLog(reference) {
@@ -7313,7 +8781,13 @@ async function recordUnifiedCollectionCore(form) {
   clearFormError("unified-collection-error");
     // Collection form always creates and submits its draft in one action.
     const submitForReview = true;
-  const sourceKind = document.getElementById("collection-source-kind")?.value;
+  let sourceKind = document.getElementById("collection-source-kind")?.value;
+  const enteredReference = document.getElementById("collection-source-reference")?.value.trim() || "";
+  if (enteredReference || document.getElementById("collection-source-operation-id")?.value) {
+    const resolvedOperation = await resolveCollectionOperationReference();
+    if (!resolvedOperation) return;
+    sourceKind = document.getElementById("collection-source-kind")?.value;
+  }
   const paymentType = sourceKind === "OtherPayments" ? (document.getElementById("collection-payment-type")?.value || "CashReceived") : "CashReceived";
   const method = canonicalSelectValue("collection-method", "movementMethod", { allowEmpty: true });
   const transactionReference = document.getElementById("collection-transaction-reference")?.value.trim() || null;
@@ -7324,11 +8798,16 @@ async function recordUnifiedCollectionCore(form) {
     showFormError("unified-collection-error", foundationT("payments.errors.collectionAmountAndMethod"));
     return;
   }
+  const scopedMaximum = Number(document.getElementById("collection-amount")?.max);
+  if (sourceKind === "MerchantAccount" && document.getElementById("collection-source-operation-id")?.value && Number.isFinite(scopedMaximum) && amount > scopedMaximum) {
+    showFormError("unified-collection-error", paymentT("collectionOperationExceedsRemaining"));
+    return;
+  }
   if (!financeAccountId) {
     showFormError("unified-collection-error", foundationT("payments.errors.collectionAccount"));
     return;
   }
-  if (["CashTransaction", "BankTransfer", "Wallet"].includes(method) && !transactionReference) {
+  if (["BankTransfer", "Wallet"].includes(method) && !transactionReference) {
     showFormError("unified-collection-error", foundationT("payments.errors.collectionReference"));
     return;
   }
@@ -7535,6 +9014,7 @@ function mapSkuOption(sku) {
     expiryType: sku.expiryType,
     piecesPerPack: sku.piecesPerPack,
     sellMode: sku.sellMode,
+    isSellable: sku.isSellable !== false,
     skuCode: sku.skuCode,
     powerSign: sku.powerSign,
     powerValue: sku.powerValue,
@@ -7607,22 +9087,13 @@ async function payoutCashRefund(id, paymentLogId = null) {
   });
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) return;
-  const paymentMethod = canonicalSelectValue("adjustment-refund-payment-method", "movementMethod", { allowEmpty: true });
-  const financeAccountId = document.getElementById("adjustment-refund-finance-account")?.value || "";
-  const transactionReference = document.getElementById("adjustment-refund-reference")?.value.trim() || null;
-  if (!paymentMethod || !financeAccountId) {
-    notice(paymentT("errors.collectionAccount"), "error");
-    return;
-  }
-  if (["CashTransaction", "BankTransfer", "Wallet"].includes(paymentMethod) && !transactionReference) {
-    notice(paymentT("errors.collectionReference"), "error");
-    return;
-  }
   return confirmFinalAction({ action: "payout", title: "Record refund payout", message: "Record this cash refund payout?", control: document.querySelector(`[data-adjustment-payout="${CSS.escape(id)}"]`), key: `payment:adjustment:${id}:payout`, execute: async () => {
   try {
     await request(`/api/v1/payments/adjustments/${encodeURIComponent(id)}/payout`, {
       method: "POST",
-      body: JSON.stringify({ amount: value, paymentMethod, transactionReference, financeAccountId })
+    // New return refunds reuse the payment details selected with the refund
+    // request.  The API only asks for fallback details on historical rows.
+    body: JSON.stringify({ amount: value })
     });
     notice(paymentT("refundPayoutRecordedNotice"), "success");
     await Promise.all([loadPayments(), loadPaymentHistory(), loadFinancialAdjustmentInbox(), loadMerchantBalance()]);
@@ -7808,11 +9279,11 @@ async function loadMerchantBalance() {
       <article class="merchant-account-answer"><span>${paymentT("acceptedReturnValue")}</span><strong>${escapeHtml(formatMoney(acceptedReturns))}</strong><p>${paymentT("acceptedReturnHelp")}</p></article>
       <article class="merchant-account-answer"><span>${paymentT("additionalCharges")}</span><strong>${escapeHtml(formatMoney(additionalCharges))}</strong><p>${paymentT("additionalChargesHelp")}</p></article>
       <article class="merchant-account-answer"><span>${paymentT("amountReductions")}</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong><p>${paymentT("amountReductionsHelp")}</p></article>`;
-    const openingTarget = document.getElementById("merchant-opening-history");
+      const openingTarget = document.getElementById("merchant-opening-history");
     if (openingTarget) {
       const canApproveOpening = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
       const canCorrectOpening = ["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
-      openingTarget.innerHTML = financeTable(openingHistory, [foundationT("payments.merchantOpening.amount"), foundationT("payments.merchantOpening.date"), foundationT("payments.merchantOpening.status"), foundationT("payments.merchantOpening.note"), foundationT("payments.merchantOpening.actions")], (item) => `<tr><td>${escapeHtml(formatMoney(item.amount))}</td><td>${escapeHtml(item.asOfDate)}</td><td>${escapeHtml(paymentWorkflowStatusLabel(item.status))}</td><td>${escapeHtml(item.description || "—")}${item.reviewReason ? `<small>${escapeHtml(item.reviewReason)}</small>` : ""}</td><td>${canApproveOpening && item.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-merchant-opening-approve="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.approve")}</button>` : ""}${canCorrectOpening && item.status === "Posted" && !item.replacedByChargeId ? `<button class="button secondary table-action" type="button" data-merchant-opening-correct="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.correct")}</button>` : ""}</td></tr>`);
+      openingTarget.innerHTML = financeTable(openingHistory, [foundationT("payments.merchantOpening.amount"), foundationT("payments.merchantOpening.date"), foundationT("payments.merchantOpening.status"), foundationT("payments.merchantOpening.note"), foundationT("payments.merchantOpening.actions")], (item) => `<tr><td>${escapeHtml(formatMoney(item.amount))}</td><td>${escapeHtml(renderDateOnly(item.asOfDate))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(item.status))}</td><td>${escapeHtml(item.description || "—")}${item.reviewReason ? `<small>${escapeHtml(item.reviewReason)}</small>` : ""}</td><td>${canApproveOpening && item.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-merchant-opening-approve="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.approve")}</button>` : ""}${canCorrectOpening && item.status === "Posted" && !item.replacedByChargeId ? `<button class="button secondary table-action" type="button" data-merchant-opening-correct="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.correct")}</button>` : ""}</td></tr>`);
       const openingCreate = document.getElementById("merchant-opening-create");
       if (openingCreate) {
         openingCreate.hidden = openingHistory.some((item) => !item.reversesChargeId && item.status !== "Rejected");
@@ -7924,7 +9395,19 @@ async function loadMerchantFinancialClosure(merchantId) {
   const section = document.getElementById("merchant-financial-closure");
   const rows = document.getElementById("merchant-closure-rows");
   const submit = document.getElementById("merchant-closure-submit");
+  const feedback = document.getElementById("merchant-closure-feedback");
   if (!section || !rows || !submit) return;
+  const setFeedback = (message = "", kind = "") => {
+    if (!feedback) return;
+    feedback.textContent = message;
+    feedback.hidden = !message;
+    feedback.className = kind === "success" ? "form-success" : "form-error";
+  };
+  const syncSubmitAvailability = () => {
+    const hasSelection = rows.querySelector("[data-closure-operation]:checked") !== null;
+    submit.toggleAttribute("disabled", !hasSelection);
+    submit.setAttribute("aria-disabled", String(!hasSelection));
+  };
   try {
     const eligible = await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/eligible`);
     if (document.getElementById("payment-merchant")?.value !== merchantId) return;
@@ -7937,6 +9420,11 @@ async function loadMerchantFinancialClosure(merchantId) {
     }) : [paymentEmptyTableRow(5, paymentT("noEligibleSales"))]));
     const canSubmit = ["Accountant", "Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
     submit.hidden = !canSubmit || !items.length;
+    rows.onchange = () => {
+      setFeedback();
+      syncSubmitAvailability();
+    };
+    syncSubmitAvailability();
     const review = document.getElementById("merchant-closure-review");
     if (review) {
       review.hidden = !["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
@@ -7974,7 +9462,12 @@ async function loadMerchantFinancialClosure(merchantId) {
     }
     submit.onclick = async () => withMutationGuard(`payment:closure-submit:${merchantId}`, submit, async () => {
       const operationIds = [...document.querySelectorAll("[data-closure-operation]:checked")].map((node) => node.dataset.closureOperation);
-      if (!operationIds.length) { notice(paymentT("selectAtLeastOne"), "error"); return; }
+      if (!operationIds.length) {
+        setFeedback(paymentT("selectAtLeastOne"));
+        notice(paymentT("selectAtLeastOne"), "error");
+        syncSubmitAvailability();
+        return;
+      }
       const body = { operationIds, notes: null };
       const fingerprint = JSON.stringify(body);
       if (submit.dataset.requestFingerprint !== fingerprint) {
@@ -7982,12 +9475,18 @@ async function loadMerchantFinancialClosure(merchantId) {
         submit.dataset.idempotencyKey = createUuid();
       }
       try {
+        setFeedback(`${paymentT("sendFinancialClosure")}...`);
         await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`, { method: "POST", headers: { "Idempotency-Key": submit.dataset.idempotencyKey }, body: JSON.stringify(body) });
         notice(paymentT("submittedForClosure"), "success");
+        setFeedback(paymentT("submittedForClosure"), "success");
         delete submit.dataset.requestFingerprint;
         delete submit.dataset.idempotencyKey;
         await loadMerchantFinancialClosure(merchantId);
-      } catch (exception) { notice(getFriendlyWorkspaceError(exception), "error"); }
+      } catch (exception) {
+        const message = getFriendlyWorkspaceError(exception);
+        setFeedback(message);
+        notice(message, "error");
+      }
     });
   } catch (exception) {
     section.hidden = false;
@@ -8145,6 +9644,43 @@ function paymentAuditRow(item) {
   return row;
 }
 
+function paymentAuditDataSummary(dataJson) {
+  let data = dataJson;
+  if (typeof dataJson === "string") {
+    try {
+      data = JSON.parse(dataJson);
+    } catch {
+      return foundationT("app.inline.structuredDetailsAvailable");
+    }
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return foundationT("app.inline.structuredDetailsAvailable");
+  }
+
+  const read = (...names) => {
+    const entry = Object.entries(data).find(([key, value]) =>
+      names.includes(key.toLowerCase()) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean"));
+    return entry?.[1];
+  };
+  const fields = [];
+  const amount = read("amount", "request.amount");
+  if (amount !== undefined && Number.isFinite(Number(amount))) fields.push([paymentT("amount"), formatMoney(Number(amount))]);
+  const method = read("paymentmethod", "movementmethod", "method");
+  if (method) fields.push([paymentT("method"), movementMethodLabel(method)]);
+  const status = read("status", "newstatus");
+  if (status) fields.push([paymentT("status"), paymentWorkflowStatusLabel(status)]);
+  const type = read("adjustmenttype", "paymenttype", "subtype");
+  if (type) fields.push([paymentT("type"), systemValueLabel(type)]);
+  const remaining = read("remaining", "remainingamount");
+  if (remaining !== undefined && Number.isFinite(Number(remaining))) fields.push([paymentT("remaining"), formatMoney(Number(remaining))]);
+  const reason = read("reason", "rejectionreason", "notes");
+  if (reason) fields.push([paymentT("reason"), displaySafeText(reason, "AUD")]);
+
+  return fields.length
+    ? fields.map(([label, value]) => `${label}: ${value}`).join(" · ")
+    : foundationT("app.inline.structuredDetailsAvailable");
+}
+
 function togglePaymentAuditDetails(row, item) {
   const existing = row.nextElementSibling;
   if (existing?.dataset.paymentAuditDetail === item.id) {
@@ -8169,7 +9705,7 @@ function togglePaymentAuditDetails(row, item) {
     [foundationT("common.notes"), item.reason || "-"],
     [paymentT("correlation"), item.correlationId ? shortId(item.correlationId, "REF") : "-"],
     [paymentT("idempotency"), item.idempotencyKey ? shortId(item.idempotencyKey, "REF") : "-"],
-    [paymentT("recordedDetails"), item.dataJson ? displaySafeText(item.dataJson, "AUD") : "-" ]
+    [paymentT("recordedDetails"), item.dataJson ? paymentAuditDataSummary(item.dataJson) : "-" ]
   ];
   cell.innerHTML = `<div class="detail-grid audit-payment-detail">${fields.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   detail.append(cell);
@@ -8183,12 +9719,17 @@ function paymentAuditActionLabel(action) {
   keys.CashRefundSubmittedForApproval = "cashRefundSubmitted";
   keys.CashRefundApproved = "cashRefundApproved";
   keys.CashRefundRejected = "cashRefundRejected";
-  return keys[action] ? paymentT(keys[action]) : action || "-";
+  return keys[action] ? paymentT(keys[action]) : systemValueLabel(action);
 }
 
 function paymentWorkflowStatusLabel(status) {
   const keys = { PendingAccountant: "waitingAccountant", PendingAdminReview: "waitingAdminApproval", PendingAdmin: "waitingAdminReview", PendingApproval: "pendingApproval", Completed: "completed", Confirmed: "confirmed", Rejected: "rejected", Draft: "draft", Cancelled: "cancelled" };
-  return keys[status] ? paymentT(keys[status]) : status || "-";
+  return keys[status] ? paymentT(keys[status]) : systemValueLabel(status);
+}
+
+function paymentSettlementStatusLabel(status) {
+  const labels = { Settled: "Settled", Outstanding: "Outstanding", ReviewPending: "Review pending", RefundDue: "Refund due" };
+  return labels[status] || systemValueLabel(status || "-");
 }
 
 function paymentCollectionDraftRow(item, canReview) {
@@ -8275,7 +9816,23 @@ function stocktakeReference(session, location = null) {
 }
 
 function displaySafeText(value, prefix = "REF") {
-  return sanitizeVisibleText(value, { prefix, language: currentLanguage });
+  if (value && typeof value === "object") {
+    return foundationT("app.inline.structuredDetailsAvailable");
+  }
+  const text = String(value ?? "");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    if (trimmed.length > 20000) {
+      return foundationT("app.inline.structuredDetailsAvailable");
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object") return foundationT("app.inline.structuredDetailsAvailable");
+    } catch {
+      // Preserve ordinary prose that only happens to start with a brace.
+    }
+  }
+  return sanitizeVisibleText(text, { prefix, language: currentLanguage });
 }
 
 function sanitizeVisibleIdentifiers(root) {
@@ -8290,8 +9847,22 @@ function sanitizeVisibleIdentifiers(root) {
   });
 }
 
-window.__lenseeFindVisibleUuidLeaks = () => findVisibleUuidLeaks(document.getElementById("view")).map((node) => node.nodeValue);
-window.__lenseeSanitizeVisibleIdentifiers = () => sanitizeVisibleIdentifiers(document.getElementById("view"));
+function visiblePresentationRoots() {
+  return [
+    document.getElementById("view"),
+    document.getElementById("notification-area"),
+    ...document.querySelectorAll(".dialog-overlay")
+  ].filter(Boolean);
+}
+
+function sanitizeVisiblePresentation() {
+  visiblePresentationRoots().forEach(sanitizeVisibleIdentifiers);
+}
+
+window.__lenseeFindVisibleUuidLeaks = () => visiblePresentationRoots()
+  .flatMap((root) => findVisibleUuidLeaks(root))
+  .map((node) => node.nodeValue);
+window.__lenseeSanitizeVisibleIdentifiers = sanitizeVisiblePresentation;
 
 function reportCatalogEntry(key) {
   return reportCatalogEntries.find((entry) => entry.key === key);
@@ -8326,7 +9897,7 @@ function financeT(key, params = {}) {
 
 function financeBusinessDateInputValue() {
   const values = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
+  return renderDateOnly(`${values.year}-${values.month}-${values.day}`);
 }
 
 function reportsT(key, params = {}) {
@@ -8339,12 +9910,12 @@ function financeValueLabel(kind, value) {
   const labels = {
     accountType: { CashOnHand: "accountTypes.cash", BankAccount: "accountTypes.bank", Wallet: "accountTypes.wallet" },
     direction: { Credit: "directions.inflow", Debit: "directions.outflow" },
-    method: { CashHandToHand: "methods.cash", CashTransaction: "methods.cashTransaction", BankTransfer: "methods.bank", Wallet: "methods.wallet" },
+    method: { CashHandToHand: "methods.cash", CashTransaction: "methods.bank", BankTransfer: "methods.bank", Wallet: "methods.wallet" },
     status: { Draft: "statuses.draft", PendingReview: "statuses.pendingReview", Pending: "statuses.pending", Paid: "statuses.paid", Posted: "statuses.posted", Rejected: "statuses.rejected", Corrected: "statuses.corrected" },
     category: { MerchantCollection: "categories.merchantCollection", InstallmentCollection: "categories.installmentCollection", OtherPayment: "categories.otherPayment", OperatingExpense: "categories.operatingExpense", CLevelWithdrawal: "categories.cLevelWithdrawal", FinanceOpeningBalance: "categories.openingBalance", TreasuryOpeningBalance: "categories.openingBalance", RefundPayout: "categories.refundPayout", SupplyPayment: "categories.supplyPayment" }
   };
   const translationKey = labels[kind]?.[key];
-  return translationKey ? financeT(translationKey) : key;
+  return translationKey ? financeT(translationKey) : systemValueLabel(key, "—");
 }
 
 async function renderFinance() {
@@ -8360,15 +9931,15 @@ async function renderFinance() {
   }
   view.innerHTML = `<section class="workspace finance-workspace">
      <div class="workspace-intro"><div><p class="eyebrow">${financeT("accounts.kicker")}</p><h2>${financeT("accounts.title")}</h2><p>${financeT("accounts.setupDescription")}</p></div><button id="finance-refresh" class="button secondary" type="button">${foundationT("common.refresh")}</button></div>
-     ${["Admin", "CLevel"].includes(role) ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("executive.title")}</h3><div class="form-grid compact-form"><label>${financeT("executive.period")}<select id="finance-summary-period" class="select"><option value="daily">${financeT("executive.daily")}</option><option value="monthly">${financeT("executive.monthly")}</option></select></label><label>${financeT("businessDate")}<input id="finance-summary-date" class="input" type="date"></label></div></div><div id="finance-executive-summary">${foundationT("common.loading")}</div></section>` : ""}
+     ${["Admin", "CLevel"].includes(role) ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("executive.title")}</h3><div class="form-grid compact-form"><label>${financeT("fromDate")}<input id="finance-summary-from" class="input" type="date"></label><label>${financeT("toDate")}<input id="finance-summary-to" class="input" type="date"></label></div></div><div id="finance-executive-summary">${foundationT("common.loading")}</div></section>` : ""}
      ${canManageAccounts ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("transfers.title")}</h3></div><form id="finance-transfer-form" class="form-grid compact-form"><label>${financeT("transfers.source")}<select id="finance-transfer-source" class="select" required></select></label><label>${financeT("transfers.destination")}<select id="finance-transfer-destination" class="select" required></select></label><label>${financeT("amount")}<input id="finance-transfer-amount" class="input" type="number" min="0.0001" step="0.0001" required></label><label>${financeT("transfers.fee")}<input id="finance-transfer-fee" class="input" type="number" min="0" step="0.0001" value="0"></label><label>${financeT("businessDate")}<input id="finance-transfer-date" class="input" type="date" required></label><label>${financeT("description")}<input id="finance-transfer-notes" class="input" maxlength="1000"></label><button class="button primary" type="submit">${financeT("transfers.create")}</button></form><div id="finance-transfers" class="table-wrap compact-table"></div></section>` : ""}
-     ${canManageAccounts ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("categories.title")}</h3></div><form id="finance-category-form" class="form-grid compact-form"><label>${financeT("categories.kind")}<select id="finance-category-kind" class="select"><option value="Expense">${financeT("expenses.title")}</option><option value="Withdrawal">${financeT("withdrawals.title")}</option></select></label><label>${financeT("categories.code")}<input id="finance-category-code" class="input" maxlength="60" required></label><label>${financeT("categories.english")}<input id="finance-category-english" class="input" maxlength="150" required></label><label>${financeT("categories.arabic")}<input id="finance-category-arabic" class="input" maxlength="150" required></label><label>${financeT("categories.order")}<input id="finance-category-order" class="input" type="number" min="0" value="100" required></label><button class="button primary" type="submit">${financeT("categories.create")}</button></form><div id="finance-categories" class="table-wrap compact-table"></div></section>` : ""}
+     ${canManageAccounts ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("categories.title")}</h3></div><form id="finance-category-form" class="form-grid compact-form"><label>${financeT("categories.kind")}<select id="finance-category-kind" class="select"><option value="Expense">${financeT("expenses.title")}</option><option value="Withdrawal">${financeT("withdrawals.title")}</option></select></label><label>${financeT("categories.code")}<input id="finance-category-code" class="input" maxlength="60" required></label><label>${financeT("categories.english")}<input id="finance-category-english" class="input" maxlength="150" required></label><label>${financeT("categories.arabic")}<input id="finance-category-arabic" class="input" maxlength="150" required></label><label>${financeT("categories.order")}<input id="finance-category-order" class="input" type="number" min="0" placeholder="100"></label><button class="button primary" type="submit">${financeT("categories.create")}</button></form><div id="finance-categories" class="table-wrap compact-table"></div></section>` : ""}
      ${canManageAccounts ? `<section class="workspace-panel" hidden><div class="section-head"><h3>${financeT("repayments.title")}</h3></div><form id="finance-repayment-form" class="form-grid compact-form"><label>${financeT("withdrawals.title")}<select id="finance-repayment-withdrawal" class="select" required></select></label><label>${financeT("account")}<select id="finance-repayment-account" class="select" required></select></label><label>${financeT("amount")}<input id="finance-repayment-amount" class="input" type="number" min="0.0001" step="0.0001" required></label><label>${financeT("method")}<select id="finance-repayment-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></label><label>${financeT("businessDate")}<input id="finance-repayment-date" class="input" type="date" required></label><label>${financeT("description")}<input id="finance-repayment-notes" class="input" maxlength="1000"></label><button class="button primary" type="submit">${financeT("repayments.create")}</button></form></section>` : ""}
     <section class="workspace-panel finance-accounts-panel"><div class="section-head"><div><p class="ledger-kicker">${financeT("accounts.kicker")}</p><h3>${financeT("accounts.title")}</h3></div></div>
-      ${canManageAccounts ? `<form id="finance-account-form" class="form-grid compact-form"><div class="field"><label for="finance-account-name">${financeT("accounts.name")}</label><input id="finance-account-name" class="input" maxlength="150" required></div><div class="field"><label for="finance-account-type">${financeT("accounts.type")}</label><select id="finance-account-type" class="select"><option value="CashOnHand">${financeT("accounts.cashOnHand")}</option><option value="BankAccount">${financeT("accounts.bankAccount")}</option><option value="Wallet">${financeT("accounts.wallet")}</option></select></div><div class="field"><label for="finance-account-reference">${financeT("accounts.reference")}</label><input id="finance-account-reference" class="input" maxlength="200"></div><div class="field"><label for="finance-account-details">${financeT("accounts.details")}</label><input id="finance-account-details" class="input" maxlength="1000"></div><div class="form-actions"><button class="button primary" type="submit">${financeT("accounts.create")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
+      ${canManageAccounts ? `<form id="finance-account-form" class="form-grid compact-form"><div class="field"><label for="finance-account-name">${financeT("accounts.name")}</label><input id="finance-account-name" class="input" maxlength="150" required></div><div class="field"><label for="finance-account-type">${financeT("accounts.type")}</label><select id="finance-account-type" class="select"><option value="CashOnHand">${financeT("accounts.cashOnHand")}</option><option value="BankAccount">${financeT("accounts.bankAccount")}</option><option value="Wallet">${financeT("accounts.wallet")}</option></select></div><div class="field"><label for="finance-account-area">${financeT("accounts.area")}</label><select id="finance-account-area" class="select"><option value="">${financeT("accounts.companyWide")}</option></select></div><div class="field"><label for="finance-account-reference">${financeT("accounts.reference")}</label><input id="finance-account-reference" class="input" maxlength="200"></div><div class="field"><label for="finance-account-details">${financeT("accounts.details")}</label><input id="finance-account-details" class="input" maxlength="1000"></div><div class="form-actions"><button class="button primary" type="submit">${financeT("accounts.create")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
       <div id="finance-accounts" class="table-wrap compact-table">${foundationT("common.loading")}</div>
       <div class="section-head tight-head"><div><p class="ledger-kicker">${financeT("openingBalances.kicker")}</p><h3>${financeT("openingBalances.title")}</h3></div></div>
-      ${canCreateOpening ? `<form id="finance-opening-form" class="form-grid compact-form"><div class="field"><label for="finance-opening-account">${financeT("account")}</label><select id="finance-opening-account" class="select" required></select></div><div class="field"><label for="finance-opening-amount">${financeT("amount")}</label><input id="finance-opening-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-opening-date">${financeT("openingBalances.asOfDate")}</label><input id="finance-opening-date" class="input" type="date" required></div><div class="field full-span"><label for="finance-opening-description">${financeT("openingBalances.description")}</label><input id="finance-opening-description" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("openingBalances.create")}</button></div></form>` : ""}
+      ${canCreateOpening ? `<form id="finance-opening-form" class="form-grid compact-form"><div class="field"><label for="finance-opening-account">${financeT("account")}</label><select id="finance-opening-account" class="select" required></select></div><div class="field"><label for="finance-opening-amount">${financeT("amount")}</label><input id="finance-opening-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-opening-date">${financeT("openingBalances.asOfDate")}</label><input id="finance-opening-date" class="input" type="date" required></div><div class="field full-span"><label for="finance-opening-description">${financeT("openingBalances.description")}</label><input id="finance-opening-description" class="input" maxlength="1000"></div><div class="form-actions"><button class="button primary" type="submit">${financeT("openingBalances.create")}</button></div></form>` : ""}
       <div id="finance-opening-balances" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
      ${["Admin", "CLevel", "Accountant"].includes(role) ? `<section class="workspace-panel finance-supply-panel"><div class="section-head"><div><p class="ledger-kicker">${foundationT("supply.title")}</p><h3>${financeT("supply.title")}</h3><p class="muted-text">${financeT("supply.help")}</p></div></div><div class="form-grid compact-form"><label>${foundationT("supply.searchHelp")}<input id="finance-supply-search" class="input"></label><button id="finance-supply-search-button" class="button secondary" type="button">${foundationT("common.refresh")}</button></div><div id="finance-supply-logs" class="table-wrap compact-table">${foundationT("common.loading")}</div><div id="finance-supply-detail" class="finance-supply-detail" hidden></div></section>` : ""}
      <div class="scenario-grid finance-metrics"><article class="scenario-card"><span>${financeT("expectedCash")}</span><strong id="finance-cash">—</strong></article><article class="scenario-card"><span>${financeT("expectedBank")}</span><strong id="finance-bank">—</strong></article><article class="scenario-card"><span>${financeT("expectedWallet")}</span><strong id="finance-wallet">—</strong></article><article class="scenario-card"><span>${financeT("totalLiquidFunds")}</span><strong id="finance-total">—</strong></article><article class="scenario-card" hidden><span>${financeT("executive.merchantReceivables")}</span><strong id="finance-receivables">—</strong></article></div>
@@ -8377,7 +9948,7 @@ async function renderFinance() {
         ${canCreateExpense ? `<form id="finance-expense-form" class="form-grid compact-form"><div class="field"><label for="finance-expense-category">${financeT("expenses.category")}</label><select id="finance-expense-category" class="select"><option value="Salary">${financeT("expenses.salary")}</option><option value="Rent">${financeT("expenses.rent")}</option><option value="SocialMedia">${financeT("expenses.socialMedia")}</option><option value="SoftwareAndTechnologySubscriptions">${financeT("expenses.softwareTechnology")}</option><option value="Other">${financeT("expenses.other")}</option></select></div><div class="field"><label for="finance-expense-account">${financeT("account")}</label><select id="finance-expense-account" class="select" required></select></div><div class="field"><label for="finance-expense-method">${financeT("method")}</label><select id="finance-expense-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-expense-amount">${financeT("amount")}</label><input id="finance-expense-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-expense-date">${financeT("businessDate")}</label><input id="finance-expense-date" class="input" type="date" required></div><div class="field"><label for="finance-expense-description">${financeT("description")}</label><input id="finance-expense-description" class="input" maxlength="1000"></div><div class="form-actions"><button class="button primary" type="submit">${financeT("expenses.create")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
         <div id="finance-expenses" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
       <section class="workspace-panel"><div class="section-head"><div><p class="ledger-kicker">${financeT("withdrawals.kicker")}</p><h3>${financeT("withdrawals.title")}</h3></div></div>
-        ${canAssignWithdrawal ? `<div class="warning-panel finance-withdrawal-warning" role="note"><div><strong>${financeT("withdrawals.immediatePostTitle")}</strong><span>${financeT("withdrawals.immediatePostHelp")}</span></div></div><form id="finance-withdrawal-form" class="form-grid compact-form"><div class="field"><label for="finance-withdrawal-user">${financeT("withdrawals.assignedTo")}</label><select id="finance-withdrawal-user" class="select" required></select></div><div class="field"><label for="finance-withdrawal-account">${financeT("account")}</label><select id="finance-withdrawal-account" class="select" required></select></div><div class="field"><label for="finance-withdrawal-method">${financeT("method")}</label><select id="finance-withdrawal-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-withdrawal-amount">${financeT("amount")}</label><input id="finance-withdrawal-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-withdrawal-date">${financeT("businessDate")}</label><input id="finance-withdrawal-date" class="input" type="date" required></div><div class="field"><label for="finance-withdrawal-reason">${financeT("withdrawals.reason")}</label><input id="finance-withdrawal-reason" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("withdrawals.create")}</button></div></form>` : `<p class="muted-text">${canApprove ? financeT("withdrawals.reviewOnly") : financeT("readOnly")}</p>`}
+     ${canAssignWithdrawal ? `<div class="warning-panel finance-withdrawal-warning" role="note"><div><strong>${financeT("withdrawals.reviewTitle")}</strong><span>${financeT("withdrawals.reviewHelp")}</span></div></div><form id="finance-withdrawal-form" class="form-grid compact-form"><div class="field"><label for="finance-withdrawal-user">${financeT("withdrawals.assignedTo")}</label><select id="finance-withdrawal-user" class="select" required></select></div><div class="field"><label for="finance-withdrawal-account">${financeT("account")}</label><select id="finance-withdrawal-account" class="select" required></select></div><div class="field"><label for="finance-withdrawal-method">${financeT("method")}</label><select id="finance-withdrawal-method" class="select"><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></div><div class="field"><label for="finance-withdrawal-amount">${financeT("amount")}</label><input id="finance-withdrawal-amount" class="input" type="number" min="0.0001" step="0.0001" required></div><div class="field"><label for="finance-withdrawal-date">${financeT("businessDate")}</label><input id="finance-withdrawal-date" class="input" type="date" required></div><div class="field"><label for="finance-withdrawal-reason">${financeT("withdrawals.reason")}</label><input id="finance-withdrawal-reason" class="input" maxlength="1000" required></div><div class="form-actions"><button class="button primary" type="submit">${financeT("withdrawals.create")}</button></div></form>` : `<p class="muted-text">${canApprove ? financeT("withdrawals.reviewOnly") : financeT("readOnly")}</p>`}
         <div id="finance-withdrawals" class="table-wrap compact-table">${foundationT("common.loading")}</div></section>
      </div><section class="workspace-panel" hidden><div class="section-head"><div><p class="ledger-kicker">${financeT("ledger.kicker")}</p><h3>${financeT("ledger.title")}</h3></div></div><div id="finance-ledger" class="table-wrap compact-table">${foundationT("common.loading")}</div></section><section class="workspace-panel" hidden><div class="section-head"><div><p class="ledger-kicker">${financeT("reconciliation.kicker")}</p><h3>${financeT("reconciliation.title")}</h3><p class="muted-text">${financeT("reconciliation.help")}</p></div></div><div id="finance-reconciliation" class="table-wrap compact-table">${foundationT("common.loading")}</div></section></section>`;
   // The Finance route is a complete workspace again.  Some panels were
@@ -8416,8 +9987,11 @@ async function renderFinance() {
     repaymentForm.addEventListener("submit", submitFinanceRepayment);
     document.getElementById("finance-repayment-withdrawal")?.addEventListener("change", loadFinanceRepaymentHistory);
   }
-  document.getElementById("finance-summary-period")?.addEventListener("change", loadFinanceExecutiveSummary);
-  document.getElementById("finance-summary-date")?.addEventListener("change", loadFinanceExecutiveSummary);
+  if (["Admin", "CLevel"].includes(role)) {
+    loadFinanceExecutiveSummary();
+    document.getElementById("finance-summary-from")?.addEventListener("change", loadFinanceExecutiveSummary);
+    document.getElementById("finance-summary-to")?.addEventListener("change", loadFinanceExecutiveSummary);
+  }
   if (document.getElementById("finance-withdrawal-form")) {
     const categoryField = document.createElement("div");
     categoryField.className = "field";
@@ -8432,15 +10006,16 @@ async function renderFinance() {
     document.getElementById("finance-withdrawal-user")?.closest(".field")?.after(categoryField);
   }
   await loadFinanceWorkspace();
-  await loadFinanceExecutiveSummary();
 }
 
 async function loadFinanceWorkspace() {
   try {
-    const [overview, accounts, expenses, withdrawals, ledger, reconciliation, openingBalances, cLevels, categories, transfers] = await Promise.all([
+    const [overview, accounts, expenses, withdrawals, ledger, reconciliation, openingBalances, cLevels, categories, transfers, dailyMetrics] = await Promise.all([
       request("/api/v1/finance/overview"), request("/api/v1/finance/accounts"), request("/api/v1/finance/expenses?pageSize=25"), request("/api/v1/finance/withdrawals?pageSize=25"), request("/api/v1/finance/ledger?pageSize=50"), request("/api/v1/finance/reconciliation?pageSize=50").catch(() => ({ items: [] })), request("/api/v1/finance/opening-balances?pageSize=25").catch(() => ({ items: [] })), getAuth()?.user?.role === "Admin" ? request("/api/v1/finance/c-level-users").catch(() => []) : Promise.resolve([])
-      ,request("/api/v1/finance/categories").catch(() => []), getAuth()?.user?.role === "Admin" ? request("/api/v1/finance/transfers?pageSize=25").catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
+      ,request("/api/v1/finance/categories").catch(() => []), getAuth()?.user?.role === "Admin" ? request("/api/v1/finance/transfers?pageSize=25").catch(() => ({ items: [] })) : Promise.resolve({ items: [] }), request("/api/v1/finance/daily-metrics?pageSize=1").catch(() => ({ areas: [] }))
     ]);
+    financeMetricAreas = dailyMetrics.areas || [];
+    renderDailyFinanceAreaOptions(document.getElementById("finance-account-area"), financeMetricAreas, document.getElementById("finance-account-area")?.value || "");
     await loadFinanceSupplyLogs();
     const money = (value) => formatMoney(Number(value || 0));
     document.getElementById("finance-cash").textContent = money(overview.expectedCash); document.getElementById("finance-bank").textContent = money(overview.expectedBank); document.getElementById("finance-wallet").textContent = money(overview.expectedWallet); document.getElementById("finance-total").textContent = money(overview.totalLiquidFunds);
@@ -8468,22 +10043,37 @@ async function loadFinanceWorkspace() {
     const categoryTable = document.getElementById("finance-categories");
     if (categoryTable) {
       const initialCategory = (item) => item.kind === "Expense" && item.createdBy === "00000000-0000-0000-0000-000000000000";
-      categoryTable.innerHTML = financeTable(categories, [financeT("categories.kind"), financeT("categories.code"), financeT("categories.english"), financeT("categories.arabic"), financeT("categories.order"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.kind === "Expense" ? financeT("expenses.title") : item.kind === "Withdrawal" ? financeT("withdrawals.title") : uiText(item.kind))}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.englishName)}</td><td>${escapeHtml(item.arabicName)}</td><td>${initialCategory(item) ? "—" : escapeHtml(item.sortOrder)}</td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" data-finance-category-id="${escapeHtml(item.id)}" type="button">${financeT("categories.edit")}</button><button class="button secondary table-action" data-finance-category-toggle="${escapeHtml(item.id)}" type="button">${item.isActive ? financeT("categories.deactivate") : financeT("categories.activate")}</button></td></tr>`);
+      replaceMarkup(categoryTable, financeTable(categories, [financeT("categories.kind"), financeT("categories.code"), financeT("categories.english"), financeT("categories.arabic"), financeT("categories.order"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.kind === "Expense" ? financeT("expenses.title") : item.kind === "Withdrawal" ? financeT("withdrawals.title") : systemValueLabel(item.kind))}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.englishName)}</td><td>${escapeHtml(item.arabicName)}</td><td>${initialCategory(item) ? "—" : escapeHtml(item.sortOrder)}</td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" data-finance-category-id="${escapeHtml(item.id)}" type="button">${financeT("categories.edit")}</button><button class="button secondary table-action" data-finance-category-toggle="${escapeHtml(item.id)}" type="button">${item.isActive ? financeT("categories.deactivate") : financeT("categories.activate")}</button></td></tr>`));
       categoryTable.querySelectorAll("[data-finance-category-id]").forEach((button) => button.addEventListener("click", () => editFinanceCategory(categories.find((item) => item.id === button.dataset.financeCategoryId))));
       categoryTable.querySelectorAll("[data-finance-category-toggle]").forEach((button) => button.addEventListener("click", () => void toggleFinanceCategory(categories.find((item) => item.id === button.dataset.financeCategoryToggle))));
     }
     const transferTable = document.getElementById("finance-transfers");
-    if (transferTable) transferTable.innerHTML = financeTable(transfers.items || [], [financeT("transfers.source"), financeT("transfers.destination"), financeT("amount"), financeT("transfers.fee"), financeT("businessDate"), financeT("description")], (item) => `<tr><td>${escapeHtml(accounts.find((account) => account.id === item.sourceAccountId)?.name || "—")}</td><td>${escapeHtml(accounts.find((account) => account.id === item.destinationAccountId)?.name || "—")}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(money(item.feeAmount))}</td><td>${escapeHtml(item.businessDate)}</td><td>${escapeHtml(item.notes || "—")}</td></tr>`);
-    document.getElementById("finance-accounts").innerHTML = financeTable(accounts || [], [financeT("accounts.name"), financeT("accounts.type"), financeT("accounts.reference"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(financeValueLabel("accountType", item.type))}</td><td><bdi>${escapeHtml(item.reference || "—")}</bdi></td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" type="button" data-finance-account-detail="${escapeHtml(item.id)}">${financeT("details")}</button></td></tr>`);
+    if (transferTable) transferTable.innerHTML = financeTable(transfers.items || [], [financeT("transfers.source"), financeT("transfers.destination"), financeT("amount"), financeT("transfers.fee"), financeT("businessDate"), financeT("description")], (item) => `<tr><td>${escapeHtml(accounts.find((account) => account.id === item.sourceAccountId)?.name || "—")}</td><td>${escapeHtml(accounts.find((account) => account.id === item.destinationAccountId)?.name || "—")}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(money(item.feeAmount))}</td><td>${escapeHtml(renderDateOnly(item.businessDate))}</td><td>${escapeHtml(item.notes || "—")}</td></tr>`);
+    const canManageAccountAreas = getAuth()?.user?.role === "Admin";
+    const accountAreaOptions = (selectedId) => `<option value="">${escapeHtml(financeT("accounts.companyWide"))}</option>${financeMetricAreas.map((area) => `<option value="${escapeHtml(area.id)}" ${area.id === selectedId ? "selected" : ""}>${escapeHtml(area.name)}</option>`).join("")}`;
+    replaceMarkup(document.getElementById("finance-accounts"), financeTable(accounts || [], [financeT("accounts.name"), financeT("accounts.type"), financeT("accounts.area"), financeT("accounts.reference"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(financeValueLabel("accountType", item.type))}</td><td>${canManageAccountAreas ? `<select class="select table-select" data-finance-account-area="${escapeHtml(item.id)}">${accountAreaOptions(item.locationId)}</select>` : escapeHtml(financeMetricAreas.find((area) => area.id === item.locationId)?.name || financeT("accounts.companyWide"))}</td><td><bdi>${escapeHtml(item.reference || "—")}</bdi></td><td>${escapeHtml(item.isActive ? financeT("accounts.active") : financeT("accounts.inactive"))}</td><td><button class="button secondary table-action" type="button" data-finance-account-detail="${escapeHtml(item.id)}">${financeT("details")}</button>${canManageAccountAreas ? `<button class="button secondary table-action" type="button" data-finance-account-area-save="${escapeHtml(item.id)}">${escapeHtml(foundationT("common.save"))}</button>` : ""}</td></tr>`));
     document.querySelectorAll("[data-finance-account-detail]").forEach((button) => button.addEventListener("click", () => {
       const account = accounts.find((item) => item.id === button.dataset.financeAccountDetail);
       if (account) void confirmDialog({ title: account.name, message: account.details || financeT("empty"), confirmLabel: financeT("close"), translateMessage: false, translateTitle: false });
     }));
+    document.querySelectorAll("[data-finance-account-area-save]").forEach((button) => button.addEventListener("click", async () => {
+      const id = button.dataset.financeAccountAreaSave;
+      const select = document.querySelector(`[data-finance-account-area="${id}"]`);
+      try {
+        await request(`/api/v1/finance/accounts/${encodeURIComponent(id)}/area`, { method: "PUT", body: JSON.stringify({ locationId: select?.value || null }) });
+        notice(financeT("accounts.areaSaved"), "success");
+        await loadFinanceWorkspace();
+        if (["Admin", "CLevel"].includes(getAuth()?.user?.role)) await loadDailyFinanceMetrics("finance");
+      } catch (error) {
+        notice(getFriendlyWorkspaceError(error), "error");
+      }
+    }));
     const cLevelSelect = document.getElementById("finance-withdrawal-user"); if (cLevelSelect) cLevelSelect.innerHTML = `<option value="">${financeT("withdrawals.chooseUser")}</option>${cLevels.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.fullName)}</option>`).join("")}`;
+    const currentFinanceUserId = getAuth()?.user?.userId;
     const canApprove = getAuth()?.user?.role === "Admin";
     document.getElementById("finance-opening-balances").innerHTML = financeTable(openingBalances.items || [], [financeT("account"), financeT("amount"), financeT("openingBalances.direction"), financeT("openingBalances.asOfDate"), financeT("status"), financeT("actions")], (item) => `<tr><td>${escapeHtml(accounts.find((account) => account.id === item.financeAccountId)?.name || contextualReference({ context: item.financeAccountId, prefix: "REF", language: currentLanguage }))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(financeValueLabel("direction", item.direction))}</td><td><bdi>${escapeHtml(item.asOfDate)}</bdi></td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td><button class="button secondary table-action" type="button" data-finance-opening-note="${escapeHtml(item.id)}">${financeT("details")}</button>${canApprove && item.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="opening-balances" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("openingBalances.approve"))}</button><button class="button secondary table-action" type="button" data-finance-action="reject" data-finance-kind="opening-balances" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("openingBalances.reject"))}</button>` : ""}${["Admin", "Accountant"].includes(getAuth()?.user?.role) && item.status === "Posted" && !item.replacedByOpeningBalanceId ? `<button class="button secondary table-action" type="button" data-finance-opening-correct="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`);
     document.getElementById("finance-expenses").innerHTML = financeTable(expenses.items || [], [financeT("expenses.category"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => `<tr><td>${escapeHtml(categoryName(categories.find((category) => category.id === item.categoryId) || { englishName: item.category, arabicName: item.category }))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td><bdi>${escapeHtml(item.businessDate)}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="expense" data-finance-id="${escapeHtml(item.id)}">${financeT("details")}</button>${canApprove && item.status === "Pending" ? `<button class="button secondary table-action" type="button" data-finance-edit-expense="${escapeHtml(item.id)}">${financeT("expenses.editPending")}</button>` : ""}${canApprove && ["Pending", "PendingReview", "Draft"].includes(item.status) ? `<button class="button secondary table-action" type="button" data-finance-action="confirm" data-finance-kind="expenses" data-finance-id="${escapeHtml(item.id)}">${escapeHtml(financeT("expenses.confirmPayment"))}</button>` : ""}${canApprove && ["Paid", "Posted"].includes(item.status) && !item.replacedByExpenseId ? `<button class="button secondary table-action" type="button" data-finance-correct-expense="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`);
-    document.getElementById("finance-withdrawals").innerHTML = financeTable(withdrawals.items || [], [financeT("withdrawals.assignedTo"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => { const withdrawal = item.withdrawal || item; return `<tr><td>${escapeHtml(item.assignedToName || (withdrawal.assignedToCLevelUserId ? shortId(withdrawal.assignedToCLevelUserId, "USR") : "—"))}</td><td>${escapeHtml(money(withdrawal.amount))}</td><td>${escapeHtml(financeValueLabel("status", withdrawal.status))}</td><td><bdi>${escapeHtml(withdrawal.businessDate || "")}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="withdrawal" data-finance-id="${escapeHtml(withdrawal.id)}">${financeT("details")}</button>${canApprove && withdrawal.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="withdrawals" data-finance-id="${escapeHtml(withdrawal.id)}">${escapeHtml(financeT("approve"))}</button>` : ""}${canApprove && withdrawal.status === "Posted" && !withdrawal.replacedByWithdrawalId ? `<button class="button secondary table-action" type="button" data-finance-correct-withdrawal="${escapeHtml(withdrawal.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`; });
+    document.getElementById("finance-withdrawals").innerHTML = financeTable(withdrawals.items || [], [financeT("withdrawals.assignedTo"), financeT("amount"), financeT("status"), financeT("businessDate"), financeT("actions")], (item) => { const withdrawal = item.withdrawal || item; const eligibleReviewer = currentFinanceUserId !== withdrawal.assignedToCLevelUserId; return `<tr><td>${escapeHtml(item.assignedToName || (withdrawal.assignedToCLevelUserId ? shortId(withdrawal.assignedToCLevelUserId, "USR") : "—"))}</td><td>${escapeHtml(money(withdrawal.amount))}</td><td>${escapeHtml(financeValueLabel("status", withdrawal.status))}</td><td><bdi>${escapeHtml(withdrawal.businessDate || "")}</bdi></td><td><button class="button secondary table-action" type="button" data-finance-detail="withdrawal" data-finance-id="${escapeHtml(withdrawal.id)}">${financeT("details")}</button>${withdrawal.status === "Draft" && withdrawal.createdByUserId === currentFinanceUserId ? `<button class="button secondary table-action" type="button" data-finance-submit-withdrawal="${escapeHtml(withdrawal.id)}">${escapeHtml(financeT("withdrawals.submit"))}</button>` : ""}${canApprove && eligibleReviewer && withdrawal.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-finance-action="approve" data-finance-kind="withdrawals" data-finance-id="${escapeHtml(withdrawal.id)}">${escapeHtml(financeT("approve"))}</button>` : ""}${canApprove && withdrawal.status === "Posted" && !withdrawal.replacedByWithdrawalId ? `<button class="button secondary table-action" type="button" data-finance-correct-withdrawal="${escapeHtml(withdrawal.id)}">${financeT("openingBalances.correct")}</button>` : ""}</td></tr>`; });
     const accountNames = new Map(accounts.map((account) => [account.id, account.name]));
     document.getElementById("finance-ledger").innerHTML = financeTable(ledger.rows || [], [financeT("ledger.category"), financeT("ledger.direction"), financeT("amount"), financeT("account"), financeT("businessDate")], (item) => `<tr><td>${escapeHtml(financeValueLabel("category", item.category))}</td><td>${escapeHtml(financeValueLabel("direction", item.direction))}</td><td>${escapeHtml(money(item.amount))}</td><td>${escapeHtml(accountNames.get(item.financeAccountId) || contextualReference({ businessReference: item.financeAccountReference, context: item.financeAccountId, prefix: "REF", language: currentLanguage }))}</td><td><bdi>${escapeHtml(item.businessDate)}</bdi></td></tr>`);
     document.getElementById("finance-reconciliation").innerHTML = financeTable(reconciliation.items || [], [financeT("reconciliation.account"), financeT("reconciliation.inflow"), financeT("reconciliation.outflow"), financeT("reconciliation.net"), financeT("reconciliation.expected"), financeT("reconciliation.entries"), financeT("reconciliation.history")], (item) => `<tr><td>${escapeHtml(item.accountName)}<span class="muted-cell">${escapeHtml(financeValueLabel("accountType", item.accountType))}</span></td><td>${escapeHtml(money(item.postedInflow))}</td><td>${escapeHtml(money(item.postedOutflow))}</td><td>${escapeHtml(money(item.netMovement))}</td><td>${escapeHtml(money(item.expectedBalance))}</td><td>${escapeHtml(item.postedEntryCount)}</td><td>${item.historicalNegativeBalance ? `${financeT("reconciliation.historicalNegative")} (${escapeHtml(money(item.minimumPostedBalance))})` : "—"}</td></tr>`);
@@ -8502,13 +10092,17 @@ async function loadFinanceWorkspace() {
       document.getElementById("finance-expense-account").value = expense.financeAccountId;
       document.getElementById("finance-expense-method").value = expense.movementMethod;
       document.getElementById("finance-expense-amount").value = expense.amount;
-      document.getElementById("finance-expense-date").value = expense.businessDate;
+      document.getElementById("finance-expense-date").value = renderDateOnly(expense.businessDate);
       document.getElementById("finance-expense-description").value = expense.description || "";
       form.querySelector('button[type="submit"]').textContent = financeT("expenses.savePending");
       form.scrollIntoView({ behavior: "smooth", block: "center" });
     }));
     document.querySelectorAll("[data-finance-correct-expense]").forEach((button) => button.addEventListener("click", () => void correctFinanceExpense((expenses.items || []).find((item) => item.id === button.dataset.financeCorrectExpense))));
     document.querySelectorAll("[data-finance-correct-withdrawal]").forEach((button) => button.addEventListener("click", () => void correctFinanceWithdrawal((withdrawals.items || []).map((item) => item.withdrawal || item).find((item) => item.id === button.dataset.financeCorrectWithdrawal))));
+    document.querySelectorAll("[data-finance-submit-withdrawal]").forEach((button) => button.addEventListener("click", async () => {
+      try { await request(`/api/v1/finance/withdrawals/${encodeURIComponent(button.dataset.financeSubmitWithdrawal)}/submit`, { method: "POST" }); notice(financeT("withdrawals.submitted"), "success"); await loadFinanceWorkspace(); }
+      catch (error) { notice(getFriendlyWorkspaceError(error), "error"); }
+    }));
     document.querySelectorAll("[data-finance-detail]").forEach((button) => button.addEventListener("click", async () => {
       const kind = button.dataset.financeDetail;
       const source = kind === "expense" ? (expenses.items || []).find((item) => item.id === button.dataset.financeId) :
@@ -8578,10 +10172,10 @@ async function renderFinanceSupplyDetail(log) {
     <div class="finance-supply-category-grid">${financeSupplyCategories.map(([category, key]) => `<article class="scenario-card"><span>${financeT(`supply.categories.${key}`)}</span><strong>${money(totals[category])}</strong></article>`).join("")}</div>
     <section class="finance-supply-subsection"><div class="section-head"><div><h4>${financeT("supply.costsTitle")}</h4><p class="muted-text">${financeT("supply.costsHelp")}</p></div></div>
       ${canManage ? `<form id="finance-supply-cost-form" class="form-grid compact-form"><label>${financeT("supply.category")}<select class="select" name="category" required>${financeSupplyCategories.map(([value, key]) => `<option value="${value}">${financeT(`supply.categories.${key}`)}</option>`).join("")}</select></label><label>${financeT("amount")}<input class="input" name="amount" type="number" min="0.0001" step="0.0001" required></label><label>${financeT("businessDate")}<input class="input" name="businessDate" type="date" value="${financeBusinessDateInputValue()}" required></label><label class="full-span">${financeT("description")}<input class="input" name="notes" maxlength="1000"></label><div class="form-actions"><button class="button primary" type="submit">${financeT("supply.addCost")}</button></div></form>` : `<p class="muted-text">${financeT("readOnly")}</p>`}
-      <div class="table-wrap compact-table">${financeTable(costs, [financeT("supply.category"), financeT("amount"), financeT("businessDate"), financeT("description"), financeT("actions")], (item) => `<tr><td>${escapeHtml(financeSupplyCategoryLabel(item.category))}${item.correctionNote ? `<small>${escapeHtml(item.correctionNote)}</small>` : ""}</td><td>${money(item.amount)}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(item.notes || "—")}</td><td>${canManage && item.status === "Active" && !item.replacedByCostEntryId ? `<button class="button secondary table-action" type="button" data-finance-supply-cost-correct="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : item.status === "Corrected" ? escapeHtml(financeT("openingBalances.corrected")) : "—"}</td></tr>`)}</div></section>
+      <div class="table-wrap compact-table">${financeTable(costs, [financeT("supply.category"), financeT("amount"), financeT("businessDate"), financeT("description"), financeT("actions")], (item) => `<tr><td>${escapeHtml(financeSupplyCategoryLabel(item.category))}${item.correctionNote ? `<small>${escapeHtml(item.correctionNote)}</small>` : ""}</td><td>${money(item.amount)}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(item.notes || "—")}</td><td>${canManage && item.status === "Active" && !item.replacedByCostEntryId ? `<button class="button secondary table-action" type="button" data-finance-supply-cost-correct="${escapeHtml(item.id)}">${financeT("openingBalances.correct")}</button>` : item.status === "Corrected" ? escapeHtml(foundationT("openingBalances.corrected")) : "—"}</td></tr>`)}</div></section>
     <section class="finance-supply-subsection"><div class="section-head"><div><h4>${financeT("supply.paymentsTitle")}</h4><p class="muted-text">${financeT("supply.paymentsHelp")}</p></div></div>
-      ${canManage && activeAccounts.length ? `<form id="finance-supply-payment-form" class="form-grid compact-form"><label>${financeT("account")}<select class="select" name="financeAccountId" required>${accountOptions}</select></label><label>${financeT("method")}<select class="select" name="movementMethod" required><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="CashTransaction">${financeT("methods.cashTransaction")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></label><label>${financeT("amount")}<input class="input" name="amount" type="number" min="0.0001" max="${escapeHtml(Math.max(0, Number(log.outstandingBalance || 0)))}" step="0.0001" required></label><label>${financeT("businessDate")}<input class="input" name="businessDate" type="date" value="${financeBusinessDateInputValue()}" required></label><label>${financeT("supply.externalReference")}<input class="input" name="externalReference" maxlength="200"></label><label>${financeT("description")}<input class="input" name="notes" maxlength="1000"></label><div class="form-actions"><button class="button primary" type="submit" ${Number(log.outstandingBalance || 0) <= 0 ? "disabled" : ""}>${financeT("supply.savePaymentDraft")}</button></div></form>` : canManage ? `<p class="warning-panel" role="note">${financeT("supply.noAccounts")}</p>` : ""}
-      <div class="table-wrap compact-table">${financeTable(installments, [financeT("amount"), financeT("account"), financeT("method"), financeT("businessDate"), financeT("status"), financeT("description"), financeT("actions")], (item) => { const account = accounts.find((value) => value.id === item.financeAccountId); return `<tr><td>${money(item.amount)}</td><td>${escapeHtml(account?.name || "—")}</td><td>${escapeHtml(financeValueLabel("method", item.movementMethod))}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td>${escapeHtml(item.notes || item.externalReference || "—")}</td><td>${canManage && item.status === "Draft" ? `<button class="button primary table-action" type="button" data-finance-supply-post="${escapeHtml(item.id)}">${financeT("supply.postPayment")}</button>` : canManage && item.status === "Posted" && !item.replacedByInstallmentId ? `<button class="button secondary table-action" type="button" data-finance-supply-correct="${escapeHtml(item.id)}">${financeT("supply.correctPayment")}</button>` : item.status === "Corrected" ? escapeHtml(financeT("openingBalances.corrected")) : "—"}</td></tr>`; })}</div></section>`;
+      ${canManage && activeAccounts.length ? `<form id="finance-supply-payment-form" class="form-grid compact-form"><label>${financeT("account")}<select class="select" name="financeAccountId" required>${accountOptions}</select></label><label>${financeT("method")}<select class="select" name="movementMethod" required><option value="CashHandToHand">${financeT("methods.cash")}</option><option value="BankTransfer">${financeT("methods.bank")}</option><option value="Wallet">${financeT("methods.wallet")}</option></select></label><label>${financeT("amount")}<input class="input" name="amount" type="number" min="0.0001" max="${escapeHtml(Math.max(0, Number(log.outstandingBalance || 0)))}" step="0.0001" required></label><label>${financeT("businessDate")}<input class="input" name="businessDate" type="date" value="${financeBusinessDateInputValue()}" required></label><label>${financeT("supply.externalReference")}<input class="input" name="externalReference" maxlength="200"></label><label>${financeT("description")}<input class="input" name="notes" maxlength="1000"></label><div class="form-actions"><button class="button primary" type="submit" ${Number(log.outstandingBalance || 0) <= 0 ? "disabled" : ""}>${financeT("supply.savePaymentDraft")}</button></div></form>` : canManage ? `<p class="warning-panel" role="note">${financeT("supply.noAccounts")}</p>` : ""}
+      <div class="table-wrap compact-table">${financeTable(installments, [financeT("amount"), financeT("account"), financeT("method"), financeT("businessDate"), financeT("status"), financeT("description"), financeT("actions")], (item) => { const account = accounts.find((value) => value.id === item.financeAccountId); return `<tr><td>${money(item.amount)}</td><td>${escapeHtml(account?.name || "—")}</td><td>${escapeHtml(financeValueLabel("method", item.movementMethod))}</td><td><bdi>${escapeHtml(item.businessDate || "—")}</bdi></td><td>${escapeHtml(financeValueLabel("status", item.status))}</td><td>${escapeHtml(item.notes || item.externalReference || "—")}</td><td>${canManage && item.status === "Draft" ? `<button class="button primary table-action" type="button" data-finance-supply-post="${escapeHtml(item.id)}">${financeT("supply.postPayment")}</button>` : canManage && item.status === "Posted" && !item.replacedByInstallmentId ? `<button class="button secondary table-action" type="button" data-finance-supply-correct="${escapeHtml(item.id)}">${financeT("supply.correctPayment")}</button>` : item.status === "Corrected" ? escapeHtml(foundationT("openingBalances.corrected")) : "—"}</td></tr>`; })}</div></section>`;
   detail.hidden = false;
   detail.querySelector("#finance-supply-detail-close")?.addEventListener("click", () => { detail.hidden = true; detail.replaceChildren(); });
   const costForm = detail.querySelector("#finance-supply-cost-form");
@@ -8622,7 +10216,7 @@ async function renderFinanceSupplyDetail(log) {
     const selected = activeAccounts.find((account) => account.id === event.target.value);
     const method = paymentForm.querySelector('[name="movementMethod"]');
     if (!method) return;
-    const allowed = selected?.type === "CashOnHand" ? ["CashHandToHand", "CashTransaction"] : selected?.type === "Wallet" ? ["Wallet"] : selected?.type === "BankAccount" ? ["BankTransfer"] : [];
+    const allowed = selected?.type === "CashOnHand" ? ["CashHandToHand"] : selected?.type === "Wallet" ? ["Wallet"] : selected?.type === "BankAccount" ? ["BankTransfer"] : [];
     [...method.options].forEach((option) => { option.disabled = !allowed.includes(option.value); });
     if (allowed.length) method.value = allowed[0];
   });
@@ -8673,13 +10267,13 @@ async function renderFinanceSupplyDetail(log) {
     } catch (error) { notice(getFriendlyWorkspaceError(error), "error"); button.disabled = false; }
   }));
 }
-async function submitFinanceAccount(event) { event.preventDefault(); const name = document.getElementById("finance-account-name").value.trim(); if (!name) return; await request("/api/v1/finance/accounts", { method: "POST", body: JSON.stringify({ name, type: canonicalSelectValue("finance-account-type", "financeAccountType"), reference: document.getElementById("finance-account-reference").value.trim() || null, details: document.getElementById("finance-account-details").value.trim() || null }) }); notice(financeT("accounts.created"), "success"); document.getElementById("finance-account-form")?.reset(); await loadFinanceWorkspace(); }
+async function submitFinanceAccount(event) { event.preventDefault(); const name = document.getElementById("finance-account-name").value.trim(); if (!name) return; await request("/api/v1/finance/accounts", { method: "POST", body: JSON.stringify({ name, type: canonicalSelectValue("finance-account-type", "financeAccountType"), reference: document.getElementById("finance-account-reference").value.trim() || null, details: document.getElementById("finance-account-details").value.trim() || null, locationId: document.getElementById("finance-account-area").value || null }) }); notice(financeT("accounts.created"), "success"); document.getElementById("finance-account-form")?.reset(); await loadFinanceWorkspace(); }
 async function submitFinanceOpeningBalance(event) { event.preventDefault(); const payload = { financeAccountId: document.getElementById("finance-opening-account").value, amount: Number(document.getElementById("finance-opening-amount").value), direction: "Credit", asOfDate: document.getElementById("finance-opening-date").value, description: document.getElementById("finance-opening-description").value.trim() }; await request("/api/v1/finance/opening-balances", { method: "POST", body: JSON.stringify(payload) }); notice(financeT("posted"), "success"); document.getElementById("finance-opening-form")?.reset(); await loadFinanceWorkspace(); }
 async function correctFinanceOpening(opening) {
   if (!opening) return;
   const amountText = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("amount"), defaultValue: String(opening.amount), inputType: "number", required: true });
   if (amountText === null) return;
-  const note = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("openingBalances.correctionNote"), required: true, multiline: true });
+  const note = await promptDialog({ title: financeT("openingBalances.correct"), label: financeT("openingBalances.correctionNote"), multiline: true });
   if (note === null) return;
   if (!await confirmDialog({ title: financeT("openingBalances.correct"), message: financeT("openingBalances.correctionNote"), confirmLabel: financeT("openingBalances.correct"), tone: "warning", translateMessage: false, translateTitle: false })) return;
   try {
@@ -8750,7 +10344,7 @@ async function submitFinanceWithdrawal(event) {
     };
     await request("/api/v1/finance/withdrawals", { method: "POST", body: JSON.stringify(payload) });
     form.reset();
-    notice(financeT("withdrawals.posted"), "success");
+    notice(financeT("withdrawals.drafted"), "success");
     await loadFinanceWorkspace();
   } catch (error) {
     notice(getFriendlyWorkspaceError(error), "error");
@@ -8811,7 +10405,7 @@ async function submitFinanceCategory(event) {
     code: document.getElementById("finance-category-code").value.trim(),
     englishName: document.getElementById("finance-category-english").value.trim(),
     arabicName: document.getElementById("finance-category-arabic").value.trim(),
-    sortOrder: Number(document.getElementById("finance-category-order").value), parentId: null
+    sortOrder: document.getElementById("finance-category-order").value.trim() === "" ? null : Number(document.getElementById("finance-category-order").value), parentId: null
   };
   try {
     await request("/api/v1/finance/categories", { method: "POST", body: JSON.stringify(payload) });
@@ -8906,7 +10500,7 @@ async function loadFinanceRepaymentHistory() {
       document.getElementById("finance-repayment-account").value = item.financeAccountId;
       document.getElementById("finance-repayment-method").value = item.movementMethod;
       document.getElementById("finance-repayment-amount").value = item.amount;
-      document.getElementById("finance-repayment-date").value = item.businessDate;
+      document.getElementById("finance-repayment-date").value = renderDateOnly(item.businessDate);
       document.getElementById("finance-repayment-notes").value = item.notes || "";
       const reason = document.getElementById("finance-repayment-correction-note");
       reason.closest("label").hidden = false;
@@ -8923,10 +10517,13 @@ async function loadFinanceRepaymentHistory() {
 async function loadFinanceExecutiveSummary() {
   const target = document.getElementById("finance-executive-summary");
   if (!target) return;
-  const period = document.getElementById("finance-summary-period")?.value || "daily";
-  const date = document.getElementById("finance-summary-date")?.value;
+  const from = document.getElementById("finance-summary-from")?.value;
+  const to = document.getElementById("finance-summary-to")?.value;
+  const query = new URLSearchParams({ page: "1", pageSize: "25" });
+  if (from) query.set("from", from);
+  if (to) query.set("to", to);
   try {
-    const summary = await request(`/api/v1/reports/executive-summary?period=${encodeURIComponent(period)}${date ? `&date=${encodeURIComponent(date)}` : ""}`);
+    const summary = await request(`/api/v1/reports/executive-summary?${query}`);
     const tiles = [
       [financeT("cash"), summary.currentBalances.cash],
       [financeT("bank"), summary.currentBalances.bank],
@@ -8936,14 +10533,14 @@ async function loadFinanceExecutiveSummary() {
       [financeT("executive.netSales"), summary.flows.netSales],
       [financeT("executive.collections"), summary.flows.actualCollections],
       [financeT("executive.expenses"), summary.flows.paidExpenses],
-      [financeT("executive.withdrawals"), summary.flows.withdrawals],
+      [financeT("executive.outstandingWithdrawals"), summary.currentBalances.cLevelWithdrawalOutstanding],
       [financeT("executive.repayments"), summary.flows.repayments],
       [financeT("executive.supplyPayments"), summary.flows.postedSupplyPayments],
       [financeT("executive.netCashMovement"), summary.flows.netExternalCashMovement],
-      [financeT("executive.paidPieces"), summary.units.paidPiecesSold],
+      [financeT("executive.nonBonusPieces"), summary.units.nonBonusPiecesSold],
       [financeT("executive.bonusPieces"), summary.units.bonusPieces]
     ];
-    target.innerHTML = `<p class="muted-text">${escapeHtml(summary.start)} – ${escapeHtml(summary.endExclusive)} · ${financeT("executive.currentBalances")}${summary.units.estimated ? ` · ${financeT("executive.estimated")}` : ""}${summary.units.unresolvedPackLines ? ` · ${financeT("executive.incomplete")}: ${escapeHtml(summary.units.unresolvedPackLines)}` : ""}</p><div class="scenario-grid">${tiles.map(([label, value]) => `<article class="scenario-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(label === financeT("executive.paidPieces") || label === financeT("executive.bonusPieces") ? Number(value || 0).toLocaleString(currentLanguage === "ar" ? "ar-EG" : "en-US") : formatMoney(Number(value || 0)))}</strong></article>`).join("")}</div>`;
+    target.innerHTML = `<p class="muted-text">${escapeHtml(summary.start)} – ${escapeHtml(summary.end || summary.endExclusive)} · ${financeT("executive.currentBalances")}${summary.units.estimated ? ` · ${financeT("executive.estimated")}` : ""}${summary.units.unresolvedPackLines ? ` · ${financeT("executive.incomplete")}: ${escapeHtml(summary.units.unresolvedPackLines)}` : ""}</p><div class="scenario-grid">${tiles.map(([label, value]) => `<article class="scenario-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(label === financeT("executive.nonBonusPieces") || label === financeT("executive.bonusPieces") ? Number(value || 0).toLocaleString(currentLanguage === "ar" ? "ar-EG" : "en-US") : formatMoney(Number(value || 0)))}</strong></article>`).join("")}</div>`;
   } catch (error) { target.textContent = getFriendlyWorkspaceError(error); }
 }
 
@@ -8951,7 +10548,7 @@ async function renderReports() {
   const role = getAuth()?.user.role;
   const allowedReportKeys = role === "WarehouseClerk"
     ? new Set(["stock", "operation-bill", "payment-receipt", "cash-receipt", "stocktake-summary"])
-    : role === "ERPAdmin" || role === "Accountant"
+    : role === "Accountant"
       ? new Set(["financial-summary", "stock", "operations", "payments", "merchant-balances", "operation-bill", "payment-receipt", "cash-receipt", "merchant-statement", "stocktake-summary"])
       : null;
   const canSeeReport = (key) => !allowedReportKeys || allowedReportKeys.has(key);
@@ -8983,6 +10580,7 @@ async function renderReports() {
             <label class="field"><span>${reportsT("operationType")}</span><select id="report-filter-operation-type" class="input"><option value="">${reportsT("allTypes")}</option><option value="WholesaleSale">${reportsT("wholesaleSale")}</option><option value="RetailSale">${reportsT("retailSale")}</option><option value="Return">${reportsT("return")}</option></select></label>
             <label class="field"><span>${foundationT("reports.sort")}</span><select id="report-filter-sort" class="input"><option value="createdAt">${foundationT("reports.sortCreated")}</option><option value="operationNumber">${foundationT("reports.sortOperationNumber")}</option><option value="total">${foundationT("reports.sortTotal")}</option><option value="quantity">${foundationT("reports.sortQuantity")}</option></select></label>
             <label class="field"><span>${foundationT("reports.direction")}</span><select id="report-filter-direction" class="input"><option value="desc">${foundationT("reports.descending")}</option><option value="asc">${foundationT("reports.ascending")}</option></select></label>
+            <label class="field"><span>${escapeHtml(foundationT("app.inline.rowsPerPage"))}</span><select id="report-page-size" class="input"><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1,000</option><option value="100000">${escapeHtml(reportsT("allRows"))}</option></select></label>
             <label class="field"><span>${reportsT("supplyStatus")}</span><select id="report-filter-supply-status" class="input"><option value="">${reportsT("allStatuses")}</option><option value="Draft">${reportsT("draft")}</option><option value="Arrived">${foundationT("supply.arrived")}</option><option value="PartiallyReceived">${foundationT("supply.partiallyReceived")}</option><option value="Received">${reportsT("received")}</option><option value="Cancelled">${reportsT("cancelled")}</option></select></label>
           </div>
         </section>
@@ -9016,7 +10614,8 @@ async function renderReports() {
     </section>`;
 
   document.getElementById("reports-refresh").addEventListener("click", loadReports);
-  document.querySelectorAll("#report-filter-location, #report-filter-from, #report-filter-to, #report-filter-operation-type, #report-filter-sort, #report-filter-direction, #report-filter-supply-status").forEach((control) => control?.addEventListener("change", () => {
+  document.querySelectorAll("#report-filter-location, #report-filter-from, #report-filter-to, #report-filter-operation-type, #report-filter-sort, #report-filter-direction, #report-filter-supply-status, #report-page-size").forEach((control) => control?.addEventListener("change", () => {
+    if (control.id === "report-page-size") reportPageSize = Number(control.value) || 50;
     reportPageState = { stock: 1, operations: 1, payments: 1, supply: 1, merchantBalances: 1 };
     void loadReports();
   }));
@@ -9040,6 +10639,19 @@ async function loadReports() {
     loadExportLogs()
   ]);
   renderReportDownloadSelectors();
+}
+
+// Feed document pickers from the same report sources used by the report
+// workspace so privileged users can open the same documents from either place.
+async function loadOperationalDocumentLookups() {
+  const [operations, payments, merchants] = await Promise.all([
+    request("/api/v1/operations?page=1&pageSize=50"),
+    request("/api/v1/payments?page=1&pageSize=50"),
+    request("/api/v1/crm/merchants?page=1&pageSize=50")
+  ]);
+  reportOperationRows = operations.items || [];
+  reportPaymentRows = payments.items || [];
+  reportMerchantRows = (merchants.items || []).map((merchant) => ({ ...merchant, merchantId: merchant.id }));
 }
 
 async function loadStockReport() {
@@ -9074,7 +10686,7 @@ async function loadOperationsReport() {
     reportOperationRows = rows;
     target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("payments.operation"))}</th><th>${escapeHtml(foundationT("payments.type"))}</th><th>${escapeHtml(foundationT("payments.status"))}</th><th>${escapeHtml(foundationT("supply.qty"))}</th><th>${escapeHtml(foundationT("payments.total"))}</th><th>${escapeHtml(foundationT("app.created"))}</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inline.noOperations"))}</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.operationNumber)}</td><td>${escapeHtml(operationTypeLabel(row.operationType))}</td><td>${escapeHtml(uiText(row.status))}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.total))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>${renderReportPager("operations", result, loadOperationsReport)}`;
+      : rows.map((row) => `<tr><td>${escapeHtml(row.operationNumber)}${row.externalReference ? `<span class="muted-cell">${escapeHtml(row.externalReference)}</span>` : ""}</td><td>${escapeHtml(operationTypeLabel(row.operationType))}</td><td>${escapeHtml(systemValueLabel(row.status))}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.total))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>${renderReportPager("operations", result, loadOperationsReport)}`;
   } catch (exception) {
     target.textContent = getFriendlyWorkspaceError(exception);
   }
@@ -9086,9 +10698,9 @@ async function loadPaymentsReport() {
     const result = await request(`/api/v1/reports/payments?page=${reportPageState.payments}&pageSize=50`);
     const rows = result.items || [];
     reportPaymentRows = rows;
-    target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("payments.payment"))}</th><th>${escapeHtml(foundationT("payments.operation"))}</th><th>${escapeHtml(foundationT("payments.method"))}</th><th>${escapeHtml(foundationT("payments.total"))}</th><th>${escapeHtml(foundationT("payments.paid"))}</th><th>${escapeHtml(foundationT("payments.remaining"))}</th><th>${escapeHtml(foundationT("payments.status"))}</th></tr></thead><tbody>${rows.length === 0
-      ? `<tr><td colspan="7">${escapeHtml(foundationT("app.inline.noPaymentLogs"))}</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(paymentReference(row))}</td><td>${escapeHtml(operationReference(row))}</td><td>${escapeHtml(movementMethodLabel(row.paymentMethod))}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(row.status))}</td></tr>`).join("")}</tbody></table>${renderReportPager("payments", result, loadPaymentsReport)}`;
+    target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("payments.payment"))}</th><th>${escapeHtml(foundationT("payments.operation"))}</th><th>${escapeHtml(foundationT("payments.method"))}</th><th>${escapeHtml(foundationT("payments.total"))}</th><th>${escapeHtml(foundationT("payments.paid"))}</th><th>${escapeHtml(foundationT("payments.remaining"))}</th><th>Settlement</th><th>${escapeHtml(foundationT("payments.status"))}</th></tr></thead><tbody>${rows.length === 0
+      ? `<tr><td colspan="8">${escapeHtml(foundationT("app.inline.noPaymentLogs"))}</td></tr>`
+      : rows.map((row) => `<tr><td>${escapeHtml(paymentReference(row))}</td><td>${escapeHtml(operationReference(row))}</td><td>${escapeHtml(movementMethodLabel(row.paymentMethod))}</td><td>${escapeHtml(formatMoney(row.totalAmount))}</td><td>${escapeHtml(formatMoney(row.amountPaid))}</td><td>${escapeHtml(formatMoney(row.remainingAmount))}</td><td>${escapeHtml(paymentSettlementStatusLabel(row.settlementStatus))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(row.status))}</td></tr>`).join("")}</tbody></table>${renderReportPager("payments", result, loadPaymentsReport)}`;
   } catch (exception) {
     target.textContent = getFriendlyWorkspaceError(exception);
   }
@@ -9097,7 +10709,7 @@ async function loadPaymentsReport() {
 function renderWearCycle(cycle, duration) {
   if (!cycle) return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.needsSetup"))}</span>`;
   if (cycle === "NotApplicable") return `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.notApplicable"))}</span>`;
-  return `<span class="status-pill status-ok">${escapeHtml(uiText(cycle))}</span>${duration ? `<span class="muted-cell"> ${escapeHtml(duration)}</span>` : ""}`;
+  return `<span class="status-pill status-ok">${escapeHtml(systemValueLabel(cycle))}</span>${duration ? `<span class="muted-cell"> ${escapeHtml(duration)}</span>` : ""}`;
 }
 
 async function loadSupplyReport() {
@@ -9113,7 +10725,7 @@ async function loadSupplyReport() {
     reportSupplyRows = rows;
     target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("supply.shipment"))}</th><th>${escapeHtml(foundationT("supply.supplier"))}</th><th>${escapeHtml(foundationT("payments.status"))}</th><th>${escapeHtml(foundationT("supply.qty"))}</th><th>${escapeHtml(foundationT("app.inline.landed"))}</th><th>${escapeHtml(foundationT("app.inline.receipt"))}</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="6">${escapeHtml(foundationT("app.inline.noSupplyShipments"))}</td></tr>`
-      : rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td dir="auto">${escapeHtml(row.supplierName)}</td><td>${escapeHtml(supplyStatusLabel(row.status))}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationNumber || (row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId, "OP") : "-"))}</td></tr>`).join("")}</tbody></table>${renderReportPager("supply", result, loadSupplyReport)}`;
+      : rows.map((row) => `<tr><td>${escapeHtml(row.shipmentNumber)}<span class="muted-cell">${escapeHtml(row.invoiceNumber || "-")}</span></td><td dir="auto">${escapeHtml(row.supplierName)}</td><td>${escapeHtml(supplyStatusLabel(row.status))}</td><td>${escapeHtml(row.quantity)}</td><td>${escapeHtml(formatMoney(row.landedTotal))}</td><td>${escapeHtml(row.inventoryReceiptOperationNumber || (row.inventoryReceiptOperationId ? shortId(row.inventoryReceiptOperationId, "OP") : "-"))}</td></tr>`).join("")}</tbody></table>${renderReportPager("supply", result, loadSupplyReport)}`;
   } catch (exception) {
     reportSupplyRows = [];
     target.textContent = getFriendlyWorkspaceError(exception);
@@ -9128,7 +10740,7 @@ async function loadMerchantBalancesReport() {
     reportMerchantRows = rows;
     target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("customer.merchant"))}</th><th>${escapeHtml(foundationT("payments.remaining"))}</th><th>${escapeHtml(foundationT("app.inline.sales"))}</th><th>${escapeHtml(foundationT("payments.netCollected"))}</th><th>${escapeHtml(foundationT("app.inline.accountAdjustments"))}</th></tr></thead><tbody>${rows.length === 0
       ? `<tr><td colspan="5">${escapeHtml(foundationT("app.inline.noMerchantRemaining"))}</td></tr>`
-      : rows.slice(0, 12).map((row) => {
+      : rows.map((row) => {
         const corrections = Number(row.acceptedReturnValue || 0) + Number(row.additionalCharges || 0) - Number(row.amountReductions || 0);
         return `<tr><td>${escapeHtml(row.businessName)}</td><td>${escapeHtml(formatMoney(row.remainingOwed))}</td><td>${escapeHtml(formatMoney(row.totalSales))}</td><td>${escapeHtml(formatMoney(row.netCollected))}</td><td>${escapeHtml(formatMoney(corrections))}</td></tr>`;
       }).join("")}</tbody></table>${renderReportPager("merchantBalances", result, loadMerchantBalancesReport)}`;
@@ -9161,12 +10773,12 @@ async function loadStocktakeReportOptions() {
 }
 
 function renderReportDownloadSelectors() {
-  setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${operationTypeLabel(row.operationType)} / ${row.status} / ${row.clientName || "-"}`);
+  setupReportSearchPicker("operation-bill", reportOperationRows, (row) => row.id, (row) => `${row.operationNumber} / ${operationTypeLabel(row.operationType)} / ${systemValueLabel(row.status)} / ${row.clientName || "-"}`);
   setupReportSearchPicker("payment-receipt", reportPaymentRows, (row) => row.id, (row) => `${paymentReference(row)} / ${movementMethodLabel(row.paymentMethod)} / ${formatMoney(row.remainingAmount)} remaining`);
-  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${paymentReference(row)} / ${row.status} / ${formatMoney(row.totalAmount)}`);
+  setupReportSearchPicker("cash-receipt", reportPaymentRows.filter((row) => row.paymentMethod === "CashHandToHand"), (row) => row.id, (row) => `${paymentReference(row)} / ${paymentWorkflowStatusLabel(row.status)} / ${formatMoney(row.totalAmount)}`);
   setupReportSearchPicker("supply-landed-cost", reportSupplyRows, (row) => row.id, (row) => `${row.shipmentNumber} / ${row.supplierName} / ${row.invoiceNumber || "-"} / ${formatMoney(row.landedTotal)}`);
-  setupReportSearchPicker("merchant-statement", reportMerchantRows, (row) => row.merchantId, (row) => `${row.businessName} / ${formatMoney(row.balance)}`);
-  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${stocktakeReference(row)} / ${row.status}`);
+  setupReportSearchPicker("merchant-statement", reportMerchantRows, (row) => row.merchantId || row.id, (row) => `${row.businessName}${row.balance == null ? "" : ` / ${formatMoney(row.balance)}`}`);
+  setupReportSearchPicker("stocktake-summary", reportStocktakeRows, (row) => row.id, (row) => `${stocktakeReference(row)} / ${systemValueLabel(row.status)}`);
 }
 
 function setReportSelect(id, rows, valueSelector, labelSelector) {
@@ -9211,7 +10823,7 @@ function bindTransactionReferenceField(methodId, referenceId) {
   const reference = document.getElementById(referenceId);
   if (!method || !reference) return;
   const sync = () => {
-    const required = ["CashTransaction", "BankTransfer", "Wallet"].includes(canonicalSelectValue(methodId, "movementMethod", { allowEmpty: true }));
+    const required = ["BankTransfer", "Wallet"].includes(canonicalSelectValue(methodId, "movementMethod", { allowEmpty: true }));
     reference.required = required;
     reference.closest(".field")?.toggleAttribute("hidden", !required);
     if (!required) reference.value = "";
@@ -9236,13 +10848,14 @@ function reportExportFilterParams(reportName) {
     if (value("report-filter-to")) params.set("to", value("report-filter-to"));
     if (value("report-filter-supply-status")) params.set("status", value("report-filter-supply-status"));
   }
+  params.set("pageSize", String(reportPageSize));
   return params;
 }
 
 function reportListParams(reportName, page) {
   const params = reportExportFilterParams(reportName);
   params.set("page", String(page));
-  params.set("pageSize", "50");
+  params.set("pageSize", String(reportPageSize));
   return params;
 }
 
@@ -9340,7 +10953,7 @@ async function loadExportLogs() {
     count.textContent = foundationT("payments.loggedCount", { count: result.totalCount });
     target.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("app.inline.report"))}</th><th>${escapeHtml(foundationT("app.inline.requestedBy"))}</th><th>${escapeHtml(foundationT("app.created"))}</th></tr></thead><tbody>${result.items.length === 0
       ? `<tr><td colspan="3">${escapeHtml(foundationT("app.inline.noExportLogsYet"))}</td></tr>`
-      : result.items.map((row) => `<tr><td>${escapeHtml(uiText(row.reportType))}</td><td>${escapeHtml(row.requestedByRole ? roleLabel(row.requestedByRole) : foundationT("app.inline.system"))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
+      : result.items.map((row) => `<tr><td>${escapeHtml(systemValueLabel(row.reportType))}</td><td>${escapeHtml(row.requestedByRole ? roleLabel(row.requestedByRole) : foundationT("app.inline.system"))}</td><td>${escapeHtml(formatDateTime(row.createdAt))}</td></tr>`).join("")}</tbody></table>`;
   } catch (exception) {
     count.textContent = foundationT("payments.failed");
     target.textContent = getFriendlyWorkspaceError(exception);
@@ -9365,7 +10978,10 @@ async function downloadReport(reportName, format = "csv", trigger = null) {
     const params = reportExportFilterParams(reportName);
     params.set("format", format);
     params.set("language", language);
-    const fileName = await downloadFile(`/api/v1/reports/${encodeURIComponent(reportName)}/export?${params}`, `lensee-${language}-${reportName}.${format}`);
+    const exportPath = `/api/v1/reports/${encodeURIComponent(reportName)}/export?${params}`;
+    const fileName = await downloadReportJobAware(exportPath, `lensee-${language}-${reportName}.${format}`, (job) => {
+      updateExportDocket({ title: reportName, format, status: `Preparing complete export (${job.rowCount || 0} rows)…` });
+    });
     updateExportDocket({ title: reportName, format, fileName, status: "Export completed and downloaded." });
     notice(foundationT("app.message.reportDownloaded"), "success");
     await loadExportLogs();
@@ -9396,7 +11012,10 @@ async function downloadReportPdf(reportType, format = "pdf", trigger = null) {
     if (trigger) trigger.disabled = true;
     const language = getReportExportLanguage();
     updateExportDocket({ title: reportType, format, status: "Rendering the official document…" });
-    const fileName = await downloadFile(`/api/v1/documents/${encodeURIComponent(reportType)}/${encodeURIComponent(id.trim())}?format=${encodeURIComponent(format)}&language=${encodeURIComponent(language)}`, `lensee-${language}-${reportType}.${format}`);
+    const documentPath = `/api/v1/documents/${encodeURIComponent(reportType)}/${encodeURIComponent(id.trim())}?format=${encodeURIComponent(format)}&language=${encodeURIComponent(language)}`;
+    const fileName = await downloadReportJobAware(documentPath, `lensee-${language}-${reportType}.${format}`, (job) => {
+      updateExportDocket({ title: reportType, format, status: `Preparing complete document (${job.rowCount || 0} rows)…` });
+    });
     updateExportDocket({ title: reportType, format, fileName, status: "Official document downloaded." });
     notice(`${format.toUpperCase()} downloaded.`, "success");
     await loadExportLogs();
@@ -9431,7 +11050,7 @@ async function printReportPdf(reportType, id, codeOverride = null) {
     if (from) query.set("from", from);
     if (to) query.set("to", to);
   }
-  await downloadFile(`${paths[reportType]}?${query.toString()}`, `lensee-${language}-${reportType}-${code}.pdf`);
+  await downloadReportJobAware(`${paths[reportType]}?${query.toString()}`, `lensee-${language}-${reportType}-${code}.pdf`);
 }
 
 function getReportFileCode(reportType, id) {
@@ -9480,7 +11099,7 @@ function supplyStatusLabel(status) {
     Received: foundationT("supply.received"),
     Cancelled: foundationT("supply.cancelled")
   };
-  return labels[status] || status || "-";
+  return labels[status] || systemValueLabel(status);
 }
 
 async function hydrateSupplySkus() {
@@ -9587,7 +11206,6 @@ function renderSupplyForm() {
           <div class="supply-header-grid">
             <div class="field"><label for="supply-supplier">${foundationT("supply.supplier")}</label><input id="supply-supplier" class="input" maxlength="255" required></div>
             <div class="field"><label for="supply-invoice">${foundationT("supply.invoiceNumber")}</label><input id="supply-invoice" class="input" maxlength="100"></div>
-            <div class="field"><label for="supply-date">${foundationT("supply.shipmentDate")}</label><input id="supply-date" class="input" type="datetime-local"></div>
             <div class="field"><label for="supply-location">${foundationT("supply.destinationWarehouse")}</label><select id="supply-location" class="select">${inventoryLocations.filter((location) => location.isActive).map((location) => `<option value="${escapeHtml(location.id)}" ${location.id === mainWarehouse?.id ? "selected" : ""}>${escapeHtml(location.name)}</option>`).join("")}</select></div>
             <div class="field full-span"><label for="supply-notes">${foundationT("supply.notes")}</label><textarea id="supply-notes" class="input" rows="2" maxlength="4000"></textarea></div>
           </div>
@@ -9638,6 +11256,7 @@ function addSupplyLine(line = {}, target = null) {
     _clientId: line._clientId || createUuid(),
     skuId: line.skuId || "",
     quantity: line.quantity || 1,
+    quantityUnit: "Pack",
     lotNumber: line.lotNumber || null,
     expiryDate: line.expiryDate || null,
     notes: line.notes || null,
@@ -9659,7 +11278,7 @@ function addSupplyLine(line = {}, target = null) {
     <input class="supply-line-sku" type="hidden" value="${escapeHtml(model.skuId)}">
     <div class="field op-line-finder"><label>${foundationT("supply.findSKU")}</label><input class="input supply-line-search" autocomplete="off" placeholder="${foundationT("supply.productColorPowerSKUCode")}"><div class="op-line-search-results" hidden></div></div>
     <div class="op-line-resolved full-span"><span class="muted-text">${foundationT("supply.searchAndSelectASKU")}</span></div>
-    <div class="field"><label>${foundationT("supply.quantity")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(model.quantity)}" required></div>
+    <div class="field"><label>${foundationT("supply.sealedPackQuantity")}</label><input class="input supply-line-qty" type="number" min="1" step="1" value="${escapeHtml(model.quantity)}" required></div>
     <div class="field"><label>${foundationT("supply.lot")}</label><input class="input supply-line-lot" maxlength="100" value="${escapeHtml(model.lotNumber || "")}"></div>
     <div class="field"><label>${foundationT("supply.expiry")}</label><input class="input supply-line-expiry" type="date" value="${escapeHtml(model.expiryDate || "")}"></div>
     <div class="field full-span"><label>${foundationT("supply.lineNotes")}</label><input class="input supply-line-notes" maxlength="1000" value="${escapeHtml(model.notes || "")}"></div>
@@ -9686,6 +11305,7 @@ function readSupplyLineRow(row) {
     _clientId: row.dataset.supplyLineKey,
     skuId: row.querySelector(".supply-line-sku").value,
     quantity: Number(row.querySelector(".supply-line-qty").value || 0),
+    quantityUnit: "Pack",
     lotNumber: row.querySelector(".supply-line-lot").value.trim() || null,
     expiryDate: row.querySelector(".supply-line-expiry").value || null,
     notes: row.querySelector(".supply-line-notes").value.trim() || null,
@@ -9899,9 +11519,9 @@ async function showSupplyDetail(id, linePage = 1) {
       ${renderSupplyReceivingPanel({ shipment, receiving, quantityByLine, openReceivingSession, receivingLines, canReceive })}
       <h3>${foundationT("supply.lines")} <span class="muted-text">${escapeHtml(lineResult.totalCount)}</span></h3>
       <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${foundationT("supply.qty")}</th><th>${foundationT("supply.batch")}</th></tr></thead><tbody>${shipment.lines.map((line) => `
-        <tr><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span>${line.notes ? `<span class="muted-cell">${escapeHtml(line.notes)}</span>` : ""}</td><td>${escapeHtml(line.quantity)}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(line.expiryDate || "-")}</td></tr>`).join("")}</tbody></table></div>
+        <tr><td><strong>${escapeHtml(line.skuCode)}</strong><span class="muted-cell">${escapeHtml(line.productName)}</span>${line.notes ? `<span class="muted-cell">${escapeHtml(line.notes)}</span>` : ""}</td><td>${escapeHtml(line.quantity)}</td><td>${escapeHtml(line.lotNumber || "-")} / ${escapeHtml(renderDateOnly(line.expiryDate || "-"))}</td></tr>`).join("")}</tbody></table></div>
       <h3>${foundationT("supply.history")}</h3>
-      <div class="table-wrap compact-table"><table><thead><tr><th>${foundationT("supply.action")}</th><th>${foundationT("supply.time")}</th><th>${foundationT("supply.summary")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${foundationT("supply.noHistory")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(uiText(item.action))}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(uiText(item.summary || "-"))}</td></tr>`).join("")}</tbody></table></div>
+      <div class="table-wrap compact-table"><table><thead><tr><th>${foundationT("supply.action")}</th><th>${foundationT("supply.time")}</th><th>${foundationT("supply.summary")}</th></tr></thead><tbody>${shipment.history.length === 0 ? `<tr><td colspan="3">${foundationT("supply.noHistory")}</td></tr>` : shipment.history.map((item) => `<tr><td>${escapeHtml(systemValueLabel(item.action))}</td><td>${escapeHtml(formatDateTime(item.createdAt))}</td><td>${escapeHtml(systemValueLabel(item.summary))}</td></tr>`).join("")}</tbody></table></div>
       <div class="pagination" id="supply-detail-line-pagination"></div>`;
 
     const detailPager = document.getElementById("supply-detail-line-pagination");
@@ -10104,7 +11724,6 @@ function fillSupplyForm(shipment) {
   document.getElementById("supply-id").value = shipment.id;
   document.getElementById("supply-supplier").value = shipment.supplierName || "";
   document.getElementById("supply-invoice").value = shipment.invoiceNumber || "";
-  document.getElementById("supply-date").value = shipment.shipmentDate ? shipment.shipmentDate.slice(0, 16) : "";
   document.getElementById("supply-location").value = shipment.destinationLocationId;
   document.getElementById("supply-notes").value = shipment.notes || "";
   supplyEditorLines = shipment.lines.map((line) => ({
@@ -10203,7 +11822,6 @@ function collectSupplyFormPayload() {
   return {
     supplierName: document.getElementById("supply-supplier").value.trim(),
     invoiceNumber: document.getElementById("supply-invoice").value.trim() || null,
-    shipmentDate: document.getElementById("supply-date").value || null,
     destinationLocationId: document.getElementById("supply-location").value,
     notes: document.getElementById("supply-notes").value.trim() || null,
     lines: supplyEditorLines.map((line) => ({ ...line, _row: visibleRows.get(line._clientId) }))
@@ -10357,9 +11975,9 @@ async function loadStocktakes() {
       return `<tr>
         <td>${escapeHtml(stocktakeReference(session, location))}</td>
         <td>${escapeHtml(location?.name || shortId(session.locationId, "LOC"))}</td>
-        <td>${escapeHtml(uiText(session.status))}</td>
+        <td>${escapeHtml(systemValueLabel(session.status))}</td>
         <td>${escapeHtml(session.productsCounted)}</td>
-        <td>${escapeHtml(session.totalDiscrepancyUnits)}</td>
+        <td>${escapeHtml(`${session.totalDiscrepancyUnits} ${foundationT("stocktake.totalPhysicalPieces")}`)}</td>
         <td>${escapeHtml(formatDateTime(session.createdAt))}</td>
         <td><button class="button secondary table-action" type="button" data-stocktake-detail="${escapeHtml(session.id)}">${escapeHtml(foundationT("payments.details"))}</button><button class="button secondary table-action" type="button" data-print-report="stocktake-summary" data-print-id="${escapeHtml(session.id)}" data-print-code="${escapeHtml(stocktakeReference(session, location))}">${escapeHtml(foundationT("payments.print"))}</button></td>
       </tr>`;
@@ -10403,13 +12021,13 @@ async function showStocktakeDetail(sessionId) {
   const location = inventoryLocations.find((value) => value.id === session.locationId);
   target.innerHTML = `
     <div class="section-head">
-      <div><h2>${escapeHtml(stocktakeReference(session, location))}</h2><p class="muted-text">${escapeHtml(uiText(session.status))}</p></div>
+      <div><h2>${escapeHtml(stocktakeReference(session, location))}</h2><p class="muted-text">${escapeHtml(systemValueLabel(session.status))}</p></div>
       ${isAdmin && session.status === "Draft" ? `<button id="stocktake-confirm" class="button primary" type="button">${escapeHtml(foundationT("app.inline.confirmAdjustments"))}</button>` : ""}
     </div>
     ${session.notes ? `<p class="muted-text"><strong>${escapeHtml(foundationT("payments.notes"))}:</strong> ${escapeHtml(session.notes)}</p>` : ""}
-    <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.catalogExpiry"))}</th><th>${escapeHtml(foundationT("stocktake.packs"))}</th><th>${escapeHtml(foundationT("stocktake.pieces"))}</th><th>${escapeHtml(foundationT("stocktake.physicalPacks"))}</th><th>${escapeHtml(foundationT("stocktake.physicalPieces"))}</th><th>${escapeHtml(foundationT("stocktake.delta"))}</th><th>${escapeHtml(foundationT("payments.merchantOpening.note"))}</th></tr></thead><tbody>${session.lines.length === 0
+    <div class="table-wrap compact-table"><table><thead><tr><th>${escapeHtml(foundationT("app.sku"))}</th><th>${escapeHtml(foundationT("app.lot"))}</th><th>${escapeHtml(foundationT("app.catalogExpiry"))}</th><th>${escapeHtml(foundationT("stocktake.packs"))}</th><th>${escapeHtml(foundationT("stocktake.pieces"))}</th><th>${escapeHtml(foundationT("stocktake.physicalPacks"))}</th><th>${escapeHtml(foundationT("stocktake.physicalPieces"))}</th><th>${escapeHtml(foundationT("stocktake.totalPhysicalPieces"))}</th><th>${escapeHtml(foundationT("payments.merchantOpening.note"))}</th></tr></thead><tbody>${session.lines.length === 0
       ? `<tr><td colspan="9">${escapeHtml(foundationT("app.inline.noCountedLinesYet"))}</td></tr>`
-      : session.lines.map((line) => `<tr><td>${escapeHtml(stocktakeSkuLabel(line.skuId))}</td><td>${escapeHtml(line.lotNumber || "-")}</td><td>${escapeHtml(line.expiryDate || "-")}</td><td>${escapeHtml(line.systemPackCount ?? line.systemQtyBefore)}</td><td>${escapeHtml(line.systemPieceCount ?? 0)}</td><td>${escapeHtml(line.physicalPackCount ?? line.physicalCount)}</td><td>${escapeHtml(line.physicalPieceCount ?? 0)}</td><td>${escapeHtml(`${line.deltaPackCount ?? line.delta} / ${line.deltaPieceCount ?? 0}`)}</td><td>${escapeHtml(line.lineNote || "-")}</td></tr>`).join("")}</tbody></table></div>
+      : session.lines.map((line) => `<tr><td>${escapeHtml(stocktakeSkuLabel(line.skuId))}</td><td>${escapeHtml(line.lotNumber || "-")}</td><td>${escapeHtml(line.expiryDate || "-")}</td><td>${escapeHtml(line.systemPackCount ?? line.systemQtyBefore)}</td><td>${escapeHtml(line.systemPieceCount ?? 0)}</td><td>${escapeHtml(line.physicalPackCount ?? line.physicalCount)}</td><td>${escapeHtml(line.physicalPieceCount ?? 0)}</td><td>${escapeHtml(line.deltaPhysicalPieces ?? foundationT("app.inline.legacyUnitUnknown"))}<span class="muted-cell">${escapeHtml(line.piecesPerPackSnapshot ? `${foundationT("stocktake.packSize")}: ${line.piecesPerPackSnapshot}` : "")}</span></td><td>${escapeHtml(line.lineNote || "-")}</td></tr>`).join("")}</tbody></table></div>
     ${isAdmin && session.status === "Draft" ? `
       <form id="stocktake-lines-form" class="form wide-form compact-form">
         <div class="form-error" id="stocktake-lines-error" hidden></div>
@@ -10720,6 +12338,10 @@ function renderNotificationCard(item) {
   const tone = item.isRead ? "status-muted" : "status-warning";
   const target = item.targetRole ? roleLabel(item.targetRole) : (item.targetUserId ? foundationT("app.specificEmployee") : foundationT("notifications.broadcast"));
   const actionLabel = uiText(item.actionLabel || notificationActionLabel(item));
+  const paymentWorkflow = isPaymentWorkflowNotification(item);
+  const recordCaption = paymentWorkflow
+    ? item.referenceTitle || paymentT("payment")
+    : [item.referenceCode, item.referenceTitle].filter(Boolean).join(" / ");
   const actionButton = item.referenceId
     ? `<button class="button secondary table-action" type="button" data-resolve-notification="${escapeHtml(item.id)}">${escapeHtml(actionLabel)}</button>`
     : "";
@@ -10731,8 +12353,8 @@ function renderNotificationCard(item) {
             <span class="status-pill ${tone}">${escapeHtml(notificationTypeLabel(item.alertType))}</span>
             <span class="muted-text">${escapeHtml(formatDateTime(item.createdAt))}</span>
           </div>
-          <p class="notification-message">${escapeHtml(uiText(item.message))}</p>
-          ${item.referenceCode ? `<p class="muted-text notification-record-code">${escapeHtml(item.referenceCode)}${item.referenceTitle ? ` / ${escapeHtml(item.referenceTitle)}` : ""}</p>` : ""}
+          <p class="notification-message">${escapeHtml(notificationMessageLabel(item))}</p>
+          ${recordCaption ? `<p class="muted-text notification-record-code">${escapeHtml(recordCaption)}</p>` : ""}
         </div>
         <div class="notification-actions">
           <button class="button secondary table-action" type="button" data-toggle-notification="${escapeHtml(item.id)}">${escapeHtml(foundationT("payments.details"))}</button>
@@ -10744,12 +12366,73 @@ function renderNotificationCard(item) {
         <dl>
           <div><dt>${escapeHtml(foundationT("app.inline.target"))}</dt><dd>${escapeHtml(target)}</dd></div>
           <div><dt>${escapeHtml(foundationT("app.inline.channel"))}</dt><dd>${escapeHtml(item.channel ? uiText(item.channel) : "-")}</dd></div>
-          <div><dt>${escapeHtml(foundationT("payments.reference"))}</dt><dd>${escapeHtml(item.referenceCode || item.referenceType || "-")}${item.referenceId && !item.referenceCode ? ` / ${escapeHtml(shortId(item.referenceId, referencePrefix(item.referenceType)))}` : ""}</dd></div>
+          <div><dt>${escapeHtml(foundationT("payments.reference"))}</dt><dd>${escapeHtml(paymentWorkflow ? (item.referenceTitle || paymentT("payment")) : (item.referenceCode || item.referenceType || "-"))}${item.referenceId && !item.referenceCode && !paymentWorkflow ? ` / ${escapeHtml(shortId(item.referenceId, referencePrefix(item.referenceType)))}` : ""}</dd></div>
           <div><dt>${escapeHtml(foundationT("app.inline.eventLocation"))}</dt><dd>${item.referenceId ? escapeHtml(actionLabel) : "-"}</dd></div>
           <div><dt>${escapeHtml(foundationT("payments.status"))}</dt><dd>${item.isRead ? foundationT("app.inline.read") : foundationT("app.inline.unread")}</dd></div>
         </dl>
       </div>
     </article>`;
+}
+
+const paymentNotificationEvents = Object.freeze({
+  CollectionRequired: "collectionRequired",
+  PaymentAssigned: "paymentAssigned",
+  PaymentReassigned: "paymentReassigned",
+  PaymentSubLogDrafted: "paymentSubLogDrafted",
+  PaymentSubLogSubmittedForApproval: "paymentSubLogSubmitted",
+  PaymentSubLogApproved: "paymentSubLogApproved",
+  PaymentSubLogRejected: "paymentSubLogRejected",
+  PaymentCompleted: "paymentCompleted",
+  CashReceiptRecorded: "cashReceiptRecorded",
+  CashReceiptSubmittedForApproval: "cashReceiptSubmitted",
+  CashReceiptApproved: "cashReceiptApproved",
+  CashReceiptRejected: "cashReceiptRejected",
+  CashRefundRecorded: "cashRefundRecorded",
+  CashRefundSubmittedForApproval: "cashRefundSubmitted",
+  CashRefundApproved: "cashRefundApproved",
+  CashRefundRejected: "cashRefundRejected",
+  MerchantAccountCollectionDrafted: "merchantCollectionDrafted",
+  MerchantAccountCollectionSubmitted: "merchantCollectionSubmitted",
+  MerchantAccountCollectionApproved: "merchantCollectionApproved",
+  MerchantAccountCollectionRejected: "merchantCollectionRejected",
+  FinancialAdjustmentRequested: "financialAdjustmentRequested",
+  FinancialAdjustmentApproved: "financialAdjustmentApproved",
+  FinancialAdjustmentRejected: "financialAdjustmentRejected",
+  CashRefundPaidOut: "cashRefundPaidOut",
+  ReconciliationCompleted: "reconciliationCompleted"
+});
+
+function paymentNotificationEventKey(item) {
+  const eventType = String(item?.eventType || item?.alertType || "").trim();
+  if (paymentNotificationEvents[eventType]) return paymentNotificationEvents[eventType];
+  const message = String(item?.message || "");
+  const patterns = [
+    [/collection must be recorded and approved/i, "collectionRequired"],
+    [/assigned to accountant workflow/i, "paymentAssigned"],
+    [/payment sub-log.*awaiting .*review/i, "paymentSubLogSubmitted"],
+    [/payment sub-log.*approved/i, "paymentSubLogApproved"],
+    [/payment sub-log.*rejected/i, "paymentSubLogRejected"],
+    [/cash receipt.*approved/i, "cashReceiptApproved"],
+    [/cash refund.*approved/i, "cashRefundApproved"],
+    [/cash receipt.*rejected/i, "cashReceiptRejected"],
+    [/cash refund.*rejected/i, "cashRefundRejected"]
+  ];
+  return patterns.find(([pattern]) => pattern.test(message))?.[1] || null;
+}
+
+function isPaymentWorkflowNotification(item) {
+  const alertType = String(item?.alertType || item?.eventType || "");
+  const referenceType = String(item?.referenceType || "").toLowerCase();
+  return Boolean(paymentNotificationEventKey(item))
+    || /^paymentworkflow$/i.test(alertType)
+    || (referenceType === "paymentlog" && /payment|collection|cashreceipt|cashrefund|financialadjustment/i.test(alertType));
+}
+
+function notificationMessageLabel(item) {
+  const eventKey = paymentNotificationEventKey(item);
+  if (eventKey) return foundationT(`notifications.paymentEvent.${eventKey}`);
+  if (isPaymentWorkflowNotification(item)) return foundationT("notifications.paymentEvent.generic");
+  return uiText(item?.message || "");
 }
 
 function notificationActionUrl(item) {
@@ -10832,7 +12515,8 @@ function notificationTypeLabel(type) {
     StocktakeConfirmed: "stocktakeConfirmed",
     MerchantExpiryRecall: "merchantExpiryRecall"
   };
-  return keys[type] ? foundationT(`notifications.type.${keys[type]}`) : (type ? uiText(type) : foundationT("notifications.type.notification"));
+  if (paymentNotificationEvents[type]) return foundationT("notifications.type.paymentWorkflow");
+  return keys[type] ? foundationT(`notifications.type.${keys[type]}`) : (type ? systemValueLabel(type) : foundationT("notifications.type.notification"));
 }
 
 async function markNotificationRead(id) {
@@ -11078,7 +12762,7 @@ async function createAdminUser(event) {
       });
       form.reset();
       syncAdminCreateUserLocation();
-      notice(`Employee account created for ${user.fullName}.`, "success");
+      notice(foundationT("admin.employeeAccountCreated", { employee: user.fullName }), "success");
       await loadAdminUsers();
     } catch (exception) {
       notice(getFriendlyWorkspaceError(exception), "error");
@@ -11106,7 +12790,7 @@ async function createAdminLocation(event) {
         body: JSON.stringify({ name, locationType })
       });
       form.reset();
-      notice(`${location.name} was added as an active warehouse.`, "success");
+      notice(foundationT("admin.activeWarehouseAdded", { warehouse: location.name }), "success");
       await loadAdminUsers();
     } catch (exception) {
       notice(getFriendlyWorkspaceError(exception), "error");
@@ -11167,6 +12851,18 @@ function renderForbidden() {
   document.getElementById("view").innerHTML = `<section class="band"><h2>${escapeHtml(foundationT("app.inline.accessDenied"))}</h2><p>${escapeHtml(foundationT("app.inline.thisSessionCannotOpenThatWorkspace"))}</p></section>`;
 }
 
+function renderNotFound(auth) {
+  document.body.classList.toggle("auth-page", !auth);
+  document.getElementById("page-title").textContent = foundationT("app.notFound.title");
+  document.getElementById("route-label").textContent = foundationT("routes.notFound.label");
+  renderNav(auth);
+  renderSession(auth);
+  const destination = auth ? "/dashboard" : "/login";
+  document.getElementById("view").innerHTML = `<section class="band not-found-page"><p class="eyebrow">404</p><h2>${escapeHtml(foundationT("app.notFound.title"))}</h2><p>${escapeHtml(foundationT("app.notFound.message"))}</p><a class="button primary" href="#${destination}">${escapeHtml(foundationT("app.notFound.home"))}</a></section>`;
+  applyLanguage(document.getElementById("view"));
+  sanitizeVisiblePresentation();
+}
+
 async function logout() {
   try {
     await request("/api/v1/auth/logout", { method: "POST", body: JSON.stringify({}) });
@@ -11177,7 +12873,21 @@ async function logout() {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
+  const text = String(value ?? "");
+  const isoDate = /^\d{4}-\d{2}-\d{2}$/.test(text);
+  const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(text);
+  const formattedDate = /^\d{2}\/\d{2}\/\d{4}$/.test(text);
+  const formattedDateTime = /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}(?::\d{2})?$/.test(text);
+  const display = isoDate || formattedDate ? renderDateOnly(text)
+    : isoDateTime || formattedDateTime ? formatDateTime(text)
+      : text;
+  return display.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
+}
+
+function replaceMarkup(target, markup) {
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  target.replaceChildren(range.createContextualFragment(markup));
 }
 
 function roleLabel(role) {
@@ -11188,7 +12898,7 @@ function roleLabel(role) {
     Accountant: "app.inline.accountant",
     WarehouseClerk: "app.inline.warehouseClerk"
   };
-  return keys[role] ? foundationT(keys[role]) : role;
+  return keys[role] ? foundationT(keys[role]) : systemValueLabel(role);
 }
 
 function referencePrefix(type) {
@@ -11392,12 +13102,16 @@ function renderAuditPagination(result) {
 async function showAuditDetail(id) {
   const detail = document.getElementById("audit-detail");
   if (!detail) return;
-  detail.innerHTML = `<h2>${escapeHtml(foundationT("app.inline.eventDetail"))}</h2><p>${escapeHtml(foundationT("app.inline.loadingEvent"))}</p>`;
+  const loadingTitle = document.createElement("h2");
+  loadingTitle.textContent = foundationT("app.inline.eventDetail");
+  const loadingBody = document.createElement("p");
+  loadingBody.textContent = foundationT("app.inline.loadingEvent");
+  detail.replaceChildren(loadingTitle, loadingBody);
   try {
     const event = await request(`/api/v1/audit/${encodeURIComponent(id)}`);
     const changes = Array.isArray(event.changes) ? event.changes : [];
     const savedValues = changes.length ? `<div class="audit-change-list">${changes.map((change) => `<article class="audit-change"><strong>${escapeHtml(change.field)}</strong>${change.before ? `<span>${escapeHtml(foundationT("audit.was"))}: ${escapeHtml(displaySafeText(change.before, "AUD"))}</span>` : ""}<span>${escapeHtml(foundationT(change.before ? "audit.now" : "audit.saved"))}: ${escapeHtml(displaySafeText(change.after || foundationT("audit.cleared"), "AUD"))}</span></article>`).join("")}</div>` : `<p class="muted-text audit-empty-values">${escapeHtml(foundationT("app.inline.noIndividualFieldValuesWereSavedForThisEvent"))}</p>`;
-    detail.innerHTML = `<div class="section-head"><div><p class="eyebrow">${escapeHtml(foundationT("app.recordedActivity"))}</p><h2>${escapeHtml(auditSummaryText(event))}</h2><p class="muted-text">${escapeHtml(formatDateTime(event.happenedAt))} ${escapeHtml(foundationT("app.by"))} ${escapeHtml(event.actorName)}</p></div><button class="button secondary" type="button" id="audit-open-detail-source">${escapeHtml(foundationT("app.openRelatedRecord"))}</button></div><div class="detail-grid"><div><span>${escapeHtml(foundationT("app.record"))}</span><strong>${escapeHtml(event.recordName || foundationT("payments.relatedRecord"))}</strong></div><div><span>${escapeHtml(foundationT("app.performedBy"))}</span><strong>${escapeHtml(event.actorName || foundationT("payments.historicalActorUnavailable"))} · ${escapeHtml(auditActorRole(event.actorType))}</strong></div><div><span>${escapeHtml(foundationT("app.area"))}</span><strong>${escapeHtml(auditSectionLabel(event.section))}</strong></div><div><span>${escapeHtml(foundationT("payments.scope"))}</span><strong>${escapeHtml(event.entityType ? uiText(event.entityType) : foundationT("app.systemActivity"))}</strong></div><div><span>${escapeHtml(foundationT("app.time"))}</span><strong>${escapeHtml(formatDateTime(event.happenedAt))}</strong></div>${event.stockDeltaApplied == null ? "" : `<div><span>${escapeHtml(foundationT("app.stockChange"))}</span><strong>${escapeHtml(String(event.stockDeltaApplied))}</strong></div>`}</div><section class="audit-saved-values"><h3>${escapeHtml(foundationT("app.savedValues"))}</h3><p class="muted-text">${escapeHtml(foundationT("app.activityValueExplanation"))}</p>${savedValues}</section>`;
+    replaceMarkup(detail, `<div class="section-head"><div><p class="eyebrow">${escapeHtml(foundationT("app.recordedActivity"))}</p><h2>${escapeHtml(auditSummaryText(event))}</h2><p class="muted-text">${escapeHtml(formatDateTime(event.happenedAt))} ${escapeHtml(foundationT("app.by"))} ${escapeHtml(event.actorName)}</p></div><button class="button secondary" type="button" id="audit-open-detail-source">${escapeHtml(foundationT("app.openRelatedRecord"))}</button></div><div class="detail-grid"><div><span>${escapeHtml(foundationT("app.record"))}</span><strong>${escapeHtml(event.recordName || foundationT("payments.relatedRecord"))}</strong></div><div><span>${escapeHtml(foundationT("app.performedBy"))}</span><strong>${escapeHtml(event.actorName || foundationT("payments.historicalActorUnavailable"))} · ${escapeHtml(auditActorRole(event.actorType))}</strong></div><div><span>${escapeHtml(foundationT("app.area"))}</span><strong>${escapeHtml(auditSectionLabel(event.section))}</strong></div><div><span>${escapeHtml(foundationT("payments.scope"))}</span><strong>${escapeHtml(event.entityType ? systemValueLabel(event.entityType) : foundationT("app.systemActivity"))}</strong></div><div><span>${escapeHtml(foundationT("app.time"))}</span><strong>${escapeHtml(formatDateTime(event.happenedAt))}</strong></div>${event.stockDeltaApplied == null ? "" : `<div><span>${escapeHtml(foundationT("app.stockChange"))}</span><strong>${escapeHtml(String(event.stockDeltaApplied))}</strong></div>`}</div><section class="audit-saved-values"><h3>${escapeHtml(foundationT("app.savedValues"))}</h3><p class="muted-text">${escapeHtml(foundationT("app.activityValueExplanation"))}</p>${savedValues}</section>`);
     document.getElementById("audit-open-detail-source")?.addEventListener("click", () => openAuditSource(event.id));
   } catch (exception) {
     detail.innerHTML = `<h2>${escapeHtml(foundationT("app.inline.eventDetail"))}</h2><p class="form-error">${escapeHtml(getFriendlyWorkspaceError(exception))}</p>`;
@@ -11533,7 +13247,7 @@ function renderShopifyEvent(event) {
     : "";
   const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
   const statusKeys = { RequiresAttention: "app.inline.needsReview", Queued: "app.inline.queued", Processing: "app.inline.processing", Retrying: "app.inline.retrying", Resolved: "app.inline.resolved", Succeeded: "app.inline.succeeded", Imported: "app.inline.imported" };
-  const visibleStatus = statusKeys[event.status] ? foundationT(statusKeys[event.status]) : uiText(event.status);
+  const visibleStatus = statusKeys[event.status] ? foundationT(statusKeys[event.status]) : systemValueLabel(event.status);
   return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(visibleStatus)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(uiText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">${escapeHtml(foundationT("app.openOperation"))}${event.shopifyOrderId ? ` · Shopify ${escapeHtml(event.shopifyOrderId)}` : ""}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>${escapeHtml(foundationT("app.trust"))}</dt><dd>${escapeHtml(uiText(trust))}</dd></div><div><dt>${escapeHtml(foundationT("payments.order"))}</dt><dd>${escapeHtml(event.shopifyOrderId || foundationT("app.notParsed"))}</dd></div><div><dt>${escapeHtml(foundationT("app.store"))}</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>${escapeHtml(foundationT("app.attempts"))}</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>${escapeHtml(foundationT("app.payload"))}</dt><dd>${event.payloadAvailable ? escapeHtml(foundationT("app.retainedSecurely")) : escapeHtml(foundationT("app.retentionExpired"))}</dd></div>${event.resolutionNote ? `<div><dt>${escapeHtml(foundationT("app.resolution"))}</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
 }
 
@@ -11606,7 +13320,7 @@ async function loadShopifySkuReadiness(page = shopifySkuPageState.page || 1) {
       return;
     }
     shopifySkuPageState = { page: Math.min(result.page, totalPages), pageSize: result.pageSize };
-    list.innerHTML = `<table><thead><tr><th>${escapeHtml(foundationT("app.erpSku"))}</th><th>${escapeHtml(foundationT("app.productAttributes"))}</th><th>${escapeHtml(foundationT("app.wearCycle"))}</th><th>${escapeHtml(foundationT("app.piecesPerPack"))}</th><th>${escapeHtml(foundationT("app.sellMode"))}</th><th>${escapeHtml(foundationT("app.readiness"))}</th><th></th></tr></thead><tbody>${result.items.length === 0 ? `<tr><td colspan="7">${escapeHtml(foundationT("app.noActiveErpSkus"))}</td></tr>` : result.items.map((sku) => `<tr><td><strong>${escapeHtml(sku.skuCode)}</strong></td><td>${escapeHtml(sku.productName)}<div class="muted-cell">${escapeHtml([formatPower(sku), sku.colorName, sku.size].filter(Boolean).join(" / ") || foundationT("app.noVariantAttributes"))}</div></td><td>${renderWearCycle(sku.wearCycle, sku.wearDuration)}</td><td>${escapeHtml(sku.piecesPerPack || "-")}</td><td>${escapeHtml(sku.sellMode || foundationT("app.notSet"))}</td><td>${renderShopifySkuReadiness(sku.status)}</td><td><button class="button secondary table-action" type="button" data-copy-shopify-sku="${escapeHtml(sku.skuCode)}">${escapeHtml(foundationT("app.copySku"))}</button></td></tr>`).join("")}</tbody></table>`;
+    replaceMarkup(list, `<table><thead><tr><th>${escapeHtml(foundationT("app.erpSku"))}</th><th>${escapeHtml(foundationT("app.productAttributes"))}</th><th>${escapeHtml(foundationT("app.wearCycle"))}</th><th>${escapeHtml(foundationT("app.piecesPerPack"))}</th><th>${escapeHtml(foundationT("app.sellMode"))}</th><th>${escapeHtml(foundationT("app.readiness"))}</th><th></th></tr></thead><tbody>${result.items.length === 0 ? `<tr><td colspan="7">${escapeHtml(foundationT("app.noActiveErpSkus"))}</td></tr>` : result.items.map((sku) => `<tr><td><strong>${escapeHtml(sku.skuCode)}</strong></td><td>${escapeHtml(sku.productName)}<div class="muted-cell">${escapeHtml([formatPower(sku), sku.colorName, sku.size].filter(Boolean).join(" / ") || foundationT("app.noVariantAttributes"))}</div></td><td>${renderWearCycle(sku.wearCycle, sku.wearDuration)}</td><td>${escapeHtml(sku.piecesPerPack || "-")}</td><td>${escapeHtml(sku.sellMode ? systemValueLabel(sku.sellMode) : foundationT("app.notSet"))}</td><td>${renderShopifySkuReadiness(sku.status)}</td><td><button class="button secondary table-action" type="button" data-copy-shopify-sku="${escapeHtml(sku.skuCode)}">${escapeHtml(foundationT("app.copySku"))}</button></td></tr>`).join("")}</tbody></table>`);
     if (pagination && pageLabel && previous && next) {
       const first = result.totalCount === 0 ? 0 : ((shopifySkuPageState.page - 1) * result.pageSize) + 1;
       const last = Math.min(shopifySkuPageState.page * result.pageSize, result.totalCount);
@@ -11639,11 +13353,11 @@ async function copyShopifySku(sku) {
 }
 
 function formatPackHint(product) {
-  const sellMode = product.sellMode ? uiText(product.sellMode) : foundationT("app.catalogPack");
+  const sellMode = product.sellMode ? systemValueLabel(product.sellMode) : foundationT("app.catalogPack");
   const pieces = foundationT("app.inline.pieces");
   return product.piecesPerPack
     ? `${escapeHtml(sellMode)} / ${escapeHtml(product.piecesPerPack)} ${escapeHtml(pieces)}`
-    : escapeHtml(product.sellMode ? uiText(product.sellMode) : "-");
+    : escapeHtml(product.sellMode ? systemValueLabel(product.sellMode) : "-");
 }
 
 function formatPower(sku) {
@@ -11651,17 +13365,7 @@ function formatPower(sku) {
 }
 
 function formatDateTime(value) {
-  if (!value) {
-    return "-";
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat(currentLanguage === "ar" ? "ar-EG-u-nu-latn" : "en-US", {
-      dateStyle: "medium",
-      timeStyle: "short"
-    }).format(date);
+  return renderDateTime(value);
 }
 
 function formatMoney(value) {
@@ -11794,11 +13498,16 @@ function wireOperationLineEditor() {
     const control = event.target;
     const row = control.closest?.(".line-editor-row");
     if (!row) return;
-    if (control.matches(".op-line-bonus, .op-line-section, .op-line-entry-mode")) {
-      syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType);
+    if (control.matches(".op-line-type, .op-line-section, .op-line-entry-mode")) {
+      // Changing the entry mode needs this row's availability recalculated, not
+      // a page-wide SKU refresh that aborts and re-primes its batch selector.
+      syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType, { refreshSkuAvailability: false });
       refreshOperationSourceLineOptions(row);
       await refreshOperationStockOptions(row);
       return;
+    }
+    if (control.matches(".op-line-price")) {
+      syncOperationLineControls(document.getElementById("op-type")?.value || operationsUiState.operationType);
     }
     if (control.matches(".op-line-product")) {
       await loadProductSkuOptions(control.value);
@@ -11810,7 +13519,18 @@ function wireOperationLineEditor() {
       resolveOperationLineSku(row);
       return;
     }
-    if (control.matches(".op-line-stock-option")) applySelectedStockOption(row);
+    if (control.matches(".op-line-stock-option")) {
+      // Selecting a batch must not invoke the asynchronous SKU-availability
+      // refresh: that refresh primes every selector and can erase this choice
+      // before the draft payload is read.
+      applySelectedStockOption(row);
+      syncCurrentOperationPage();
+    }
+    if (control.matches(".op-line-qty")) {
+      syncOperationLinePackOpeningHint(row);
+      syncCurrentOperationPage();
+    }
+    if (control.matches(".op-line-lot, .op-line-expiry")) syncCurrentOperationPage();
     if (control.matches(".op-line-source-line")) applyOperationSourceLine(row);
   });
 

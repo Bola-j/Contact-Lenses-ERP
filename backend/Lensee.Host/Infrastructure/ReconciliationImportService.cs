@@ -220,8 +220,9 @@ public sealed class ReconciliationImportService(
     private static Guid RequiredGuid(IReadOnlyDictionary<string, string> values, string key) => TryGuid(values, key, out var value) ? value : throw new InvalidOperationException($"CSV '{key}' must be a non-empty GUID.");
     private static bool TryAmount(IReadOnlyDictionary<string, string> values, out decimal result) => decimal.TryParse(Get(values, "amount"), NumberStyles.Number, CultureInfo.InvariantCulture, out result) && result > 0;
     private static decimal RequiredAmount(IReadOnlyDictionary<string, string> values) => TryAmount(values, out var value) ? value : throw new InvalidOperationException("CSV amount must be positive.");
-    private static bool TryDate(IReadOnlyDictionary<string, string> values, out DateOnly result) => DateOnly.TryParseExact(Get(values, "as_of_date"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out result);
-    private static DateOnly RequiredDate(IReadOnlyDictionary<string, string> values) => TryDate(values, out var value) ? value : throw new InvalidOperationException("CSV as_of_date must use yyyy-MM-dd.");
+    private static bool TryDate(IReadOnlyDictionary<string, string> values, out DateOnly result) =>
+        DateOnly.TryParseExact(Get(values, "as_of_date"), ["dd/MM/yyyy", "yyyy-MM-dd"], CultureInfo.InvariantCulture, DateTimeStyles.None, out result);
+    private static DateOnly RequiredDate(IReadOnlyDictionary<string, string> values) => TryDate(values, out var value) ? value : throw new InvalidOperationException("CSV as_of_date must use dd/MM/yyyy (or legacy yyyy-MM-dd).");
 
     private sealed record CsvRow(int RowNumber, string RowType, string SourceReference, Dictionary<string, string> Values);
     private sealed record RowDecision(string Decision, string? CanonicalTrack, string Reason);

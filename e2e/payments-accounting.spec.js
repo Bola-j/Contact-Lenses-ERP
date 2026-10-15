@@ -83,7 +83,7 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
     await page.locator("#collection-amount").fill(String(amount));
     await page.locator("#collection-method").selectOption("CashHandToHand");
     await page.locator("#collection-finance-account").selectOption(accountId);
-    await page.locator("#collection-date").fill("2026-07-07");
+    await page.locator("#collection-date").fill("07/07/2026");
     await page.locator("#collection-notes").fill(notes);
     const [response] = await Promise.all([
       page.waitForResponse((value) => value.url().includes("/api/v1/payments/collections") && value.request().method() === "POST"),

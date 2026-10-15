@@ -382,7 +382,9 @@ BEGIN
         expiry_date,
         lot_number,
         unit_cost,
-        line_notes
+        line_notes,
+        normal_quantity,
+        normal_value
     )
     SELECT
         v_supply_operation_id,
@@ -398,7 +400,9 @@ BEGIN
         DATE '__EXPIRY_DATE__',
         lot_number,
         __UNIT_PRICE__,
-        'Direct DB seed receipt'
+        'Direct DB seed receipt',
+        inbound_quantity,
+        inbound_quantity * __UNIT_PRICE__
     FROM seed_skus;
 
     INSERT INTO operations.operation_versions (
@@ -636,7 +640,9 @@ BEGIN
             expiry_date,
             lot_number,
             unit_cost,
-            line_notes
+            line_notes,
+            normal_quantity,
+            normal_value
         )
         SELECT
             v_operation_id,
@@ -652,7 +658,9 @@ BEGIN
             DATE '__EXPIRY_DATE__',
             lot_number,
             __UNIT_PRICE__,
-            'Direct DB seed transfer'
+            'Direct DB seed transfer',
+            __PACKS_PER_DESTINATION__,
+            0
         FROM seed_skus;
 
         INSERT INTO operations.operation_versions (

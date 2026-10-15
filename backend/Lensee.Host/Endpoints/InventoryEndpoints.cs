@@ -37,6 +37,8 @@ public static class InventoryEndpoints
         group.MapPut("/stock-balances/{locationId:guid}/{skuId:guid}/target", SetTargetQuantityAsync).RequireAuthorization("inventory.write");
         group.MapGet("/batches", ListBatchesAsync).RequireAuthorization("inventory.read");
         group.MapGet("/batches/{id:guid}", GetBatchByIdAsync).RequireAuthorization("inventory.read");
+        group.MapPost("/batches/{id:guid}/quarantine/release", ReleaseQuarantinedBatchAsync).RequireAuthorization("inventory.write");
+        group.MapPost("/batches/{id:guid}/quarantine/write-off", WriteOffQuarantinedBatchAsync).RequireAuthorization("inventory.write");
         group.MapGet("/transfer-blocked-batches", ListTransferBlockedBatchesAsync).RequireAuthorization("inventory.read");
         group.MapGet("/transactions", ListTransactionsAsync).RequireAuthorization("inventory.read");
         group.MapPost("/receipts", CreateReceiptAsync).RequireAuthorization("inventory.write");
@@ -178,12 +180,17 @@ public static class InventoryEndpoints
         {
             query = query.Where(balance => balance.SkuId == skuId.Value);
         }
+        var transparentColour = string.Equals(colorName, "__transparent__", StringComparison.Ordinal);
         if (!string.IsNullOrWhiteSpace(colorName))
         {
-            query = query.Where(balance => catalogDbContext.Skus.Any(sku => sku.Id == balance.SkuId &&
-                (string.Equals(colorName, "__transparent__", StringComparison.Ordinal)
-                    ? string.IsNullOrWhiteSpace(sku.ColorName)
-                    : sku.ColorName == colorName)));
+            // Do not capture CatalogDbContext inside an InventoryDbContext query: neither
+            // the in-memory provider nor PostgreSQL can translate that cross-context join.
+            var matchingSkuIds = await (transparentColour
+                    ? catalogDbContext.Skus.AsNoTracking().Where(sku => sku.ColorName == null || sku.ColorName == "")
+                    : catalogDbContext.Skus.AsNoTracking().Where(sku => sku.ColorName == colorName))
+                .Select(sku => sku.Id)
+                .ToListAsync(cancellationToken);
+            query = query.Where(balance => matchingSkuIds.Contains(balance.SkuId));
         }
 
         if (includeZeroStock != true)
@@ -219,9 +226,9 @@ public static class InventoryEndpoints
         }
         if (!string.IsNullOrWhiteSpace(colorName))
         {
-            skuQuery = skuQuery.Where(sku => string.Equals(colorName, "__transparent__", StringComparison.Ordinal)
-                ? string.IsNullOrWhiteSpace(sku.ColorName)
-                : sku.ColorName == colorName);
+            skuQuery = transparentColour
+                ? skuQuery.Where(sku => sku.ColorName == null || sku.ColorName == "")
+                : skuQuery.Where(sku => sku.ColorName == colorName);
         }
         var skuCount = await skuQuery.CountAsync(cancellationToken);
         var totalCount = checked(locations.Count * skuCount);
@@ -355,7 +362,6 @@ public static class InventoryEndpoints
 
         var query = inventoryDbContext.StockBalances
             .AsNoTracking()
-            .Where(balance => balance.AvailableQty > 0)
             .AsQueryable();
         if (scopedLocationId.HasValue)
         {
@@ -366,7 +372,6 @@ public static class InventoryEndpoints
             .GroupBy(balance => balance.SkuId)
             .Select(group => new { SkuId = group.Key, AvailableQty = group.Sum(balance => balance.AvailableQty) })
             .ToListAsync(cancellationToken);
-        var skuLookup = await LoadSkuLookupAsync(catalogDbContext, balances.Select(balance => balance.SkuId), cancellationToken);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var looseQuery = inventoryDbContext.OpenedPieceLots.AsNoTracking()
             .Where(lot => lot.LoosePieceQuantity > 0 && (lot.PieceExpiryDate == null || lot.PieceExpiryDate >= today));
@@ -379,15 +384,23 @@ public static class InventoryEndpoints
             .Select(group => new { SkuId = group.Key, Quantity = group.Sum(lot => lot.LoosePieceQuantity) })
             .ToDictionaryAsync(value => value.SkuId, value => value.Quantity, cancellationToken);
 
-        var skuRows = balances
-            .Select(balance =>
+        var packsBySku = balances.ToDictionary(balance => balance.SkuId, balance => balance.AvailableQty);
+        var skuIds = packsBySku.Where(value => value.Value > 0).Select(value => value.Key)
+            .Concat(loosePieces.Keys)
+            .Distinct()
+            .ToList();
+        var skuLookup = await LoadSkuLookupAsync(catalogDbContext, skuIds, cancellationToken);
+        var skuRows = skuIds
+            .Select(skuId =>
             {
-                skuLookup.TryGetValue(balance.SkuId, out var sku);
+                skuLookup.TryGetValue(skuId, out var sku);
+                var availablePacks = packsBySku.GetValueOrDefault(skuId);
                 return new
                 {
-                    Balance = balance,
+                    SkuId = skuId,
+                    AvailablePacks = availablePacks,
                     Sku = sku,
-                    AvailablePieces = ToTotalPieces(balance.AvailableQty, sku, loosePieces.GetValueOrDefault(balance.SkuId))
+                    AvailablePieces = ToTotalPieces(availablePacks, sku, loosePieces.GetValueOrDefault(skuId))
                 };
             })
             .Where(row => row.Sku is not null)
@@ -407,8 +420,8 @@ public static class InventoryEndpoints
                 categoryGroup.Key.CategoryId,
                 categoryGroup.Key.CategoryName,
                 categoryGroup.Select(row => row.Sku!.ProductId).Distinct().Count(),
-                categoryGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
-                categoryGroup.Sum(row => row.Balance.AvailableQty),
+                categoryGroup.Select(row => row.SkuId).Distinct().Count(),
+                categoryGroup.Sum(row => row.AvailablePacks),
                 categoryGroup.Any(row => row.AvailablePieces.HasValue) ? categoryGroup.Sum(row => row.AvailablePieces ?? 0) : null,
                 [])).ToList());
         }
@@ -418,16 +431,16 @@ public static class InventoryEndpoints
                 categoryGroup.Key.CategoryId,
                 categoryGroup.Key.CategoryName,
                 categoryGroup.Select(row => row.Sku!.ProductId).Distinct().Count(),
-                categoryGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
-                categoryGroup.Sum(row => row.Balance.AvailableQty),
+                categoryGroup.Select(row => row.SkuId).Distinct().Count(),
+                categoryGroup.Sum(row => row.AvailablePacks),
                 categoryGroup.Any(row => row.AvailablePieces.HasValue) ? categoryGroup.Sum(row => row.AvailablePieces ?? 0) : null,
                 categoryGroup
                     .GroupBy(row => new { row.Sku!.ProductId, row.Sku.ProductName })
                     .Select(group => new InventoryProductTotalResponse(
                         group.Key.ProductId,
                         group.Key.ProductName,
-                        group.Select(row => row.Balance.SkuId).Distinct().Count(),
-                        group.Sum(row => row.Balance.AvailableQty),
+                        group.Select(row => row.SkuId).Distinct().Count(),
+                        group.Sum(row => row.AvailablePacks),
                         group.Any(row => row.AvailablePieces.HasValue) ? group.Sum(row => row.AvailablePieces ?? 0) : null,
                         group
                             .GroupBy(row => new
@@ -440,8 +453,8 @@ public static class InventoryEndpoints
                                 rateGroup.Key.OpenedExpiryDuration,
                                 rateGroup.Key.SealedExpiryDuration,
                                 rateGroup.Key.OpenedExpiryRate,
-                                rateGroup.Select(row => row.Balance.SkuId).Distinct().Count(),
-                                rateGroup.Sum(row => row.Balance.AvailableQty),
+                                rateGroup.Select(row => row.SkuId).Distinct().Count(),
+                                rateGroup.Sum(row => row.AvailablePacks),
                                 rateGroup.Any(row => row.AvailablePieces.HasValue) ? rateGroup.Sum(row => row.AvailablePieces ?? 0) : null))
                             .OrderBy(row => row.OpenedExpiryRate ?? "Not set")
                             .ThenBy(row => row.OpenedExpiryDuration ?? row.SealedExpiryDuration ?? "Not set")
@@ -489,6 +502,7 @@ public static class InventoryEndpoints
                 batch.LocationId == locationId &&
                 batch.SkuId == skuId &&
                 batch.Quantity > 0 &&
+                !batch.IsQuarantined &&
                 batch.ExpiryDate != null &&
                 batch.ExpiryDate >= today)
             .OrderBy(batch => batch.ExpiryDate == null)
@@ -571,12 +585,18 @@ public static class InventoryEndpoints
             return Results.Forbid();
         }
 
-        var ids = await inventoryDbContext.StockBalances.AsNoTracking()
+        var packSkuIds = await inventoryDbContext.StockBalances.AsNoTracking()
             .Where(balance => balance.LocationId == locationId && balance.AvailableQty > 0)
             .OrderBy(balance => balance.SkuId)
             .Select(balance => balance.SkuId)
             .ToListAsync(cancellationToken);
-        return Results.Ok(ids);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var looseSkuIds = await inventoryDbContext.OpenedPieceLots.AsNoTracking()
+            .Where(lot => lot.LocationId == locationId && lot.LoosePieceQuantity > 0 && (lot.PieceExpiryDate == null || lot.PieceExpiryDate >= today))
+            .Select(lot => lot.SkuId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        return Results.Ok(packSkuIds.Concat(looseSkuIds).Distinct().OrderBy(id => id).ToList());
     }
 
     private static async Task<IResult> SetTargetQuantityAsync(
@@ -649,10 +669,61 @@ public static class InventoryEndpoints
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
         var skuLookup = await LoadSkuLookupAsync(catalogDbContext, rows.Select(row => row.SkuId), cancellationToken);
+        // A batch is sealed stock. Loose pieces live in opened lots and must not be
+        // repeated on every batch row for the same SKU/location.
         var response = rows.Select(batch => ToResponse(batch, skuLookup)).ToList();
 
         return Results.Ok(new PagedResult<InventoryBatchResponse>(response, request.Page, request.PageSize, total));
     }
+
+    private static async Task<IResult> ReleaseQuarantinedBatchAsync(
+        Guid id, QuarantineActionRequest request, InventoryDbContext inventoryDbContext,
+        StockLedgerService ledgerService, ICurrentUser currentUser, IAuditLogWriter auditLogWriter,
+        CancellationToken cancellationToken)
+    {
+        if (!IsInventoryAdministrator(currentUser)) return Results.Forbid();
+        var reason = InputText.NormalizeSingleLine(request.Reason);
+        if (request.Quantity <= 0 || reason.Length == 0)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Quantity)] = ["A positive quantity and inspection reason are required."] });
+        var batch = await inventoryDbContext.InventoryBatches.AsNoTracking().FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (batch is null) return Results.NotFound();
+        try
+        {
+            await ledgerService.ReleaseQuarantinedBatchAsync(id, request.Quantity, currentUser.UserId ?? Guid.Empty, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Results.Conflict(new { code = "quarantine-action-invalid", detail = exception.Message });
+        }
+        await auditLogWriter.WriteAsync("InventoryBatch", id, "QuarantineRelease", new { request.Quantity, Reason = reason, ActorRole = LenseeRoles.Normalize(currentUser.Role) }, cancellationToken: cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> WriteOffQuarantinedBatchAsync(
+        Guid id, QuarantineActionRequest request, InventoryDbContext inventoryDbContext,
+        StockLedgerService ledgerService, ICurrentUser currentUser, IAuditLogWriter auditLogWriter,
+        CancellationToken cancellationToken)
+    {
+        if (!IsInventoryAdministrator(currentUser)) return Results.Forbid();
+        var reason = InputText.NormalizeSingleLine(request.Reason);
+        if (request.Quantity <= 0 || reason.Length == 0)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Quantity)] = ["A positive quantity and inspection reason are required."] });
+        var batch = await inventoryDbContext.InventoryBatches.AsNoTracking().FirstOrDefaultAsync(value => value.Id == id, cancellationToken);
+        if (batch is null) return Results.NotFound();
+        try
+        {
+            await ledgerService.WriteOffQuarantinedBatchAsync(id, request.Quantity, currentUser.UserId ?? Guid.Empty, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Results.Conflict(new { code = "quarantine-action-invalid", detail = exception.Message });
+        }
+        await auditLogWriter.WriteAsync("InventoryBatch", id, "QuarantineWriteOff", new { request.Quantity, Reason = reason, ActorRole = LenseeRoles.Normalize(currentUser.Role) }, cancellationToken: cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static bool IsInventoryAdministrator(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
 
     private static async Task<IResult> ListTransactionsAsync(
         Guid? locationId,
@@ -1022,6 +1093,7 @@ public static class InventoryEndpoints
     {
         skuLookup.TryGetValue(balance.SkuId, out var sku);
         var availablePieces = ToPieces(balance.AvailableQty, sku, balance.Location.LocationType);
+        var totalPieces = sku?.PiecesPerPack is > 0 ? checked(balance.AvailableQty * sku.PiecesPerPack.Value + loosePieces) : (int?)null;
         return new StockBalanceResponse(
             balance.LocationId,
             balance.Location.Name,
@@ -1041,12 +1113,17 @@ public static class InventoryEndpoints
             balance.TargetQty,
             ToPieces(balance.TargetQty, sku, balance.Location.LocationType),
             balance.RowVersion,
-            balance.LastUpdated);
+            balance.LastUpdated,
+            totalPieces,
+            FormatQuantity(balance.AvailableQty, loosePieces, sku?.PiecesPerPack),
+            balance.AvailableQty,
+            loosePieces);
     }
 
     private static InventoryBatchResponse ToResponse(InventoryBatch batch, IReadOnlyDictionary<Guid, SkuLookup> skuLookup)
     {
         skuLookup.TryGetValue(batch.SkuId, out var sku);
+        var totalPieces = sku?.PiecesPerPack is > 0 ? checked(batch.Quantity * sku.PiecesPerPack.Value) : (int?)null;
         return new InventoryBatchResponse(
             batch.Id,
             batch.LocationId,
@@ -1061,7 +1138,12 @@ public static class InventoryEndpoints
             batch.Quantity,
             ToPieces(batch.Quantity, sku, batch.Location.LocationType),
             batch.Notes,
-            batch.CreatedAt);
+            batch.CreatedAt,
+            batch.IsQuarantined,
+            totalPieces,
+            FormatQuantity(batch.Quantity, 0, sku?.PiecesPerPack),
+            batch.Quantity,
+            0);
     }
 
     private static StockTransactionResponse ToResponse(StockTransaction transaction, IReadOnlyDictionary<Guid, SkuLookup> skuLookup)
@@ -1078,7 +1160,9 @@ public static class InventoryEndpoints
             sku?.IsActive,
             transaction.TransactionType,
             transaction.QuantityChange,
-            ToPieces(transaction.QuantityChange, sku, transaction.Location.LocationType),
+            transaction.QuantityUnit,
+            transaction.RelatedTransactionId,
+            transaction.ConversionPiecesPerPack,
             transaction.ReferenceOperationId,
             transaction.CreatedAt);
     }
@@ -1088,6 +1172,9 @@ public static class InventoryEndpoints
 
     private static int? ToTotalPieces(int packs, SkuLookup? sku, int loosePieces) =>
         sku?.PiecesPerPack is > 0 ? (packs * sku.PiecesPerPack.Value) + loosePieces : null;
+
+    private static string? FormatQuantity(int packs, int loosePieces, int? piecesPerPack) =>
+        piecesPerPack is > 0 ? $"{packs} packs + {loosePieces} pieces" : null;
 
     private static async Task<Dictionary<(Guid LocationId, Guid SkuId), int>> LoadLoosePiecesAsync(
         InventoryDbContext dbContext,
@@ -1163,7 +1250,7 @@ public static class InventoryEndpoints
 
     private static string BuildStockOptionLabel(string? lotNumber, DateOnly? expiryDate, int packQuantity, int? pieceQuantity, bool requestedPieces)
     {
-        var expiry = expiryDate?.ToString("yyyy-MM-dd") ?? "No expiry";
+        var expiry = expiryDate?.ToString("dd/MM/yyyy") ?? "No expiry";
         var lot = string.IsNullOrWhiteSpace(lotNumber) ? "No lot" : lotNumber;
         var quantity = requestedPieces && pieceQuantity.HasValue
             ? $"{pieceQuantity.Value} piece(s)"
@@ -1211,7 +1298,11 @@ public sealed record StockBalanceResponse(
     int? TargetPacks,
     int? TargetPieces,
     int RowVersion,
-    DateTime? LastUpdated);
+    DateTime? LastUpdated,
+    int? TotalPieces = null,
+    string? DisplayQuantity = null,
+    int? DisplayPacks = null,
+    int? DisplayPieces = null);
 
 public sealed record InventoryProductCategoryTotalResponse(
     Guid CategoryId,
@@ -1252,7 +1343,14 @@ public sealed record InventoryBatchResponse(
     int PackQuantity,
     int? PieceQuantity,
     string? Notes,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    bool IsQuarantined = false,
+    int? TotalPieces = null,
+    string? DisplayQuantity = null,
+    int? DisplayPacks = null,
+    int? DisplayPieces = null);
+
+public sealed record QuarantineActionRequest(int Quantity, string Reason);
 
 public sealed record StockOptionResponse(
     Guid LocationId,
@@ -1274,8 +1372,10 @@ public sealed record StockTransactionResponse(
     string? ProductName,
     bool? SkuIsActive,
     string TransactionType,
-    int PackChange,
-    int? PieceChange,
+    int QuantityChange,
+    string? QuantityUnit,
+    Guid? RelatedTransactionId,
+    int? ConversionPiecesPerPack,
     Guid? ReferenceOperationId,
     DateTime CreatedAt);
 

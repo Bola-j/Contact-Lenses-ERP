@@ -337,7 +337,7 @@ public static class CatalogEndpoints
                 sku.Product.Brand.Name, sku.Product.CategoryId, sku.Product.Category.Name,
                 sku.Product.ProductType, sku.Product.ExpiryType, sku.Product.PiecesPerPack,
                 sku.Product.SellMode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size,
-                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
+                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null, sku.IsSellable))
             .ToListAsync(cancellationToken);
 
         return TypedResults.Ok(new PagedResult<SkuOptionResponse>(rows, request.Page, request.PageSize, total));
@@ -355,7 +355,7 @@ public static class CatalogEndpoints
                 sku.Product.Brand.Name, sku.Product.CategoryId, sku.Product.Category.Name,
                 sku.Product.ProductType, sku.Product.ExpiryType, sku.Product.PiecesPerPack,
                 sku.Product.SellMode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size,
-                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null))
+                sku.Barcode, sku.IsActive && sku.DeletedAt == null && sku.Product.IsActive && sku.Product.DeletedAt == null, sku.IsSellable))
             .SingleOrDefaultAsync(cancellationToken);
 
         return row is null ? TypedResults.NotFound() : TypedResults.Ok(row);
@@ -534,6 +534,7 @@ public static class CatalogEndpoints
             ColorName = InputText.NormalizeOptionalSingleLine(request.ColorName),
             Size = InputText.NormalizeOptionalSingleLine(request.Size),
             Barcode = InputText.NormalizeOptionalSingleLine(request.Barcode),
+            IsSellable = request.IsSellable,
             IsActive = true
         };
 
@@ -588,6 +589,7 @@ public static class CatalogEndpoints
         sku.ColorName = InputText.NormalizeOptionalSingleLine(request.ColorName);
         sku.Size = InputText.NormalizeOptionalSingleLine(request.Size);
         sku.Barcode = InputText.NormalizeOptionalSingleLine(request.Barcode);
+        sku.IsSellable = request.IsSellable;
 
         await catalogMutationTransaction.ExecuteAsync(dbContext, async () =>
         {
@@ -743,7 +745,7 @@ public static class CatalogEndpoints
         new(brand.Id, brand.Name, brand.CreatedAt);
 
     private static SkuResponse ToResponse(Sku sku) =>
-        new(sku.Id, sku.ProductId, sku.SkuCode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size, sku.Barcode, sku.IsActive, sku.DeletedAt);
+        new(sku.Id, sku.ProductId, sku.SkuCode, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size, sku.Barcode, sku.IsActive, sku.DeletedAt, sku.IsSellable);
 
     private static ProductDetailResponse ToDetailResponse(Product product) =>
         new(
@@ -835,7 +837,8 @@ public sealed record SkuRequest(
     decimal? PowerValue,
     string? ColorName,
     string? Size,
-    string? Barcode);
+    string? Barcode,
+    bool IsSellable = true);
 
 public sealed record SkuResponse(
     Guid Id,
@@ -847,7 +850,8 @@ public sealed record SkuResponse(
     string? Size,
     string? Barcode,
     bool IsActive,
-    DateTime? DeletedAt);
+    DateTime? DeletedAt,
+    bool IsSellable = true);
 
 public sealed record SkuOptionResponse(
     Guid Id,
@@ -867,4 +871,5 @@ public sealed record SkuOptionResponse(
     string? ColorName,
     string? Size,
     string? Barcode,
-    bool IsActive);
+    bool IsActive,
+    bool IsSellable = true);

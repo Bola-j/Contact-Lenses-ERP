@@ -75,6 +75,17 @@ public sealed class CatalogEndpointContractTests : IClassFixture<CatalogEndpoint
         Assert.Equal(skuId, search.Items[0].Id);
         Assert.Equal(1, search.PageSize);
         Assert.Equal("SKU-PERF-125", selected!.SkuCode);
+        Assert.True(selected.IsSellable);
+    }
+
+    [Fact]
+    public async Task SkuOption_ExposesPerSkuSellability()
+    {
+        var skuId = await _factory.CreateSkuAsync("Non-sellable lens", "SKU-NONSELL-1", "+", 1m, "Clear", isSellable: false);
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.CLevel, LenseePermissions.CatalogRead);
+        var selected = await client.GetFromJsonAsync<SkuOptionContract>($"/api/v1/catalog/skus/{skuId}");
+        Assert.False(selected!.IsSellable);
     }
 
     [Fact]
@@ -292,7 +303,7 @@ public sealed class CatalogEndpointFactory : WebApplicationFactory<Program>
         return productId;
     }
 
-    public async Task<Guid> CreateSkuAsync(string productName, string skuCode, string powerSign, decimal powerValue, string colorName)
+    public async Task<Guid> CreateSkuAsync(string productName, string skuCode, string powerSign, decimal powerValue, string colorName, bool isSellable = true)
     {
         using var scope = Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
@@ -321,7 +332,8 @@ public sealed class CatalogEndpointFactory : WebApplicationFactory<Program>
             PowerSign = powerSign,
             PowerValue = powerValue,
             ColorName = colorName,
-            IsActive = true
+            IsActive = true,
+            IsSellable = isSellable
         };
         dbContext.AddRange(category, brand, product, sku);
         await dbContext.SaveChangesAsync();
@@ -403,6 +415,6 @@ internal sealed record PagedContract<T>(IReadOnlyList<T> Items, int Page, int Pa
 
 internal sealed record ProductListContract(Guid Id, string Name, string ProductType, bool IsActive);
 
-internal sealed record SkuOptionContract(Guid Id, string SkuCode, string ProductName);
+internal sealed record SkuOptionContract(Guid Id, string SkuCode, string ProductName, bool IsSellable = true);
 
 internal sealed record ValidationProblemContract(Dictionary<string, string[]> Errors);

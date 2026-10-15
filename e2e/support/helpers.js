@@ -32,8 +32,8 @@ function makeRunData(prefix = "E2E") {
     mainLot: `${runId}-MAIN`,
     secondLot: `${runId}-SECOND`,
     badLot: `${runId}-NOT-SOLD`,
-    expiry: "2031-06-01",
-    secondExpiry: "2032-01-01"
+    expiry: "01/06/2031",
+    secondExpiry: "01/01/2032"
   };
 }
 
@@ -416,19 +416,29 @@ async function fillFirstOperationLine(page, options) {
     await selectOptionByText(row.locator(".op-line-stock-option"), options.stockText);
   }
   if (options.lot || options.expiry) {
-    await enableNewBatchEntryIfNeeded(row);
+    await enableNewBatchEntryIfNeeded(row, options);
   }
-  if (options.lot) await row.locator(".op-line-lot").fill(options.lot);
-  if (options.expiry) await row.locator(".op-line-expiry").fill(options.expiry);
+  if (options.lot && await row.locator(".op-line-lot").isEnabled()) await row.locator(".op-line-lot").fill(options.lot);
+  if (options.expiry && await row.locator(".op-line-expiry").isEnabled()) await row.locator(".op-line-expiry").fill(options.expiry);
 }
 
-async function enableNewBatchEntryIfNeeded(row) {
+async function enableNewBatchEntryIfNeeded(row, options = {}) {
   const lot = row.locator(".op-line-lot");
   if (!await lot.isDisabled().catch(() => false)) {
     return;
   }
 
   const stockOption = row.locator(".op-line-stock-option");
+  const existingBatchValue = await stockOption.locator("option").evaluateAll((elements, expected) => {
+    const match = Array.from(elements).find((option) => option.value && option.value !== "__new_batch__"
+      && (!expected.lot || option.textContent.includes(expected.lot))
+      && (!expected.expiry || option.textContent.includes(expected.expiry)));
+    return match?.value || null;
+  }, options);
+  if (existingBatchValue) {
+    await stockOption.selectOption(existingBatchValue);
+    return;
+  }
   await expect.poll(async () => {
     return await stockOption.locator("option").evaluateAll((options) =>
       Array.from(options).some((option) => option.value === "__new_batch__"));
@@ -488,12 +498,14 @@ async function waitForStockOptions(row, textOrRegex) {
   }, { timeout: 25_000 }).toBeTruthy();
 }
 
-async function runLatestOperationAction(page, operationType, labelRegex) {
+async function runLatestOperationAction(page, operationType, labelRegex, operationNumber = null) {
   const showCompleted = page.locator("#operations-show-completed");
   if (await showCompleted.isVisible().catch(() => false)) {
     await showCompleted.check({ force: true }).catch(() => undefined);
   }
-  const row = page.locator("#operation-rows tr", { hasText: operationType }).first();
+  const row = operationNumber
+    ? page.locator(`#operation-rows tr[data-operation-type="${operationType}"][data-operation-number="${operationNumber}"]`)
+    : page.locator(`#operation-rows tr[data-operation-type="${operationType}"]`).first();
   await expect(row).toBeVisible();
   const operationId = await row.locator("[data-op-action]").first().getAttribute("data-op-id");
   const action = await row.getByRole("button", { name: labelRegex }).getAttribute("data-op-action");

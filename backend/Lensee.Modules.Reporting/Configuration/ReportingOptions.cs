@@ -7,7 +7,10 @@ public sealed class ReportingOptions
     public const string SectionName = "Reporting";
 
     [Range(1, 1_000_000)]
-    public int MaxExportRows { get; init; } = 10_000;
+    // Browsing reports is paginated, but an explicitly requested document must
+    // contain the complete filtered result. Keep a generous safety ceiling for
+    // accidental/unbounded exports without truncating normal large ledgers.
+    public int MaxExportRows { get; init; } = 100_000;
 
     public string QuestPdfLicense { get; init; } = "Community";
 

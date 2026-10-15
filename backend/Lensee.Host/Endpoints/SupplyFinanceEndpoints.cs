@@ -10,7 +10,7 @@ namespace Lensee.Host.Endpoints;
 public static class SupplyFinanceEndpoints
 {
     private static readonly string[] Categories = ["ProductCost", "CustomsCost", "ShipmentCost", "Handling", "SupplierPurchase", "Freight", "Customs", "Duties", "Clearance", "Insurance", "Transport", "Storage", "Miscellaneous"];
-    private static readonly string[] Methods = ["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"];
+    private static readonly string[] Methods = ["CashHandToHand", "BankTransfer", "Wallet"];
 
     public static RouteGroupBuilder MapSupplyFinanceEndpoints(this IEndpointRouteBuilder routes)
     {

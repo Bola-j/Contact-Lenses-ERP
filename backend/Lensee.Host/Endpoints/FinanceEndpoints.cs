@@ -1,7 +1,9 @@
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Finance.Data;
+using Lensee.Modules.CRM.Data;
 using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Payments.Data;
+using Lensee.Modules.Inventory.Data;
 using Lensee.SharedKernel.Abstractions;
 using Lensee.SharedKernel.Security;
 using Microsoft.AspNetCore.Mvc;
@@ -15,9 +17,11 @@ public static partial class FinanceEndpoints
     {
         var group = routes.MapGroup("/api/v1/finance").WithTags("Finance").RequireAuthorization();
         group.MapGet("/overview", GetOverviewAsync).RequireAuthorization("finance.read");
+        group.MapGet("/daily-metrics", GetDailyMetricsAsync).RequireAuthorization("finance.read");
         group.MapGet("/accounts", ListAccountsAsync).RequireAuthorization("finance.read");
         group.MapGet("/accounts/{id:guid}", GetAccountAsync).RequireAuthorization("finance.read");
         group.MapPost("/accounts", CreateAccountAsync).RequireAuthorization("finance.accounts.manage");
+        group.MapPut("/accounts/{id:guid}/area", UpdateAccountAreaAsync).RequireAuthorization("finance.accounts.manage");
         group.MapGet("/balances", GetBalancesAsync).RequireAuthorization("finance.read");
         group.MapGet("/ledger", ListLedgerAsync).RequireAuthorization("finance.read");
         group.MapGet("/reconciliation", GetReconciliationAsync).RequireAuthorization("finance.reconcile");
@@ -74,12 +78,15 @@ public static partial class FinanceEndpoints
     private static async Task<IResult> CreateAccountAsync(
         FinanceAccountRequest request,
         FinanceDbContext finance,
+        InventoryDbContext inventory,
         ICurrentUser currentUser,
         IClock clock,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Type is not (FinanceLedgerService.CashOnHand or FinanceLedgerService.BankAccount or FinanceLedgerService.Wallet))
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Name)] = ["Name and a valid account type are required."] });
+        if (request.LocationId.HasValue && !await inventory.Locations.AsNoTracking().AnyAsync(value => value.Id == request.LocationId && value.IsActive, ct))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.LocationId)] = ["The selected sales area is not active."] });
 
         var account = new FinanceAccount
         {
@@ -89,12 +96,31 @@ public static partial class FinanceEndpoints
             IsActive = true,
             Reference = string.IsNullOrWhiteSpace(request.Reference) ? null : request.Reference.Trim(),
             Details = request.Details,
+            LocationId = request.LocationId,
             CreatedBy = currentUser.UserId ?? Guid.Empty,
             CreatedAt = clock.EgyptNow
         };
         finance.FinanceAccounts.Add(account);
         await PersistenceBoundary.CommitAsync(finance, ct);
         return Results.Created($"/api/v1/finance/accounts/{account.Id}", ToAccountResponse(account));
+    }
+
+    private static async Task<IResult> UpdateAccountAreaAsync(
+        Guid id,
+        FinanceAccountAreaRequest request,
+        FinanceDbContext finance,
+        InventoryDbContext inventory,
+        IClock clock,
+        CancellationToken ct)
+    {
+        var account = await finance.FinanceAccounts.SingleOrDefaultAsync(value => value.Id == id, ct);
+        if (account is null) return Results.NotFound();
+        if (request.LocationId.HasValue && !await inventory.Locations.AsNoTracking().AnyAsync(value => value.Id == request.LocationId && value.IsActive, ct))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.LocationId)] = ["The selected sales area is not active."] });
+        account.LocationId = request.LocationId;
+        account.UpdatedAt = clock.EgyptNow;
+        await PersistenceBoundary.CommitAsync(finance, ct);
+        return Results.Ok(ToAccountResponse(account));
     }
 
     private static async Task<IResult> GetBalancesAsync(FinanceLedgerService service, CancellationToken ct)
@@ -252,6 +278,24 @@ public static partial class FinanceEndpoints
         var entries = finance.FinanceLedgerEntries.AsNoTracking().Where(value => value.Status == "Posted");
         var rows = await entries.GroupBy(value => value.Category).Select(group => new { category = group.Key, inflow = group.Where(value => value.Direction == FinanceLedgerService.Credit).Sum(value => (decimal?)value.Amount) ?? 0m, outflow = group.Where(value => value.Direction == FinanceLedgerService.Debit).Sum(value => (decimal?)value.Amount) ?? 0m }).ToListAsync(ct);
         return Results.Ok(new { accounts = balances, expectedCash = balances.Where(value => value.Type == FinanceLedgerService.CashOnHand).Sum(value => value.ExpectedBalance), expectedBank = balances.Where(value => value.Type == FinanceLedgerService.BankAccount).Sum(value => value.ExpectedBalance), expectedWallet = balances.Where(value => value.Type == FinanceLedgerService.Wallet).Sum(value => value.ExpectedBalance), totalLiquidFunds = balances.Sum(value => value.ExpectedBalance), outstandingMerchantReceivable = merchantOutstanding, categories = rows });
+    }
+
+    private static async Task<IResult> GetDailyMetricsAsync(
+        DailyFinanceMetricsService service,
+        DateOnly? date = null,
+        Guid? locationId = null,
+        int page = 1,
+        int pageSize = 20,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            return Results.Ok(await service.GetAsync(date, locationId, page, pageSize, ct));
+        }
+        catch (ArgumentException exception) when (exception.ParamName == nameof(locationId))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(locationId)] = [exception.Message] });
+        }
     }
 
     private static async Task<IResult> ListExpensesAsync(FinanceDbContext finance, int page = 1, int pageSize = 50, string? status = null, string? category = null, Guid? accountId = null, DateOnly? from = null, DateOnly? to = null, string? reference = null, CancellationToken ct = default)
@@ -416,7 +460,8 @@ public static partial class FinanceEndpoints
         }
         else category = await finance.FinanceCategories.SingleOrDefaultAsync(value => value.Kind == "Withdrawal" && value.Code == "CLevelWithdrawal" && value.IsActive, ct);
         // Creation is a non-posting workflow step. Treasury must not move until a
-        // separate eligible reviewer approves the PendingReview withdrawal.
+        // separate approval is still required before the PendingReview withdrawal
+        // affects treasury. The creator may approve; the C-Level beneficiary may not.
         var entity = new CLevelWithdrawal { Id = Guid.NewGuid(), AssignedToCLevelUserId = request.AssignedToCLevelUserId, AssignedByUserId = actor, FinanceAccountId = request.FinanceAccountId, Amount = request.Amount, MovementMethod = request.MovementMethod, BusinessDate = request.BusinessDate, Reason = request.Reason.Trim(), CategoryId = category?.Id, Status = "Draft", CreatedByUserId = actor, CreatedAt = clock.EgyptNow, ExternalReference = Clean(request.ExternalReference), CorrelationId = Clean(request.CorrelationId) };
         finance.CLevelWithdrawals.Add(entity);
         await PersistenceBoundary.CommitAsync(finance, ct);
@@ -447,8 +492,8 @@ public static partial class FinanceEndpoints
         if (entity is null) return Results.NotFound();
         if (entity.Status == "Posted") return Results.Ok(ToWithdrawalResponse(entity));
         if (entity.Status != "PendingReview") return Results.Conflict(new { code = "withdrawal-not-reviewable" });
-        if (actor == Guid.Empty || actor == entity.AssignedToCLevelUserId || actor == entity.CreatedByUserId)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["The creator and beneficiary cannot post this withdrawal."] });
+        if (actor == Guid.Empty || actor == entity.AssignedToCLevelUserId)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["approval"] = ["The C-Level beneficiary cannot post this withdrawal."] });
 
         try
         {
@@ -565,7 +610,7 @@ public static partial class FinanceEndpoints
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static Dictionary<string, string[]> ValidateExpense(FinanceExpenseRequest request) { var errors = new Dictionary<string, string[]>(); if (request.Amount <= 0) errors[nameof(request.Amount)] = ["Amount must be positive."]; if (string.IsNullOrWhiteSpace(request.Category)) errors[nameof(request.Category)] = ["Expense category is required."]; if (request.Category == "Other" && string.IsNullOrWhiteSpace(request.Description)) errors[nameof(request.Description)] = ["Description is required for Other."]; if (!MovementMethods.Contains(request.MovementMethod)) errors[nameof(request.MovementMethod)] = ["Movement method is invalid."]; return errors; }
     private static Dictionary<string, string[]> ValidateWithdrawal(CLevelWithdrawalRequest request) { var errors = new Dictionary<string, string[]>(); if (request.Amount <= 0) errors[nameof(request.Amount)] = ["Amount must be positive."]; if (string.IsNullOrWhiteSpace(request.Reason)) errors[nameof(request.Reason)] = ["Reason is required."]; if (!MovementMethods.Contains(request.MovementMethod)) errors[nameof(request.MovementMethod)] = ["Movement method is invalid."]; return errors; }
-    private static readonly HashSet<string> MovementMethods = ["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"];
+    private static readonly HashSet<string> MovementMethods = ["CashHandToHand", "BankTransfer", "Wallet"];
     private static bool MovementMatchesAccount(string method, string accountType)
         => FinanceLedgerService.MovementMatchesAccount(method, accountType);
 
@@ -577,8 +622,8 @@ public static partial class FinanceEndpoints
         IClock clock,
         CancellationToken ct)
     {
-        if (request.Amount <= 0 || request.FinanceAccountId == Guid.Empty || request.Direction != FinanceLedgerService.Credit || string.IsNullOrWhiteSpace(request.Description))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive amount, account, direction, and description are required."] });
+        if (request.Amount <= 0 || request.FinanceAccountId == Guid.Empty || request.Direction != FinanceLedgerService.Credit)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive amount, account, and direction are required."] });
         if (!await finance.FinanceAccounts.AnyAsync(value => value.Id == request.FinanceAccountId && value.IsActive, ct))
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.FinanceAccountId)] = ["The selected FinanceAccount is not active."] });
 
@@ -593,7 +638,7 @@ public static partial class FinanceEndpoints
             Amount = request.Amount,
             Direction = request.Direction,
             AsOfDate = request.AsOfDate,
-            Description = request.Description.Trim(),
+            Description = Clean(request.Description) ?? string.Empty,
             Status = "Posted",
             CreatedBy = currentUser.UserId ?? Guid.Empty,
             CreatedAt = clock.EgyptNow,
@@ -728,8 +773,8 @@ public static partial class FinanceEndpoints
         IClock clock,
         CancellationToken ct)
     {
-        if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Description) || request.Direction is not (null or FinanceLedgerService.Credit))
-            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive replacement amount and description are required."] });
+        if (request.Amount <= 0 || request.Direction is not (null or FinanceLedgerService.Credit))
+            return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["A positive replacement amount is required."] });
 
         await using var transaction = await PersistenceBoundary.OpenTransactionAsync(finance, ct);
         var original = await LoadOpeningBalanceForUpdateAsync(id, finance, ct);
@@ -750,7 +795,7 @@ public static partial class FinanceEndpoints
             Amount = request.Amount,
             Direction = request.Direction is FinanceLedgerService.Credit or FinanceLedgerService.Debit ? request.Direction : original.Direction,
             AsOfDate = request.AsOfDate ?? original.AsOfDate,
-            Description = request.Description.Trim(),
+            Description = Clean(request.Description) ?? string.Empty,
             Status = "Draft",
             CreatedBy = actorId,
             CreatedAt = clock.EgyptNow,
@@ -809,6 +854,7 @@ public static partial class FinanceEndpoints
         account.IsActive,
         account.Reference,
         account.Details,
+        account.LocationId,
         account.CreatedBy,
         account.CreatedAt,
         account.UpdatedAt
@@ -863,7 +909,8 @@ public static partial class FinanceEndpoints
     };
 }
 
-public sealed record FinanceAccountRequest(string Name, string Type, string? Reference, string? Details);
+public sealed record FinanceAccountRequest(string Name, string Type, string? Reference, string? Details, Guid? LocationId = null);
+public sealed record FinanceAccountAreaRequest(Guid? LocationId);
 public sealed record FinanceOpeningBalanceRequest(Guid FinanceAccountId, decimal Amount, string Direction, DateOnly AsOfDate, string Description, string? CorrelationId);
 public sealed record FinanceOpeningBalanceCorrectionRequest(decimal Amount, string? Direction, DateOnly? AsOfDate, string Description, string? CorrelationId);
 public sealed record FinanceExpenseRequest(Guid FinanceAccountId, decimal Amount, string Category, string MovementMethod, DateOnly BusinessDate, string? Description, string? ExternalReference, string? CorrelationId);

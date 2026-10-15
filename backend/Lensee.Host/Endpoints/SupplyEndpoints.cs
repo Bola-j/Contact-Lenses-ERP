@@ -23,7 +23,7 @@ public static class SupplyEndpoints
     // Legacy private helpers still support historical correction data but are no
     // longer reachable through Supply routes.
     private static readonly string[] AllowedPaymentCategories = ["SupplierPurchase", "Freight", "Customs", "Transport", "OtherShipmentCost"];
-    private static readonly string[] AllowedMovementMethods = ["CashHandToHand", "CashTransaction", "BankTransfer", "Wallet"];
+    private static readonly string[] AllowedMovementMethods = ["CashHandToHand", "BankTransfer", "Wallet"];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static RouteGroupBuilder MapSupplyEndpoints(this IEndpointRouteBuilder routes)
@@ -149,7 +149,7 @@ public static class SupplyEndpoints
         var query = dbContext.SupplyShipmentLines.AsNoTracking().Where(value => value.ShipmentId == id);
         var total = await query.CountAsync(cancellationToken);
         var rows = await query.OrderBy(value => value.Id).Skip(request.Skip).Take(request.PageSize)
-            .Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes))
+            .Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.QuantityUnit, line.LotNumber, line.ExpiryDate, line.Notes))
             .ToListAsync(cancellationToken);
         return Results.Ok(new PagedResult<SupplyLineResponse>(rows, request.Page, request.PageSize, total));
     }
@@ -171,7 +171,7 @@ public static class SupplyEndpoints
         return Results.Ok(new SupplyShipmentEditorResponse(
             shipment.Id, shipment.SupplierName, shipment.InvoiceNumber, shipment.ShipmentDate, shipment.Status,
             shipment.ConcurrencyVersion, shipment.DestinationLocationId, shipment.Notes,
-            shipment.Lines.OrderBy(value => value.Id).Select(line => new SupplyEditorLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList()));
+            shipment.Lines.OrderBy(value => value.Id).Select(line => new SupplyEditorLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.QuantityUnit, line.LotNumber, line.ExpiryDate, line.Notes)).ToList()));
     }
 
     private static async Task<IResult> GetHistoryAsync(Guid id, OperationsDbContext operationsDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
@@ -373,7 +373,7 @@ public static class SupplyEndpoints
             ShipmentNumber = $"SUP-{now:yyyyMMddHHmmss}-{RandomNumberGenerator.GetInt32(100, 1000)}",
             SupplierName = request.SupplierName!.Trim(),
             InvoiceNumber = TrimToNull(request.InvoiceNumber),
-            ShipmentDate = request.ShipmentDate ?? now,
+            ShipmentDate = now,
             DestinationLocationId = request.DestinationLocationId,
             Status = Draft,
             Notes = TrimToNull(request.Notes),
@@ -447,7 +447,6 @@ public static class SupplyEndpoints
         var now = clock.EgyptNow;
         shipment.SupplierName = request.SupplierName!.Trim();
         shipment.InvoiceNumber = TrimToNull(request.InvoiceNumber);
-        shipment.ShipmentDate = request.ShipmentDate ?? now;
         shipment.DestinationLocationId = request.DestinationLocationId;
         shipment.Notes = TrimToNull(request.Notes);
         shipment.UpdatedBy = currentUser.UserId ?? Guid.Empty;
@@ -546,7 +545,7 @@ public static class SupplyEndpoints
         var now = clock.EgyptNow;
         var session = new SupplyReceivingSession { Id = Guid.NewGuid(), ShipmentId = id, Status = Draft, Notes = $"Physical receipt for {shipment.ShipmentNumber}", CreatedBy = user.UserId ?? Guid.Empty, CreatedAt = now };
         foreach (var manifest in shipment.Lines)
-            session.Lines.Add(new SupplyReceivingLine { Id = Guid.NewGuid(), ReceivingSessionId = session.Id, ShipmentLineId = manifest.Id, ReceivedQuantity = 0, Notes = manifest.Notes });
+            session.Lines.Add(new SupplyReceivingLine { Id = Guid.NewGuid(), ReceivingSessionId = session.Id, ShipmentLineId = manifest.Id, ReceivedQuantity = 0, QuantityUnit = "Pack", Notes = manifest.Notes });
         operations.SupplyReceivingSessions.Add(session);
         AddHistory(operations, shipment, "ReceivingSessionCreate", user.UserId ?? Guid.Empty, now, $"Receiving count session {session.Id} created.");
         try
@@ -580,12 +579,13 @@ public static class SupplyEndpoints
         if (destination is null) return Results.NotFound();
         if (!CanAccessShipmentLocation(user, destination.Value)) return Results.Forbid();
         if (session.Status != Draft) return Results.ValidationProblem(new Dictionary<string,string[]> { ["session"] = ["Only draft receiving sessions can be changed."] });
-        if (request.GroupBy(x => x.ShipmentLineId).Any(group => group.Count() > 1) || request.Any(x => x.ReceivedQuantity < 0 || x.LotNumber?.Length > 100 || x.Notes?.Length > 1000) || request.Select(x => x.ShipmentLineId).Except(session.Lines.Select(x => x.ShipmentLineId)).Any())
+        if (request.GroupBy(x => x.ShipmentLineId).Any(group => group.Count() > 1) || request.Any(x => x.ReceivedQuantity < 0 || !IsPackUnit(x.QuantityUnit) || x.LotNumber?.Length > 100 || x.Notes?.Length > 1000) || request.Select(x => x.ShipmentLineId).Except(session.Lines.Select(x => x.ShipmentLineId)).Any())
             return Results.ValidationProblem(new Dictionary<string,string[]> { ["lines"] = ["Receiving lines must be unique, belong to the shipment, and use valid non-negative values."] });
         foreach (var item in request)
         {
             var line = session.Lines.Single(x => x.ShipmentLineId == item.ShipmentLineId);
             line.ReceivedQuantity = item.ReceivedQuantity;
+            line.QuantityUnit = "Pack";
             line.LotNumber = TrimToNull(item.LotNumber);
             line.ExpiryDate = item.ExpiryDate;
             line.Notes = TrimToNull(item.Notes);
@@ -636,7 +636,31 @@ public static class SupplyEndpoints
                 var lot = count.LotNumber ?? manifest.LotNumber;
                 var expiry = count.ExpiryDate ?? manifest.ExpiryDate;
                 if (string.IsNullOrWhiteSpace(lot) || expiry is null) throw new ArgumentException("Each received SKU requires a batch number and expiry date.");
-                operation.OperationLines.Add(new OperationLine { Id = Guid.NewGuid(), OperationId = operation.Id, SkuId = manifest.SkuId, ProductNameSnapshot = manifest.ProductNameSnapshot, SkuCodeSnapshot = manifest.SkuCodeSnapshot, Section = "Standard", Quantity = count.ReceivedQuantity, EntryMode = "Pieces", BonusQuantity = 0, UnitPrice = 0m, UnitCost = null, LineTotal = 0m, LotNumber = lot, ExpiryDate = expiry, LineNotes = count.Notes ?? manifest.Notes });
+                operation.OperationLines.Add(new OperationLine
+                {
+                    Id = Guid.NewGuid(),
+                    OperationId = operation.Id,
+                    SkuId = manifest.SkuId,
+                    ProductNameSnapshot = manifest.ProductNameSnapshot,
+                    SkuCodeSnapshot = manifest.SkuCodeSnapshot,
+                    Section = "Standard",
+                    Quantity = count.ReceivedQuantity,
+                    EntryMode = "Packs",
+                    PiecesPerPackSnapshot = null,
+                    BonusQuantity = 0,
+                    UnitPrice = 0m,
+                    UnitCost = null,
+                    LineTotal = 0m,
+                    // The return-split invariant applies to every operation line.
+                    // A supply receipt is entirely a normal physical receipt.
+                    NormalQuantity = count.ReceivedQuantity,
+                    ExceptionQuantity = 0,
+                    NormalValue = 0m,
+                    ExceptionValue = 0m,
+                    LotNumber = lot,
+                    ExpiryDate = expiry,
+                    LineNotes = count.Notes ?? manifest.Notes
+                });
             }
             await ledgerService.ReceiveSupplyBatchAsync(shipment.DestinationLocationId, lines.Select(x => { var m = manifestById[x.ShipmentLineId]; return new SupplyReceiptLine(m.SkuId, x.ReceivedQuantity, x.LotNumber ?? m.LotNumber!, x.ExpiryDate ?? m.ExpiryDate!.Value, x.Notes ?? m.Notes); }).ToArray(), actor, operation.Id, ct);
             operation.InventoryReceiptHeader = new InventoryReceiptHeader { Id = Guid.NewGuid(), OperationId = operation.Id, SupplierName = shipment.SupplierName, InvoiceNumber = shipment.InvoiceNumber, ReceiptDate = now, SupplyShipmentId = shipment.Id, SupplyReceivingSessionId = session.Id };
@@ -809,6 +833,11 @@ public static class SupplyEndpoints
                 errors[$"{nameof(request.Lines)}[{index}].{nameof(line.Quantity)}"] = ["Quantity must be greater than zero."];
             }
 
+            if (!IsPackUnit(line.QuantityUnit))
+            {
+                errors[$"{nameof(request.Lines)}[{index}].{nameof(line.QuantityUnit)}"] = ["Supply quantities are sealed packs only."];
+            }
+
             if (line.LotNumber is { Length: > 100 })
             {
                 errors[$"{nameof(request.Lines)}[{index}].{nameof(line.LotNumber)}"] = ["Lot number cannot exceed 100 characters."];
@@ -833,6 +862,7 @@ public static class SupplyEndpoints
                 ProductNameSnapshot = sku.Product.Name,
                 SkuCodeSnapshot = sku.SkuCode,
                 Quantity = quantity,
+                QuantityUnit = "Pack",
                 UnitPrice = null,
                 LineSubtotal = 0m,
                 LotNumber = TrimToNull(line.LotNumber),
@@ -857,7 +887,7 @@ public static class SupplyEndpoints
             errors[nameof(shipment.Lines)] = ["At least one SKU line is required."];
         }
 
-        if (shipment.Lines.Any(line => line.Quantity <= 0))
+        if (shipment.Lines.Any(line => line.Quantity <= 0 || !IsPackUnit(line.QuantityUnit)))
         {
             errors[nameof(shipment.Lines)] = ["Every SKU line quantity must be greater than zero."];
         }
@@ -1002,8 +1032,8 @@ public static class SupplyEndpoints
             .ToDictionary(group => group.Key, group => group.Sum(line => line.ReceivedQuantity));
         var receiving = new SupplyReceivingSummaryResponse(
             shipment.Lines.Select(line => new SupplyReceivingQuantityResponse(line.Id, receivedByLine.GetValueOrDefault(line.Id), line.Quantity - receivedByLine.GetValueOrDefault(line.Id))).ToList(),
-            shipment.ReceivingSessions.Where(session => session.Status == Draft).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList(),
-            shipment.ReceivingSessions.Where(session => session.Status == "Confirmed").OrderByDescending(session => session.ConfirmedAt).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Where(line => line.ReceivedQuantity > 0).Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList());
+            shipment.ReceivingSessions.Where(session => session.Status == Draft).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.QuantityUnit, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList(),
+            shipment.ReceivingSessions.Where(session => session.Status == "Confirmed").OrderByDescending(session => session.ConfirmedAt).Select(session => new SupplyReceivingSessionResponse(session.Id, session.Status, session.CreatedAt, session.ConfirmedAt, session.InventoryReceiptOperationId, session.Lines.Where(line => line.ReceivedQuantity > 0).Select(line => new SupplyReceivingLineResponse(line.ShipmentLineId, line.ReceivedQuantity, line.QuantityUnit, line.LotNumber, line.ExpiryDate, line.Notes)).ToList())).ToList());
         return new(
             shipment.Id,
             shipment.ShipmentNumber,
@@ -1024,7 +1054,7 @@ public static class SupplyEndpoints
             shipment.CancelledBy,
             shipment.CancelledAt,
             shipment.Lines.Count,
-            includeCollections ? shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.LotNumber, line.ExpiryDate, line.Notes)).ToList() : [],
+            includeCollections ? shipment.Lines.Select(line => new SupplyLineResponse(line.Id, line.SkuId, line.SkuCodeSnapshot, line.ProductNameSnapshot, line.Quantity, line.QuantityUnit, line.LotNumber, line.ExpiryDate, line.Notes)).ToList() : [],
             includeCollections ? shipment.HistoryLogs.OrderByDescending(value => value.CreatedAt).Select(value => new SupplyHistoryResponse(value.Id, value.Action, value.ActorUserId, value.CreatedAt, value.Summary)).ToList() : [],
             receiving);
     }
@@ -1061,6 +1091,8 @@ public static class SupplyEndpoints
         string.Equals(value, Cancelled, StringComparison.OrdinalIgnoreCase) ? Cancelled :
         Draft;
 
+    private static bool IsPackUnit(string? value) => string.Equals(value, "Pack", StringComparison.OrdinalIgnoreCase);
+
     private static string? TrimToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private sealed record SupplyBuildResult(Dictionary<string, string[]> Errors, List<SupplyShipmentLine> Lines, IReadOnlyDictionary<Guid, Location> LocationLookup);
@@ -1071,17 +1103,16 @@ public sealed record SupplyShipmentCancellationRequest(string? Reason);
 public sealed record SupplyShipmentRequest(
     string? SupplierName,
     string? InvoiceNumber,
-    DateTime? ShipmentDate,
     Guid DestinationLocationId,
     string? Notes,
     IReadOnlyList<SupplyShipmentLineRequest>? Lines,
     uint? ExpectedVersion = null);
 
-public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyShipmentLineRequest(Guid SkuId, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes, string? QuantityUnit = "Pack");
 
 public sealed record SupplyShipmentCostRequest(string? CostType, string? Description, decimal Amount);
 
-public sealed record SupplyReceivingLineRequest(Guid ShipmentLineId, int ReceivedQuantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyReceivingLineRequest(Guid ShipmentLineId, int ReceivedQuantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes, string? QuantityUnit = "Pack");
 
 public sealed record SupplyPaymentRequest(string? Category, decimal Amount, string? MovementMethod, Guid FinanceAccountId, string? ExternalReference, string? Notes, string? CorrelationId = null);
 
@@ -1130,11 +1161,11 @@ public sealed record SupplyShipmentDetailResponse(
     IReadOnlyList<SupplyHistoryResponse> History,
     SupplyReceivingSummaryResponse Receiving);
 
-public sealed record SupplyLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string QuantityUnit, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyShipmentEditorResponse(Guid Id, string SupplierName, string? InvoiceNumber, DateTime ShipmentDate, string Status, uint ConcurrencyVersion, Guid DestinationLocationId, string? Notes, IReadOnlyList<SupplyEditorLineResponse> Lines);
 
-public sealed record SupplyEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyEditorLineResponse(Guid Id, Guid SkuId, string SkuCode, string ProductName, int Quantity, string QuantityUnit, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
 
 public sealed record SupplyCostResponse(Guid Id, string CostType, string? Description, decimal Amount);
 
@@ -1142,4 +1173,4 @@ public sealed record SupplyHistoryResponse(Guid Id, string Action, Guid ActorUse
 public sealed record SupplyReceivingSummaryResponse(IReadOnlyList<SupplyReceivingQuantityResponse> Quantities, IReadOnlyList<SupplyReceivingSessionResponse> OpenSessions, IReadOnlyList<SupplyReceivingSessionResponse> History);
 public sealed record SupplyReceivingQuantityResponse(Guid ShipmentLineId, int CumulativeReceived, int OutstandingQuantity);
 public sealed record SupplyReceivingSessionResponse(Guid Id, string Status, DateTime CreatedAt, DateTime? ConfirmedAt, Guid? InventoryReceiptOperationId, IReadOnlyList<SupplyReceivingLineResponse> Lines);
-public sealed record SupplyReceivingLineResponse(Guid ShipmentLineId, int ReceivedQuantity, string? LotNumber, DateOnly? ExpiryDate, string? Notes);
+public sealed record SupplyReceivingLineResponse(Guid ShipmentLineId, int ReceivedQuantity, string QuantityUnit, string? LotNumber, DateOnly? ExpiryDate, string? Notes);

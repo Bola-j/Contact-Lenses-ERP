@@ -507,8 +507,8 @@ public sealed class MerchantExpiryRecallService
             skus.TryGetValue(recall.SkuId, out var sku);
             var label = sku?.SkuCode ?? "Unknown SKU";
             var state = recall.ExpiryDate < DateOnly.FromDateTime(now) ? "expired" : "approaching expiry";
-            var message = $"Merchant batch recall: {merchantName ?? "Unknown merchant"} received {label}, lot {EmptyToNull(recall.LotNumber) ?? "No lot"}, expiring {recall.ExpiryDate:yyyy-MM-dd}. The batch is {state}. Confirm the physical quantity before starting a return.";
-            var title = $"{merchantName ?? "Unknown merchant"} / {label} / {recall.ExpiryDate:yyyy-MM-dd}";
+            var message = $"Merchant batch recall: {merchantName ?? "Unknown merchant"} received {label}, lot {EmptyToNull(recall.LotNumber) ?? "No lot"}, expiring {recall.ExpiryDate:dd/MM/yyyy}. The batch is {state}. Confirm the physical quantity before starting a return.";
+            var title = $"{merchantName ?? "Unknown merchant"} / {label} / {recall.ExpiryDate:dd/MM/yyyy}";
             var context = JsonSerializer.Serialize(new { recall.MerchantId, recall.SkuId, LotNumber = EmptyToNull(recall.LotNumber), recall.ExpiryDate }, JsonOptions);
 
             foreach (var role in TargetRoles)

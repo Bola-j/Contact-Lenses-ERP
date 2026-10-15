@@ -9,6 +9,7 @@ using Lensee.Modules.Identity.Data;
 using Lensee.Modules.Inventory.Data;
 using Lensee.Modules.Operations.Data;
 using Lensee.Modules.Payments.Data;
+using Lensee.Modules.Reporting.Application;
 using Lensee.Modules.Reporting.Data;
 using Lensee.SharedKernel.Security;
 using Microsoft.AspNetCore.Hosting;
@@ -130,7 +131,37 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
     }
 
     [Fact]
-    public async Task StandardExport_RejectsRowsBeyondConfiguredLimitWithoutTruncating()
+    public async Task PaymentReportDocument_LocalizesSettlementAndWorkflowInArabicAndBilingualExports()
+    {
+        await _factory.ResetAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+        await _factory.SeedPrintableDocumentsAsync();
+
+        var report = await client.GetFromJsonAsync<JsonElement>("/api/v1/reports/payments");
+        var payment = report.GetProperty("items").EnumerateArray().First();
+        var settlement = payment.GetProperty("settlementStatus").GetString()!;
+        var workflow = payment.GetProperty("status").GetString()!;
+
+        using var arabicResponse = await client.GetAsync("/api/v1/reports/payments/export?format=csv&language=ar");
+        var arabicCsv = await arabicResponse.Content.ReadAsStringAsync();
+        using var bilingualResponse = await client.GetAsync("/api/v1/reports/payments/export?format=csv&language=bi");
+        var bilingualCsv = await bilingualResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, arabicResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, bilingualResponse.StatusCode);
+        Assert.Contains("\"التسوية\"", arabicCsv);
+        Assert.Contains("\"سير العمل\"", arabicCsv);
+        Assert.Contains("\"التسوية / Settlement\"", bilingualCsv);
+        Assert.Contains("\"سير العمل / Workflow\"", bilingualCsv);
+        Assert.Contains($"\"{DocumentTranslations.Arabic(settlement)}\"", arabicCsv);
+        Assert.Contains($"\"{DocumentTranslations.Arabic(workflow)}\"", arabicCsv);
+        Assert.Contains($"\"{DocumentTranslations.Arabic(settlement)} / {settlement}\"", bilingualCsv);
+        Assert.Contains($"\"{DocumentTranslations.Arabic(workflow)} / {workflow}\"", bilingualCsv);
+    }
+
+    [Fact]
+    public async Task StandardExport_IgnoresLegacyConfiguredLimitAndIncludesAllFilteredRows()
     {
         await using var factory = new LimitedReportsEndpointFactory();
         await factory.SeedPrintableDocumentsAsync();
@@ -140,8 +171,9 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
 
         using var response = await client.GetAsync("/api/v1/reports/operations/export?format=xlsx&language=en");
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", response.Content.Headers.ContentType?.MediaType);
+        Assert.True((await response.Content.ReadAsByteArrayAsync()).Length > 20);
     }
 
     [Fact]
@@ -243,8 +275,8 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
                 using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
                 return reader.ReadToEnd();
             }));
-        Assert.Contains("صافي التحصيل", workbookText);
-        Assert.DoesNotContain(">Net collected<", workbookText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("التحصيلات", workbookText);
+        Assert.DoesNotContain(">Collections<", workbookText, StringComparison.OrdinalIgnoreCase);
     }
 }
 

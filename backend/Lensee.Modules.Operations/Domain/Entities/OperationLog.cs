@@ -11,6 +11,11 @@ public partial class OperationLog
 
     public string OperationNumber { get; set; } = null!;
 
+    // Optional business/customer/import reference. The generated operation
+    // number remains the immutable system identifier; this value is searchable
+    // and may be edited only while the operation is a draft.
+    public string? ExternalReference { get; set; }
+
     public string OperationType { get; set; } = null!;
 
     public string Status { get; set; } = null!;
@@ -46,6 +51,43 @@ public partial class OperationLog
     public string? BuyerEmail { get; set; }
 
     public string? ShippingAddress { get; set; }
+
+    // Online checkout facts are snapshotted on the operation; they are never
+    // inferred from a later payment or courier event.
+    public decimal DeliveryFee { get; set; }
+    public decimal CodCharge { get; set; }
+    public string? CodChargeOverrideReason { get; set; }
+    public bool BuyerContactVerified { get; set; }
+    public string? ExternalPaymentProvider { get; set; }
+    public string? ExternalPaymentReference { get; set; }
+    public bool ExternalPaymentVerified { get; set; }
+    public string? PaymentStatus { get; set; }
+    public string? ClientRequestId { get; set; }
+
+    // Return exceptions are one operator interaction, retained immutably on
+    // the confirmed return while normal/exception values remain on each line.
+    public string? ReturnExceptionReason { get; set; }
+    public string? ReturnVerbalAuthorizer { get; set; }
+    public decimal ReturnNormalValue { get; set; }
+    public decimal ReturnExceptionValue { get; set; }
+
+    // A return may reference a completed sale for customer/payment context, but
+    // it never creates per-line source allocations or quantity caps.  The
+    // physical lines and entered value remain the operator's own record.
+    public Guid? ReturnReferenceOperationId { get; set; }
+
+    // Return workflow records each human decision independently.  The legacy
+    // ReturnApprovalReason remains populated as a compatibility summary for
+    // existing readers, while these facts retain the actual workflow audit.
+    public string? ReturnSubmissionReason { get; set; }
+    public Guid? ReturnSubmittedBy { get; set; }
+    public DateTime? ReturnSubmittedAt { get; set; }
+    public string? ReturnApprovalReason { get; set; }
+    public string? ReturnRejectionReason { get; set; }
+    public Guid? ReturnApprovedBy { get; set; }
+    public DateTime? ReturnApprovedAt { get; set; }
+    public Guid? ReturnRejectedBy { get; set; }
+    public DateTime? ReturnRejectedAt { get; set; }
 
     public Guid? CurrentVersionId { get; set; }
 
@@ -87,6 +129,7 @@ public partial class OperationLog
     public virtual InventoryReceiptHeader? InventoryReceiptHeader { get; set; }
 
     public virtual ICollection<OperationLine> OperationLines { get; set; } = new List<OperationLine>();
+    public virtual ICollection<ReturnApprovalLine> ReturnApprovalLines { get; set; } = new List<ReturnApprovalLine>();
 
     public virtual ICollection<OperationVersion> OperationVersions { get; set; } = new List<OperationVersion>();
 

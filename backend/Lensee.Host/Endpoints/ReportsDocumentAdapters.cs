@@ -35,23 +35,18 @@ public static partial class ReportsEndpoints
         DateTime generatedAtUtc) => key.ToLowerInvariant() switch
         {
             "financial-summary" => BuildFinancialSummaryDocument((FinancialSummaryResponse)value, language, generatedBy, generatedAtUtc),
-            "stock" => BuildTableDocument(key, "Inventory report", language, generatedBy, generatedAtUtc,
-                [Column("Location"), Column("Type"), Column("SKU", ColumnDataType.Code), Column("Product"), Column("Available", ColumnDataType.Integer), Column("Reserved warehouse", ColumnDataType.Integer), Column("Reserved rep", ColumnDataType.Integer), Column("Target", ColumnDataType.Integer), Column("Updated", ColumnDataType.DateTime)],
-                ((IEnumerable<StockReportRow>)value).Select(row => new TableRow([
-                    Text(row.LocationName), Text(row.LocationType), new DocumentCell.Code(row.SkuCode ?? row.SkuId.ToString("N")), Text(row.ProductName),
-                    new DocumentCell.Integer(row.AvailableQty), new DocumentCell.Integer(row.ReservedInWarehouseQty), new DocumentCell.Integer(row.ReservedWithRepQty),
-                    row.TargetQty.HasValue ? new DocumentCell.Integer(row.TargetQty.Value) : Text(string.Empty), new DocumentCell.DateTimeValue(row.LastUpdated)])).ToList()),
+            "stock" => BuildStockDocument((IEnumerable<StockReportRow>)value, language, generatedBy, generatedAtUtc),
             "operations" => BuildTableDocument(key, "Operations report", language, generatedBy, generatedAtUtc,
                 [Column("Operation", ColumnDataType.Code), Column("Type"), Column("Status"), Column("Client"), Column("Payment"), Column("Quantity", ColumnDataType.Integer), Column("Bonus", ColumnDataType.Integer), Column("Total", ColumnDataType.Money), Column("Created", ColumnDataType.DateTime)],
                 ((IEnumerable<OperationReportRow>)value).Select(row => new TableRow([
                     new DocumentCell.Code(row.OperationNumber), Text(row.OperationType), Text(row.Status), Text(row.ClientName), Text(row.PaymentMethod),
                     new DocumentCell.Integer(row.Quantity), new DocumentCell.Integer(row.BonusQuantity), new DocumentCell.Money(row.Total), new DocumentCell.DateTimeValue(row.CreatedAt)])).ToList()),
             "payments" => BuildTableDocument(key, "Payments report", language, generatedBy, generatedAtUtc,
-                [Column("Payment", ColumnDataType.Code), Column("Operation", ColumnDataType.Code), Column("Merchant", ColumnDataType.Code), Column("Method"), Column("Total", ColumnDataType.Money), Column("Paid", ColumnDataType.Money), Column("Remaining", ColumnDataType.Money), Column("Refund due", ColumnDataType.Money), Column("Status")],
+                [Column("Payment", ColumnDataType.Code), Column("Operation", ColumnDataType.Code), Column("Merchant", ColumnDataType.Code), Column("Method"), Column("Total", ColumnDataType.Money), Column("Paid", ColumnDataType.Money), Column("Remaining", ColumnDataType.Money), Column("Refund due", ColumnDataType.Money), Column("Settlement"), Column("Workflow")],
                 ((IEnumerable<PaymentReportRow>)value).Select(row => new TableRow([
                     new DocumentCell.Code(DocumentRecordCode("PAY", row.Id)), new DocumentCell.Code(row.OperationNumber ?? DocumentRecordCode("OP", row.OperationId)),
                     new DocumentCell.Code(row.MerchantId.HasValue ? DocumentRecordCode("MER", row.MerchantId.Value) : string.Empty), Text(row.PaymentMethod),
-                    new DocumentCell.Money(row.TotalAmount), new DocumentCell.Money(row.AmountPaid), new DocumentCell.Money(row.RemainingAmount), new DocumentCell.Money(row.RefundDue), Text(row.Status)])).ToList()),
+                    new DocumentCell.Money(row.TotalAmount), new DocumentCell.Money(row.AmountPaid), new DocumentCell.Money(row.RemainingAmount), new DocumentCell.Money(row.RefundDue), Text(Localized(row.SettlementStatus, language)), Text(Localized(row.Status, language))])).ToList()),
             "supply" => BuildTableDocument(key, "Supply landed cost report", language, generatedBy, generatedAtUtc,
                 [Column("Shipment", ColumnDataType.Code), Column("Supplier"), Column("Invoice", ColumnDataType.Code), Column("Status"), Column("Quantity", ColumnDataType.Integer), Column("Products", ColumnDataType.Money), Column("Import costs", ColumnDataType.Money), Column("Landed total", ColumnDataType.Money), Column("Receipt operation", ColumnDataType.Code), Column("Created", ColumnDataType.DateTime)],
                 ((IEnumerable<SupplyLandedCostReportRow>)value).Select(row => new TableRow([
@@ -65,12 +60,42 @@ public static partial class ReportsEndpoints
             _ => throw new NotSupportedException($"Unknown report '{key}'.")
         };
 
+    private static DocumentModel BuildStockDocument(IEnumerable<StockReportRow> source, DocumentLanguage language, string? generatedBy, DateTime generatedAtUtc)
+    {
+        var rows = source.ToList();
+        var detail = BuildTableDocument("stock", "Inventory report", language, generatedBy, generatedAtUtc,
+            [Column("Location"), Column("Type"), Column("SKU", ColumnDataType.Code), Column("Product"), Column("Available", ColumnDataType.Integer), Column("Reserved warehouse", ColumnDataType.Integer), Column("Reserved rep", ColumnDataType.Integer), Column("Target", ColumnDataType.Integer), Column("Updated", ColumnDataType.DateTime)],
+            rows.Select(row => new TableRow([
+                Text(row.LocationName), Text(row.LocationType), new DocumentCell.Code(row.SkuCode ?? Localized("Unavailable", language)), Text(row.ProductName),
+                new DocumentCell.Integer(row.AvailableQty), new DocumentCell.Integer(row.ReservedInWarehouseQty), new DocumentCell.Integer(row.ReservedWithRepQty),
+                row.TargetQty.HasValue ? new DocumentCell.Integer(row.TargetQty.Value) : Text(string.Empty), new DocumentCell.DateTimeValue(row.LastUpdated)])).ToList());
+
+        var colorSummary = rows.GroupBy(row => string.IsNullOrWhiteSpace(row.ColorName) ? Localized("Unspecified", language) : row.ColorName!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key)
+            .Select(group => new TableRow([
+                Text(group.Key),
+                new DocumentCell.Integer(group.Sum(row => row.AvailableQty)),
+                new DocumentCell.Integer(group.Sum(row => row.LoosePieceQuantity)),
+                new DocumentCell.Integer(group.Sum(row => row.AvailableQty * (row.PiecesPerPack ?? 0) + row.LoosePieceQuantity))
+            ])).ToList();
+
+        return detail with
+        {
+            Tables = [
+                detail.Tables[0],
+                new TableSection(Localized("Stock totals by color", language),
+                    [Column("Color"), Column("Boxes", ColumnDataType.Integer), Column("Loose pieces", ColumnDataType.Integer), Column("Total pieces", ColumnDataType.Integer)],
+                    colorSummary,
+                    Localized("No color totals found for the selected criteria.", language))]
+        };
+    }
+
     private static DocumentModel BuildFinancialSummaryDocument(FinancialSummaryResponse summary, DocumentLanguage language, string? generatedBy, DateTime generatedAtUtc) => new(
         new Lensee.Modules.Reporting.Application.Models.DocumentMetadata("financial-summary", Localized("Financial summary", language), DocumentTemplateKind.Analytical, language, null, generatedAtUtc, generatedBy),
         new DocumentHeader(Localized("Financial summary", language)),
         [new InfoSection(Localized("Report metadata", language),
         [
-            new InfoField(Localized("Generated at", language), generatedAtUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)),
+            new InfoField(Localized("Generated at", language), generatedAtUtc.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture)),
             new InfoField(Localized("Generated by", language), generatedBy ?? "-")
         ])],
         [
@@ -90,16 +115,29 @@ public static partial class ReportsEndpoints
         IReadOnlyList<TableRow> rows)
     {
         var localizedColumns = columns.Select(column => column with { Header = Localized(column.Header, language) }).ToList();
+        var totals = columns.Select((column, index) => new { column, index })
+            .Where(item => item.column.DataType is ColumnDataType.Integer or ColumnDataType.Decimal or ColumnDataType.Money)
+            .Select(item => new SummaryMetric(
+                $"{Localized("Grand total", language)} — {Localized(item.column.Header, language)}",
+                rows.Sum(row => row.Cells.Count <= item.index ? 0m : row.Cells[item.index] switch
+                {
+                    DocumentCell.Integer value => value.Value,
+                    DocumentCell.Number value => value.Value,
+                    DocumentCell.Decimal value => value.Value,
+                    DocumentCell.Money value => value.Value,
+                    _ => 0m
+                }).ToString(item.column.DataType == ColumnDataType.Integer ? "0" : "#,##0.0000", CultureInfo.InvariantCulture)))
+            .ToList();
         return new DocumentModel(
             new Lensee.Modules.Reporting.Application.Models.DocumentMetadata(key, Localized(title, language), DocumentTemplateKind.Analytical, language, null, generatedAtUtc, generatedBy, columns.Count > 7, rows.Count),
             new DocumentHeader(Localized(title, language)),
             [new InfoSection(Localized("Report metadata", language),
             [
-                new InfoField(Localized("Generated at", language), generatedAtUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)),
+                new InfoField(Localized("Generated at", language), generatedAtUtc.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture)),
                 new InfoField(Localized("Generated by", language), generatedBy ?? "-")
             ])], [],
             [new TableSection(null, localizedColumns, rows, Localized("No data found for the selected criteria.", language))],
-            null, [], null, new DocumentFooter());
+            totals.Count == 0 ? null : new TotalsSection(totals), [], null, new DocumentFooter());
     }
 
     private static TableColumn Column(string header, ColumnDataType dataType = ColumnDataType.Text) => new(

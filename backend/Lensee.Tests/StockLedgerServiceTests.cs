@@ -26,6 +26,7 @@ public sealed class StockLedgerServiceTests
         Assert.Equal(1, balance.RowVersion);
         Assert.Equal(InventoryTransactionTypes.Receipt, transaction.TransactionType);
         Assert.Equal(12, transaction.QuantityChange);
+        Assert.Equal(InventoryQuantityUnits.Pack, transaction.QuantityUnit);
     }
 
     [Fact]
@@ -205,6 +206,164 @@ public sealed class StockLedgerServiceTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.IssueFefoAsync(Guid.NewGuid(), Guid.NewGuid(), 1, "Manual", Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task IssuePiecesFromSelectionAsync_RecordsActualPieceIssue_WhenLooseStockSatisfiesRequest()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        dbContext.OpenedPieceLots.Add(new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batchId,
+            LotNumber = "LOT", BatchExpiryDate = new DateOnly(2028, 6, 1), OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = new DateOnly(2028, 6, 1), LoosePieceQuantity = 5, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+        });
+        await dbContext.SaveChangesAsync();
+
+        await service.IssuePiecesFromSelectionAsync(locationId, skuId, 3, 10, "LOT", new DateOnly(2028, 6, 1), userId);
+
+        var transaction = Assert.Single(await dbContext.StockTransactions.ToListAsync());
+        Assert.Equal(InventoryTransactionTypes.Sale, transaction.TransactionType);
+        Assert.Equal(-3, transaction.QuantityChange);
+        Assert.Equal(InventoryQuantityUnits.Piece, transaction.QuantityUnit);
+        Assert.Equal(2, await dbContext.OpenedPieceLots.Select(value => value.LoosePieceQuantity).SingleAsync());
+    }
+
+    [Fact]
+    public async Task IssuePiecesFromSelectionAsync_DoesNotOpenASealedPack_WhenSelectedLoosePiecesCoverANonMultipleRequest()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var expiry = new DateOnly(2028, 6, 1);
+
+        await service.ReceiveAsync(locationId, skuId, 1, userId, "LOT", expiry);
+        var batch = await dbContext.InventoryBatches.SingleAsync();
+        dbContext.OpenedPieceLots.Add(new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
+            LotNumber = "LOT", BatchExpiryDate = expiry, OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = expiry, LoosePieceQuantity = 2, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+        });
+        await dbContext.SaveChangesAsync();
+
+        await service.IssuePiecesFromSelectionAsync(locationId, skuId, 2, 3, "LOT", expiry, userId, allowOpeningSelectedPacks: true);
+
+        Assert.DoesNotContain(await dbContext.StockTransactions.ToListAsync(), value => value.TransactionType == InventoryTransactionTypes.PackOpen);
+        Assert.Equal(1, await dbContext.InventoryBatches.Select(value => value.Quantity).SingleAsync());
+        Assert.Equal(0, await dbContext.OpenedPieceLots.SumAsync(value => value.LoosePieceQuantity));
+    }
+
+    [Fact]
+    public async Task IssuePiecesFromSelectionAsync_OpensOnlyTheAdditionalPackNeededAfterUsingSelectedLoosePieces()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var expiry = new DateOnly(2028, 6, 1);
+
+        await service.ReceiveAsync(locationId, skuId, 2, userId, "LOT", expiry);
+        var batch = await dbContext.InventoryBatches.SingleAsync();
+        dbContext.OpenedPieceLots.Add(new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
+            LotNumber = "LOT", BatchExpiryDate = expiry, OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = expiry, LoosePieceQuantity = 1, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+        });
+        await dbContext.SaveChangesAsync();
+
+        await service.IssuePiecesFromSelectionAsync(locationId, skuId, 2, 3, "LOT", expiry, userId, allowOpeningSelectedPacks: true);
+
+        var packOpen = await dbContext.StockTransactions.SingleAsync(value => value.TransactionType == InventoryTransactionTypes.PackOpen);
+        Assert.Equal((-1, InventoryQuantityUnits.Pack), (packOpen.QuantityChange, packOpen.QuantityUnit));
+        Assert.Equal(1, await dbContext.InventoryBatches.Select(value => value.Quantity).SingleAsync());
+        Assert.Equal(2, await dbContext.OpenedPieceLots.SumAsync(value => value.LoosePieceQuantity));
+    }
+
+    [Fact]
+    public async Task IssuePiecesFromSelectionAsync_RecordsOnePieceIssueAndLinkedPackOpen_AcrossLooseAndSealedStock()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        await service.ReceiveAsync(locationId, skuId, 1, userId, "LOT", new DateOnly(2028, 6, 1));
+        var batch = await dbContext.InventoryBatches.SingleAsync();
+        dbContext.OpenedPieceLots.Add(new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = batch.Id,
+            LotNumber = "LOT", BatchExpiryDate = batch.ExpiryDate, OpenedDate = new DateOnly(2026, 6, 25),
+            PieceExpiryDate = batch.ExpiryDate, LoosePieceQuantity = 2, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+        });
+        await dbContext.SaveChangesAsync();
+
+        await service.IssuePiecesFromSelectionAsync(locationId, skuId, 3, 10, "LOT", new DateOnly(2028, 6, 1), userId, allowOpeningSelectedPacks: true);
+
+        var issue = await dbContext.StockTransactions.SingleAsync(value => value.TransactionType == InventoryTransactionTypes.Sale);
+        var packOpen = await dbContext.StockTransactions.SingleAsync(value => value.TransactionType == InventoryTransactionTypes.PackOpen);
+        Assert.Equal((-3, InventoryQuantityUnits.Piece), (issue.QuantityChange, issue.QuantityUnit));
+        Assert.Equal((-1, InventoryQuantityUnits.Pack), (packOpen.QuantityChange, packOpen.QuantityUnit));
+        Assert.Equal(issue.Id, packOpen.RelatedTransactionId);
+        Assert.Equal(10, packOpen.ConversionPiecesPerPack);
+        // This fixture intentionally holds one sealed 10-piece pack plus two already-open
+        // loose pieces. Issuing three consumes the loose pieces, opens the pack, and leaves 9.
+        Assert.Equal(9, await dbContext.OpenedPieceLots.SumAsync(value => value.LoosePieceQuantity));
+        Assert.Equal(0, await dbContext.InventoryBatches.Select(value => value.Quantity).SingleAsync());
+    }
+
+    [Fact]
+    public async Task IssuePiecesFefoAsync_RecordsActualPieceIssue()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        dbContext.OpenedPieceLots.AddRange(
+            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 1, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) },
+            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 3, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) });
+        await dbContext.SaveChangesAsync();
+
+        await service.IssuePiecesFefoAsync(locationId, skuId, 3, 10, userId);
+
+        var transaction = Assert.Single(await dbContext.StockTransactions.ToListAsync());
+        Assert.Equal((InventoryTransactionTypes.Sale, -3, InventoryQuantityUnits.Piece), (transaction.TransactionType, transaction.QuantityChange, transaction.QuantityUnit));
+        Assert.Equal(1, await dbContext.OpenedPieceLots.SumAsync(value => value.LoosePieceQuantity));
+    }
+
+    [Fact]
+    public async Task RestorePiecesToOpenedLotAsync_RecordsPieceReturnRestore()
+    {
+        await using var dbContext = CreateContext();
+        var service = new StockLedgerService(dbContext, new FixedClock());
+        var locationId = Guid.NewGuid();
+        var skuId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        var lot = new OpenedPieceLot
+        {
+            Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(),
+            LotNumber = "LOT", OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 1,
+            CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25)
+        };
+        dbContext.OpenedPieceLots.Add(lot);
+        await dbContext.SaveChangesAsync();
+
+        await service.RestorePiecesToOpenedLotAsync(lot.Id, 2, userId, operationId);
+
+        var transaction = Assert.Single(await dbContext.StockTransactions.ToListAsync());
+        Assert.Equal((InventoryTransactionTypes.ReturnRestore, 2, InventoryQuantityUnits.Piece, operationId), (transaction.TransactionType, transaction.QuantityChange, transaction.QuantityUnit, transaction.ReferenceOperationId));
+        Assert.Equal(3, await dbContext.OpenedPieceLots.Select(value => value.LoosePieceQuantity).SingleAsync());
     }
 
     private static InventoryDbContext CreateContext()

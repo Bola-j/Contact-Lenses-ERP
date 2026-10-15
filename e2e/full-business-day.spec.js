@@ -104,7 +104,7 @@ test("full business day: catalog, CRM, inventory, operations, payments, reports,
   await page.locator("#collection-amount").fill("250");
   await page.locator("#collection-method").selectOption("CashHandToHand");
   await page.locator("#collection-finance-account").selectOption(cashAccount.id);
-  await page.locator("#collection-date").fill("2026-07-07");
+  await page.locator("#collection-date").fill("07/07/2026");
   await page.locator("#collection-notes").fill(`${data.runId} full payment`);
   const [collectionResponse] = await Promise.all([
     page.waitForResponse((response) => response.url().includes("/api/v1/payments/collections") && response.request().method() === "POST"),

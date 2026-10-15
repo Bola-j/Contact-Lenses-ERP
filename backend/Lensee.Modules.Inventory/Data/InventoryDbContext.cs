@@ -76,6 +76,7 @@ public partial class InventoryDbContext : DbContext
             entity.Property(e => e.CreatedBy).HasColumnName("created_by");
             entity.Property(e => e.CreatedFrom).HasColumnName("created_from");
             entity.Property(e => e.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(e => e.IsQuarantined).HasDefaultValue(false).HasColumnName("is_quarantined");
             entity.Property(e => e.LocationId).HasColumnName("location_id");
             entity.Property(e => e.LotNumber)
                 .HasMaxLength(100)
@@ -210,7 +211,10 @@ public partial class InventoryDbContext : DbContext
             {
                 table.HasCheckConstraint(
                     "chk_txn_type",
-                    "transaction_type in ('Receipt','Sale','ReserveInWarehouse','ReserveWithRep','ReserveReleaseInWarehouse','ReserveReleaseWithRep','WriteOff','SupplyOut','SupplyIn','StocktakeAdjustment','ChangeOut','ChangeIn','ReturnIn')");
+                    "transaction_type in ('Receipt','Sale','ReserveInWarehouse','ReserveWithRep','ReserveReleaseInWarehouse','ReserveReleaseWithRep','WriteOff','SupplyOut','SupplyIn','StocktakeAdjustment','ChangeOut','ChangeIn','ReturnIn','ReturnRestore','PackOpen','QuarantineIn','QuarantineRelease','QuarantineWriteOff')");
+                table.HasCheckConstraint(
+                    "chk_txn_quantity_unit",
+                    "quantity_unit is null or (quantity_unit in ('Pack','Piece') and quantity_change <> 0)");
             });
 
             entity.HasIndex(e => e.ReferenceOperationId, "idx_stock_txn_operation").HasFilter("(reference_operation_id IS NOT NULL)");
@@ -228,6 +232,9 @@ public partial class InventoryDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.LocationId).HasColumnName("location_id");
             entity.Property(e => e.QuantityChange).HasColumnName("quantity_change");
+            entity.Property(e => e.QuantityUnit).HasMaxLength(10).HasColumnName("quantity_unit");
+            entity.Property(e => e.RelatedTransactionId).HasColumnName("related_transaction_id");
+            entity.Property(e => e.ConversionPiecesPerPack).HasColumnName("conversion_pieces_per_pack");
             entity.Property(e => e.ReferenceOperationId).HasColumnName("reference_operation_id");
             entity.Property(e => e.SkuId).HasColumnName("sku_id");
             entity.Property(e => e.TransactionType)

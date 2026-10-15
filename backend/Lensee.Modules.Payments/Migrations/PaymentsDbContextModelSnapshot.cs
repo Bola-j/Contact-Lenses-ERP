@@ -82,6 +82,15 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnName("payment_type")
                         .HasDefaultValueSql("'CashReceived'::character varying");
 
+                    b.Property<Guid?>("ReturnEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_entitlement_id");
+
+                    b.Property<string>("ReturnSettlementScope")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("return_settlement_scope");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -100,8 +109,16 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("transaction_reference");
 
+                    b.Property<decimal?>("TransferFeeAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("transfer_fee_amount");
+
                     b.HasKey("Id")
                         .HasName("cash_records_pkey");
+
+                    b.HasIndex("ReturnEntitlementId")
+                        .HasFilter("(return_entitlement_id IS NOT NULL)");
 
                     b.HasIndex(new[] { "FinancialAdjustmentId" }, "idx_cash_records_adjustment")
                         .HasFilter("(financial_adjustment_id IS NOT NULL)");
@@ -183,6 +200,15 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
+                    b.Property<Guid?>("ReturnEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_entitlement_id");
+
+                    b.Property<string>("ReturnSettlementScope")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("return_settlement_scope");
+
                     b.Property<Guid?>("ReversesAdjustmentId")
                         .HasColumnType("uuid")
                         .HasColumnName("reverses_adjustment_id");
@@ -206,10 +232,16 @@ namespace Lensee.Modules.Payments.Migrations
                     b.HasKey("Id")
                         .HasName("financial_adjustments_pkey");
 
+                    b.HasIndex("ReturnEntitlementId")
+                        .HasFilter("(return_entitlement_id IS NOT NULL)");
+
                     b.HasIndex(new[] { "MerchantId" }, "idx_financial_adjustments_merchant");
 
                     b.HasIndex(new[] { "OperationId" }, "idx_financial_adjustments_operation")
                         .HasFilter("(operation_id IS NOT NULL)");
+
+                    b.HasIndex(new[] { "CreatedAt" }, "idx_financial_adjustments_created_at")
+                        .IsDescending();
 
                     b.ToTable("financial_adjustments", "payments", t =>
                         {
@@ -411,6 +443,14 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasIndex(new[] { "Status" }, "idx_main_payment_status")
                         .HasFilter("(is_deleted = false)");
+
+                    b.HasIndex(new[] { "LastModifiedAt" }, "idx_main_payment_active_last_modified")
+                        .IsDescending()
+                        .HasFilter("(is_deleted = false)");
+
+                    b.HasIndex(new[] { "LastModifiedAt" }, "idx_main_payment_open_queue_last_modified")
+                        .IsDescending()
+                        .HasFilter("(is_deleted = false AND status <> 'Completed' AND status <> 'Rejected')");
 
                     b.HasIndex(new[] { "OperationId" }, "uq_main_payment_operation_active")
                         .IsUnique()
@@ -671,9 +711,7 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OperationId")
-                        .IsUnique()
-                        .HasFilter("(decision = 'Pending')");
+                    b.HasIndex("OperationId");
 
                     b.HasIndex("AccountId", "Sequence")
                         .IsUnique();
@@ -741,7 +779,8 @@ namespace Lensee.Modules.Payments.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
 
                     b.Property<DateTime>("AllocatedAt")
                         .HasColumnType("timestamp without time zone")
@@ -798,8 +837,8 @@ namespace Lensee.Modules.Payments.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
-                        .HasColumnName("decision")
-                        .HasDefaultValue("Pending");
+                        .HasDefaultValue("Pending")
+                        .HasColumnName("decision");
 
                     b.Property<Guid>("OperationId")
                         .HasColumnType("uuid")
@@ -831,7 +870,9 @@ namespace Lensee.Modules.Payments.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OperationId");
+                    b.HasIndex("OperationId")
+                        .IsUnique()
+                        .HasFilter("(decision = 'Pending')");
 
                     b.HasIndex("ProposalId", "OperationId")
                         .IsUnique();
@@ -882,8 +923,8 @@ namespace Lensee.Modules.Payments.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)")
-                        .HasColumnName("status")
-                        .HasDefaultValue("PendingAdminReview");
+                        .HasDefaultValue("PendingAdminReview")
+                        .HasColumnName("status");
 
                     b.Property<DateTime>("SubmittedAt")
                         .ValueGeneratedOnAdd()
@@ -1130,6 +1171,10 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<Guid?>("FinancialAdjustmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("financial_adjustment_id");
+
                     b.Property<string>("Notes")
                         .HasColumnType("text")
                         .HasColumnName("notes");
@@ -1152,6 +1197,10 @@ namespace Lensee.Modules.Payments.Migrations
                         .HasColumnName("status");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("FinancialAdjustmentId")
+                        .IsUnique()
+                        .HasFilter("financial_adjustment_id IS NOT NULL");
 
                     b.HasIndex("AccountId", "Status");
 
@@ -1320,6 +1369,297 @@ namespace Lensee.Modules.Payments.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.ReturnEntitlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<decimal>("AccountLevelSettledAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("account_level_settled_amount");
+
+                    b.Property<string>("BeneficiaryKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("beneficiary_kind");
+
+                    b.Property<string>("BuyerName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("buyer_name");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<decimal>("ExceptionAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("exception_amount");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<decimal>("MerchantAccountSettledAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("merchant_account_settled_amount");
+
+                    b.Property<Guid?>("MerchantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merchant_id");
+
+                    b.Property<decimal>("NormalAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("normal_amount");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("OriginalPaymentReference")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("original_payment_reference");
+
+                    b.Property<Guid?>("OriginalSaleOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("original_sale_operation_id");
+
+                    b.Property<decimal>("OtherPaymentsSettledAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("other_payments_settled_amount");
+
+                    b.Property<string>("PaymentTrack")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_track");
+
+                    b.Property<decimal>("ReservedAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("reserved_amount");
+
+                    b.Property<string>("ReservedScope")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("reserved_scope");
+
+                    b.Property<Guid>("ReturnOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_operation_id");
+
+                    b.Property<decimal>("SettledAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("settled_amount");
+
+                    b.Property<decimal>("SourceSettledAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("source_settled_amount");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasDefaultValue("Held")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("(idempotency_key IS NOT NULL)");
+
+                    b.HasIndex("ReturnOperationId")
+                        .IsUnique();
+
+                    b.HasIndex("MerchantId", "Status")
+                        .HasFilter("(merchant_id IS NOT NULL)");
+
+                    b.ToTable("return_entitlements", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_return_entitlement_amounts", "normal_amount >= 0 and exception_amount >= 0 and reserved_amount >= 0 and settled_amount >= 0 and reserved_amount + settled_amount <= normal_amount + exception_amount");
+
+                            t.HasCheckConstraint("chk_return_entitlement_beneficiary", "beneficiary_kind in ('Merchant','Anonymous')");
+
+                            t.HasCheckConstraint("chk_return_entitlement_status", "status in ('PendingValuation','Held','Reserved','Settled','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.ReturnEntitlementValuation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("Note")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("note");
+
+                    b.Property<string>("PrincipalName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("principal_name");
+
+                    b.Property<Guid>("ReturnEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_entitlement_id");
+
+                    b.Property<string>("Scope")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("scope");
+
+                    b.Property<DateTime>("ValuedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("valued_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReturnEntitlementId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("idempotency_key is not null");
+
+                    b.ToTable("return_entitlement_valuations", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_return_entitlement_valuation_amount", "amount > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.ReturnEntitlementWaiver", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<Guid>("RequestedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requested_by");
+
+                    b.Property<Guid>("ReturnEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_entitlement_id");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("scope");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReturnEntitlementId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("idempotency_key is not null");
+
+                    b.HasIndex("ReturnEntitlementId", "Scope", "Status");
+
+                    b.ToTable("return_entitlement_waivers", "payments", t =>
+                        {
+                            t.HasCheckConstraint("chk_return_entitlement_waiver_amount", "amount > 0");
+
+                            t.HasCheckConstraint("chk_return_entitlement_waiver_scope", "scope in ('SourceOperation','MerchantAccount','OtherPayments')");
+
+                            t.HasCheckConstraint("chk_return_entitlement_waiver_status", "status in ('PendingReview','Approved','Rejected')");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Payments.Data.InstallmentSubLog", b =>
                 {
                     b.HasOne("Lensee.Modules.Payments.Data.MainPaymentLog", "MainLog")
@@ -1421,6 +1761,23 @@ namespace Lensee.Modules.Payments.Migrations
                         .IsRequired();
 
                     b.Navigation("Account");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.MerchantRefundReservation", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.FinancialAdjustment", null)
+                        .WithMany()
+                        .HasForeignKey("FinancialAdjustmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Payments.Data.ReturnEntitlementWaiver", b =>
+                {
+                    b.HasOne("Lensee.Modules.Payments.Data.ReturnEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("ReturnEntitlementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Lensee.Modules.Payments.Data.MainPaymentLog", b =>

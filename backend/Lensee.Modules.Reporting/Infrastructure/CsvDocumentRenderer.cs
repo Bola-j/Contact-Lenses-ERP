@@ -41,8 +41,8 @@ public sealed class CsvDocumentRenderer : IDocumentRenderer
         DocumentCell.Decimal decimalValue => decimalValue.Value.ToString(column?.NumberFormat ?? "0.####", CultureInfo.InvariantCulture),
         DocumentCell.Money money => money.Value.ToString(column?.NumberFormat ?? "0.00", CultureInfo.InvariantCulture),
         DocumentCell.Percentage percentage => percentage.Value.ToString(column?.NumberFormat ?? "0.00%", CultureInfo.InvariantCulture),
-        DocumentCell.Date date => date.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        DocumentCell.DateTimeValue dateTime => dateTime.Value.ToString("s", CultureInfo.InvariantCulture),
+        DocumentCell.Date date => date.Value.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture),
+        DocumentCell.DateTimeValue dateTime => dateTime.Value.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture),
         DocumentCell.Boolean boolean => boolean.Value ? "true" : "false",
         _ => string.Empty
     };

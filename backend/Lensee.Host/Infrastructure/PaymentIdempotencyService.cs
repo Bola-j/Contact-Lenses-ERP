@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
+using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Lensee.Modules.Payments.Data;
 using Lensee.SharedKernel.Abstractions;
 using Microsoft.EntityFrameworkCore;
@@ -12,6 +14,7 @@ public sealed class PaymentIdempotencyService
     private const string Pending = "Pending";
     private const string Completed = "Completed";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions ApiJsonOptions = ApiDateJsonOptions.CreateWebOptions();
 
     private readonly PaymentsDbContext _paymentsDbContext;
     private readonly IClock _clock;
@@ -139,7 +142,7 @@ public sealed class PaymentIdempotencyService
             idempotency.MarkFinished();
         }
 
-        return Results.Json(response, statusCode: statusCode, options: JsonOptions);
+        return Results.Json(response, statusCode: statusCode, options: ApiJsonOptions);
     }
 
     public static async Task<IResult> AbortAsync(PaymentIdempotencyHandle idempotency, IResult result)
@@ -211,7 +214,8 @@ public sealed class PaymentIdempotencyService
         if (entry.Status == Completed && entry.ResponseBody is not null && entry.ResponseStatusCode.HasValue)
         {
             using var document = JsonDocument.Parse(entry.ResponseBody);
-            return new(null, Results.Json(document.RootElement.Clone(), statusCode: entry.ResponseStatusCode.Value, options: JsonOptions), null);
+            var normalized = NormalizeCachedDates(JsonNode.Parse(document.RootElement.GetRawText()));
+            return new(null, Results.Json(normalized, statusCode: entry.ResponseStatusCode.Value, options: ApiJsonOptions), null);
         }
 
         return new(null, Results.Conflict(new
@@ -219,6 +223,30 @@ public sealed class PaymentIdempotencyService
             code = "idempotency-key-pending-reconciliation",
             detail = "This payment key is pending historical reconciliation and cannot be replayed automatically."
         }), null);
+    }
+
+    private static JsonNode? NormalizeCachedDates(JsonNode? node)
+    {
+        if (node is JsonObject obj)
+        {
+            foreach (var key in obj.Select(pair => pair.Key).ToArray()) obj[key] = NormalizeCachedDates(obj[key]);
+            return obj;
+        }
+        if (node is JsonArray array)
+        {
+            for (var index = 0; index < array.Count; index++) array[index] = NormalizeCachedDates(array[index]);
+            return array;
+        }
+        if (node is JsonValue value && value.TryGetValue<string>(out var text) && text is not null)
+        {
+            if (DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+                return JsonValue.Create(date.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture));
+            if (DateTime.TryParseExact(text,
+                    ["yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK", "yyyy-MM-dd'T'HH:mm:ssK", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss"],
+                    CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dateTime))
+                return JsonValue.Create(dateTime.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture));
+        }
+        return node;
     }
 }
 

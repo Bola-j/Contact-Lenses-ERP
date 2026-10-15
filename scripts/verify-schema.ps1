@@ -84,6 +84,53 @@ if ($missingTables.Count -gt 0 -or $missingConstraints.Count -gt 0) {
     exit 1
 }
 
+$operationConstraintSql = @"
+select conname || '|' || pg_get_constraintdef(c.oid)
+from pg_constraint c
+join pg_class t on t.oid = c.conrelid
+join pg_namespace n on n.oid = t.relnamespace
+where n.nspname = 'operations'
+  and t.relname = 'operation_logs'
+  and c.conname in ('chk_op_status', 'chk_op_type')
+order by conname;
+"@
+
+$operationConstraintRows = $operationConstraintSql | docker compose @composeFiles exec -T db psql -U $databaseUser -d $databaseName -At
+$operationConstraints = @{}
+foreach ($row in $operationConstraintRows) {
+    $parts = $row -split '\|', 2
+    if ($parts.Count -eq 2) { $operationConstraints[$parts[0]] = $parts[1] }
+}
+
+$statusDefinition = $operationConstraints['chk_op_status']
+$typeDefinition = $operationConstraints['chk_op_type']
+$expectedOperationStatuses = @('Draft', 'PendingApproval', 'Approved', 'Confirmed', 'Completed', 'Reserved', 'Shipped', 'Received', 'Cancelled', 'Rejected', 'Dispatched', 'Delivered', 'FailedDelivery')
+$expectedOperationTypes = @('InventoryReceipt', 'WarehouseTransfer', 'WholesaleSale', 'RetailSale', 'Reserve', 'WriteOff', 'StocktakeAdjustment', 'Change', 'Return')
+
+function Assert-ConstraintValues {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Definition,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedValues
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Definition)) {
+        throw "$Name is missing from operations.operation_logs."
+    }
+
+    $actualValues = [regex]::Matches($Definition, "'([^']+)'") |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique
+    $difference = Compare-Object -ReferenceObject ($ExpectedValues | Sort-Object) -DifferenceObject $actualValues
+    if ($difference) {
+        $changedValues = ($difference | ForEach-Object { $_.InputObject }) -join ', '
+        throw "$Name does not exactly match the current Operations contract: $changedValues."
+    }
+}
+
+Assert-ConstraintValues -Name 'chk_op_status' -Definition $statusDefinition -ExpectedValues $expectedOperationStatuses
+Assert-ConstraintValues -Name 'chk_op_type' -Definition $typeDefinition -ExpectedValues $expectedOperationTypes
+
 $historyCount = 'select count(*) from "__EFMigrationsHistory";' | docker compose @composeFiles exec -T db psql -U $databaseUser -d $databaseName -At
 
 Write-Host "Schema verification passed. EF migrations recorded: $historyCount"

@@ -168,14 +168,17 @@ public static class StocktakeEndpoints
         }
 
         var skuIds = request.Lines.Select(line => line.SkuId).Distinct().ToArray();
-        var activeSkuIds = await catalogDbContext.Skus
+        var activeSkus = await catalogDbContext.Skus
             .Where(sku => skuIds.Contains(sku.Id))
             .Where(sku => sku.IsActive)
             .Where(sku => sku.DeletedAt == null)
             .Where(sku => sku.Product.IsActive)
             .Where(sku => sku.Product.DeletedAt == null)
-            .Select(sku => sku.Id)
+            .Select(sku => new { sku.Id, PiecesPerPack = sku.Product.PiecesPerPack })
             .ToListAsync(cancellationToken);
+
+        var activeSkuIds = activeSkus.Select(sku => sku.Id).ToList();
+        var piecesPerPackBySku = activeSkus.ToDictionary(sku => sku.Id, sku => sku.PiecesPerPack);
 
         var missingSkuIds = skuIds.Except(activeSkuIds).ToArray();
         if (missingSkuIds.Length > 0)
@@ -213,6 +216,9 @@ public static class StocktakeEndpoints
                         .SumAsync(piece => (int?)piece.LoosePieceQuantity, cancellationToken) ?? 0;
                     var physicalPacks = line.PhysicalPackCount ?? line.PhysicalCount;
                     var physicalPieces = line.PhysicalPieceCount ?? 0;
+                    var piecesPerPack = piecesPerPackBySku[line.SkuId];
+                    var deltaPacks = physicalPacks - systemQty;
+                    var deltaPieces = physicalPieces - systemPieces;
                     acceptedLines.Add(new StocktakeAdjustmentLine
                     {
                         Id = Guid.NewGuid(),
@@ -227,9 +233,12 @@ public static class StocktakeEndpoints
                         SystemPieceCount = systemPieces,
                         PhysicalPackCount = physicalPacks,
                         PhysicalPieceCount = physicalPieces,
-                        DeltaPackCount = physicalPacks - systemQty,
-                        DeltaPieceCount = physicalPieces - systemPieces,
-                        Delta = (physicalPacks - systemQty) + (physicalPieces - systemPieces),
+                        DeltaPackCount = deltaPacks,
+                        DeltaPieceCount = deltaPieces,
+                        PiecesPerPackSnapshot = piecesPerPack,
+                        DeltaPhysicalPieces = piecesPerPack is > 0 ? checked(deltaPacks * piecesPerPack.Value + deltaPieces) : null,
+                        // Deprecated compatibility alias. It is not a canonical mixed-unit total.
+                        Delta = deltaPacks + deltaPieces,
                         LineNote = line.LineNote
                     });
                 }
@@ -241,7 +250,7 @@ public static class StocktakeEndpoints
                 }
 
                 session.ProductsCounted = acceptedLines.Count;
-                session.TotalDiscrepancyUnits = acceptedLines.Sum(line => Math.Abs(line.Delta));
+                session.TotalDiscrepancyUnits = acceptedLines.Sum(line => Math.Abs(line.DeltaPhysicalPieces ?? line.Delta));
                 await operationsDbContext.SaveChangesAsync(cancellationToken);
             }, cancellationToken, operationsDbContext);
         }
@@ -359,7 +368,7 @@ public static class StocktakeEndpoints
                     session.ConfirmedBy = userId;
                     session.ConfirmedAt = clock.EgyptNow;
                     session.ProductsCounted = session.StocktakeAdjustmentLines.Count;
-                    session.TotalDiscrepancyUnits = session.StocktakeAdjustmentLines.Sum(line => Math.Abs(line.Delta));
+                    session.TotalDiscrepancyUnits = session.StocktakeAdjustmentLines.Sum(line => Math.Abs(line.DeltaPhysicalPieces ?? line.Delta));
                     await operationsDbContext.SaveChangesAsync(cancellationToken);
                 },
                 cancellationToken);
@@ -419,7 +428,7 @@ public static class StocktakeEndpoints
             session.ConfirmedAt,
             session.StocktakeAdjustmentLines
                 .OrderBy(line => line.SkuId)
-            .Select(line => new StocktakeLineResponse(line.Id, line.SkuId, line.LotNumber, line.ExpiryDate, line.SystemQtyBefore, line.PhysicalCount, line.Delta, line.BaselineStockRowVersion, line.LineNote, line.SystemPackCount, line.SystemPieceCount, line.PhysicalPackCount, line.PhysicalPieceCount, line.DeltaPackCount, line.DeltaPieceCount))
+            .Select(line => new StocktakeLineResponse(line.Id, line.SkuId, line.LotNumber, line.ExpiryDate, line.SystemQtyBefore, line.PhysicalCount, line.Delta, line.BaselineStockRowVersion, line.LineNote, line.SystemPackCount, line.SystemPieceCount, line.PhysicalPackCount, line.PhysicalPieceCount, line.DeltaPackCount, line.DeltaPieceCount, line.PiecesPerPackSnapshot, line.DeltaPhysicalPieces))
                 .ToList());
 
     private static string? NormalizeBlank(string? value) =>
@@ -453,6 +462,6 @@ public sealed record StocktakeListResponse(Guid Id, Guid LocationId, string Stat
 
 public sealed record StocktakeDetailResponse(Guid Id, Guid LocationId, DateTime SessionDate, string Status, Guid PerformedBy, Guid? ConfirmedBy, int ProductsCounted, int TotalDiscrepancyUnits, string? Notes, DateTime CreatedAt, DateTime? ConfirmedAt, IReadOnlyList<StocktakeLineResponse> Lines);
 
-public sealed record StocktakeLineResponse(Guid Id, Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int SystemQtyBefore, int PhysicalCount, int Delta, int BaselineStockRowVersion, string? LineNote, int SystemPackCount, int SystemPieceCount, int PhysicalPackCount, int PhysicalPieceCount, int DeltaPackCount, int DeltaPieceCount);
+public sealed record StocktakeLineResponse(Guid Id, Guid SkuId, string? LotNumber, DateOnly? ExpiryDate, int SystemQtyBefore, int PhysicalCount, int Delta, int BaselineStockRowVersion, string? LineNote, int SystemPackCount, int SystemPieceCount, int PhysicalPackCount, int PhysicalPieceCount, int DeltaPackCount, int DeltaPieceCount, int? PiecesPerPackSnapshot = null, int? DeltaPhysicalPieces = null);
 
 internal sealed class StocktakeConflictException(string message) : Exception(message);

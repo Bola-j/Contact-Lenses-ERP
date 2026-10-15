@@ -6,8 +6,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$hostProject = Join-Path $repoRoot "backend/Lensee.Host/Lensee.Host.csproj"
-$hostDir = Split-Path -Parent $hostProject
 $dbPassword = $env:DB_PASSWORD
 if ([string]::IsNullOrWhiteSpace($dbPassword)) {
     $envPath = Join-Path $repoRoot ".env"
@@ -25,8 +23,6 @@ if ([string]::IsNullOrWhiteSpace($dbPassword)) {
 if ([string]::IsNullOrWhiteSpace($dbPassword)) {
     $dbPassword = "SomeStrongPassword123!"
 }
-
-$defaultConnection = "Host=127.0.0.1;Port=8181;Database=lensee;Username=lensee_user;Password=$dbPassword"
 
 $contexts = @(
     @{ Project = "backend/Lensee.SharedKernel/Lensee.SharedKernel.csproj"; Context = "SharedDbContext"; Migrations = "backend/Lensee.SharedKernel/Migrations" },
@@ -87,23 +83,19 @@ if ($BaselineExisting) {
 $escapedDbPassword = Escape-SqlLiteral $dbPassword
 Invoke-DbSql "alter user lensee_user with password '$escapedDbPassword';"
 
-Push-Location $hostDir
-try {
-    $env:ConnectionStrings__DefaultConnection = $defaultConnection
-    $env:Database__AutoMigrate = "false"
-    $dotnetEf = Join-Path $env:USERPROFILE ".dotnet/tools/dotnet-ef.exe"
-    if (-not (Test-Path -LiteralPath $dotnetEf)) {
-        $dotnetEf = "dotnet-ef"
-    }
-    foreach ($item in $contexts) {
-        $project = Join-Path $repoRoot $item.Project
-        & $dotnetEf database update --project $project --startup-project $hostProject --context $item.Context --connection $defaultConnection
-        if ($LASTEXITCODE -ne 0) {
-            throw "Migration failed for $($item.Context)."
-        }
-    }
-} finally {
-    Pop-Location
+# The Compose migrator is the authoritative deployment path: it takes the
+# PostgreSQL advisory lock and runs post-migration compatibility checks that
+# direct `dotnet ef database update` does not execute. It also receives the
+# startup configuration required by all DbContexts.
+Write-Host "Running the locked Compose migration service to finalize and verify the DEV schema..."
+docker compose --profile migrate run --rm --build migrator
+if ($LASTEXITCODE -ne 0) {
+    throw "The Compose migration service failed. DEV schema changes were not certified."
+}
+
+& (Join-Path $PSScriptRoot "verify-schema.ps1")
+if ($LASTEXITCODE -ne 0) {
+    throw "DEV schema verification failed after migration."
 }
 
 if ($SeedLocations) {

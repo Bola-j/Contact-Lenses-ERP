@@ -22,6 +22,7 @@ public sealed class MerchantBatchHistoryService
         var query = _operations.OperationLogs
             .AsNoTracking()
             .Include(operation => operation.OperationLines)
+                .ThenInclude(line => line.PieceAllocations)
             .Include(operation => operation.OperationVersions)
             .Where(operation =>
                 operation.ClientId.HasValue &&
@@ -39,7 +40,7 @@ public sealed class MerchantBatchHistoryService
 
         var operations = await query.ToListAsync(cancellationToken);
         var sold = new Dictionary<MerchantBatchHistoryKey, QuantityState>();
-        var returned = new Dictionary<MerchantBatchHistoryKey, int>();
+        var returned = new Dictionary<MerchantBatchHistoryKey, ValueState>();
 
         foreach (var operation in operations)
         {
@@ -57,7 +58,10 @@ public sealed class MerchantBatchHistoryService
                                 sold,
                                 new MerchantBatchHistoryKey(operationMerchantId, allocation.SkuId, NormalizeLot(batch.LotNumber), batch.ExpiryDate),
                                 batch.Quantity,
-                                operation.ConfirmedAt ?? operation.CreatedAt);
+                                ToPhysicalPieces(batch.Quantity, operation.OperationLines.Where(line => line.SkuId == allocation.SkuId && line.EntryMode == "Packs").Select(line => line.PiecesPerPackSnapshot).FirstOrDefault()),
+                                operation.OperationLines.Where(line => line.SkuId == allocation.SkuId && line.EntryMode == "Packs").Sum(line => line.LineTotal) * batch.Quantity / Math.Max(1, operation.OperationLines.Where(line => line.SkuId == allocation.SkuId && line.EntryMode == "Packs").Sum(line => line.Quantity)),
+                                operation.ConfirmedAt ?? operation.CreatedAt,
+                                operation.OperationLines.Where(line => line.SkuId == allocation.SkuId && line.EntryMode == "Packs").Select(line => line.PiecesPerPackSnapshot).FirstOrDefault() is not > 0);
                         }
                     }
                 }
@@ -69,7 +73,31 @@ public sealed class MerchantBatchHistoryService
                             sold,
                             new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate),
                             line.Quantity,
-                            operation.ConfirmedAt ?? operation.CreatedAt);
+                            ToPhysicalPieces(line.Quantity, line.PiecesPerPackSnapshot),
+                            line.LineTotal,
+                            operation.ConfirmedAt ?? operation.CreatedAt,
+                            line.PiecesPerPackSnapshot is not > 0);
+                    }
+                }
+
+                foreach (var line in operation.OperationLines.Where(line => line.EntryMode == "Pieces"))
+                {
+                    if (line.PieceAllocations.Count == 0 || line.PieceAllocations.Sum(value => value.IssuedPieceQuantity) != line.Quantity)
+                    {
+                        AddSold(sold, new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate), 0, 0, 0m, operation.ConfirmedAt ?? operation.CreatedAt, true);
+                        continue;
+                    }
+
+                    foreach (var allocation in line.PieceAllocations)
+                    {
+                        AddSold(
+                            sold,
+                            new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(allocation.LotNumber), allocation.ExpiryDate),
+                            0,
+                            allocation.IssuedPieceQuantity,
+                            line.LineTotal * allocation.IssuedPieceQuantity / Math.Max(1, line.Quantity),
+                            operation.ConfirmedAt ?? operation.CreatedAt,
+                            false);
                     }
                 }
             }
@@ -77,14 +105,14 @@ public sealed class MerchantBatchHistoryService
             {
                 foreach (var line in operation.OperationLines)
                 {
-                    AddReturned(returned, new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate), line.Quantity);
+                    AddReturned(returned, new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate), line.EntryMode == "Packs" ? line.Quantity : 0, ToPhysicalPieces(line.Quantity, line.EntryMode == "Pieces" ? 1 : line.PiecesPerPackSnapshot), line.NormalValue + line.ExceptionValue, line.EntryMode != "Pieces" && line.PiecesPerPackSnapshot is not > 0);
                 }
             }
             else if (operation.OperationType == "Change")
             {
                 foreach (var line in operation.OperationLines.Where(line => line.Section == "ChangeOut"))
                 {
-                    AddReturned(returned, new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate), line.Quantity);
+                    AddReturned(returned, new MerchantBatchHistoryKey(operationMerchantId, line.SkuId, NormalizeLot(line.LotNumber), line.ExpiryDate), line.EntryMode == "Packs" ? line.Quantity : 0, ToPhysicalPieces(line.Quantity, line.EntryMode == "Pieces" ? 1 : line.PiecesPerPackSnapshot), line.NormalValue + line.ExceptionValue, line.EntryMode != "Pieces" && line.PiecesPerPackSnapshot is not > 0);
                 }
             }
         }
@@ -94,12 +122,17 @@ public sealed class MerchantBatchHistoryService
             .Select(key =>
             {
                 sold.TryGetValue(key, out var sale);
-                returned.TryGetValue(key, out var returnedQuantity);
+                returned.TryGetValue(key, out var returnedState);
                 return new MerchantBatchHistoryRow(
                     key,
                     sale?.Quantity ?? 0,
-                    returnedQuantity,
-                    sale?.LatestSaleAt);
+                    sale?.Value ?? 0m,
+                    returnedState?.Quantity ?? 0,
+                    returnedState?.Value ?? 0m,
+                    sale?.LatestSaleAt,
+                    sale?.PhysicalQuantity ?? 0,
+                    returnedState?.PhysicalQuantity ?? 0,
+                    (sale?.HasLegacyUnitUnknown ?? false) || (returnedState?.HasLegacyUnitUnknown ?? false));
             })
             .OrderBy(row => row.Key.MerchantId)
             .ThenBy(row => row.Key.SkuId)
@@ -129,25 +162,38 @@ public sealed class MerchantBatchHistoryService
         return [];
     }
 
-    private static void AddSold(Dictionary<MerchantBatchHistoryKey, QuantityState> values, MerchantBatchHistoryKey key, int quantity, DateTime saleAt)
+    private static int ToPhysicalPieces(int quantity, int? piecesPerPackSnapshot) =>
+        piecesPerPackSnapshot is > 0 ? quantity * piecesPerPackSnapshot.Value : 0;
+
+    private static void AddSold(Dictionary<MerchantBatchHistoryKey, QuantityState> values, MerchantBatchHistoryKey key, int quantity, int physicalQuantity, decimal value, DateTime saleAt, bool hasLegacyUnitUnknown)
     {
         if (!values.TryGetValue(key, out var state))
         {
-            values[key] = new QuantityState(quantity, saleAt);
+            values[key] = new QuantityState(quantity, physicalQuantity, value, saleAt, hasLegacyUnitUnknown);
             return;
         }
 
         state.Quantity += quantity;
+        state.PhysicalQuantity += physicalQuantity;
+        state.Value += value;
+        state.HasLegacyUnitUnknown |= hasLegacyUnitUnknown;
         if (saleAt > state.LatestSaleAt)
         {
             state.LatestSaleAt = saleAt;
         }
     }
 
-    private static void AddReturned(Dictionary<MerchantBatchHistoryKey, int> values, MerchantBatchHistoryKey key, int quantity)
+    private static void AddReturned(Dictionary<MerchantBatchHistoryKey, ValueState> values, MerchantBatchHistoryKey key, int quantity, int physicalQuantity, decimal value, bool hasLegacyUnitUnknown)
     {
-        values.TryGetValue(key, out var current);
-        values[key] = current + quantity;
+        if (!values.TryGetValue(key, out var current))
+        {
+            values[key] = new ValueState(quantity, physicalQuantity, value, hasLegacyUnitUnknown);
+            return;
+        }
+        current.Quantity += quantity;
+        current.PhysicalQuantity += physicalQuantity;
+        current.Value += value;
+        current.HasLegacyUnitUnknown |= hasLegacyUnitUnknown;
     }
 
     public static string? NormalizeLot(string? value) =>
@@ -155,14 +201,29 @@ public sealed class MerchantBatchHistoryService
 
     private sealed class QuantityState
     {
-        public QuantityState(int quantity, DateTime latestSaleAt)
+        public QuantityState(int quantity, int physicalQuantity, decimal value, DateTime latestSaleAt, bool hasLegacyUnitUnknown)
         {
             Quantity = quantity;
+            PhysicalQuantity = physicalQuantity;
+            Value = value;
             LatestSaleAt = latestSaleAt;
+            HasLegacyUnitUnknown = hasLegacyUnitUnknown;
         }
 
         public int Quantity { get; set; }
+        public int PhysicalQuantity { get; set; }
+        public decimal Value { get; set; }
         public DateTime LatestSaleAt { get; set; }
+        public bool HasLegacyUnitUnknown { get; set; }
+    }
+
+    private sealed class ValueState
+    {
+        public ValueState(int quantity, int physicalQuantity, decimal value, bool hasLegacyUnitUnknown) { Quantity = quantity; PhysicalQuantity = physicalQuantity; Value = value; HasLegacyUnitUnknown = hasLegacyUnitUnknown; }
+        public int Quantity { get; set; }
+        public int PhysicalQuantity { get; set; }
+        public decimal Value { get; set; }
+        public bool HasLegacyUnitUnknown { get; set; }
     }
 
     private sealed record OperationSnapshot(IReadOnlyList<TransferAllocationSnapshot>? TransferAllocations);
@@ -175,8 +236,15 @@ public sealed record MerchantBatchHistoryKey(Guid MerchantId, Guid SkuId, string
 public sealed record MerchantBatchHistoryRow(
     MerchantBatchHistoryKey Key,
     int SoldQuantity,
+    decimal SoldValue,
     int ReturnedQuantity,
-    DateTime? LatestSaleAt)
+    decimal ReturnedValue,
+    DateTime? LatestSaleAt,
+    int SoldPhysicalPieces,
+    int ReturnedPhysicalPieces,
+    bool HasLegacyUnitUnknown)
 {
     public int RecordedBalanceQuantity => Math.Max(SoldQuantity - ReturnedQuantity, 0);
+    public int RecordedBalancePhysicalPieces => Math.Max(SoldPhysicalPieces - ReturnedPhysicalPieces, 0);
+    public decimal RecordedBalanceValue => Math.Max(SoldValue - ReturnedValue, 0m);
 }

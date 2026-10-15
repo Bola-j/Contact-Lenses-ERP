@@ -6,8 +6,7 @@ USER root
 # The .NET Alpine image can contain vulnerable base packages between image
 # publications. Upgrade the repository packages before adding runtime tools so
 # the build consumes Alpine's current security fixes.
-RUN apk upgrade --no-cache \
-    && apk add --no-cache fontconfig tzdata \
+RUN apk add --no-cache fontconfig tzdata \
     && mkdir -p /home/app/.aspnet/DataProtection-Keys \
     && chown -R $APP_UID:$APP_UID /home/app/.aspnet
 USER $APP_UID

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Lensee.Host.Infrastructure;
 using Lensee.Modules.Finance.Data;
+using Lensee.Modules.Operations.Data;
 using Lensee.SharedKernel.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -112,6 +113,56 @@ public sealed class FinanceEndpointContractTests : IClassFixture<OperationsEndpo
         var finance = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
         Assert.Equal(18m, (await finance.FinanceExpenses.SingleAsync(value => value.Id == expense.Id)).Amount);
         Assert.False(await finance.FinanceLedgerEntries.AnyAsync(value => value.SourceId == expense.Id));
+    }
+
+    [Fact]
+    public async Task OpeningBalanceDescriptionAndCorrectionNoteAreOptional()
+    {
+        await _factory.SeedAsync();
+        var adminId = Guid.NewGuid();
+        var accountId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var finance = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
+            finance.FinanceAccounts.Add(new FinanceAccount
+            {
+                Id = accountId,
+                Name = $"Optional opening note {accountId:N}",
+                Type = FinanceLedgerService.CashOnHand,
+                IsActive = true,
+                CreatedBy = adminId,
+                CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+            });
+            await finance.SaveChangesAsync();
+        }
+
+        using var admin = _factory.CreateClient();
+        admin.AuthorizeAs(LenseeRoles.Admin, adminId, LenseePermissions.FinanceRead,
+            LenseePermissions.FinanceOpeningCreate, LenseePermissions.FinanceOpeningCorrect);
+
+        var created = await admin.PostAsJsonAsync("/api/v1/finance/opening-balances", new
+        {
+            financeAccountId = accountId,
+            amount = 1000m,
+            direction = "Credit",
+            asOfDate = "2026-09-20",
+            description = ""
+        });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var opening = await created.Content.ReadFromJsonAsync<FinanceOpeningBalance>();
+        Assert.NotNull(opening);
+        Assert.Equal(string.Empty, opening!.Description);
+
+        var corrected = await admin.PostAsJsonAsync($"/api/v1/finance/opening-balances/{opening.Id}/correct", new
+        {
+            amount = 1200m,
+            direction = "Credit",
+            description = ""
+        });
+        Assert.Equal(HttpStatusCode.Created, corrected.StatusCode);
+        var replacement = await corrected.Content.ReadFromJsonAsync<FinanceOpeningBalance>();
+        Assert.NotNull(replacement);
+        Assert.Equal(string.Empty, replacement!.Description);
     }
 
     [Fact]
@@ -227,7 +278,7 @@ public sealed class FinanceEndpointContractTests : IClassFixture<OperationsEndpo
         client.AuthorizeAs(LenseeRoles.ERPAdmin, Guid.NewGuid(), LenseePermissions.FinanceRead,
             LenseePermissions.ExecutiveSummaryRead);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/finance/overview")).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/reports/executive-summary?period=daily")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/reports/executive-summary?date=2026-01-01")).StatusCode);
     }
 
     private async Task AssertLedgerCountAsync(Guid sourceId, int expected)
@@ -385,4 +436,5 @@ public sealed class FinanceEndpointContractTests : IClassFixture<OperationsEndpo
         Assert.Equal("PendingReview", row.GetProperty("decision").GetString());
         Assert.False(row.TryGetProperty("canonicalTrack", out var track) && track.ValueKind == JsonValueKind.String);
     }
+
 }

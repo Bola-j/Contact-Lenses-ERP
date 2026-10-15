@@ -33,6 +33,11 @@ public partial class StocktakeAdjustmentLine
 
     public int DeltaPieceCount { get; set; }
 
+    public int? PiecesPerPackSnapshot { get; set; }
+
+    /// <summary>Canonical discrepancy: sealed-pack delta at the saved ratio plus loose-piece delta.</summary>
+    public int? DeltaPhysicalPieces { get; set; }
+
     public int Delta { get; set; }
 
     public string? LineNote { get; set; }

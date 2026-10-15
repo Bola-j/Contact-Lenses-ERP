@@ -1,8 +1,10 @@
-import en from "./en.js?v=20260927-supply-receiving";
-import ar from "./ar.js?v=20260927-supply-receiving";
+import { formatDateTime as formatSharedDateTime } from "../date-format.js?v=20261014-date-format";
+import en from "./en.js?v=20261014-cod-settings-history-v2";
+import ar from "./ar.js?v=20261014-cod-settings-history-v2";
 
 const languageKey = "lensee.language";
 const dictionaries = Object.freeze({ en, ar });
+const reportedMissingKeys = new Set();
 
 function normalizeLanguage(language) {
   return language === "en" ? "en" : "ar";
@@ -47,9 +49,34 @@ export function setLanguage(language) {
 
 export function t(key, params = {}) {
   const normalized = normalizeLanguage(getLanguage());
-  const message = dictionaries[normalized][key] ?? dictionaries.en[key] ?? key;
+  const message = dictionaries[normalized][key] ?? dictionaries.en[key] ?? missingKeyFallback(key, normalized);
   return String(message).replace(/\{([A-Za-z0-9_]+)\}/g, (match, name) =>
     Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match);
+}
+
+function missingKeyFallback(key, language) {
+  reportMissingKey(key, language);
+  return readableMissingKey(key);
+}
+
+function reportMissingKey(key, language) {
+  const normalizedKey = String(key ?? "");
+  const marker = `${language}:${normalizedKey}`;
+  if (reportedMissingKeys.has(marker)) return;
+  reportedMissingKeys.add(marker);
+  if (typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn(`[i18n] Missing translation key "${normalizedKey}" for ${language}.`);
+  }
+}
+
+function readableMissingKey(key) {
+  return String(key ?? "")
+    .split(".")
+    .pop()
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim() || String(key ?? "");
 }
 
 export function formatNumber(value, options) {
@@ -57,8 +84,8 @@ export function formatNumber(value, options) {
 }
 
 export function formatDate(value, options = { dateStyle: "medium", timeStyle: "short" }) {
-  return new Intl.DateTimeFormat(getLanguage() === "ar" ? "ar-EG" : "en-US", options)
-    .format(value instanceof Date ? value : new Date(value));
+  if (options?.timeStyle) return formatSharedDateTime(value instanceof Date ? value.toISOString() : value);
+  return formatSharedDateTime(value instanceof Date ? value.toISOString().slice(0, 10) : value).split(" ")[0];
 }
 
 export function isRtl() {

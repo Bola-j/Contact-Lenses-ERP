@@ -58,12 +58,12 @@ for (const [role, user] of [["Admin", users.admin], ["C-Level", users.clevel], [
       await expect(page.locator("#finance-supply-cost-form")).toBeVisible();
       await expect(page.locator("#finance-supply-payment-form")).toBeVisible();
       await page.locator('#finance-supply-cost-form [name="amount"]').fill("10");
-      await page.locator('#finance-supply-cost-form [name="businessDate"]').fill("2026-09-26");
+      await page.locator('#finance-supply-cost-form [name="businessDate"]').fill("26/09/2026");
       await page.locator('#finance-supply-cost-form button[type="submit"]').click();
       await expect(page.locator("#finance-supply-detail")).toContainText("10");
       await page.locator('#finance-supply-payment-form [name="financeAccountId"]').selectOption("30000000-0000-4000-8000-000000000003");
       await page.locator('#finance-supply-payment-form [name="amount"]').fill("20");
-      await page.locator('#finance-supply-payment-form [name="businessDate"]').fill("2026-09-26");
+      await page.locator('#finance-supply-payment-form [name="businessDate"]').fill("26/09/2026");
       await page.locator('#finance-supply-payment-form button[type="submit"]').click();
       await expect(page.locator("#finance-supply-detail")).toContainText("Draft");
       await page.locator("[data-finance-supply-post]").click();

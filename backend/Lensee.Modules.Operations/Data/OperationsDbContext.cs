@@ -18,10 +18,13 @@ public partial class OperationsDbContext : DbContext
     public virtual DbSet<OperationLine> OperationLines { get; set; }
 
     public virtual DbSet<OperationLineSourceAllocation> OperationLineSourceAllocations { get; set; }
+    public virtual DbSet<OperationLinePieceAllocation> OperationLinePieceAllocations { get; set; }
 
     public virtual DbSet<OperationCorrectionProposal> OperationCorrectionProposals { get; set; }
 
     public virtual DbSet<OperationLog> OperationLogs { get; set; }
+
+    public virtual DbSet<ReturnApprovalLine> ReturnApprovalLines { get; set; }
 
     public virtual DbSet<OperationVersion> OperationVersions { get; set; }
 
@@ -134,6 +137,10 @@ public partial class OperationsDbContext : DbContext
                 table.HasCheckConstraint("chk_operation_lines_line_total", "line_total >= 0");
                 table.HasCheckConstraint("chk_operation_lines_unit_cost", "unit_cost is null or unit_cost >= 0");
                 table.HasCheckConstraint("chk_operation_lines_pieces_per_pack_snapshot", "pieces_per_pack_snapshot is null or pieces_per_pack_snapshot > 0");
+                table.HasCheckConstraint("chk_operation_lines_return_disposition", "return_disposition is null or return_disposition in ('Sellable','Quarantine','WriteOff')");
+                table.HasCheckConstraint("chk_operation_lines_pricing_mode", "pricing_mode is null or pricing_mode in ('FullPrice','Promotion50','PromotionFree')");
+                table.HasCheckConstraint("chk_operation_lines_line_type", "line_type is null or line_type in ('Paid','Bonus','Offer')");
+                table.HasCheckConstraint("chk_operation_lines_return_split", "normal_quantity >= 0 and exception_quantity >= 0 and normal_quantity + exception_quantity = quantity");
             });
 
             entity.HasIndex(e => e.OperationId, "idx_op_lines_operation");
@@ -155,6 +162,12 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.LineTotal)
                 .HasPrecision(18, 4)
                 .HasColumnName("line_total");
+            entity.Property(e => e.PricingMode).HasMaxLength(20).HasColumnName("pricing_mode");
+            entity.Property(e => e.LineType).HasMaxLength(20).HasColumnName("line_type");
+            entity.Property(e => e.NormalQuantity).HasDefaultValue(0).HasColumnName("normal_quantity");
+            entity.Property(e => e.ExceptionQuantity).HasDefaultValue(0).HasColumnName("exception_quantity");
+            entity.Property(e => e.NormalValue).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("normal_value");
+            entity.Property(e => e.ExceptionValue).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("exception_value");
             entity.Property(e => e.LotNumber)
                 .HasMaxLength(100)
                 .HasColumnName("lot_number");
@@ -170,6 +183,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.RepresentativeNameSnapshot)
                 .HasMaxLength(255)
                 .HasColumnName("representative_name_snapshot");
+            entity.Property(e => e.ReturnDisposition).HasMaxLength(20).HasColumnName("return_disposition");
             entity.Property(e => e.Section)
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'Standard'::character varying")
@@ -228,6 +242,31 @@ public partial class OperationsDbContext : DbContext
             entity.HasOne(value => value.TargetOperationLine).WithMany(value => value.SourceAllocations).HasForeignKey(value => value.TargetOperationLineId).OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<OperationLinePieceAllocation>(entity =>
+        {
+            entity.ToTable("operation_line_piece_allocations", "operations", table =>
+            {
+                table.HasCheckConstraint("chk_operation_piece_allocation_quantity", "issued_piece_quantity > 0");
+                table.HasCheckConstraint("chk_operation_piece_allocation_pack_size", "pieces_per_pack_snapshot > 0");
+            });
+            entity.HasKey(value => value.Id);
+            entity.HasIndex(value => new { value.OperationLineId, value.OpenedPieceLotId, value.PieceIssueTransactionId }).IsUnique();
+            entity.HasIndex(value => value.SourceBatchId);
+            entity.HasIndex(value => value.PieceIssueTransactionId);
+            entity.Property(value => value.Id).HasColumnName("id").HasDefaultValueSql("uuid_generate_v4()");
+            entity.Property(value => value.OperationLineId).HasColumnName("operation_line_id");
+            entity.Property(value => value.OpenedPieceLotId).HasColumnName("opened_piece_lot_id");
+            entity.Property(value => value.SourceBatchId).HasColumnName("source_batch_id");
+            entity.Property(value => value.IssuedPieceQuantity).HasColumnName("issued_piece_quantity");
+            entity.Property(value => value.PiecesPerPackSnapshot).HasColumnName("pieces_per_pack_snapshot");
+            entity.Property(value => value.PieceIssueTransactionId).HasColumnName("piece_issue_transaction_id");
+            entity.Property(value => value.PackOpenTransactionId).HasColumnName("pack_open_transaction_id");
+            entity.Property(value => value.LotNumber).HasColumnName("lot_number").HasMaxLength(100);
+            entity.Property(value => value.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(value => value.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp without time zone");
+            entity.HasOne(value => value.OperationLine).WithMany(value => value.PieceAllocations).HasForeignKey(value => value.OperationLineId).OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<OperationLog>(entity =>
         {
             entity.Property(e => e.ConcurrencyVersion).HasColumnName("xmin").IsRowVersion();
@@ -240,7 +279,7 @@ public partial class OperationsDbContext : DbContext
                     "operation_type in ('InventoryReceipt','WarehouseTransfer','WholesaleSale','RetailSale','Reserve','WriteOff','StocktakeAdjustment','Change','Return')");
                 table.HasCheckConstraint(
                     "chk_op_status",
-                    "status in ('Draft','Confirmed','Completed','Reserved','Shipped','Received','Cancelled')");
+                    "status in ('Draft','PendingApproval','Approved','Confirmed','Completed','Reserved','Shipped','Received','Cancelled','Rejected','Dispatched','Delivered','FailedDelivery')");
                 table.HasCheckConstraint("chk_op_financial_closure_status", "financial_closure_status in ('Open','FinanciallyClosed')");
                 table.HasCheckConstraint(
                     "chk_op_payment_method",
@@ -261,8 +300,12 @@ public partial class OperationsDbContext : DbContext
             entity.HasIndex(e => new { e.OperationType, e.Status }, "idx_op_logs_type_status");
 
             entity.HasIndex(e => e.OperationNumber, "operation_logs_operation_number_key").IsUnique();
+            entity.HasIndex(e => e.ExternalReference, "ix_operation_logs_external_reference");
+            entity.HasIndex(e => e.ReturnReferenceOperationId, "idx_op_logs_return_reference");
 
             entity.HasIndex(e => e.SalesChannel, "idx_op_logs_sales_channel");
+            entity.HasIndex(e => e.ClientRequestId, "uq_operation_client_request")
+                .IsUnique().HasFilter("(client_request_id is not null)");
 
             entity.HasIndex(e => e.MerchantExpiryRecallId, "idx_op_logs_merchant_expiry_recall");
 
@@ -279,6 +322,29 @@ public partial class OperationsDbContext : DbContext
                 .HasColumnName("client_name");
             entity.Property(e => e.BuyerEmail).HasMaxLength(255).HasColumnName("buyer_email");
             entity.Property(e => e.BuyerPhone).HasMaxLength(50).HasColumnName("buyer_phone");
+            entity.Property(e => e.DeliveryFee).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("delivery_fee");
+            entity.Property(e => e.CodCharge).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("cod_charge");
+            entity.Property(e => e.CodChargeOverrideReason).HasMaxLength(500).HasColumnName("cod_charge_override_reason");
+            entity.Property(e => e.BuyerContactVerified).HasDefaultValue(false).HasColumnName("buyer_contact_verified");
+            entity.Property(e => e.ExternalPaymentProvider).HasMaxLength(100).HasColumnName("external_payment_provider");
+            entity.Property(e => e.ExternalPaymentReference).HasMaxLength(255).HasColumnName("external_payment_reference");
+            entity.Property(e => e.ExternalPaymentVerified).HasDefaultValue(false).HasColumnName("external_payment_verified");
+            entity.Property(e => e.PaymentStatus).HasMaxLength(50).HasColumnName("payment_status");
+            entity.Property(e => e.ClientRequestId).HasMaxLength(100).HasColumnName("client_request_id");
+            entity.Property(e => e.ReturnExceptionReason).HasMaxLength(500).HasColumnName("return_exception_reason");
+            entity.Property(e => e.ReturnVerbalAuthorizer).HasMaxLength(255).HasColumnName("return_verbal_authorizer");
+            entity.Property(e => e.ReturnNormalValue).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("return_normal_value");
+            entity.Property(e => e.ReturnExceptionValue).HasPrecision(18, 4).HasDefaultValue(0).HasColumnName("return_exception_value");
+            entity.Property(e => e.ReturnReferenceOperationId).HasColumnName("return_reference_operation_id");
+            entity.Property(e => e.ReturnSubmissionReason).HasMaxLength(1000).HasColumnName("return_submission_reason");
+            entity.Property(e => e.ReturnSubmittedBy).HasColumnName("return_submitted_by");
+            entity.Property(e => e.ReturnSubmittedAt).HasColumnType("timestamp without time zone").HasColumnName("return_submitted_at");
+            entity.Property(e => e.ReturnApprovalReason).HasMaxLength(1000).HasColumnName("return_approval_reason");
+            entity.Property(e => e.ReturnRejectionReason).HasMaxLength(1000).HasColumnName("return_rejection_reason");
+            entity.Property(e => e.ReturnApprovedBy).HasColumnName("return_approved_by");
+            entity.Property(e => e.ReturnApprovedAt).HasColumnType("timestamp without time zone").HasColumnName("return_approved_at");
+            entity.Property(e => e.ReturnRejectedBy).HasColumnName("return_rejected_by");
+            entity.Property(e => e.ReturnRejectedAt).HasColumnType("timestamp without time zone").HasColumnName("return_rejected_at");
             entity.Property(e => e.ConfirmedAt)
                 .HasColumnType("timestamp without time zone")
                 .HasColumnName("confirmed_at");
@@ -302,6 +368,9 @@ public partial class OperationsDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("('OP-'::text || to_char(nextval('operations.operation_number_seq'::regclass), 'FM000000'::text))")
                 .HasColumnName("operation_number");
+            entity.Property(e => e.ExternalReference)
+                .HasMaxLength(200)
+                .HasColumnName("external_reference");
             entity.Property(e => e.OperationType)
                 .HasMaxLength(50)
                 .HasColumnName("operation_type");
@@ -342,6 +411,32 @@ public partial class OperationsDbContext : DbContext
                 .HasForeignKey(d => d.MerchantExpiryRecallId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("operation_logs_merchant_expiry_recall_id_fkey");
+
+            entity.HasOne<OperationLog>()
+                .WithMany()
+                .HasForeignKey(d => d.ReturnReferenceOperationId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("operation_logs_return_reference_operation_id_fkey");
+        });
+
+        modelBuilder.Entity<ReturnApprovalLine>(entity =>
+        {
+            entity.HasKey(value => value.Id).HasName("return_approval_lines_pkey");
+            entity.ToTable("return_approval_lines", "operations");
+            entity.HasIndex(value => value.OperationId, "idx_return_approval_lines_operation");
+            entity.Property(value => value.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(value => value.OperationId).HasColumnName("operation_id");
+            entity.Property(value => value.OperationLineId).HasColumnName("operation_line_id");
+            entity.Property(value => value.SkuId).HasColumnName("sku_id");
+            entity.Property(value => value.RequestedQuantity).HasColumnName("requested_quantity");
+            entity.Property(value => value.EligibleQuantity).HasColumnName("eligible_quantity");
+            entity.Property(value => value.BatchName).HasMaxLength(200).HasColumnName("batch_name");
+            entity.Property(value => value.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(value => value.MismatchType).HasMaxLength(80).HasColumnName("mismatch_type");
+            entity.Property(value => value.Detail).HasMaxLength(1000).HasColumnName("detail");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.HasOne(value => value.Operation).WithMany(value => value.ReturnApprovalLines).HasForeignKey(value => value.OperationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(value => value.OperationLine).WithMany().HasForeignKey(value => value.OperationLineId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<OperationCorrectionProposal>(entity =>
@@ -486,6 +581,8 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.PhysicalPieceCount).HasColumnName("physical_piece_count");
             entity.Property(e => e.DeltaPackCount).HasColumnName("delta_pack_count");
             entity.Property(e => e.DeltaPieceCount).HasColumnName("delta_piece_count");
+            entity.Property(e => e.PiecesPerPackSnapshot).HasColumnName("pieces_per_pack_snapshot");
+            entity.Property(e => e.DeltaPhysicalPieces).HasColumnName("delta_physical_pieces");
             entity.Property(e => e.SessionId).HasColumnName("session_id");
             entity.Property(e => e.SkuId).HasColumnName("sku_id");
             entity.Property(e => e.SystemQtyBefore).HasColumnName("system_qty_before");
@@ -613,6 +710,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.Notes).HasColumnName("notes");
             entity.Property(e => e.ProductNameSnapshot).HasMaxLength(255).HasColumnName("product_name_snapshot");
             entity.Property(e => e.Quantity).HasColumnName("quantity");
+            entity.Property(e => e.QuantityUnit).HasMaxLength(10).HasDefaultValue("Pack").HasColumnName("quantity_unit");
             entity.Property(e => e.ShipmentId).HasColumnName("shipment_id");
             entity.Property(e => e.SkuCodeSnapshot).HasMaxLength(100).HasColumnName("sku_code_snapshot");
             entity.Property(e => e.SkuId).HasColumnName("sku_id");
@@ -659,6 +757,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(value => value.ReceivingSessionId).HasColumnName("receiving_session_id");
             entity.Property(value => value.ShipmentLineId).HasColumnName("shipment_line_id");
             entity.Property(value => value.ReceivedQuantity).HasColumnName("received_quantity");
+            entity.Property(value => value.QuantityUnit).HasMaxLength(10).HasDefaultValue("Pack").HasColumnName("quantity_unit");
             entity.Property(value => value.Notes).HasColumnName("notes").HasMaxLength(4000);
             entity.HasOne(value => value.ReceivingSession).WithMany(value => value.Lines).HasForeignKey(value => value.ReceivingSessionId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(value => value.ShipmentLine).WithMany().HasForeignKey(value => value.ShipmentLineId).OnDelete(DeleteBehavior.Restrict);
