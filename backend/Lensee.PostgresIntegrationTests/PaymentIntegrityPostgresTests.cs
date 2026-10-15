@@ -629,12 +629,12 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
         var selected = await service.PostSaleAsync(merchantId, selectedOperationId, 100m, actor, now.AddMinutes(1), null, CancellationToken.None);
 
         await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 25m, "CashHandToHand", null, actor, now.AddMinutes(2), null, null, CancellationToken.None);
-        await service.PostCollectionAsync(merchantId, Guid.NewGuid(), 150m, "CashHandToHand", null, actor, now.AddMinutes(3), null, null, CancellationToken.None, selectedOperationId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.PostCollectionAsync(merchantId, Guid.NewGuid(), 150m, "CashHandToHand", null, actor, now.AddMinutes(3), null, null, CancellationToken.None, selectedOperationId));
         var selectedAllocation = await payments.EffectiveAllocations().Where(value => value.ObligationId == selected.Id).SumAsync(value => value.Amount);
         var oldestAllocation = await payments.EffectiveAllocations().Where(value => value.ObligationId == oldest.Id).SumAsync(value => value.Amount);
 
-        Assert.Equal(100m, selectedAllocation);
-        Assert.Equal(75m, oldestAllocation);
+        Assert.Equal(0m, selectedAllocation);
+        Assert.Equal(25m, oldestAllocation);
     }
 
     [PostgreSqlIntegrationFact]

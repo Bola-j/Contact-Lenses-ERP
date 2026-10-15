@@ -758,7 +758,27 @@ public sealed class MerchantAccountService
         if (requested is { Count: > 0 })
             throw new InvalidOperationException("Operation-scoped collections cannot override their allocation.");
 
-        await AllocateCreditAsync(accountId, entry, requested, actorId, now, cancellationToken, requiredOperationId);
+        var obligations = await LockOpenObligationsAsync(accountId, cancellationToken);
+        var obligation = obligations.SingleOrDefault(value => value.OperationId == requiredOperationId.Value)
+            ?? throw new InvalidOperationException("The selected operation no longer has an open merchant receivable.");
+        var allocated = await _payments.EffectiveCreditAllocations()
+            .Where(value => value.ObligationId == obligation.Id && value.Entry.CreditAmount > 0)
+            .SumAsync(value => (decimal?)value.Amount, cancellationToken) ?? 0m;
+        var settlementAmount = await GetOperationSettlementLiabilityAsync(accountId, requiredOperationId.Value, obligation.OriginalAmount, cancellationToken);
+        var remaining = Math.Max(settlementAmount - allocated, 0m);
+        if (entry.CreditAmount > remaining)
+            throw new InvalidOperationException("Collection exceeds the selected operation's remaining receivable amount.");
+
+        _payments.MerchantEntryAllocations.Add(new MerchantEntryAllocation
+        {
+            Id = Guid.NewGuid(),
+            EntryId = entry.Id,
+            ObligationId = obligation.Id,
+            Amount = entry.CreditAmount,
+            AllocatedAt = now,
+            AllocatedBy = actorId
+        });
+        if (entry.CreditAmount == remaining) obligation.Status = "Settled";
     }
 
     private async Task<decimal> GetOperationSettlementLiabilityAsync(Guid accountId, Guid operationId, decimal fallbackAmount, CancellationToken cancellationToken)
