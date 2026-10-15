@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   packages: read
 
 concurrency:
@@ -15,32 +16,133 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: CD / Deploy certified commit
+  validate-certified-release:
+    name: CD / Validate certification evidence
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.event == 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.certified.outputs.sha }}
+      api_digest_ref: ${{ steps.certified.outputs.api_digest_ref }}
+      frontend_digest_ref: ${{ steps.certified.outputs.frontend_digest_ref }}
+      api_image_id: ${{ steps.certified.outputs.api_image_id }}
+      frontend_image_id: ${{ steps.certified.outputs.frontend_image_id }}
+    steps:
+      - name: Download certification manifest from this exact run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-certification-manifest
+          path: certification-evidence
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate certification and exact commit identity
+        id: certified
+        env:
+          EVENT_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, re
+          path = pathlib.Path("certification-evidence/release-certification-manifest.json")
+          manifest = json.loads(path.read_text(encoding="utf-8"))
+          sha = manifest.get("candidate_sha", "")
+          assert re.fullmatch(r"[0-9a-f]{40}", sha), "candidate SHA must be a full commit id"
+          assert manifest.get("schema_version") == 1
+          assert manifest.get("overall_result") == "passed"
+          assert manifest.get("release_run") is True
+          assert manifest.get("repository") == os.environ["EXPECTED_REPOSITORY"]
+          assert os.environ["EVENT_BRANCH"] == "main"
+          assert os.environ["EVENT_REPOSITORY"] == os.environ["EXPECTED_REPOSITORY"]
+          assert os.environ["EVENT_CONCLUSION"] == "success"
+          source = manifest.get("source_ci", {})
+          assert source.get("repository") == os.environ["EXPECTED_REPOSITORY"]
+          assert source.get("event") == "push"
+          assert source.get("branch") == "main"
+          assert source.get("conclusion") == "success"
+          assert source.get("head_sha") == sha
+          assert str(manifest.get("certification_run_id")) == os.environ["EVENT_RUN_ID"]
+          required_checks = manifest.get("same_sha_required_checks", {})
+          assert required_checks.get("security_evidence") == "success"
+          assert required_checks.get("semgrep_sast") == "success"
+          suites = manifest.get("suites", {})
+          required = ["preflight", "same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery", "immutable_images"]
+          assert all(suites.get(name) == "success" for name in required), "a required suite or image publication did not pass"
+          durations = manifest.get("durations_seconds", {})
+          duration_names = ["same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery", "immutable_images"]
+          assert all(str(durations.get(name, "")).isdigit() for name in duration_names), "required suite duration evidence is missing"
+          image_data = manifest.get("candidate_images", {})
+          api = image_data.get("api", {})
+          frontend = image_data.get("frontend", {})
+          owner, repository = os.environ["EXPECTED_REPOSITORY"].lower().split("/", 1)
+          assert api.get("sha_tag") == f"ghcr.io/{owner}/{repository}-api:{sha}"
+          assert frontend.get("sha_tag") == f"ghcr.io/{owner}/{repository}-frontend:{sha}"
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", api.get("image_id", ""))
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", frontend.get("image_id", ""))
+          assert api.get("digest_ref", "").startswith(f"ghcr.io/{owner}/{repository}-api@sha256:")
+          assert frontend.get("digest_ref", "").startswith(f"ghcr.io/{owner}/{repository}-frontend@sha256:")
+          assert re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", api["digest_ref"])
+          assert re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", frontend["digest_ref"])
+          source_ci_run_id = source.get("run_id", "")
+          assert str(source_ci_run_id).isdigit(), "source CI run id is missing or malformed"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"sha={sha}\n")
+              output.write(f"source_ci_run_id={source_ci_run_id}\n")
+              output.write(f"api_digest_ref={api['digest_ref']}\n")
+              output.write(f"frontend_digest_ref={frontend['digest_ref']}\n")
+              output.write(f"api_image_id={api['image_id']}\n")
+              output.write(f"frontend_image_id={frontend['image_id']}\n")
+          PY
+
+      - name: Verify source CI run through GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CERTIFIED_SHA: ${{ steps.certified.outputs.sha }}
+          SOURCE_CI_RUN_ID: ${{ steps.certified.outputs.source_ci_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_CI_RUN_ID")"
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sha "$CERTIFIED_SHA" \
+            '.name == "CI" and .event == "push" and .head_branch == "main" and .head_repository.full_name == $repository and .head_sha == $sha and .status == "completed" and .conclusion == "success"' \
+            <<< "$run" >/dev/null
+
+  deploy:
+    name: CD / Deploy certified commit
+    needs: validate-certified-release
+    if: needs.validate-certified-release.result == 'success'
     runs-on: [self-hosted, linux, lensee-production]
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - name: Check out the certified commit
+      - name: Check out the exact certified commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ needs.validate-certified-release.outputs.sha }}
           fetch-depth: 0
           clean: true
 
       - name: Verify the certified commit belongs to main
+        env:
+          CERTIFIED_SHA: ${{ needs.validate-certified-release.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          candidate_sha="$(git rev-parse HEAD)"
-          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$CERTIFIED_SHA" ]]
           git fetch --no-tags origin main
-          git merge-base --is-ancestor "$candidate_sha" origin/main
-          printf 'Deploying certified commit %s\n' "$candidate_sha"
+          git merge-base --is-ancestor "$CERTIFIED_SHA" origin/main
 
       - name: Deploy with backup, health checks, and application rollback
         shell: bash
@@ -48,6 +150,10 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRODUCTION_ENV_FILE: ${{ vars.LENSEE_PRODUCTION_ENV_FILE }}
           PRODUCTION_BACKUP_DIR: ${{ vars.LENSEE_PRODUCTION_BACKUP_DIR }}
+          CERTIFIED_API_IMAGE: ${{ needs.validate-certified-release.outputs.api_digest_ref }}
+          CERTIFIED_FRONTEND_IMAGE: ${{ needs.validate-certified-release.outputs.frontend_digest_ref }}
+          EXPECTED_API_IMAGE_ID: ${{ needs.validate-certified-release.outputs.api_image_id }}
+          EXPECTED_FRONTEND_IMAGE_ID: ${{ needs.validate-certified-release.outputs.frontend_image_id }}
         run: |
           set -euo pipefail
           umask 077
@@ -61,15 +167,16 @@ jobs:
           : "${PRODUCTION_BACKUP_DIR:?Set repository variable LENSEE_PRODUCTION_BACKUP_DIR to the VPS backup directory}"
           test -f "$PRODUCTION_ENV_FILE"
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-          candidate_sha="$(git rev-parse HEAD)"
-          image_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
-          image_repository="${GITHUB_REPOSITORY##*/}"
-          image_repository="${image_repository,,}"
+          docker pull "$CERTIFIED_API_IMAGE"
+          docker pull "$CERTIFIED_FRONTEND_IMAGE"
+          [[ "$(docker image inspect --format '{{.Id}}' "$CERTIFIED_API_IMAGE")" == "$EXPECTED_API_IMAGE_ID" ]]
+          [[ "$(docker image inspect --format '{{.Id}}' "$CERTIFIED_FRONTEND_IMAGE")" == "$EXPECTED_FRONTEND_IMAGE_ID" ]]
+          candidate_sha="${{ needs.validate-certified-release.outputs.sha }}"
           env_file="$(mktemp)"
           awk '!/^[[:space:]]*(LENSEE_HOST_IMAGE|LENSEE_FRONTEND_IMAGE)=/' "$PRODUCTION_ENV_FILE" > "$env_file"
           printf '\nLENSEE_HOST_IMAGE=%s\nLENSEE_FRONTEND_IMAGE=%s\n' \
-            "$image_namespace/$image_repository-api:$candidate_sha" \
-            "$image_namespace/$image_repository-frontend:$candidate_sha" >> "$env_file"
+            "$CERTIFIED_API_IMAGE" \
+            "$CERTIFIED_FRONTEND_IMAGE" >> "$env_file"
           bash scripts/deploy-automatic.sh \
             --env-file "$env_file" \
             --backup-dir "$PRODUCTION_BACKUP_DIR" \

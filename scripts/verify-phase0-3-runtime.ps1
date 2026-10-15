@@ -1,5 +1,8 @@
 param(
     [string]$EvidenceRoot = "artifacts/certification",
+    [string]$CandidateSha,
+    [string]$ApiImage,
+    [string]$FrontendImage,
     [ValidateRange(1, 64)][int]$TargetCpuCount = 2,
     [ValidateRange(1, 64)][int]$TargetMemoryGb = 4,
     [switch]$SkipDockerCapacityGate,
@@ -10,6 +13,10 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
+$candidateSha = if ([string]::IsNullOrWhiteSpace($CandidateSha)) { (& git -C $repoRoot rev-parse HEAD).Trim() } else { $CandidateSha }
+if ($candidateSha -notmatch '^[0-9a-f]{40}$') { throw "Candidate SHA must be a full 40-character commit id." }
+$checkedOutSha = (& git -C $repoRoot rev-parse HEAD).Trim()
+if ($checkedOutSha -ne $candidateSha) { throw "Checked-out commit $checkedOutSha does not match requested candidate $candidateSha." }
 $evidenceDirectory = Join-Path $repoRoot (Join-Path $EvidenceRoot $runId)
 $successProject = "lensee-certification-success"
 $failureProject = "lensee-certification-failure"
@@ -141,9 +148,14 @@ function New-CertificationEnvFile {
         [Parameter(Mandatory = $true)][int]$DbPort,
         [Parameter(Mandatory = $true)][int]$ApiPort,
         [Parameter(Mandatory = $true)][int]$FrontendPort,
-        [Parameter(Mandatory = $true)][int]$CaddyPort
+        [Parameter(Mandatory = $true)][int]$CaddyPort,
+        [string]$ApiImage,
+        [string]$FrontendImage
     )
 
+    if ([string]::IsNullOrWhiteSpace($ApiImage) -ne [string]::IsNullOrWhiteSpace($FrontendImage)) {
+        throw "Both prebuilt API and frontend image references must be supplied together."
+    }
     $jwtSecret = New-RandomBase64 -ByteCount 48
     $dbPassword = New-RandomBase64 -ByteCount 32
     $lines = @(
@@ -163,6 +175,10 @@ function New-CertificationEnvFile {
         "CERT_FRONTEND_PORT=$FrontendPort"
         "CERT_CADDY_PORT=$CaddyPort"
     )
+    if (-not [string]::IsNullOrWhiteSpace($ApiImage)) {
+        $lines += "LENSEE_HOST_IMAGE=$ApiImage"
+        $lines += "LENSEE_FRONTEND_IMAGE=$FrontendImage"
+    }
     [System.IO.File]::WriteAllLines($Path, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
 }
 
@@ -222,36 +238,90 @@ function Assert-AutoMigrateDisabled {
     $environment | Where-Object { $_ -match '^Database__(AutoMigrate|BaselineExistingSchema)=' }
 }
 
-function Assert-VpsRuntimeResourceEnvelope {
-    param([Parameter(Mandatory = $true)][string]$Prefix)
+function Get-ResolvedComposeConfiguration {
+    param(
+        [Parameter(Mandatory = $true)][string]$Project,
+        [string]$EnvFile,
+        [Parameter(Mandatory = $true)][string[]]$ComposeFiles
+    )
 
-    $expectedLimits = @(
-        [pscustomobject]@{ Name = "$Prefix-db"; NanoCpus = 750000000L; MemoryBytes = 768MB },
-        [pscustomobject]@{ Name = "$Prefix-api"; NanoCpus = 1000000000L; MemoryBytes = 1GB },
-        [pscustomobject]@{ Name = "$Prefix-web"; NanoCpus = 100000000L; MemoryBytes = 128MB },
-        [pscustomobject]@{ Name = "$Prefix-caddy"; NanoCpus = 150000000L; MemoryBytes = 128MB }
+    $arguments = @("--project-name", $Project)
+    if (-not [string]::IsNullOrWhiteSpace($EnvFile)) { $arguments += @("--env-file", $EnvFile) }
+    foreach ($composeFile in $ComposeFiles) { $arguments += @("-f", $composeFile) }
+    $arguments += @("config", "--format", "json")
+    $json = & docker compose @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not render the resolved Compose resource configuration for $Project." }
+    try { return (($json -join [Environment]::NewLine) | ConvertFrom-Json) }
+    catch { throw "Resolved Compose resource configuration for $Project was not valid JSON." }
+}
+
+function Get-ResolvedServiceLimits {
+    param(
+        [Parameter(Mandatory = $true)]$Configuration,
+        [Parameter(Mandatory = $true)][string]$ServiceName
+    )
+
+    $serviceProperty = $Configuration.services.PSObject.Properties[$ServiceName]
+    if ($null -eq $serviceProperty) { throw "Resolved Compose service '$ServiceName' is missing." }
+    $service = $serviceProperty.Value
+    $cpuValue = $service.cpus
+    $memoryValue = $service.mem_limit
+    if ($null -eq $cpuValue -and $null -ne $service.deploy) { $cpuValue = $service.deploy.resources.limits.cpus }
+    if ($null -eq $memoryValue -and $null -ne $service.deploy) { $memoryValue = $service.deploy.resources.limits.memory }
+    if ($null -eq $cpuValue -or $null -eq $memoryValue) {
+        throw "Resolved Compose service '$ServiceName' must declare positive CPU and memory limits."
+    }
+
+    try {
+        $nanoCpus = [int64][Math]::Round(([decimal]$cpuValue) * 1000000000L)
+        $memoryBytes = [int64]$memoryValue
+    }
+    catch { throw "Resolved Compose resource limits for '$ServiceName' were not numeric bytes/CPU values." }
+    if ($nanoCpus -le 0 -or $memoryBytes -le 0) { throw "Resolved Compose service '$ServiceName' has a non-positive resource limit." }
+    return [pscustomobject]@{
+        ServiceName = $ServiceName
+        NanoCpus = $nanoCpus
+        MemoryBytes = $memoryBytes
+    }
+}
+
+function Assert-VpsRuntimeResourceEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$Project,
+        [Parameter(Mandatory = $true)][string]$EnvFile,
+        [Parameter(Mandatory = $true)][string]$Prefix
+    )
+
+    $files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml")
+    $configuration = Get-ResolvedComposeConfiguration -Project $Project -EnvFile $EnvFile -ComposeFiles $files
+    $targets = @(
+        [pscustomobject]@{ Service = "db"; Container = "$Prefix-db" },
+        [pscustomobject]@{ Service = "lensee.host"; Container = "$Prefix-api" },
+        [pscustomobject]@{ Service = "frontend"; Container = "$Prefix-web" },
+        [pscustomobject]@{ Service = "caddy"; Container = "$Prefix-caddy" }
     )
 
     $lines = [System.Collections.Generic.List[string]]::new()
     $containerNames = [System.Collections.Generic.List[string]]::new()
     $totalNanoCpus = 0L
     $totalMemoryBytes = 0L
-    foreach ($limit in $expectedLimits) {
-        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}' $limit.Name).Trim()
+    foreach ($target in $targets) {
+        $resolved = Get-ResolvedServiceLimits -Configuration $configuration -ServiceName $target.Service
+        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}' $target.Container).Trim()
         if ($LASTEXITCODE -ne 0 -or $actual -notmatch '^(\d+)\|(\d+)$') {
-            throw "Could not read resource limits for $($limit.Name)."
+            throw "Could not read resource limits for $($target.Container)."
         }
 
         $actualNanoCpus = [int64]$Matches[1]
         $actualMemoryBytes = [int64]$Matches[2]
-        if ($actualNanoCpus -ne $limit.NanoCpus -or $actualMemoryBytes -ne $limit.MemoryBytes) {
-            throw "$($limit.Name) has CPU=$actualNanoCpus and memory=$actualMemoryBytes; expected CPU=$($limit.NanoCpus) and memory=$($limit.MemoryBytes)."
+        if ($actualNanoCpus -ne $resolved.NanoCpus -or $actualMemoryBytes -ne $resolved.MemoryBytes) {
+            throw "$($target.Container) runtime limits differ from resolved Compose service '$($target.Service)': actual CPU=$actualNanoCpus memory=$actualMemoryBytes; configured CPU=$($resolved.NanoCpus) memory=$($resolved.MemoryBytes)."
         }
 
         $totalNanoCpus += $actualNanoCpus
         $totalMemoryBytes += $actualMemoryBytes
-        $containerNames.Add($limit.Name)
-        $lines.Add("$($limit.Name): cpu=$actualNanoCpus; memory=$actualMemoryBytes")
+        $containerNames.Add($target.Container)
+        $lines.Add("$($target.Container): service=$($target.Service); cpu=$actualNanoCpus; memory=$actualMemoryBytes")
     }
 
     if ($totalNanoCpus -gt ($TargetCpuCount * 1000000000L)) {
@@ -275,7 +345,8 @@ function Assert-VpsRuntimeResourceEnvelope {
         }
         $runtimeState.Add("${containerName}: oom-killed=$($Matches[1]); restarts=$($Matches[2])")
     }
-    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' @containerNames |
+    $dockerNames = $containerNames.ToArray()
+    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' @dockerNames |
         Set-Content -LiteralPath (Join-Path $evidenceDirectory "docker-stats-runtime.txt")
     $runtimeState | Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-runtime-state.txt")
 }
@@ -286,42 +357,70 @@ function Assert-VpsMigratorResourceLimit {
         [Parameter(Mandatory = $true)][string]$EnvFile
     )
 
-    $composeArguments = @("--project-name", $Project, "--env-file", $EnvFile,
-        "-f", "docker-compose.yml", "-f", "docker-compose.prod.yml", "-f", "docker-compose.deploy.yml",
-        "-f", "docker-compose.certification.yml", "--profile", "migrate", "config", "--format", "json")
-    $config = (& docker compose @composeArguments | ConvertFrom-Json)
-    if ($LASTEXITCODE -ne 0) { throw "Could not render the VPS-envelope Compose configuration." }
-
-    $migrator = $config.services.PSObject.Properties["migrator"].Value
-    if ($null -eq $migrator -or $migrator.cpus -ne "0.75" -or [int64]$migrator.mem_limit -ne 1GB) {
+    $files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml")
+    $config = Get-ResolvedComposeConfiguration -Project $Project -EnvFile $EnvFile -ComposeFiles $files
+    $migrator = Get-ResolvedServiceLimits -Configuration $config -ServiceName "migrator"
+    if ($migrator.NanoCpus -ne 750000000L -or $migrator.MemoryBytes -ne 1GB) {
         throw "Migrator resource limit does not match the VPS envelope."
     }
-    "migrator: cpu=$($migrator.cpus); memory=$($migrator.mem_limit)" |
+    "migrator: cpu=$($migrator.NanoCpus); memory=$($migrator.MemoryBytes)" |
         Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-migrator-resource-limit.txt")
 }
 
 function Assert-E2EWorkloadRuntime {
-    $expectedLimits = @(
-        [pscustomobject]@{ Name = "lensee_e2e_db"; NanoCpus = 750000000L; MemoryBytes = 768MB },
-        [pscustomobject]@{ Name = "lensee_e2e_api"; NanoCpus = 1000000000L; MemoryBytes = 1GB },
-        [pscustomobject]@{ Name = "lensee_e2e_web"; NanoCpus = 100000000L; MemoryBytes = 128MB }
+    $files = @("docker-compose.yml", "docker-compose.e2e.yml")
+    $configuration = Get-ResolvedComposeConfiguration -Project "lensee-e2e" -ComposeFiles $files
+    $targets = @(
+        [pscustomobject]@{ Service = "db"; Container = "lensee_e2e_db" },
+        [pscustomobject]@{ Service = "lensee.host"; Container = "lensee_e2e_api" },
+        [pscustomobject]@{ Service = "frontend"; Container = "lensee_e2e_web" }
     )
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($limit in $expectedLimits) {
-        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.State.OOMKilled}}|{{.RestartCount}}' $limit.Name).Trim()
+    $containerNames = [System.Collections.Generic.List[string]]::new()
+    $totalNanoCpus = 0L
+    $totalMemoryBytes = 0L
+    foreach ($target in $targets) {
+        $resolved = Get-ResolvedServiceLimits -Configuration $configuration -ServiceName $target.Service
+        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.State.OOMKilled}}|{{.RestartCount}}' $target.Container).Trim()
         if ($LASTEXITCODE -ne 0 -or $actual -notmatch '^(\d+)\|(\d+)\|(true|false)\|(\d+)$') {
-            throw "Could not read E2E workload state for $($limit.Name)."
+            throw "Could not read E2E workload state for $($target.Container)."
         }
-        if ([int64]$Matches[1] -ne $limit.NanoCpus -or [int64]$Matches[2] -ne $limit.MemoryBytes -or $Matches[3] -eq 'true' -or [int]$Matches[4] -ne 0) {
-            throw "$($limit.Name) exceeded its workload safety envelope: $actual."
+        if ([int64]$Matches[1] -ne $resolved.NanoCpus -or [int64]$Matches[2] -ne $resolved.MemoryBytes -or $Matches[3] -eq 'true' -or [int]$Matches[4] -ne 0) {
+            throw "$($target.Container) runtime limits differ from resolved Compose or it was OOM-killed/restarted: actual=$actual; configured cpu=$($resolved.NanoCpus) memory=$($resolved.MemoryBytes)."
         }
-        $lines.Add("$($limit.Name): cpu=$($Matches[1]); memory=$($Matches[2]); oom-killed=$($Matches[3]); restarts=$($Matches[4])")
+        $totalNanoCpus += [int64]$Matches[1]
+        $totalMemoryBytes += [int64]$Matches[2]
+        $containerNames.Add($target.Container)
+        $lines.Add("$($target.Container): service=$($target.Service); cpu=$($Matches[1]); memory=$($Matches[2]); oom-killed=$($Matches[3]); restarts=$($Matches[4])")
     }
 
+    if ($totalNanoCpus -gt ($TargetCpuCount * 1000000000L) -or $totalMemoryBytes -gt ($TargetMemoryGb * 1000000000L)) {
+        throw "Resolved E2E resource limits exceed the configured $TargetCpuCount-vCPU/$TargetMemoryGb-GB test-host envelope."
+    }
+    $lines.Insert(0, "target=$TargetCpuCount vCPU / $TargetMemoryGb GB; configured-caps=cpu=$totalNanoCpus; memory=$totalMemoryBytes")
     $lines | Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-runtime-state.txt")
-    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' lensee_e2e_db lensee_e2e_api lensee_e2e_web |
+    $dockerNames = $containerNames.ToArray()
+    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' @dockerNames |
         Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-docker-stats.txt")
+}
+
+function Assert-RuntimeImagePolicy {
+    param([Parameter(Mandatory = $true)][string]$ContainerName, [string]$ExpectedImageId)
+
+    $identity = (& docker exec $ContainerName /bin/sh -ec 'uid=$(id -u); test "$uid" -gt 0; test -f /usr/share/zoneinfo/Africa/Cairo; printf "uid=%s\n" "$uid"').Trim()
+    if ($LASTEXITCODE -ne 0 -or $identity -notmatch '^uid=[1-9]\d*$') {
+        throw "$ContainerName does not satisfy the non-root/timezone image runtime policy."
+    }
+    $imageId = (& docker inspect --format '{{.Image}}' $ContainerName).Trim()
+    if ($LASTEXITCODE -ne 0 -or $imageId -notmatch '^sha256:[0-9a-f]{64}$') {
+        throw "Could not identify the immutable image used by $ContainerName."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedImageId) -and $imageId -ne $ExpectedImageId) {
+        throw "$ContainerName is running image $imageId instead of the certified image $ExpectedImageId."
+    }
+    "container=$ContainerName`nimage-id=$imageId`n$identity`ntimezone=Africa/Cairo-present" |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "runtime-image-policy.txt")
 }
 
 function Invoke-E2ESetup {
@@ -342,9 +441,26 @@ $temporaryDirectory = [System.IO.Path]::GetTempPath()
 $successEnv = Join-Path $temporaryDirectory "lensee-certification-success-$runId.env"
 $failureEnv = Join-Path $temporaryDirectory "lensee-certification-failure-$runId.env"
 $defaultBefore = $null
+$cleanupFailures = [System.Collections.Generic.List[string]]::new()
+$deployExtraArgs = @()
+$expectedApiImageId = $null
+$expectedFrontendImageId = $null
+if (-not [string]::IsNullOrWhiteSpace($ApiImage) -or -not [string]::IsNullOrWhiteSpace($FrontendImage)) {
+    if ([string]::IsNullOrWhiteSpace($ApiImage) -or [string]::IsNullOrWhiteSpace($FrontendImage)) {
+        throw "Both -ApiImage and -FrontendImage are required when using a prebuilt candidate image bundle."
+    }
+    $deployExtraArgs = @("-SkipApplicationBuild")
+    $expectedApiImageId = (& docker image inspect --format '{{.Id}}' $ApiImage).Trim()
+    $expectedFrontendImageId = (& docker image inspect --format '{{.Id}}' $FrontendImage).Trim()
+    if ($LASTEXITCODE -ne 0 -or $expectedApiImageId -notmatch '^sha256:[0-9a-f]{64}$' -or $expectedFrontendImageId -notmatch '^sha256:[0-9a-f]{64}$') {
+        throw "Preloaded candidate application images could not be identified."
+    }
+}
 
 Push-Location $repoRoot
 try {
+    @("candidate-sha=$candidateSha", "suite=runtime", "started-at=$(Get-Date -Format o)") |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt")
     $dockerInfo = & docker info --format 'Server={{.ServerVersion}}; OS={{.OSType}}; CPUs={{.NCPU}}; MemoryBytes={{.MemTotal}}'
     if ($LASTEXITCODE -ne 0) { throw "Docker Engine is unavailable." }
     $dockerInfo | Set-Content -LiteralPath (Join-Path $evidenceDirectory "docker-info.txt")
@@ -358,19 +474,26 @@ try {
     Invoke-Logged -Name "docker-hello-world" -Command { docker run --rm hello-world } | Out-Null
     $defaultBefore = Write-DefaultStackFingerprint -Name "default-stack-before"
 
-    New-CertificationEnvFile -Path $successEnv -Prefix $successPrefix -DbPort 18181 -ApiPort 15000 -FrontendPort 13001 -CaddyPort 18080
+    New-CertificationEnvFile -Path $successEnv -Prefix $successPrefix -DbPort 18181 -ApiPort 15000 -FrontendPort 13001 -CaddyPort 18080 -ApiImage $ApiImage -FrontendImage $FrontendImage
     Assert-VpsMigratorResourceLimit -Project $successProject -EnvFile $successEnv
     Invoke-Logged -Name "deploy-success-first" -Command {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $successProject -EnvFile $successEnv -AdditionalComposeFiles "docker-compose.certification.yml" -EvidenceDirectory $evidenceDirectory
+        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $successProject -EnvFile $successEnv -AdditionalComposeFiles "docker-compose.certification.yml" -EvidenceDirectory $evidenceDirectory @deployExtraArgs
     } | Out-Null
     Assert-Ready -ApiPort 15000 -CaddyPort 18080
     Assert-AutoMigrateDisabled -ContainerName "$successPrefix-api" | Set-Content -LiteralPath (Join-Path $evidenceDirectory "auto-migrate-api.txt")
-    Assert-VpsRuntimeResourceEnvelope -Prefix $successPrefix
+    Assert-VpsRuntimeResourceEnvelope -Project $successProject -EnvFile $successEnv -Prefix $successPrefix
+    Assert-RuntimeImagePolicy -ContainerName "$successPrefix-api" -ExpectedImageId $expectedApiImageId
+    $frontendContainerImageId = (& docker inspect --format '{{.Image}}' "$successPrefix-web").Trim()
+    if ($LASTEXITCODE -ne 0 -or ($expectedFrontendImageId -and $frontendContainerImageId -ne $expectedFrontendImageId)) {
+        throw "Certification frontend container did not use the exact candidate image."
+    }
+    "container=$successPrefix-web`nimage-id=$frontendContainerImageId`nexpected-image-id=$expectedFrontendImageId" |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "runtime-frontend-image-identity.txt")
     $firstFingerprint = Get-DatabaseFingerprint -Project $successProject -EnvFile $successEnv
     $firstFingerprint | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceDirectory "database-first.json")
 
     Invoke-Logged -Name "deploy-success-second" -Command {
-        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $successProject -EnvFile $successEnv -AdditionalComposeFiles "docker-compose.certification.yml" -EvidenceDirectory $evidenceDirectory
+        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $successProject -EnvFile $successEnv -AdditionalComposeFiles "docker-compose.certification.yml" -EvidenceDirectory $evidenceDirectory @deployExtraArgs
     } | Out-Null
     Assert-Ready -ApiPort 15000 -CaddyPort 18080
     $secondFingerprint = Get-DatabaseFingerprint -Project $successProject -EnvFile $successEnv
@@ -379,11 +502,11 @@ try {
         throw "Second deployment changed the certification database schema or migration-history schema set."
     }
 
-    New-CertificationEnvFile -Path $failureEnv -Prefix $failurePrefix -DbPort 18182 -ApiPort 15001 -FrontendPort 13002 -CaddyPort 18081
+    New-CertificationEnvFile -Path $failureEnv -Prefix $failurePrefix -DbPort 18182 -ApiPort 15001 -FrontendPort 13002 -CaddyPort 18081 -ApiImage $ApiImage -FrontendImage $FrontendImage
     $failure = Invoke-Logged -Name "deploy-injected-migrator-failure" -AllowFailure -Command {
         # Pass one explicit comma-delimited value through the child PowerShell process.
         # deploy-prod.ps1 normalizes it to the two overlay files.
-        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $failureProject -EnvFile $failureEnv -AdditionalComposeFiles "docker-compose.certification.yml,docker-compose.certification-failure.yml" -EvidenceDirectory $evidenceDirectory
+        & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts/deploy-prod.ps1") -ProjectName $failureProject -EnvFile $failureEnv -AdditionalComposeFiles "docker-compose.certification.yml,docker-compose.certification-failure.yml" -EvidenceDirectory $evidenceDirectory @deployExtraArgs
     }
     if ($failure.ExitCode -eq 0 -or -not (Select-String -LiteralPath $failure.LogPath -Pattern "certification-injected-migrator-failure" -Quiet)) {
         throw "Injected migration failure was not surfaced by deployment evidence."
@@ -416,15 +539,6 @@ try {
     } | Out-Null
     Assert-E2EWorkloadRuntime
 
-    $previousSkipWebserver = $env:LENSEE_E2E_SKIP_WEBSERVER
-    $env:LENSEE_E2E_SKIP_WEBSERVER = "1"
-    try {
-        Invoke-Logged -Name "e2e-auth-playwright" -Command { npx playwright test e2e/auth-permissions.spec.js --project=chromium } | Out-Null
-    }
-    finally {
-        if ($null -eq $previousSkipWebserver) { Remove-Item Env:LENSEE_E2E_SKIP_WEBSERVER -ErrorAction SilentlyContinue } else { $env:LENSEE_E2E_SKIP_WEBSERVER = $previousSkipWebserver }
-    }
-
     $defaultAfter = Write-DefaultStackFingerprint -Name "default-stack-after"
     if ($defaultBefore -ne $defaultAfter) {
         throw "Certification verification changed default-stack containers, volumes, or listeners."
@@ -432,6 +546,8 @@ try {
 }
 catch {
     $_ | Out-String | Set-Content -LiteralPath (Join-Path $evidenceDirectory "runtime-failure.txt")
+    "candidate-sha=$candidateSha`nsuite=runtime`nresult=failed`nfailed-at=$(Get-Date -Format o)`nerror=$($_.Exception.Message)" |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "suite-result.txt")
     throw
 }
 finally {
@@ -439,13 +555,21 @@ finally {
         $previousErrorActionPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = "Continue"
-            if (Test-Path -LiteralPath $successEnv) {
-                & docker compose --project-name $successProject --env-file $successEnv -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.deploy.yml -f docker-compose.certification.yml down --volumes --remove-orphans 2>$null
+            $cleanupTargets = @(
+                @{ Name = "runtime-success"; Project = $successProject; Env = $successEnv; Files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml") },
+                @{ Name = "runtime-failure"; Project = $failureProject; Env = $failureEnv; Files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml", "docker-compose.certification-failure.yml") },
+                @{ Name = "e2e"; Project = "lensee-e2e"; Env = $null; Files = @("docker-compose.yml", "docker-compose.e2e.yml") }
+            )
+            foreach ($target in $cleanupTargets) {
+                if ($target.Env -and -not (Test-Path -LiteralPath $target.Env)) { continue }
+                $composeArguments = @("--project-name", $target.Project)
+                if ($target.Env) { $composeArguments += @("--env-file", $target.Env) }
+                foreach ($composeFile in $target.Files) { $composeArguments += @("-f", $composeFile) }
+                $composeArguments += @("down", "--volumes", "--remove-orphans")
+                & docker compose @composeArguments 2>&1 |
+                    Tee-Object -FilePath (Join-Path $evidenceDirectory "cleanup-$($target.Name).log")
+                if ($LASTEXITCODE -ne 0) { $cleanupFailures.Add("$($target.Name) cleanup exited with code $LASTEXITCODE") }
             }
-            if (Test-Path -LiteralPath $failureEnv) {
-                & docker compose --project-name $failureProject --env-file $failureEnv -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.deploy.yml -f docker-compose.certification.yml -f docker-compose.certification-failure.yml down --volumes --remove-orphans 2>$null
-            }
-            & docker compose --project-name lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans 2>$null
         }
         finally {
             $ErrorActionPreference = $previousErrorActionPreference
@@ -453,5 +577,30 @@ finally {
             if ([System.IO.File]::Exists($failureEnv)) { [System.IO.File]::Delete($failureEnv) }
         }
     }
+    if ($KeepResources) {
+        "result=not-run`nreason=KeepResources" |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory "cleanup-result.txt")
+    }
+    elseif ($cleanupFailures.Count -eq 0) {
+        "result=passed`nprojects=$successProject,$failureProject,lensee-e2e" |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory "cleanup-result.txt")
+    }
+    else {
+        ("result=failed" + [Environment]::NewLine + ($cleanupFailures -join [Environment]::NewLine)) |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory "cleanup-result.txt")
+        "candidate-sha=$candidateSha`nsuite=runtime`nresult=failed`nfailed-at=$(Get-Date -Format o)`nerror=isolated resource cleanup failed" |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory "suite-result.txt")
+    }
+    if (Test-Path -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt")) {
+        "completed-at=$(Get-Date -Format o)" | Add-Content -LiteralPath (Join-Path $evidenceDirectory "run-metadata.txt")
+    }
     Pop-Location
+}
+
+if ($cleanupFailures.Count -gt 0) {
+    throw "Runtime certification completed but isolated resource cleanup failed. See $(Join-Path $evidenceDirectory 'cleanup-result.txt')."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $evidenceDirectory "suite-result.txt"))) {
+    "candidate-sha=$candidateSha`nsuite=runtime`nresult=passed`ncompleted-at=$(Get-Date -Format o)" |
+        Set-Content -LiteralPath (Join-Path $evidenceDirectory "suite-result.txt")
 }
