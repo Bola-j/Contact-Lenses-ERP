@@ -168,6 +168,7 @@ jobs:
       needs.complete-browser-suite.result == 'success' &&
       needs.recovery-drill.result == 'success' &&
       github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
@@ -232,6 +233,7 @@ jobs:
           SOURCE_EVENT: ${{ github.event_name }}
           CI_RESULT: ${{ github.event.workflow_run.conclusion }}
           SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_CI_EVENT: ${{ github.event.workflow_run.event }}
         shell: bash
         run: |
           set -euo pipefail
@@ -244,6 +246,6 @@ jobs:
             fi
           done
           if [[ "$SOURCE_EVENT" == "workflow_run" ]]; then
-            [[ "$CI_RESULT" == "success" && "$SOURCE_BRANCH" == "main" ]]
+            [[ "$CI_RESULT" == "success" && "$SOURCE_BRANCH" == "main" && "$SOURCE_CI_EVENT" == "push" ]]
             [[ "$IMAGE_RESULT" == "success" ]]
           fi
