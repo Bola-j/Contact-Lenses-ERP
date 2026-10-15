@@ -611,7 +611,7 @@ public sealed class PaymentIntegrityPostgresTests : IAsyncLifetime
     }
 
     [PostgreSqlIntegrationFact]
-    public async Task MerchantCollection_DefaultsOldestFirst_AndHonorsSelectedOperationBeforeSpilling()
+    public async Task MerchantCollection_SelectedOperationRejectsAmountBeyondRemainingReceivable()
     {
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
         var merchantId = Guid.NewGuid();
