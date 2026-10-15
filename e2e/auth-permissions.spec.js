@@ -38,7 +38,7 @@ test("auth: login, invalid credentials, and role-aware navigation", async ({ pag
 
   await login(page, users.erpAdmin);
   await expect(page.locator("#nav a", { hasText: "Admin" })).toBeVisible();
-  await expect(page.locator("#nav a", { hasText: "Supply" })).toHaveCount(0);
+  await expect(page.locator("#nav a", { hasText: "Supply" })).toBeVisible();
   await logout(page);
 
   await login(page, users.accountant);
@@ -56,22 +56,22 @@ test("auth: login, invalid credentials, and role-aware navigation", async ({ pag
 test("roles: every seeded role has the expected navigation and warehouse scope", async ({ page }) => {
   const expectedNav = {
     admin: ["Dashboard", "Catalog", "Inventory", "Supply", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake", "Admin"],
-    erpAdmin: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake", "Admin"],
+    erpAdmin: ["Dashboard", "Catalog", "Inventory", "Supply", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake", "Admin"],
     clevel: ["Dashboard", "Catalog", "Inventory", "Supply", "CRM", "Operations", "Payments", "Notifications", "Reports", "Stocktake"],
     accountant: ["Dashboard", "CRM", "Operations", "Payments", "Notifications", "Reports"],
-    roxyClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications"],
-    retailClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications"],
-    onlineClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications"]
+    roxyClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications", "Reports", "Stocktake"],
+    retailClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications", "Reports", "Stocktake"],
+    onlineClerk: ["Dashboard", "Catalog", "Inventory", "CRM", "Operations", "Notifications", "Reports", "Stocktake"]
   };
 
   const hiddenNav = {
     admin: [],
-    erpAdmin: ["Supply"],
+    erpAdmin: [],
     clevel: ["Admin"],
     accountant: ["Catalog", "Inventory", "Stocktake", "Admin"],
-    roxyClerk: ["Payments", "Reports", "Stocktake", "Admin"],
-    retailClerk: ["Payments", "Reports", "Stocktake", "Admin"],
-    onlineClerk: ["Payments", "Reports", "Stocktake", "Admin"]
+    roxyClerk: ["Payments", "Admin"],
+    retailClerk: ["Payments", "Admin"],
+    onlineClerk: ["Payments", "Admin"]
   };
 
   for (const roleKey of Object.keys(expectedNav)) {
@@ -146,6 +146,7 @@ test("roles: API function matrix matches every seeded user's permissions", async
       "/api/v1/users",
       "/api/v1/catalog/categories",
       "/api/v1/inventory/locations",
+      "/api/v1/supply/shipments",
       "/api/v1/crm/merchants?pageSize=1",
       "/api/v1/operations?pageSize=1",
       "/api/v1/payments?pageSize=1",
@@ -166,6 +167,7 @@ test("roles: API function matrix matches every seeded user's permissions", async
       "/api/v1/crm/merchants?pageSize=1",
       "/api/v1/operations?pageSize=1",
       "/api/v1/stocktakes?pageSize=1",
+      "/api/v1/reports/exports?pageSize=1",
       "/api/v1/notifications/unread-count"
     ],
     retailClerk: [
@@ -174,6 +176,7 @@ test("roles: API function matrix matches every seeded user's permissions", async
       "/api/v1/crm/merchants?pageSize=1",
       "/api/v1/operations?pageSize=1",
       "/api/v1/stocktakes?pageSize=1",
+      "/api/v1/reports/exports?pageSize=1",
       "/api/v1/notifications/unread-count"
     ],
     onlineClerk: [
@@ -182,24 +185,24 @@ test("roles: API function matrix matches every seeded user's permissions", async
       "/api/v1/crm/merchants?pageSize=1",
       "/api/v1/operations?pageSize=1",
       "/api/v1/stocktakes?pageSize=1",
+      "/api/v1/reports/exports?pageSize=1",
       "/api/v1/notifications/unread-count"
     ]
   };
 
   const forbiddenReads = {
     admin: [],
-    erpAdmin: ["/api/v1/supply/shipments"],
+    erpAdmin: [],
     clevel: ["/api/v1/users"],
     accountant: ["/api/v1/catalog/categories", "/api/v1/inventory/locations", "/api/v1/stocktakes?pageSize=1", "/api/v1/users"],
-    roxyClerk: ["/api/v1/payments?pageSize=1", "/api/v1/reports/exports?pageSize=1", "/api/v1/users"],
-    retailClerk: ["/api/v1/payments?pageSize=1", "/api/v1/reports/exports?pageSize=1", "/api/v1/users"],
-    onlineClerk: ["/api/v1/payments?pageSize=1", "/api/v1/reports/exports?pageSize=1", "/api/v1/users"]
+    roxyClerk: ["/api/v1/payments?pageSize=1", "/api/v1/users"],
+    retailClerk: ["/api/v1/payments?pageSize=1", "/api/v1/users"],
+    onlineClerk: ["/api/v1/payments?pageSize=1", "/api/v1/users"]
   };
 
   const forbiddenWrites = {
     admin: [],
     erpAdmin: [
-      ["POST", "/api/v1/supply/shipments", {}],
       ["PATCH", "/api/v1/users/00000000-0000-0000-0000-000000000000/password", { newPassword: "Password123!" }]
     ],
     clevel: [

@@ -1,0 +1,74 @@
+name: Full UI Certification
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-ui-certification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-acceptance:
+    name: Full browser and business workflow suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out certified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up toolchains and Chromium
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+
+      - name: Start isolated E2E stack
+        run: pwsh -NoProfile -File scripts/e2e-setup.ps1
+
+      - name: Run complete Playwright certification suite
+        env:
+          LENSEE_E2E_SKIP_WEBSERVER: "1"
+        run: npm run e2e
+
+      - name: Collect bounded E2E Compose logs
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci/e2e-compose-logs
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/ci/e2e-compose-logs/compose-ps.txt 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/ci/e2e-compose-logs/db.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/ci/e2e-compose-logs/api.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/ci/e2e-compose-logs/frontend.log 2>&1 || true
+
+      - name: Upload certification evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-ui-certification-${{ github.sha }}
+          path: |
+            playwright-report/**
+            test-results/**
+            artifacts/ci/e2e-compose-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Record exact certified commit and result
+        if: always()
+        env:
+          CERTIFICATION_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Full UI Certification"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Result: **$CERTIFICATION_STATUS**"
+            echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up isolated E2E stack
+        if: always()
+        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans

@@ -5,10 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -19,20 +20,27 @@ env:
   DOTNET_NOLOGO: "1"
 
 jobs:
-  core:
-    name: CI / Core
+  backend:
+    name: Backend build, tests, and format
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
-          fetch-depth: 0
+          dotnet-version: 8.0.x
 
-      - name: Set up toolchains
-        uses: ./.github/actions/setup-certification
+      - name: Cache NuGet packages
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', 'NuGet.Config') }}
+          restore-keys: ${{ runner.os }}-nuget-
 
-      - name: Restore .NET solution
+      - name: Restore solution
         run: dotnet restore Lensee.slnx
 
       - name: Build Release with analyzers
@@ -41,43 +49,76 @@ jobs:
       - name: Run backend unit and contract tests
         run: dotnet test backend/Lensee.Tests/Lensee.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
 
-      - name: Run PostgreSQL integration tests
-        env:
-          LENSEE_RUN_POSTGRES_TESTS: "true"
-        run: dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
-
       - name: Verify formatting
         run: dotnet format whitespace Lensee.slnx --verify-no-changes --no-restore
 
-      - name: Run frontend guards
-        run: npm run check
-
-      - name: Build deterministic frontend
-        env:
-          LENSEE_API_BASE_URL: http://127.0.0.1:5000
-        run: npm run vercel:build
-
-  full-acceptance:
-    name: CI / Full acceptance
-    needs: core
+  frontend:
+    name: Frontend checks and build
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 12
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Set up toolchains and browsers
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend guards and deterministic build
+        env:
+          LENSEE_API_BASE_URL: http://127.0.0.1:5000
+        run: npm run vercel:build
+
+  postgres-integration:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', 'NuGet.Config') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Run PostgreSQL integration tests
+        env:
+          LENSEE_RUN_POSTGRES_TESTS: "true"
+        run: dotnet test backend/Lensee.PostgresIntegrationTests/Lensee.PostgresIntegrationTests.csproj --configuration Release --logger "console;verbosity=minimal"
+
+  ui-smoke:
+    name: Critical UI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up toolchains and Chromium
         uses: ./.github/actions/setup-certification
         with:
           playwright: "true"
 
-      - name: Reset isolated E2E stack
+      - name: Start isolated E2E stack
         run: pwsh -NoProfile -File scripts/e2e-setup.ps1
 
-      - name: Run complete Playwright acceptance suite
+      - name: Run focused login/role and retail-checkout UI smoke
         env:
           LENSEE_E2E_SKIP_WEBSERVER: "1"
-        run: npm run e2e
+        run: npm run e2e:smoke
 
       - name: Collect bounded E2E Compose logs
         if: failure()
@@ -89,11 +130,11 @@ jobs:
           docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/ci/e2e-compose-logs/api.log 2>&1 || true
           docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/ci/e2e-compose-logs/frontend.log 2>&1 || true
 
-      - name: Upload failed acceptance evidence
+      - name: Upload UI smoke failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ci-full-acceptance-failure
+          name: ci-ui-smoke-${{ github.sha }}
           path: |
             playwright-report/**
             test-results/**
@@ -105,48 +146,12 @@ jobs:
         if: always()
         run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
 
-  release-images:
-    name: CI / Publish immutable release images
-    needs: [core, full-acceptance, secret-scan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - name: Authenticate to GitHub Container Registry
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Build and publish immutable images
-        env:
-          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
-          IMAGE_REPOSITORY: ${{ github.event.repository.name }}
-          RELEASE_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          namespace="${IMAGE_NAMESPACE,,}"
-          repository="${IMAGE_REPOSITORY,,}"
-          docker build --file backend/Lensee.Host/Dockerfile --tag "$namespace/$repository-api:$RELEASE_SHA" .
-          docker build --file frontend/Dockerfile --tag "$namespace/$repository-frontend:$RELEASE_SHA" frontend
-          docker push "$namespace/$repository-api:$RELEASE_SHA"
-          docker push "$namespace/$repository-frontend:$RELEASE_SHA"
-
   secret-scan:
-    name: CI / Secret scan
+    name: Secret scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
     steps:
-      - name: Check out repository
+      - name: Check out repository history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
@@ -155,3 +160,26 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  required-gate:
+    name: Required checks
+    if: always()
+    needs: [backend, frontend, postgres-integration, ui-smoke, secret-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every required job succeeded
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
+          UI_SMOKE_RESULT: ${{ needs.ui-smoke.result }}
+          SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
+        run: |
+          set -euo pipefail
+          printf 'backend=%s frontend=%s postgres=%s ui_smoke=%s secret_scan=%s\n' \
+            "$BACKEND_RESULT" "$FRONTEND_RESULT" "$POSTGRES_RESULT" "$UI_SMOKE_RESULT" "$SECRET_SCAN_RESULT"
+          for result in "$BACKEND_RESULT" "$FRONTEND_RESULT" "$POSTGRES_RESULT" "$UI_SMOKE_RESULT" "$SECRET_SCAN_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              exit 1
+            fi
+          done

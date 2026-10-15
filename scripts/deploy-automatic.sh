@@ -45,10 +45,14 @@ old_api_container="$("${DC[@]}" ps -q lensee.host | head -n 1)"
 old_frontend_container="$("${DC[@]}" ps -q frontend | head -n 1)"
 old_api_ref="$(docker inspect --format '{{.Config.Image}}' "$old_api_container")"
 old_frontend_ref="$(docker inspect --format '{{.Config.Image}}' "$old_frontend_container")"
+app_domain="$(grep -E '^[[:space:]]*APP_DOMAIN=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d "\"'[:space:]")"
+[[ "$app_domain" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_DOMAIN is missing or invalid in the deployment environment file." >&2; exit 1; }
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_path="$BACKUP_DIR/lensee-${timestamp}-${RELEASE_SHA}.dump"
 metadata_path="$backup_path.metadata"
+rollback_api_ref="lenseeproduction-rollback-api:${RELEASE_SHA}-${timestamp}"
+rollback_frontend_ref="lenseeproduction-rollback-frontend:${RELEASE_SHA}-${timestamp}"
 rollback_needed=false
 
 rollback() {
@@ -57,11 +61,35 @@ rollback() {
     exit "$exit_code"
   fi
 
+  trap - EXIT
   echo "Deployment failed; restoring previous application image IDs." >&2
-  docker tag "$old_api_image" "$old_api_ref"
-  docker tag "$old_frontend_image" "$old_frontend_ref"
-  "${DC[@]}" up -d --no-deps lensee.host frontend caddy || true
-  echo "Application rollback attempted. Database migrations were not reversed automatically." >&2
+  local rollback_env_file
+  rollback_env_file="$(mktemp)"
+  local rollback_succeeded=false
+  if docker tag "$old_api_image" "$rollback_api_ref" && docker tag "$old_frontend_image" "$rollback_frontend_ref"; then
+    awk '!/^[[:space:]]*(LENSEE_HOST_IMAGE|LENSEE_FRONTEND_IMAGE)=/' "$ENV_FILE" > "$rollback_env_file"
+    printf '\nLENSEE_HOST_IMAGE=%s\nLENSEE_FRONTEND_IMAGE=%s\n' \
+      "$rollback_api_ref" "$rollback_frontend_ref" >> "$rollback_env_file"
+    local -a rollback_dc=(docker compose --project-name lenseeproduction --env-file "$rollback_env_file" -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.deploy.yml)
+    if "${rollback_dc[@]}" up -d --no-deps lensee.host frontend caddy; then
+      for attempt in $(seq 1 60); do
+        if curl --fail --silent --max-time 10 --resolve "${app_domain}:443:127.0.0.1" "https://${app_domain}/health" >/dev/null 2>&1 && \
+          curl --fail --silent --max-time 10 --resolve "${app_domain}:443:127.0.0.1" "https://${app_domain}/ready" >/dev/null 2>&1; then
+          rollback_succeeded=true
+          break
+        fi
+        [[ "$attempt" -lt 60 ]] || break
+        sleep 2
+      done
+    fi
+  fi
+  rm -f "$rollback_env_file"
+  if [[ "$rollback_succeeded" == true ]]; then
+    echo "Previous application images restored and readiness checks passed." >&2
+  else
+    echo "AUTOMATIC APPLICATION ROLLBACK DID NOT VERIFY HEALTH. VPS OPERATOR ACTION IS REQUIRED." >&2
+  fi
+  echo "Database migrations were not reversed automatically. Backup retained at: $backup_path" >&2
   exit "$exit_code"
 }
 trap rollback EXIT
@@ -85,6 +113,8 @@ done
 backup_sha256="$(sha256sum "$backup_path" | awk '{print $1}')"
 printf 'release-sha=%s\ncreated-at=%s\nbackup=%s\nsha256=%s\n' \
   "$RELEASE_SHA" "$timestamp" "$backup_path" "$backup_sha256" > "$metadata_path"
+printf 'previous-api-image-ref=%s\nprevious-api-image-id=%s\nprevious-frontend-image-ref=%s\nprevious-frontend-image-id=%s\n' \
+  "$old_api_ref" "$old_api_image" "$old_frontend_ref" "$old_frontend_image" >> "$metadata_path"
 
 rollback_needed=true
 "${DC[@]}" --profile migrate run --rm --no-deps migrator
@@ -100,8 +130,8 @@ for attempt in $(seq 1 60); do
   sleep 2
 done
 
-curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health >/dev/null
-curl --fail --silent --show-error --max-time 10 http://127.0.0.1/ready >/dev/null
+curl --fail --silent --show-error --max-time 10 --resolve "${app_domain}:443:127.0.0.1" "https://${app_domain}/health" >/dev/null
+curl --fail --silent --show-error --max-time 10 --resolve "${app_domain}:443:127.0.0.1" "https://${app_domain}/ready" >/dev/null
 
 printf 'release-sha=%s\nbackup=%s\nbackup-sha256=%s\nstatus=success\n' \
   "$RELEASE_SHA" "$backup_path" "$backup_sha256"

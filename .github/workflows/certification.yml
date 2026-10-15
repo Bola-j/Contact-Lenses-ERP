@@ -154,3 +154,96 @@ jobs:
           path: artifacts/certification/**
           if-no-files-found: warn
           retention-days: 30
+
+  publish-certified-images:
+    name: Certification / Publish exact-SHA images
+    needs:
+      - phase4-10-static-image-config
+      - phase0-3-runtime
+      - complete-browser-suite
+      - recovery-drill
+    if: >-
+      needs.phase4-10-static-image-config.result == 'success' &&
+      needs.phase0-3-runtime.result == 'success' &&
+      needs.complete-browser-suite.result == 'success' &&
+      needs.recovery-drill.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the exact certified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Verify the candidate is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_sha="$(git rev-parse HEAD)"
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$candidate_sha" origin/main
+          printf 'Publishing images for certified commit %s\n' "$candidate_sha"
+
+      - name: Authenticate to GitHub Container Registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build and publish immutable images for the certified SHA
+        env:
+          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+          IMAGE_REPOSITORY: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="${IMAGE_NAMESPACE,,}"
+          repository="${IMAGE_REPOSITORY,,}"
+          candidate_sha="$(git rev-parse HEAD)"
+          docker build --file backend/Lensee.Host/Dockerfile --tag "$namespace/$repository-api:$candidate_sha" .
+          docker build --file frontend/Dockerfile --tag "$namespace/$repository-frontend:$candidate_sha" frontend
+          docker push "$namespace/$repository-api:$candidate_sha"
+          docker push "$namespace/$repository-frontend:$candidate_sha"
+
+  certification-result:
+    name: Certification / Release gate
+    if: always()
+    needs:
+      - phase4-10-static-image-config
+      - phase0-3-runtime
+      - complete-browser-suite
+      - recovery-drill
+      - publish-certified-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all certification and release jobs to pass
+        env:
+          STATIC_RESULT: ${{ needs.phase4-10-static-image-config.result }}
+          RUNTIME_RESULT: ${{ needs.phase0-3-runtime.result }}
+          BROWSER_RESULT: ${{ needs.complete-browser-suite.result }}
+          RECOVERY_RESULT: ${{ needs.recovery-drill.result }}
+          IMAGE_RESULT: ${{ needs.publish-certified-images.result }}
+          SOURCE_EVENT: ${{ github.event_name }}
+          CI_RESULT: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'static=%s runtime=%s browser=%s recovery=%s images=%s\n' \
+            "$STATIC_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$RECOVERY_RESULT" "$IMAGE_RESULT"
+          for result in "$STATIC_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$RECOVERY_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Certification is incomplete or failed; release gate is closed." >&2
+              exit 1
+            fi
+          done
+          if [[ "$SOURCE_EVENT" == "workflow_run" ]]; then
+            [[ "$CI_RESULT" == "success" && "$SOURCE_BRANCH" == "main" ]]
+            [[ "$IMAGE_RESULT" == "success" ]]
+          fi

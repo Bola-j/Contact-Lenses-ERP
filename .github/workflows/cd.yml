@@ -5,12 +5,6 @@ on:
     workflows: ["Certification Evidence"]
     types: [completed]
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Exact commit SHA to deploy
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -24,16 +18,16 @@ jobs:
   deploy:
     name: CD / Deploy certified commit
     if: >-
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'workflow_run'
     runs-on: [self-hosted, linux, lensee-production]
     timeout-minutes: 60
     steps:
       - name: Check out the certified commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           clean: true
 
@@ -55,17 +49,23 @@ jobs:
           PRODUCTION_BACKUP_DIR: ${{ vars.LENSEE_PRODUCTION_BACKUP_DIR }}
         run: |
           set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          umask 077
+          env_file=""
+          cleanup() {
+            if [[ -n "$env_file" ]]; then rm -f "$env_file"; fi
+            docker logout ghcr.io >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
           : "${PRODUCTION_ENV_FILE:?Set repository variable LENSEE_PRODUCTION_ENV_FILE to the VPS .env path}"
           : "${PRODUCTION_BACKUP_DIR:?Set repository variable LENSEE_PRODUCTION_BACKUP_DIR to the VPS backup directory}"
           test -f "$PRODUCTION_ENV_FILE"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           candidate_sha="$(git rev-parse HEAD)"
           image_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           image_repository="${GITHUB_REPOSITORY##*/}"
           image_repository="${image_repository,,}"
           env_file="$(mktemp)"
-          trap 'rm -f "$env_file"' EXIT
-          cp "$PRODUCTION_ENV_FILE" "$env_file"
+          awk '!/^[[:space:]]*(LENSEE_HOST_IMAGE|LENSEE_FRONTEND_IMAGE)=/' "$PRODUCTION_ENV_FILE" > "$env_file"
           printf '\nLENSEE_HOST_IMAGE=%s\nLENSEE_FRONTEND_IMAGE=%s\n' \
             "$image_namespace/$image_repository-api:$candidate_sha" \
             "$image_namespace/$image_repository-frontend:$candidate_sha" >> "$env_file"

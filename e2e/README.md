@@ -54,6 +54,14 @@ npm run test:e2e:report
 - `record-editing-complex.spec.js`: historical snapshots, draft editing, payment reassignment/rejection loop, stocktake editing locks, stale transitions.
 - `scenario-gaps.spec.js`: scenario-derived admin user lifecycle, password/deactivation behavior, user-maintenance authorization, parallel sessions, invalid stored tokens.
 
+## CI Test Tiers
+
+- **Pull-request required gate:** backend Release build/analyzers, backend unit/contract tests, whitespace verification, PostgreSQL integration tests, frontend guards plus deterministic build, secret scan, and two focused Chromium UI tests. The UI smoke runs the existing multi-role login/navigation scenario and anonymous retail checkout; it does not replace full workflow certification.
+- **Nightly and manual certification:** all Playwright tests across Chromium and mobile Chromium, against the isolated E2E Compose project. Failure evidence is retained and the workflow summary records the exact commit SHA.
+- **Release publication:** manually dispatch `Certify and publish release images` from `main`. It reruns the required CI checks and full UI certification for the dispatched commit. Images are pushed only if both pass and `publish_images` is explicitly enabled.
+
+**Suite ownership:** fast deterministic code/unit/contract checks belong in the required PR gate; real PostgreSQL invariants stay in the integration gate; only a small set of critical end-user journeys belongs in PR browser smoke; broad cross-module, role, localization, editing, race, and mobile journeys stay in full certification. Test cases remain the source of truth for current behavior; tier membership must not be used to weaken expectations. Add a smoke case only for a critical path not represented by the existing login/role or retail-checkout tests, and move it to full certification if it needs broad scenario setup or materially expands the PR runtime.
+
 ## Support Helpers
 
 The existing `e2e/support/helpers.js` remains the shared compatibility layer. Thin concern-based wrappers also exist under `e2e/support/` for new tests: auth, api, catalog, crm, inventory, operations, payments, downloads, and notifications.
