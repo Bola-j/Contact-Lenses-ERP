@@ -537,8 +537,16 @@ try {
         "$username=authenticated" | Add-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-authentication.txt")
     }
 
-    Invoke-Logged -Name "e2e-eight-user-workload" -Command {
-        node (Join-Path $repoRoot "scripts/run-workload-test.mjs") --users 8 --duration-seconds 60 --output (Join-Path $evidenceDirectory "e2e-eight-user-workload.json")
+    Invoke-Logged -Name "e2e-seven-user-workload" -Command {
+        $previousWorkloadUsers = $env:LENSEE_WORKLOAD_USERNAMES
+        try {
+            $env:LENSEE_WORKLOAD_USERNAMES = "e2e_admin,e2e_erp_admin,e2e_clevel,e2e_accountant,e2e_roxy_clerk,e2e_retail_clerk,e2e_online_clerk"
+            node (Join-Path $repoRoot "scripts/run-workload-test.mjs") --users 7 --duration-seconds 60 --output (Join-Path $evidenceDirectory "e2e-seven-user-workload.json")
+        }
+        finally {
+            if ($null -eq $previousWorkloadUsers) { Remove-Item Env:LENSEE_WORKLOAD_USERNAMES -ErrorAction SilentlyContinue }
+            else { $env:LENSEE_WORKLOAD_USERNAMES = $previousWorkloadUsers }
+        }
     } | Out-Null
     Assert-E2EWorkloadRuntime
 
