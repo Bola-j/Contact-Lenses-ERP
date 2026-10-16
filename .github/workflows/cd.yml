@@ -169,8 +169,21 @@ jobs:
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           docker pull "$CERTIFIED_API_IMAGE"
           docker pull "$CERTIFIED_FRONTEND_IMAGE"
-          [[ "$(docker image inspect --format '{{.Id}}' "$CERTIFIED_API_IMAGE")" == "$EXPECTED_API_IMAGE_ID" ]]
-          [[ "$(docker image inspect --format '{{.Id}}' "$CERTIFIED_FRONTEND_IMAGE")" == "$EXPECTED_FRONTEND_IMAGE_ID" ]]
+          # The certified registry digest is the immutable content identity.
+          # Local Docker config IDs can differ due to registry/platform handling,
+          # so record them for evidence but verify the exact pulled digest refs.
+          for image_ref in "$CERTIFIED_API_IMAGE" "$CERTIFIED_FRONTEND_IMAGE"; do
+            repo_digests="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_ref")"
+            if ! grep -Fxq -- "$image_ref" <<< "$repo_digests"; then
+              echo "Pulled image does not report the certified repository digest: $image_ref" >&2
+              printf '%s\n' "$repo_digests" >&2
+              exit 1
+            fi
+            printf 'Verified certified image digest: %s\n' "$image_ref"
+            printf 'Pulled image config ID: %s\n' "$(docker image inspect --format '{{.Id}}' "$image_ref")"
+          done
+          printf 'Candidate build API config ID: %s\n' "$EXPECTED_API_IMAGE_ID"
+          printf 'Candidate build frontend config ID: %s\n' "$EXPECTED_FRONTEND_IMAGE_ID"
           candidate_sha="${{ needs.validate-certified-release.outputs.sha }}"
           env_file="$(mktemp)"
           awk '!/^[[:space:]]*(LENSEE_HOST_IMAGE|LENSEE_FRONTEND_IMAGE)=/' "$PRODUCTION_ENV_FILE" > "$env_file"
