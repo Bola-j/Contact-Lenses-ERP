@@ -262,7 +262,9 @@ try {
     Write-Host "Pulling external production images..."
     Invoke-Compose -Arguments @("pull", "db", "caddy")
     if ($SkipApplicationBuild) {
-        $resolvedConfigJson = & docker compose @composeFiles config --format json
+        # The migrator is profile-gated and still needs its exact prebuilt image
+        # checked before the explicit migration run below.
+        $resolvedConfigJson = & docker compose --profile migrate @composeFiles config --format json
         if ($LASTEXITCODE -ne 0) { throw "Could not resolve application image references for the prebuilt-image certification deployment." }
         $resolvedConfig = (($resolvedConfigJson -join [Environment]::NewLine) | ConvertFrom-Json)
         foreach ($serviceName in "lensee.host", "migrator", "frontend") {

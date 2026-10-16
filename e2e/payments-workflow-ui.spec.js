@@ -26,7 +26,12 @@ test("payments: one collection workspace shows reconciled merchant figures and r
     if (url.pathname === "/api/v1/payments/other-payments/history") return json({ items: [], page: 1, pageSize: 200, totalCount: 0 });
     if (url.pathname === "/api/v1/payments") return json({ items: [], page: 1, pageSize: 50, totalCount: 0 });
     if (url.pathname === "/api/v1/payments/audit") return json({ items: [], page: 1, pageSize: 100, totalCount: 0 });
-    if (url.pathname === "/api/v1/payments/operations/resolve") return json({ operationId: "55555555-5555-5555-5555-555555555555", recordType: "Operation", scope: "OtherPayments", status: "Completed", permittedNextActions: ["record-refund"] });
+    if (url.pathname === "/api/v1/payments/operations/resolve") {
+      const merchantOperation = url.searchParams.get("reference") === "44444444-4444-4444-4444-444444444444";
+      return json(merchantOperation
+        ? { operationId: "55555555-5555-5555-5555-555555555555", operationNumber: "OP-20260912-001", merchantId, remainingAmount: 1000, recordType: "Operation", scope: "MerchantAccount", status: "Completed", permittedNextActions: ["collect"] }
+        : { operationId: "55555555-5555-5555-5555-555555555555", recordType: "Operation", scope: "OtherPayments", status: "Completed", permittedNextActions: ["record-refund"] });
+    }
     if (method === "POST" && url.pathname === "/api/v1/payments/cash-records") {
       refundPayload = JSON.parse(route.request().postData() || "{}");
       return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "88888888-8888-8888-8888-888888888888", paymentType: "CashRefund", status: "PendingAdminReview" }) });
@@ -93,12 +98,11 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   });
 
   await page.goto("/en/#/payments", { waitUntil: "domcontentloaded" });
-  await page.locator("#load-merchant-balance").click();
-
   await expect(page.locator("#unified-collection-form")).toHaveCount(1);
   await page.locator("#payment-merchant-search").fill("Hany");
   await expect(page.locator("#payment-merchant option")).toHaveCount(1);
   await expect(page.locator("#payment-merchant")).toHaveValue(merchantId);
+  await page.locator("#load-merchant-balance").click();
   await expect(page.locator("#unified-collection-card")).toBeHidden();
   await expect(page.locator("#payment-queue-section")).toBeHidden();
   await expect(page.locator("#payment-review-section")).toBeHidden();
@@ -142,7 +146,7 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   await page.locator("#other-collection-toggle").click();
   await expect(page.locator("#collection-payment-type-field")).toBeVisible();
   await page.locator("#collection-payment-type").selectOption("CashRefund");
-  await page.locator("#collection-source-reference").fill("OP-20260912-001");
+  await page.locator("#collection-source-reference").fill("OP-REFUND-20260912-001");
   await page.locator("#collection-amount").fill("25");
   await page.locator("#collection-method").selectOption("CashHandToHand");
   await page.locator("#collection-finance-account").selectOption(financeAccountId);
@@ -153,6 +157,9 @@ test("payments: one collection workspace shows reconciled merchant figures and r
   await page.getByRole("tab", { name: "Merchant account payments" }).click();
   await expect(page.locator("#merchant-payment-section")).toBeVisible();
   await expect(page.locator("#payment-queue-section")).toBeHidden();
+  // The button is present in the current payment table; target the row action
+  // directly so this merchant-account collection starts from its intended
+  // source rather than reusing the prior OtherPayments form state.
   await page.locator("#merchant-payment-rows [data-payment-use]").click();
   await expect(page.locator("#collection-source-kind")).toHaveValue("MerchantAccount");
   await expect(page.locator("#collection-merchant")).toHaveValue(merchantId);

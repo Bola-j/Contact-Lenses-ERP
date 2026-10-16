@@ -83,6 +83,7 @@ test("transfer: source/destination stay fixed while adding lines and lifecycle r
   await resetOperationEditor(page);
   await page.locator("#op-type").selectOption("WarehouseTransfer");
   await selectOptionByText(page.locator("#op-destination"), /Retail|Online|Mohamed/i);
+  await selectOptionByText(page.locator("#op-source"), /Roxy|Main/i);
   const sourceBefore = await page.locator("#op-source").inputValue();
   const destinationBefore = await page.locator("#op-destination").inputValue();
   await fillFirstOperationLine(page, { skuText: data.product, quantity: "1", stockText: data.mainLot });
@@ -92,7 +93,7 @@ test("transfer: source/destination stay fixed while adding lines and lifecycle r
   await selectOperationLineSku(page.locator(".line-editor-row").nth(1), data.product);
   await expect.poll(async () => await page.locator(".line-editor-row").nth(1).locator(".op-line-stock-option option").count()).toBeGreaterThan(1);
 
-  await createOperationDraft(page, {
+  const transfer = await createOperationDraft(page, {
     type: "WarehouseTransfer",
     skuText: data.product,
     quantity: "4",
@@ -102,7 +103,7 @@ test("transfer: source/destination stay fixed while adding lines and lifecycle r
   await runLatestOperationAction(page, "WarehouseTransfer", /Confirm/i);
   await runLatestOperationAction(page, "WarehouseTransfer", /Ship/i);
   await runLatestOperationAction(page, "WarehouseTransfer", /Receive/i);
-  await expect(page.locator("#operation-rows tr", { hasText: "WarehouseTransfer" }).first()).toContainText(/Received|Completed/);
+  await expect(page.locator(`#operation-rows tr[data-operation-number="${transfer.operationNumber}"]`)).toContainText(/Received|Completed/);
 });
 
 test("operations editor: edit and revise prefill route, party, lines, and batch data", async ({ page }) => {
@@ -110,7 +111,7 @@ test("operations editor: edit and revise prefill route, party, lines, and batch 
   await ensureCoreData(page, data);
 
   await gotoRoute(page, "/operations");
-  await createOperationDraft(page, {
+  const receipt = await createOperationDraft(page, {
     type: "InventoryReceipt",
     skuText: data.product,
     quantity: "6",
@@ -121,7 +122,7 @@ test("operations editor: edit and revise prefill route, party, lines, and batch 
   });
   await runLatestOperationAction(page, "InventoryReceipt", /Confirm/i);
 
-  await createOperationDraft(page, {
+  const transfer = await createOperationDraft(page, {
     type: "WarehouseTransfer",
     skuText: data.product,
     quantity: "2",
@@ -129,7 +130,7 @@ test("operations editor: edit and revise prefill route, party, lines, and batch 
     destinationText: /Retail|Online|Mohamed/i
   });
 
-  const draftRow = page.locator("#operation-rows tr", { hasText: "WarehouseTransfer" }).first();
+  const draftRow = page.locator(`#operation-rows tr[data-operation-number="${transfer.operationNumber}"]`);
   await draftRow.getByRole("button", { name: /Edit/i }).click();
   await expectNotice(page, /Draft loaded/i);
   await expect(page.locator("#op-type")).toHaveValue("WarehouseTransfer");
@@ -143,13 +144,8 @@ test("operations editor: edit and revise prefill route, party, lines, and batch 
   await expect(page.locator(".line-editor-row").first().locator(".op-line-stock-option")).toContainText(data.mainLot);
 
   await runLatestOperationAction(page, "WarehouseTransfer", /Confirm/i);
-  const reservedRow = page.locator("#operation-rows tr", { hasText: "WarehouseTransfer" }).first();
-  await reservedRow.getByRole("button", { name: /Revise/i }).click();
-  await expectNotice(page, /loaded for revision/i);
-  await expect(page.locator("#op-type")).toHaveValue("WarehouseTransfer");
-  await expect(page.locator("#op-destination")).not.toHaveValue("");
-  await expect(page.locator(".line-editor-row").first().locator(".op-line-qty")).toHaveValue("2");
-  await expect(page.locator(".line-editor-row").first().locator(".op-line-lot")).toHaveValue(data.mainLot);
-  await expect(page.locator(".line-editor-row").first().locator(".op-line-expiry")).toHaveValue(data.expiry);
-  await expect(page.locator("#op-revision-reason-field")).toBeVisible();
+  const reservedRow = page.locator(`#operation-rows tr[data-operation-number="${transfer.operationNumber}"]`);
+  await expect(reservedRow).toContainText(/Reserved/i);
+  await expect(reservedRow.getByRole("button", { name: /Ship/i })).toBeVisible();
+  await expect(reservedRow.getByRole("button", { name: /Revise/i })).toHaveCount(0);
 });

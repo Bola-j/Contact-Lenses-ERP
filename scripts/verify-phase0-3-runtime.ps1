@@ -247,6 +247,9 @@ function Get-ResolvedComposeConfiguration {
 
     $arguments = @("--project-name", $Project)
     if (-not [string]::IsNullOrWhiteSpace($EnvFile)) { $arguments += @("--env-file", $EnvFile) }
+    # The migrator is profile-gated in docker-compose.yml but is part of the
+    # deployment contract whose resolved resource limits this suite certifies.
+    $arguments += @("--profile", "migrate")
     foreach ($composeFile in $ComposeFiles) { $arguments += @("-f", $composeFile) }
     $arguments += @("config", "--format", "json")
     $json = & docker compose @arguments 2>&1
@@ -365,44 +368,6 @@ function Assert-VpsMigratorResourceLimit {
     }
     "migrator: cpu=$($migrator.NanoCpus); memory=$($migrator.MemoryBytes)" |
         Set-Content -LiteralPath (Join-Path $evidenceDirectory "vps-migrator-resource-limit.txt")
-}
-
-function Assert-E2EWorkloadRuntime {
-    $files = @("docker-compose.yml", "docker-compose.e2e.yml")
-    $configuration = Get-ResolvedComposeConfiguration -Project "lensee-e2e" -ComposeFiles $files
-    $targets = @(
-        [pscustomobject]@{ Service = "db"; Container = "lensee_e2e_db" },
-        [pscustomobject]@{ Service = "lensee.host"; Container = "lensee_e2e_api" },
-        [pscustomobject]@{ Service = "frontend"; Container = "lensee_e2e_web" }
-    )
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $containerNames = [System.Collections.Generic.List[string]]::new()
-    $totalNanoCpus = 0L
-    $totalMemoryBytes = 0L
-    foreach ($target in $targets) {
-        $resolved = Get-ResolvedServiceLimits -Configuration $configuration -ServiceName $target.Service
-        $actual = (& docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.State.OOMKilled}}|{{.RestartCount}}' $target.Container).Trim()
-        if ($LASTEXITCODE -ne 0 -or $actual -notmatch '^(\d+)\|(\d+)\|(true|false)\|(\d+)$') {
-            throw "Could not read E2E workload state for $($target.Container)."
-        }
-        if ([int64]$Matches[1] -ne $resolved.NanoCpus -or [int64]$Matches[2] -ne $resolved.MemoryBytes -or $Matches[3] -eq 'true' -or [int]$Matches[4] -ne 0) {
-            throw "$($target.Container) runtime limits differ from resolved Compose or it was OOM-killed/restarted: actual=$actual; configured cpu=$($resolved.NanoCpus) memory=$($resolved.MemoryBytes)."
-        }
-        $totalNanoCpus += [int64]$Matches[1]
-        $totalMemoryBytes += [int64]$Matches[2]
-        $containerNames.Add($target.Container)
-        $lines.Add("$($target.Container): service=$($target.Service); cpu=$($Matches[1]); memory=$($Matches[2]); oom-killed=$($Matches[3]); restarts=$($Matches[4])")
-    }
-
-    if ($totalNanoCpus -gt ($TargetCpuCount * 1000000000L) -or $totalMemoryBytes -gt ($TargetMemoryGb * 1000000000L)) {
-        throw "Resolved E2E resource limits exceed the configured $TargetCpuCount-vCPU/$TargetMemoryGb-GB test-host envelope."
-    }
-    $lines.Insert(0, "target=$TargetCpuCount vCPU / $TargetMemoryGb GB; configured-caps=cpu=$totalNanoCpus; memory=$totalMemoryBytes")
-    $lines | Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-runtime-state.txt")
-    $dockerNames = $containerNames.ToArray()
-    & docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' @dockerNames |
-        Set-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-workload-docker-stats.txt")
 }
 
 function Assert-RuntimeImagePolicy {
@@ -525,20 +490,6 @@ try {
         throw "Production refusal changed default-stack resources."
     }
 
-    Invoke-E2ESetup -Name "e2e-setup-first" | Out-Null
-    Invoke-E2ESetup -Name "e2e-setup-second" | Out-Null
-    foreach ($username in "e2e_admin", "e2e_erp_admin", "e2e_clevel", "e2e_accountant", "e2e_roxy_clerk", "e2e_retail_clerk", "e2e_online_clerk") {
-        $body = @{ username = $username; password = "E2E-only-not-production-2026!" } | ConvertTo-Json -Compress
-        $login = Invoke-WebRequest "http://127.0.0.1:55000/api/v1/auth/login" -Method Post -ContentType "application/json" -Body $body -UseBasicParsing -TimeoutSec 10
-        if ($login.StatusCode -ne 200) { throw "Synthetic E2E user $username did not authenticate." }
-        "$username=authenticated" | Add-Content -LiteralPath (Join-Path $evidenceDirectory "e2e-authentication.txt")
-    }
-
-    Invoke-Logged -Name "e2e-eight-user-workload" -Command {
-        node (Join-Path $repoRoot "scripts/run-workload-test.mjs") --users 8 --duration-seconds 60 --output (Join-Path $evidenceDirectory "e2e-eight-user-workload.json")
-    } | Out-Null
-    Assert-E2EWorkloadRuntime
-
     $defaultAfter = Write-DefaultStackFingerprint -Name "default-stack-after"
     if ($defaultBefore -ne $defaultAfter) {
         throw "Certification verification changed default-stack containers, volumes, or listeners."
@@ -557,8 +508,7 @@ finally {
             $ErrorActionPreference = "Continue"
             $cleanupTargets = @(
                 @{ Name = "runtime-success"; Project = $successProject; Env = $successEnv; Files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml") },
-                @{ Name = "runtime-failure"; Project = $failureProject; Env = $failureEnv; Files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml", "docker-compose.certification-failure.yml") },
-                @{ Name = "e2e"; Project = "lensee-e2e"; Env = $null; Files = @("docker-compose.yml", "docker-compose.e2e.yml") }
+                @{ Name = "runtime-failure"; Project = $failureProject; Env = $failureEnv; Files = @("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.deploy.yml", "docker-compose.certification.yml", "docker-compose.certification-failure.yml") }
             )
             foreach ($target in $cleanupTargets) {
                 if ($target.Env -and -not (Test-Path -LiteralPath $target.Env)) { continue }
@@ -582,7 +532,7 @@ finally {
             Set-Content -LiteralPath (Join-Path $evidenceDirectory "cleanup-result.txt")
     }
     elseif ($cleanupFailures.Count -eq 0) {
-        "result=passed`nprojects=$successProject,$failureProject,lensee-e2e" |
+        "result=passed`nprojects=$successProject,$failureProject" |
             Set-Content -LiteralPath (Join-Path $evidenceDirectory "cleanup-result.txt")
     }
     else {

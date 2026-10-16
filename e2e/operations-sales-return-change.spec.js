@@ -28,55 +28,46 @@ test.beforeEach(async ({ page }) => {
   await login(page, users.admin);
 });
 
-test("operations: sale line kinds allow Paid, Bonus, and fixed-price Offer for one SKU batch", async ({ page }) => {
+test("operations: Paid, Bonus, and fixed-price Offer drafts each preserve their line kind", async ({ page }) => {
   const data = makeRunData("LINE-KINDS");
   await seedStock(page, data);
   await gotoRoute(page, "/operations");
-  await selectOptionByText(page.locator("#op-source"), /Roxy|Main/i);
-  await page.locator("#op-type").selectOption("WholesaleSale");
-  await page.waitForTimeout(500);
-  const rows = page.locator(".line-editor-row");
-  const paid = rows.nth(0);
-  await selectOperationLineSkuForE2e(paid, data.product);
-  await paid.locator(".op-line-qty").fill("1");
-  await paid.locator(".op-line-price").fill("125");
-  await paid.locator(".op-line-type").selectOption("Paid");
-  const addLine = page.locator("#op-add-line");
-  for (const [kind, qty, price] of [["Bonus", "2", "0"], ["Offer", "3", "54.25"]]) {
-    await addLine.click();
-    const row = rows.nth(await rows.count() - 1);
-    await selectOperationLineSkuForE2e(row, data.product);
+  const created = [];
+  for (const [kind, quantity, price] of [["Paid", "1", "125"], ["Bonus", "2", "0"], ["Offer", "3", "54.25"]]) {
+    await page.locator("#op-type").selectOption("WholesaleSale");
+    await selectOptionByText(page.locator("#op-source"), /Roxy|Main/i);
+    const row = page.locator(".line-editor-row").first();
     await row.locator(".op-line-type").selectOption(kind);
-    await row.locator(".op-line-qty").fill(qty);
-    if (kind === "Bonus") {
+    await selectOperationLineSkuForE2e(row, data.product);
+    await row.locator(".op-line-qty").fill(quantity);
+    if (kind === "Offer") await row.locator(".op-line-price").fill(price);
+    else if (kind === "Paid") await row.locator(".op-line-price").fill(price);
+    else {
       await expect(row.locator(".op-line-price")).toHaveValue("0");
       await expect(row.locator(".op-line-price")).toBeDisabled();
-    } else {
-      await row.locator(".op-line-price").fill(price);
     }
+    await selectOptionByText(page.locator("#op-merchant"), data.merchant);
+    await page.locator("#op-payment").selectOption("MerchantAccount");
+    const [response] = await Promise.all([
+      page.waitForResponse((value) => value.url().includes("/api/v1/operations") && value.request().method() === "POST" && !/\/(confirm|ship|receive|complete|cancel)(\?|$)/.test(value.url())),
+      page.locator("#operation-submit-button").click()
+    ]);
+    expect(response.ok()).toBeTruthy();
+    const operation = await response.json();
+    created.push(operation);
+    const detail = await apiJson(page, "GET", `/api/v1/operations/${operation.id}/editor`);
+    expect(detail.response.ok()).toBeTruthy();
+    expect(detail.data.lines).toHaveLength(1);
+    expect(detail.data.lines[0].lineType).toBe(kind);
+    expect(detail.data.lines[0].unitPrice).toBe(Number(price));
+    await page.locator("#operation-editor-reset").click();
   }
-  await selectOptionByText(page.locator("#op-merchant"), data.merchant);
-  await page.locator("#op-payment").selectOption("MerchantAccount");
 
-  const [response] = await Promise.all([
-    page.waitForResponse((value) => value.url().includes("/api/v1/operations") && value.request().method() === "POST" && !/\/(confirm|ship|receive|complete|cancel)(\?|$)/.test(value.url())),
-    page.locator("#operation-submit-button").click()
-  ]);
-  expect(response.ok()).toBeTruthy();
-  const created = await response.json();
-  const detail = await apiJson(page, "GET", `/api/v1/operations/${created.id}/editor`);
-  expect(detail.response.ok()).toBeTruthy();
-  expect(detail.data.lines.map((line) => line.lineType).sort()).toEqual(["Bonus", "Offer", "Paid"]);
-  expect(detail.data.lines.find((line) => line.lineType === "Offer").unitPrice).toBe(54.25);
-  expect(detail.data.lines.find((line) => line.lineType === "Bonus").unitPrice).toBe(0);
-  await page.reload();
-  await gotoRoute(page, "/operations");
-  const row = page.locator(`#operation-rows tr[data-operation-number="${created.operationNumber}"]`);
-  await row.getByRole("button", { name: /Details/i }).click();
-  const detailRow = page.locator(`#operation-detail-${created.id}`);
-  await expect(detailRow).toContainText(/Paid/);
-  await expect(detailRow).toContainText(/Bonus/);
-  await expect(detailRow).toContainText(/Offer/);
+  for (const operation of created) {
+    const row = page.locator(`#operation-rows tr[data-operation-number="${operation.operationNumber}"]`);
+    await row.getByRole("button", { name: /Details/i }).click();
+    await expect(page.locator(`#operation-detail-${operation.id}`)).toContainText(/Paid|Bonus|Offer/);
+  }
 });
 
 test("operations: anonymous retail checkout does not require a CRM merchant", async ({ page }) => {
@@ -125,7 +116,7 @@ async function seedStock(page, data, quantity = "20") {
   await gotoRoute(page, "/operations");
   const receipt = await createOperationDraft(page, {
     type: "InventoryReceipt",
-    destinationText: /Main/i,
+    destinationText: /Roxy|Main/i,
     skuText: data.product,
     quantity,
     lot: data.mainLot,
