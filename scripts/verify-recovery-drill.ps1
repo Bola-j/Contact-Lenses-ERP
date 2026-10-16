@@ -208,6 +208,17 @@ try {
     $restoreStarted = Get-Date
     Invoke-Logged -Name "recovery-database-start" -Command {
         Invoke-Compose -Project $recoveryProject -EnvFile $recoveryEnv -Recovery -Arguments @("up", "-d", "db")
+        $databaseContainer = "$recoveryPrefix-db"
+        $deadline = (Get-Date).AddSeconds(120)
+        do {
+            $health = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' $databaseContainer).Trim()
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect the isolated recovery database health." }
+            if ($health -eq "healthy") { break }
+            if ($health -eq "unhealthy") { throw "The isolated recovery database became unhealthy before restore." }
+            Start-Sleep -Seconds 2
+        } while ((Get-Date) -lt $deadline)
+        if ($health -ne "healthy") { throw "The isolated recovery database did not become healthy within 120 seconds." }
+        "Recovery database is healthy and accepting connections."
     } | Out-Null
 
     Invoke-Logged -Name "recovery-backup-copy" -Command {
