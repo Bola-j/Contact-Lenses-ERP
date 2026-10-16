@@ -103,7 +103,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
-          path: candidate-image-bundle
+          path: ${{ runner.temp }}/candidate-image-bundle
       - name: Load and verify candidate images
         shell: pwsh
         run: >-
@@ -111,8 +111,8 @@ jobs:
           -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
           -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
           -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
-          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
-          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+          -ArchivePath '${{ runner.temp }}/candidate-image-bundle/candidate-images.tar'
+          -MetadataPath '${{ runner.temp }}/candidate-image-bundle/candidate-images.json'
       - name: Prepare security evidence directory
         run: mkdir -p artifacts/certification
       - name: Generate SBOM for the exact candidate API image
@@ -329,7 +329,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
-          path: candidate-image-bundle
+          path: ${{ runner.temp }}/candidate-image-bundle
       - name: Load and verify exact candidate images
         shell: pwsh
         run: >-
@@ -337,8 +337,8 @@ jobs:
           -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
           -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
           -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
-          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
-          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+          -ArchivePath '${{ runner.temp }}/candidate-image-bundle/candidate-images.tar'
+          -MetadataPath '${{ runner.temp }}/candidate-image-bundle/candidate-images.json'
       - name: Set up Node for synthetic workload script
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -374,72 +374,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  complete-browser-suite:
-    name: Certification / Complete browser suite
-    needs: preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 80
-    outputs:
-      duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
-    steps:
-      - name: Start suite timer
-        id: timer
-        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
-      - name: Check out exact candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.preflight.outputs.candidate_sha }}
-      - name: Set up toolchains and Chromium
-        uses: ./.github/actions/setup-certification
-        with:
-          playwright: "true"
-      - name: Start isolated E2E stack
-        shell: pwsh
-        run: ./scripts/e2e-setup.ps1
-      - name: Run complete browser certification
-        env:
-          LENSEE_E2E_SKIP_WEBSERVER: "1"
-        run: npm run e2e
-      - name: Capture bounded browser diagnostics
-        if: failure()
-        shell: bash
-        run: |
-          mkdir -p artifacts/certification/browser-compose-logs
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/certification/browser-compose-logs/compose-ps.txt 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/certification/browser-compose-logs/db.log 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/certification/browser-compose-logs/api.log 2>&1 || true
-          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/certification/browser-compose-logs/frontend.log 2>&1 || true
-      - name: Clean up isolated E2E stack
-        if: always()
-        shell: bash
-        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
-      - name: Record browser result and duration
-        id: evidence
-        if: always()
-        env:
-          CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
-          STARTED_AT: ${{ steps.timer.outputs.started_at }}
-          JOB_RESULT: ${{ job.status }}
-        shell: bash
-        run: |
-          mkdir -p artifacts/certification
-          ended_at="$(date +%s)"
-          duration=$((ended_at - STARTED_AT))
-          printf '{"candidate_sha":"%s","suite":"complete-browser","result":"%s","duration_seconds":%s}\n' \
-            "$CANDIDATE_SHA" "$JOB_RESULT" "$duration" > artifacts/certification/browser-suite-result.json
-          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
-      - name: Upload browser results and artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: certification-browser-${{ needs.preflight.outputs.candidate_sha }}
-          path: |
-            artifacts/certification/**
-            playwright-report/**
-            test-results/**
-          if-no-files-found: warn
-          retention-days: 30
-
   recovery:
     name: Certification / Backup and restore recovery
     needs: [preflight, build-candidate-images]
@@ -459,7 +393,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
-          path: candidate-image-bundle
+          path: ${{ runner.temp }}/candidate-image-bundle
       - name: Load and verify exact candidate images
         shell: pwsh
         run: >-
@@ -467,8 +401,8 @@ jobs:
           -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
           -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
           -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
-          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
-          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+          -ArchivePath '${{ runner.temp }}/candidate-image-bundle/candidate-images.tar'
+          -MetadataPath '${{ runner.temp }}/candidate-image-bundle/candidate-images.json'
       - name: Run isolated backup and restore drill
         shell: pwsh
         run: >-
@@ -502,7 +436,7 @@ jobs:
 
   publish-images:
     name: Certification / Publish immutable candidate images
-    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, complete-browser-suite, recovery]
+    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, recovery]
     if: >-
       inputs.release_run == true &&
       needs.preflight.result == 'success' &&
@@ -510,7 +444,6 @@ jobs:
       needs.build-candidate-images.result == 'success' &&
       needs.release-config.result == 'success' &&
       needs.runtime.result == 'success' &&
-      needs.complete-browser-suite.result == 'success' &&
       needs.recovery.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -533,7 +466,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-image-bundle-${{ needs.preflight.outputs.candidate_sha }}
-          path: candidate-image-bundle
+          path: ${{ runner.temp }}/candidate-image-bundle
       - name: Load and verify candidate image IDs
         shell: pwsh
         run: >-
@@ -541,8 +474,8 @@ jobs:
           -CandidateSha '${{ needs.preflight.outputs.candidate_sha }}'
           -ApiImage '${{ needs.build-candidate-images.outputs.api_image }}'
           -FrontendImage '${{ needs.build-candidate-images.outputs.frontend_image }}'
-          -ArchivePath 'candidate-image-bundle/candidate-images.tar'
-          -MetadataPath 'candidate-image-bundle/candidate-images.json'
+          -ArchivePath '${{ runner.temp }}/candidate-image-bundle/candidate-images.tar'
+          -MetadataPath '${{ runner.temp }}/candidate-image-bundle/candidate-images.json'
       - name: Authenticate to GitHub Container Registry
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -578,7 +511,7 @@ jobs:
   certification-result:
     name: Certification / Result manifest
     if: always()
-    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, complete-browser-suite, recovery, publish-images]
+    needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, recovery, publish-images]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -598,7 +531,6 @@ jobs:
           IMAGE_BUILD_RESULT: ${{ needs.build-candidate-images.result }}
           CONFIG_RESULT: ${{ needs.release-config.result }}
           RUNTIME_RESULT: ${{ needs.runtime.result }}
-          BROWSER_RESULT: ${{ needs.complete-browser-suite.result }}
           RECOVERY_RESULT: ${{ needs.recovery.result }}
           IMAGE_RESULT: ${{ needs.publish-images.result }}
           CONFIG_DURATION: ${{ needs['release-config'].outputs.duration_seconds }}
@@ -609,7 +541,6 @@ jobs:
           FRONTEND_IMAGE_ID: ${{ needs.build-candidate-images.outputs.frontend_image_id }}
           SECURITY_DURATION: ${{ needs['same-sha-security-gate'].outputs.duration_seconds }}
           RUNTIME_DURATION: ${{ needs.runtime.outputs.duration_seconds }}
-          BROWSER_DURATION: ${{ needs.complete-browser-suite.outputs.duration_seconds }}
           RECOVERY_DURATION: ${{ needs.recovery.outputs.duration_seconds }}
           IMAGE_DURATION: ${{ needs.publish-images.outputs.duration_seconds }}
           API_DIGEST_REF: ${{ needs.publish-images.outputs.api_digest_ref }}
@@ -637,7 +568,7 @@ jobs:
               "candidate_image_build": os.environ["IMAGE_BUILD_RESULT"],
               "release_config": os.environ["CONFIG_RESULT"],
               "runtime_deployment": os.environ["RUNTIME_RESULT"],
-              "complete_browser": os.environ["BROWSER_RESULT"],
+              "full_browser_suite": "not-required; covered by PR critical UI smoke and operator manual testing",
               "backup_restore_recovery": os.environ["RECOVERY_RESULT"],
               "immutable_images": os.environ["IMAGE_RESULT"],
           }
@@ -653,11 +584,10 @@ jobs:
               "candidate_image_build": os.environ.get("IMAGE_BUILD_DURATION", ""),
               "release_config": os.environ.get("CONFIG_DURATION", ""),
               "runtime_deployment": os.environ.get("RUNTIME_DURATION", ""),
-              "complete_browser": os.environ.get("BROWSER_DURATION", ""),
               "backup_restore_recovery": os.environ.get("RECOVERY_DURATION", ""),
               "immutable_images": os.environ.get("IMAGE_DURATION", ""),
           }
-          required = ["preflight", "candidate_image_build", "same_sha_security_gate", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery"]
+          required = ["preflight", "candidate_image_build", "same_sha_security_gate", "release_config", "runtime_deployment", "backup_restore_recovery"]
           passed = all(suites[name] == "success" for name in required)
           if release:
               passed = passed and security_scan == "success" and semgrep == "success" and suites["immutable_images"] == "success"

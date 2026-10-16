@@ -5002,7 +5002,8 @@ async function renderOperations() {
   const userOperationTypes = auth?.user.role === "WarehouseClerk"
     ? ["InventoryReceipt", "Return"]
     : ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "WriteOff"];
-  operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : "WarehouseTransfer";
+  const defaultOperationType = auth?.user.role === "WarehouseClerk" ? "InventoryReceipt" : "WarehouseTransfer";
+  operationsUiState.operationType = userOperationTypes.includes(operationsUiState.operationType) ? operationsUiState.operationType : defaultOperationType;
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Operations",
@@ -10719,9 +10720,13 @@ function renderWearCycle(cycle, duration) {
 
 async function loadSupplyReport() {
   const target = document.getElementById("report-supply");
+  if (!target) {
+    reportSupplyRows = [];
+    return;
+  }
   if (getAuth()?.user?.role === "ERPAdmin") {
     reportSupplyRows = [];
-    target?.replaceChildren();
+    target.replaceChildren();
     return;
   }
   try {

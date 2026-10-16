@@ -346,13 +346,39 @@ async function fillOperationDraftForm(page, options) {
       throw error;
     }
   }
-  await selectOptionByTextIfEnabled(page.locator("#op-destination"), options.destinationText);
+  const destinationSelect = page.locator("#op-destination");
+  await selectOptionByTextIfEnabled(destinationSelect, options.destinationText);
+  if (options.type === "InventoryReceipt" && !options.destinationText) {
+    // Most inventory/sales scenarios seed stock at Main, so place receipts
+    // there unless a scenario names a different destination explicitly.
+    const warehouse = destinationSelect.locator("option:not([value=''])");
+    await expect.poll(() => warehouse.count(), { timeout: 20_000 }).toBeGreaterThan(0);
+    const mainWarehouse = await warehouse.evaluateAll((options) =>
+      options.find((option) => /main|roxy/i.test(option.textContent || ""))?.value || options[0]?.value || "");
+    await destinationSelect.selectOption(mainWarehouse);
+  }
+  if (options.type === "WarehouseTransfer" && !options.sourceText) {
+    // Transfers require a source warehouse distinct from their destination.
+    // Older fixtures left this required UI field at its placeholder, which
+    // prevents the stock/batch lookup from ever loading.
+    const destinationId = await destinationSelect.inputValue();
+    await expect.poll(async () => sourceSelect.locator("option:not([value=''])").evaluateAll((options, destination) =>
+      options.find((option) => option.value !== destination)?.value || "", destinationId), { timeout: 20_000 })
+      .not.toBe("");
+    const sourceId = await sourceSelect.locator("option:not([value=''])").evaluateAll((options, destination) =>
+      options.find((option) => option.value !== destination && /main|roxy/i.test(option.textContent || ""))?.value
+        || options.find((option) => option.value !== destination)?.value || "", destinationId);
+    await sourceSelect.selectOption(sourceId);
+  }
   await selectOptionByTextIfEnabled(page.locator("#op-merchant"), options.merchantText);
   const representative = page.locator("#op-representative");
   // Representative UI is intentionally not exposed. Keep this compatibility
   // helper tolerant of older scenarios without creating or requiring that UI.
   if (await representative.count()) {
     await selectOptionByTextIfEnabled(representative, options.representativeText);
+  }
+  if (options.returnReferenceText) {
+    await selectOptionByTextIfEnabled(page.locator("#op-return-source"), options.returnReferenceText);
   }
   await selectValueIfEnabled(page.locator("#op-payment"), options.paymentMethod);
   await fillIfEnabled(page.locator("#op-buyer"), options.buyerName);
@@ -362,11 +388,10 @@ async function fillOperationDraftForm(page, options) {
 }
 
 async function selectValueIfEnabled(select, value) {
-  if (!value) {
+  if (!value || !(await select.count()) || !(await select.isVisible().catch(() => false))) {
     return;
   }
 
-  await expect(select).toBeVisible();
   if (await select.isDisabled()) {
     return;
   }

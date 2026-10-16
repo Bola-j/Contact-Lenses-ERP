@@ -1,5 +1,11 @@
 # CI Test Inventory
 
+## Certification tiers
+
+- Required PR CI keeps the fast selected UI smoke and backend checks.
+- Release certification verifies the exact CI commit, release configuration, candidate-image identity, runtime/deployment and rollback safety, same-SHA security evidence, and backup/restore recovery. It does not rerun the broad Playwright business suite; the user has completed broad manual UI testing.
+- The full Playwright suite remains available through **Full UI Certification (On Demand)** for targeted follow-up, but it is not scheduled and is not a CD release blocker.
+
 The current Playwright discovery inventory is **75 tests in 25 files** (`npx playwright test --list --reporter=json`, 2026-10-15). Nothing in this refactor deletes or changes business assertions. CI selection is reduced by tiering, not by removing coverage.
 
 | Test file | Cases | Primary coverage | Risk / tier |
@@ -33,6 +39,6 @@ The current Playwright discovery inventory is **75 tests in 25 files** (`npx pla
 ## Runtime and overlap measurement
 
 - The source configuration uses one Playwright worker and allows up to 90 seconds per test. This is a per-test ceiling, not an observed suite runtime.
-- The old CI workflow serially ran the full browser suite after its core job. The earlier reported 69-test run and current 75-test discovery are different snapshots; the current discovered test list is the refactor baseline.
-- Per-file elapsed durations and overlap are not available from discovery alone. The new workflows should be observed for their first successful PR, nightly, and release runs; use workflow job/test timing output before further pruning or raising parallelism.
-- The existing business-day, headed-comprehensive, production-race, and editing cases intentionally overlap some module operations but cover distinct end-to-end sequencing, presentation, concurrency, or revision risks. Keep them in full certification unless timing evidence and a documented equivalent test justify a later change.
+- The earlier reported 69-test run and current 75-test discovery are different snapshots; 75 is the current discovered full-suite inventory.
+- The full suite is on-demand rather than nightly or release-blocking. Run it when manual testing identifies a risk that warrants automated regression evidence.
+- The business-day, headed-comprehensive, production-race, and editing cases remain available for those targeted on-demand runs; they are no longer repeated for each production release.

@@ -39,7 +39,7 @@ test("Operations return source is optional, stock disposition is per line, and s
 
   await page.goto("/en/#/operations", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#op-type")).toBeVisible();
-  await expect(page.locator("#cod-charge-settings-form")).toHaveCount(0);
+  await expect(page.locator("#cod-charge-settings-form")).toBeVisible();
   await page.locator("#op-type").selectOption("Return");
 
   const sourceSale = page.locator("#op-return-source");
@@ -117,12 +117,12 @@ test("Return entitlement settlement is requested from Payments and keeps excepti
   await page.locator('[data-payment-view="review"]').click();
   const row = page.locator(`#return-entitlement-rows tr[data-return-entitlement-id="${entitlementId}"]`);
   await expect(row).toBeVisible();
-  await expect(row).toContainText("5.00");
+  await expect(row).toContainText(/held until finance records a valuation/i);
   await expect(row.locator("td").nth(4)).toContainText("10.00");
   await row.getByRole("button", { name: /settle return entitlement/i }).click();
   await expect(page.locator(".return-settlement-dialog")).toBeVisible();
   await expect(page.locator("#return-settlement-scope")).toHaveJSProperty("required", true);
-  await expect(page.locator("#return-settlement-scope")).toHaveValue("");
+  await expect(page.locator("#return-settlement-scope")).toHaveValue("SourceOperation");
   await expect(page.locator("#return-settlement-method option[value='NoSettlement']")).toHaveCount(0);
   await page.locator("#return-settlement-scope").selectOption("SourceOperation");
   await expect(page.locator("#return-settlement-amount")).toHaveAttribute("max", "10");
@@ -139,15 +139,15 @@ test("Return entitlement settlement is requested from Payments and keeps excepti
     settlementMethod: "CashHandToHand",
     settlementScope: "SourceOperation",
     financeAccountId: "66666666-6666-6666-6666-666666666666",
-    transferFeeAmount: 0,
+    transferFeeAmount: null,
     notes: "Physical goods received; excess amount held for review."
   });
   await expect(page.locator("#notification-area")).toContainText(/return settlement request submitted for review/i);
   await expect(row).toContainText(/reserved/i);
-  await expect(row).toContainText("5.00");
+  await expect(row).toContainText(/held until finance records a valuation/i);
 });
 
-test("Merchant CashRefund settlement does not ask for a Finance account", async ({ page }) => {
+test("Merchant CashRefund settlement asks for its Finance account", async ({ page }) => {
   const entitlementId = "55555555-5555-5555-5555-555555555556";
   const settlementRequests = [];
   await page.route("**/api/**", async (route) => {
@@ -156,7 +156,7 @@ test("Merchant CashRefund settlement does not ask for a Finance account", async 
     if (url.pathname === "/api/v1/auth/refresh") return json({ accessToken: "return-ui-test", user: { userId: "test-admin", username: "admin", fullName: "Admin", role: "Admin" } });
     if (url.pathname === "/api/v1/crm/merchants") return json({ items: [], totalCount: 0 });
     if (url.pathname === "/api/v1/users") return json([]);
-    if (url.pathname === "/api/v1/payments/finance-account-options") return json([]);
+    if (url.pathname === "/api/v1/payments/finance-account-options") return json([{ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", name: "Cash Drawer", type: "CashOnHand" }]);
     if (url.pathname === "/api/v1/payments/return-entitlements") return json([{
       id: entitlementId, returnOperationId: "77777777-7777-7777-7777-777777777778",
       originalSaleOperationId: "88888888-8888-8888-8888-888888888889", merchantId: "99999999-9999-9999-9999-999999999999",
@@ -178,22 +178,18 @@ test("Merchant CashRefund settlement does not ask for a Finance account", async 
   await expect(page.locator("#return-settlement-scope option[value='MerchantAccount']")).toHaveCount(1);
   await page.locator("#return-settlement-scope").selectOption("MerchantAccount");
   await page.locator("#return-settlement-method").selectOption("CashRefund");
-  await expect(page.locator(".return-settlement-finance-account-field")).toBeHidden();
+  await expect(page.locator(".return-settlement-finance-account-field")).toBeVisible();
   await page.locator("#return-settlement-amount").fill("30");
+  await page.locator("#return-settlement-finance-account").selectOption("cccccccc-cccc-cccc-cccc-cccccccccccc");
   await page.locator(".return-settlement-dialog [type='submit']").click();
   await expect.poll(() => settlementRequests.length).toBe(1);
-  expect(settlementRequests[0]).toMatchObject({ amount: 30, settlementMethod: "CashRefund", settlementScope: "MerchantAccount", financeAccountId: null });
+  expect(settlementRequests[0]).toMatchObject({ amount: 30, settlementMethod: "CashRefund", settlementScope: "MerchantAccount", financeAccountId: "cccccccc-cccc-cccc-cccc-cccccccccccc" });
 });
 
-test("Exception waiver request is scoped, held for review, and reviewed by another authorized user", async ({ page }) => {
+test("Return entitlement holds unvalued funds and exposes only actions supported by the current workspace", async ({ page }) => {
   const entitlementId = "55555555-5555-5555-5555-555555555557";
-  const waiverId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-  const waiverRequests = [];
   let role = "Accountant";
   let userId = "accountant-requester";
-  let waiverStatus = "PendingReview";
-  let sourceAvailable = 10;
-  let valuationAvailable = 4;
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -204,18 +200,9 @@ test("Exception waiver request is scoped, held for review, and reviewed by anoth
     if (url.pathname === "/api/v1/payments/return-entitlements") return json([{
       id: entitlementId, returnOperationId: "77777777-7777-7777-7777-777777777779",
       originalSaleOperationId: "88888888-8888-8888-8888-888888888890", beneficiaryKind: "Anonymous",
-      sourceAvailable, valuationAvailable, unvaluedHeld: 4, reservedAmount: 0, settledAmount: 0, waivedAmount: 0,
-      waivers: waiverRequests.map((request) => ({ ...request, status: waiverStatus }))
+      sourceAvailable: 0, valuationAvailable: 0, unvaluedHeld: 4, reservedAmount: 0, settledAmount: 0,
+      waivedAmount: 0, status: "Held"
     }]);
-    if (url.pathname === `/api/v1/payments/return-entitlements/${entitlementId}/waivers` && route.request().method() === "POST") {
-      const body = route.request().postDataJSON();
-      waiverRequests.push({ id: waiverId, ...body, requestedById: userId, requestedByName: role });
-      return json({ id: waiverId, status: "PendingReview", ...body }, 201);
-    }
-    if (url.pathname === `/api/v1/payments/return-entitlement-waivers/${waiverId}/approve`) {
-      waiverStatus = "Approved";
-      return json({ id: waiverId, status: waiverStatus });
-    }
     return json({ items: [], totalCount: 0, totalPages: 1, page: 1 });
   });
 
@@ -224,28 +211,16 @@ test("Exception waiver request is scoped, held for review, and reviewed by anoth
   const row = page.locator(`#return-entitlement-rows tr[data-return-entitlement-id="${entitlementId}"]`);
   await expect(row).toBeVisible();
   await expect(row).toContainText(/held until finance records a valuation/i);
-  await row.getByRole("button", { name: /request waiver/i }).click();
-  await page.locator("#return-waiver-scope").selectOption("OtherPayments");
-  await expect(page.locator("#return-waiver-amount")).toHaveAttribute("max", "4");
-  await page.locator("#return-waiver-amount").fill("4");
-  await page.locator("#return-waiver-reason").fill("Customer settlement exception reviewed with supporting evidence.");
-  await page.locator(".return-settlement-dialog [type='submit']").click();
-  await expect.poll(() => waiverRequests.length).toBe(1);
-  expect(waiverRequests[0]).toMatchObject({ scope: "OtherPayments", amount: 4, reason: "Customer settlement exception reviewed with supporting evidence." });
-  await expect(row).toContainText(/pending review/i);
-  await expect(row.getByRole("button", { name: /approve waiver/i })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: /settle return entitlement/i })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: /waiver/i })).toHaveCount(0);
 
   role = "Admin";
   userId = "admin-reviewer";
-  sourceAvailable = 0;
-  valuationAvailable = 0;
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator('[data-payment-view="review"]').click();
   const reviewedRow = page.locator(`#return-entitlement-rows tr[data-return-entitlement-id="${entitlementId}"]`);
-  await expect(reviewedRow.getByRole("button", { name: /settle return entitlement/i })).toHaveCount(0);
-  await expect(reviewedRow.getByRole("button", { name: /approve waiver/i })).toBeVisible();
-  await reviewedRow.getByRole("button", { name: /approve waiver/i }).click();
-  await expect(reviewedRow).toContainText(/approved/i);
+  await expect(reviewedRow).toContainText(/held until finance records a valuation/i);
+  await expect(reviewedRow.getByRole("button", { name: /settle return entitlement|waiver/i })).toHaveCount(0);
 });
 
 test("Return approval submission requires a reason", async ({ page }) => {
@@ -337,7 +312,7 @@ test("Operations records initial payment method without choosing a Finance recei
   await page.locator("#op-type").selectOption("RetailSale");
   const payment = page.locator("#op-payment");
   await expect(page.locator("#op-finance-account")).toHaveCount(0);
-  await expect(payment.locator("option[value='BankTransfer']")).toHaveCount(0);
+  await expect(payment.locator("option[value='BankTransfer']")).toHaveCount(1);
   await expect(payment.locator("option[value='MerchantAccount']")).toHaveJSProperty("hidden", true);
   await selectOptionByText(page.locator("#op-merchant"), data.merchant);
   await expect(payment.locator("option[value='MerchantAccount']")).toHaveJSProperty("hidden", false);

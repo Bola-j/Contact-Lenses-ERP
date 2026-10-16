@@ -247,6 +247,9 @@ function Get-ResolvedComposeConfiguration {
 
     $arguments = @("--project-name", $Project)
     if (-not [string]::IsNullOrWhiteSpace($EnvFile)) { $arguments += @("--env-file", $EnvFile) }
+    # The migrator is profile-gated in docker-compose.yml but is part of the
+    # deployment contract whose resolved resource limits this suite certifies.
+    $arguments += @("--profile", "migrate")
     foreach ($composeFile in $ComposeFiles) { $arguments += @("-f", $composeFile) }
     $arguments += @("config", "--format", "json")
     $json = & docker compose @arguments 2>&1

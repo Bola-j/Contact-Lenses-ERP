@@ -1,8 +1,6 @@
-name: Full UI Certification
+name: Full UI Certification (On Demand)
 
 on:
-  schedule:
-    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -14,22 +12,87 @@ permissions:
   contents: read
 
 concurrency:
-  group: full-certification-${{ github.workflow }}-${{ github.ref }}
+  group: full-ui-certification-${{ inputs.candidate_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
-  certify:
-    uses: ./.github/workflows/reusable-certification.yml
-    with:
-      candidate_sha: ${{ inputs.candidate_sha || github.sha }}
-      release_run: false
-      source_ci_event: ${{ github.event_name }}
-      source_ci_branch: ${{ github.ref_name }}
-      source_ci_repository: ${{ github.repository }}
-      source_ci_sha: ${{ inputs.candidate_sha || github.sha }}
-      source_ci_conclusion: not-applicable
-      source_ci_run_id: ${{ github.run_id }}
-    permissions:
-      contents: read
-      actions: read
-      packages: write
+  candidate:
+    name: Full UI / Candidate verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 0
+      - name: Require candidate to be on main
+        id: verify
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+  browser:
+    name: Full UI / All Playwright scenarios
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+      - name: Set up toolchains and Chromium
+        uses: ./.github/actions/setup-certification
+        with:
+          playwright: "true"
+      - name: Start isolated E2E stack
+        shell: pwsh
+        run: ./scripts/e2e-setup.ps1
+      - name: Run full browser suite for exact commit
+        env:
+          LENSEE_E2E_SKIP_WEBSERVER: "1"
+        run: npm run e2e
+      - name: Capture isolated stack diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification/browser-compose-logs
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml ps > artifacts/certification/browser-compose-logs/compose-ps.txt 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 db > artifacts/certification/browser-compose-logs/db.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 lensee.host > artifacts/certification/browser-compose-logs/api.log 2>&1 || true
+          docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color --tail=300 frontend > artifacts/certification/browser-compose-logs/frontend.log 2>&1 || true
+      - name: Clean up isolated E2E stack
+        if: always()
+        shell: bash
+        run: docker compose -p lensee-e2e -f docker-compose.yml -f docker-compose.e2e.yml down --volumes --remove-orphans
+      - name: Record full UI result and commit
+        if: always()
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+          JOB_RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          mkdir -p artifacts/certification
+          printf '{"candidate_sha":"%s","suite":"full-ui","result":"%s"}\n' \
+            "$CANDIDATE_SHA" "$JOB_RESULT" > artifacts/certification/full-ui-result.json
+      - name: Upload browser results and failure artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-ui-certification-${{ needs.candidate.outputs.sha }}
+          path: |
+            artifacts/certification/**
+            playwright-report/**
+            test-results/**
+          if-no-files-found: warn
+          retention-days: 30

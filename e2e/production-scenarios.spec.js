@@ -27,6 +27,7 @@ async function seedMainStock(page, data, quantity) {
   await gotoRoute(page, "/operations");
   await createOperationDraft(page, {
     type: "InventoryReceipt",
+    destinationText: /Roxy|Main/i,
     skuText: data.product,
     quantity: String(quantity),
     lot: data.mainLot,
@@ -74,6 +75,7 @@ test("production: double-submit on receipt confirmation mutates stock once", asy
   await gotoRoute(page, "/operations");
   await createOperationDraft(page, {
     type: "InventoryReceipt",
+    destinationText: /Roxy|Main/i,
     skuText: data.product,
     quantity: "2",
     lot: data.mainLot,
@@ -136,10 +138,11 @@ test("production: payment approval race allows one terminal transition", async (
   expect(merchantId).toBeTruthy();
   expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/confirm`)).ok()).toBeTruthy();
   expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/ship`)).ok()).toBeTruthy();
+  expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/receive`)).ok()).toBeTruthy();
   expect((await apiRequest(page, "POST", `/api/v1/operations/${sale}/complete`)).ok()).toBeTruthy();
   const accounts = await apiJson(page, "GET", "/api/v1/finance/accounts");
   expect(accounts.response.ok()).toBeTruthy();
-  const financeAccountId = accounts.data?.[0]?.id;
+  const financeAccountId = accounts.data?.find((account) => account.type === "CashOnHand")?.id;
   expect(financeAccountId).toBeTruthy();
   const draft = await apiJson(page, "POST", `/api/v1/payments/merchant-accounts/${merchantId}/collections`, {
     sourceOperationId: sale,

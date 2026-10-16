@@ -76,10 +76,10 @@ jobs:
           assert required_checks.get("security_evidence") == "success"
           assert required_checks.get("semgrep_sast") == "success"
           suites = manifest.get("suites", {})
-          required = ["preflight", "same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery", "immutable_images"]
+          required = ["preflight", "same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "backup_restore_recovery", "immutable_images"]
           assert all(suites.get(name) == "success" for name in required), "a required suite or image publication did not pass"
           durations = manifest.get("durations_seconds", {})
-          duration_names = ["same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "complete_browser", "backup_restore_recovery", "immutable_images"]
+          duration_names = ["same_sha_security_gate", "candidate_image_build", "release_config", "runtime_deployment", "backup_restore_recovery", "immutable_images"]
           assert all(str(durations.get(name, "")).isdigit() for name in duration_names), "required suite duration evidence is missing"
           image_data = manifest.get("candidate_images", {})
           api = image_data.get("api", {})

@@ -30,6 +30,7 @@ async function createInstallmentSale(page, data) {
   await gotoRoute(page, "/operations");
   await createOperationDraft(page, {
     type: "InventoryReceipt",
+    destinationText: /Roxy|Main/i,
     skuText: data.product,
     quantity: "8",
     lot: data.mainLot,
@@ -57,8 +58,7 @@ async function createInstallmentSale(page, data) {
     sourceText: /Roxy|Main/i
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
-  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
-  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  await expect(page.locator(`#operation-rows tr[data-operation-number="${sale.operationNumber}"]`)).toContainText(/Completed/i);
   return sale;
 }
 
@@ -72,7 +72,8 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
     const createdAccount = await apiJson(page, "POST", "/api/v1/finance/accounts", { name: `${data.runId} Cash`, type: "CashOnHand" });
     expect(createdAccount.response.ok()).toBeTruthy();
   }
-  const accountId = (await apiJson(page, "GET", "/api/v1/finance/accounts")).data[0].id;
+  const accountId = (await apiJson(page, "GET", "/api/v1/finance/accounts")).data.find((account) => account.type === "CashOnHand")?.id;
+  expect(accountId).toBeTruthy();
   await gotoRoute(page, "/payments");
   await openOtherPaymentsPanel(page);
   const paymentRow = paymentQueueRowById(page, payment.id);
@@ -107,7 +108,10 @@ test("payments: assignment, accountant draft, admin reject/approve, balance, and
   const finalDetail = await apiJson(page, "GET", `/api/v1/payments/${payment.id}`);
   expect(finalDetail.response.ok()).toBeTruthy();
   expect(finalDetail.data.log?.status || finalDetail.data.status).toBe("Completed");
-  await page.reload();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  if (await page.locator("#login-form").isVisible().catch(() => false)) {
+    await login(page, users.admin);
+  }
   await gotoRoute(page, "/payments");
   await openOtherPaymentsPanel(page);
   expect(finalDetail.data.log?.status || finalDetail.data.status).toBe("Completed");

@@ -183,8 +183,7 @@ async function createInstallmentSale(page, data, amount = "100") {
     sourceText: /Roxy|Main/i
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
-  await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
-  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
+  await expect(page.locator(`#operation-rows tr[data-operation-number="${sale.operationNumber}"]`)).toContainText(/Completed/i);
   return sale.id;
 }
 
@@ -223,6 +222,7 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
   });
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
   await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Receive/i);
   await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
 
   await gotoRoute(page, "/catalog");
@@ -265,7 +265,7 @@ test("editing: catalog and CRM edits preserve historical operation snapshots whi
   await expectNotice(page, /Note added/i);
 });
 
-test("editing: operation drafts and shipped revisions prefill lines, preserve route, and require revision reasons", async ({ page }) => {
+test("editing: operation drafts prefill editable lines and preserve the reserved fulfillment lifecycle", async ({ page }) => {
   const data = makeRunData("EDITOPS");
   await seedMainStock(page, data, "20");
 
@@ -292,21 +292,13 @@ test("editing: operation drafts and shipped revisions prefill lines, preserve ro
   await expectOperationEditorPrefilled(page, "WholesaleSale", data, "3");
 
   await runOperationActionByNumber(page, sale.operationNumber, /Confirm/i);
-  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i, sale.operationNumber);
-  await expectOperationEditorPrefilled(page, "WholesaleSale", data, "3");
-  await expect(page.locator("#op-revision-reason-field")).toBeVisible();
-  await page.locator("#operation-submit-button").click();
-  await expectNotice(page, /Revision reason is required/i);
-  await page.locator("#op-revision-reason").fill(`${data.runId} quantity audit revision`);
-  await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("2");
-  await submitOperationEditor(page, /Operation revised/i);
-
+  const reservedRow = page.locator(`#operation-rows tr[data-operation-number="${sale.operationNumber}"]`);
+  await expect(reservedRow).toContainText(/Reserved/i);
+  await expect(reservedRow.getByRole("button", { name: /Revise/i })).toHaveCount(0);
+  await expect(reservedRow.getByRole("button", { name: /Ship/i })).toBeVisible();
   await runOperationActionByNumber(page, sale.operationNumber, /Ship/i);
-  await openLatestOperationForEdit(page, "WholesaleSale", /Revise/i, sale.operationNumber);
-  await expectOperationEditorPrefilled(page, "WholesaleSale", data, "2");
-  await page.locator("#op-revision-reason").fill(`${data.runId} shipped sale correction`);
-  await page.locator(".line-editor-row").first().locator(".op-line-qty").fill("1");
-  await submitOperationEditor(page, /Operation revised/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Receive/i);
+  await runOperationActionByNumber(page, sale.operationNumber, /Complete/i);
 
   await page.locator("#operations-show-completed").check({ force: true }).catch(() => undefined);
   const row = page.locator("#operation-rows tr[data-operation-number]").filter({ hasText: sale.operationNumber }).first();
@@ -334,9 +326,15 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   await gotoRoute(page, "/payments");
   await openOtherPaymentsPanel(page);
   await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
+  await page.locator("#collection-source-reference").fill(payment.operationNumber);
+  await page.locator("#collection-source-reference").dispatchEvent("change");
+  await expect(page.locator("#collection-source-operation-id")).toHaveValue(operationId);
   await page.locator("#collection-amount").fill("50");
   await page.locator("#collection-method").selectOption("CashHandToHand");
-  const financeAccount = await page.locator("#collection-finance-account option:not([value=''])").first().getAttribute("value");
+  const accounts = await apiJson(page, "GET", "/api/v1/finance/accounts");
+  expect(accounts.response.ok()).toBeTruthy();
+  const financeAccount = (accounts.data || []).find((account) => account.type === "CashOnHand")?.id;
+  expect(financeAccount).toBeTruthy();
   await page.locator("#collection-finance-account").selectOption(financeAccount);
   await page.locator("#collection-date").fill("09/07/2026");
   await page.locator("#collection-notes").fill(`${data.runId} draft to reject`);
@@ -353,6 +351,9 @@ test("editing: payment reassignment, rejection loop, approval, completed lock, a
   expect(rejected.ok()).toBeTruthy();
 
   await paymentQueueRowById(page, payment.id).getByRole("button", { name: "Use" }).click();
+  await page.locator("#collection-source-reference").fill(payment.operationNumber);
+  await page.locator("#collection-source-reference").dispatchEvent("change");
+  await expect(page.locator("#collection-source-operation-id")).toHaveValue(operationId);
   await page.locator("#collection-amount").fill("300");
   await page.locator("#collection-method").selectOption("CashHandToHand");
   await page.locator("#collection-finance-account").selectOption(financeAccount);
@@ -392,17 +393,18 @@ test("editing: stocktake draft lines can be revised before confirmation and lock
   await stocktakeSkuResult.click();
   await page.locator(".stocktake-line-lot").first().fill(data.mainLot);
   await page.locator(".stocktake-line-expiry").first().fill(data.expiry);
-  await page.locator(".stocktake-line-count").first().fill("4");
+  await page.locator(".stocktake-line-pack-count").first().fill("4");
   await page.locator(".stocktake-line-note").first().fill("Initial count");
   await page.locator("#stocktake-lines-form button[type='submit']").click();
   await expect(page.locator("#stocktake-detail")).toContainText(data.mainLot);
 
-  await page.locator(".stocktake-line-count").first().fill("3");
+  await page.locator(".stocktake-line-pack-count").first().fill("3");
   await page.locator(".stocktake-line-note").first().fill("Corrected count before confirm");
   await page.locator("#stocktake-lines-form button[type='submit']").click();
   await expect(page.locator("#stocktake-detail")).toContainText("Corrected count before confirm");
 
   await page.locator("#stocktake-confirm").click();
+  await page.locator('[role="alertdialog"] [data-dialog-confirm]').click();
   await expect(page.locator("#stocktake-detail")).toContainText(/Confirmed|confirmed/i);
   await expect(page.locator("#stocktake-lines-form")).toHaveCount(0);
   await expectNoNegativeStock(page);

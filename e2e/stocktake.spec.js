@@ -81,5 +81,6 @@ test("stocktake: create session, count SKU/lot/expiry, confirm, and validate dup
   await expect(page.locator("#stocktake-detail")).toContainText(data.mainLot);
 
   await page.locator("#stocktake-confirm").click();
+  await page.locator('[role="alertdialog"] [data-dialog-confirm]').click();
   await expect(page.locator("#stocktake-detail")).toContainText(/Confirmed|confirmed/i);
 });
