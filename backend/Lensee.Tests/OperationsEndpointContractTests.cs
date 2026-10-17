@@ -620,6 +620,32 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task WarehouseTransfer_CanBeReceivedIntoOnlineLocation()
+    {
+        var seed = await _factory.SeedAsync(withMainStock: true);
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+
+        var operation = await CreateOperationAsync(client, new
+        {
+            operationType = "WarehouseTransfer",
+            sourceLocationId = seed.MainLocationId,
+            destinationLocationId = seed.OnlineLocationId,
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 2, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
+        });
+
+        var confirm = await client.PostAsync($"/api/v1/operations/{operation.Id}/confirm", null);
+        var ship = await client.PostAsync($"/api/v1/operations/{operation.Id}/ship", null);
+        var receive = await client.PostAsync($"/api/v1/operations/{operation.Id}/receive", null);
+        var online = await client.GetFromJsonAsync<PagedContract<OperationStockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.OnlineLocationId}");
+
+        Assert.Equal(HttpStatusCode.NoContent, confirm.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, ship.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, receive.StatusCode);
+        Assert.Contains(online!.Items, balance => balance.SkuId == seed.SkuId && balance.AvailablePacks == 2);
+    }
+
+    [Fact]
     public async Task ScheduledReplenishment_IsIdempotentForTheSameCairoDay()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);

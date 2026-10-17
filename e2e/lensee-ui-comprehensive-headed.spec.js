@@ -306,7 +306,7 @@ test("ROLE-CLEVEL/ACCOUNTANT: oversight and accounting users execute their own r
   await logout(page);
 });
 
-test("ROLE-CLERKS: Roxy, Retail, and Online clerks create UI drafts within their assigned location", async ({ page }) => {
+test("ROLE-CLERKS: Roxy and Retail clerks create supported UI drafts; Online clerk remains location-scoped", async ({ page }) => {
   test.setTimeout(180_000);
   const data = makeRunData("UI-ROLES");
 
@@ -356,28 +356,13 @@ test("ROLE-CLERKS: Roxy, Retail, and Online clerks create UI drafts within their
       user: users.retailClerk,
       locationText: /Retail|Mohamed/i,
       draft: {
-        type: "RetailSale",
+        type: "InventoryReceipt",
         skuText: data.product,
         quantity: "1",
-        price: "10",
-        stockText: data.mainLot,
-        sourceText: /Retail|Mohamed/i,
-        paymentMethod: "CashHandToHand",
-        buyerName: `${data.runId} retail buyer`
-      }
-    },
-    {
-      user: users.onlineClerk,
-      locationText: /Online/i,
-      draft: {
-        type: "RetailSale",
-        skuText: data.product,
-        quantity: "1",
-        price: "10",
-        stockText: data.mainLot,
-        sourceText: /Online/i,
-        paymentMethod: "CashHandToHand",
-        buyerName: `${data.runId} online buyer`
+        lot: `${data.mainLot}-RETAIL`,
+        expiry: data.expiry,
+        supplier: `${data.runId} Retail supplier`,
+        invoice: `${data.runId}-RETAIL-INV`
       }
     }
   ];
@@ -389,11 +374,26 @@ test("ROLE-CLERKS: Roxy, Retail, and Online clerks create UI drafts within their
     await gotoRoute(page, "/operations");
     await expect(page.locator("#operation-form")).toBeVisible();
     await createOperationDraft(page, draft);
-    await expect(page.locator("#operation-rows")).toContainText(draft.type);
+    await expect(page.locator("#operation-rows")).toContainText(draft.type === "InventoryReceipt" ? /Inventory receipt/i : draft.type);
     await page.goto("/#/payments");
     await expect(page.locator("#view")).toContainText(/Access denied/i);
     await page.goto("/#/reports");
-    await expect(page.locator("#view")).toContainText(/Access denied/i);
+    await expect(page.locator("#view")).toContainText(/Reports and exports/i);
+    await expect(page.locator("#report-stock")).toBeVisible();
+    await expect(page.locator("#report-operations")).toHaveCount(0);
+    await expect(page.locator("#report-payments")).toHaveCount(0);
     await logout(page);
   }
+
+  await login(page, users.onlineClerk);
+  await gotoRoute(page, "/inventory");
+  await expect(page.locator("#inventory-locations")).toContainText(/Online/i);
+  await page.goto("/#/payments");
+  await expect(page.locator("#view")).toContainText(/Access denied/i);
+  await page.goto("/#/reports");
+  await expect(page.locator("#view")).toContainText(/Reports and exports/i);
+  await expect(page.locator("#report-stock")).toBeVisible();
+  await expect(page.locator("#report-operations")).toHaveCount(0);
+  await expect(page.locator("#report-payments")).toHaveCount(0);
+  await logout(page);
 });

@@ -5119,7 +5119,7 @@ async function renderOperations() {
     document.getElementById("op-online-payment")?.addEventListener("change", () => syncOnlineSalesControls());
     document.getElementById("op-source").addEventListener("change", () => {
       if (document.getElementById("op-type")?.value === "WarehouseTransfer") {
-        const warehouses = operationLocations.filter((location) => ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
+        const warehouses = operationLocations.filter((location) => ["MainWarehouse", "SubWarehouse", "Online"].includes(location.locationType));
         const destination = document.getElementById("op-destination");
         const selectedDestination = destination.value;
         setSelectOptionsPreservingValue(destination, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...warehouses.filter((location) => location.id !== document.getElementById("op-source").value).map((location) => ({ value: location.id, label: location.name }))], selectedDestination);
@@ -5879,6 +5879,7 @@ function syncOperationTypeControls() {
   const previousSource = source.value;
   const previousDestination = destination.value;
   const warehouses = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
+  const transferDestinations = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse", "Online"].includes(location.locationType));
   const salesChannelField = document.querySelector(".op-sales-channel-field");
   if (salesChannelField) salesChannelField.hidden = type !== "RetailSale";
   const warehouseOptions = warehouses.map((location) => ({ value: location.id, label: location.name }));
@@ -5905,6 +5906,7 @@ function syncOperationTypeControls() {
   syncOperationLineControls(type);
 
   if (type === "WarehouseTransfer") {
+    setSelectOptionsPreservingValue(destination, [{ value: "", label: foundationT("app.inline.selectWarehouse") }, ...transferDestinations.filter((location) => location.id !== source.value).map((location) => ({ value: location.id, label: location.name }))], previousDestination);
     setOperationFieldGroupVisibility({ merchant: false, rep: false, buyer: false, payment: false, receipt: false });
     setSingleFieldState(document.getElementById("op-return-source"), false);
     applyOperationEditorMode();
@@ -6977,6 +6979,7 @@ function validateOperationForm(type, lines) {
   const source = document.getElementById("op-source").value;
   const destination = document.getElementById("op-destination").value;
   const warehouses = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse"].includes(location.locationType));
+  const transferDestinations = operationLocations.filter((location) => location.isActive !== false && ["MainWarehouse", "SubWarehouse", "Online"].includes(location.locationType));
 
   if (lines.length === 0) {
     return "Add at least one operation line.";
@@ -7017,7 +7020,7 @@ function validateOperationForm(type, lines) {
   if (type === "InventoryReceipt" && !warehouses.some((location) => location.id === destination)) {
     return foundationT("app.inline.selectValidWarehouse");
   }
-  if (type === "WarehouseTransfer" && (!warehouses.some((location) => location.id === source) || !warehouses.some((location) => location.id === destination) || source === destination)) {
+  if (type === "WarehouseTransfer" && (!warehouses.some((location) => location.id === source) || !transferDestinations.some((location) => location.id === destination) || source === destination)) {
     return foundationT("app.inline.chooseDifferentWarehouses");
   }
   if (isOperationStockConsumingType(type) && !source) {
@@ -10686,6 +10689,7 @@ async function loadStockReport() {
 
 async function loadOperationsReport() {
   const target = document.getElementById("report-operations");
+  if (!target) return;
   try {
     const result = await request(`/api/v1/reports/operations?${reportListParams("operations", reportPageState.operations)}`);
     const rows = result.items || [];
@@ -10700,6 +10704,7 @@ async function loadOperationsReport() {
 
 async function loadPaymentsReport() {
   const target = document.getElementById("report-payments");
+  if (!target) return;
   try {
     const result = await request(`/api/v1/reports/payments?page=${reportPageState.payments}&pageSize=50`);
     const rows = result.items || [];
@@ -10744,6 +10749,7 @@ async function loadSupplyReport() {
 
 async function loadMerchantBalancesReport() {
   const target = document.getElementById("report-balances");
+  if (!target) return;
   try {
     const result = await request(`/api/v1/reports/merchant-balances?page=${reportPageState.merchantBalances}&pageSize=50`);
     const rows = result.items || [];
