@@ -534,10 +534,17 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var operations = await client.GetFromJsonAsync<PagedContract<OperationListContract>>("/api/v1/operations?pageSize=10");
         var main = await client.GetFromJsonAsync<PagedContract<OperationStockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.MainLocationId}");
         var online = await client.GetFromJsonAsync<PagedContract<OperationStockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.OnlineLocationId}");
+        using var scope = _factory.Services.CreateScope();
+        var operationsDb = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var replenishmentLine = await operationsDb.OperationLines.SingleAsync(line => line.Operation.AutomationType == "TargetReplenishment" && line.SkuId == seed.SkuId);
 
         Assert.Equal(HttpStatusCode.OK, reserve.StatusCode);
         Assert.Equal(1, response!.CreatedOperations);
         Assert.Equal(0, response.UnfilledPacks);
+        Assert.Equal(replenishmentLine.Quantity, replenishmentLine.NormalQuantity);
+        Assert.Equal(0, replenishmentLine.ExceptionQuantity);
+        Assert.Equal(0m, replenishmentLine.NormalValue);
+        Assert.Equal(0m, replenishmentLine.ExceptionValue);
         Assert.Contains(operations!.Items, operation => operation.OperationType == "WarehouseTransfer" && operation.Status == "Draft");
         Assert.Contains(main!.Items, balance => balance.SkuId == seed.SkuId && balance.AvailablePacks == 10 && balance.ReservedInWarehousePacks == 0);
         Assert.Contains(online!.Items, balance => balance.SkuId == seed.SkuId && balance.AvailablePacks == 2);
@@ -580,24 +587,36 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
-    public async Task DailyReplenishment_DoesNotDropMainBelowTarget_AndCreatesLowMainStockAlert()
+    public async Task DailyReplenishment_CreatesDraftsForEveryShortDestinationWhenMainIsAtTarget()
     {
         var seed = await _factory.SeedAsync(withMainStock: true);
-        await _factory.SetTargetBalanceAsync(seed.MainLocationId, seed.SkuId, available: 10, target: 8);
+        await _factory.SetTargetBalanceAsync(seed.MainLocationId, seed.SkuId, available: 10, target: 10);
         await _factory.SetTargetBalanceAsync(seed.OnlineLocationId, seed.SkuId, available: 0, target: 5);
+        await _factory.SetTargetBalanceAsync(seed.SubLocationId, seed.SkuId, available: 0, target: 4);
         using var client = _factory.CreateClient();
         client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
 
         var reserve = await client.PostAsJsonAsync("/api/v1/operations/replenishment/daily-reset", new { });
         var response = await reserve.Content.ReadFromJsonAsync<ReplenishmentReserveContract>();
         var main = await client.GetFromJsonAsync<PagedContract<OperationStockBalanceContract>>($"/api/v1/inventory/stock-balances?locationId={seed.MainLocationId}");
-        var alerts = await _factory.GetNotificationCountAsync("TargetReplenishmentLowMainStock");
+        using var scope = _factory.Services.CreateScope();
+        var operationsDb = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var transfers = await operationsDb.OperationLogs
+            .Where(operation => operation.AutomationType == "TargetReplenishment")
+            .ToListAsync();
+        var transferLines = await operationsDb.OperationLines
+            .Where(line => line.Operation.AutomationType == "TargetReplenishment")
+            .ToListAsync();
 
         Assert.Equal(HttpStatusCode.OK, reserve.StatusCode);
-        Assert.Equal(1, response!.CreatedOperations);
-        Assert.Equal(3, response.UnfilledPacks);
+        Assert.Equal(2, response!.CreatedOperations);
+        Assert.Equal(0, response.UnfilledPacks);
         Assert.Contains(main!.Items, balance => balance.SkuId == seed.SkuId && balance.AvailablePacks == 10 && balance.ReservedInWarehousePacks == 0);
-        Assert.Equal(0, alerts);
+        Assert.Contains(transfers, operation => operation.DestinationLocationId == seed.OnlineLocationId && operation.Status == "Draft");
+        Assert.Contains(transfers, operation => operation.DestinationLocationId == seed.SubLocationId && operation.Status == "Draft");
+        Assert.Equal(9, transferLines.Sum(line => line.Quantity));
+        Assert.All(transferLines, line => Assert.Equal(line.Quantity, line.NormalQuantity));
+        Assert.All(transferLines, line => Assert.Equal(0, line.ExceptionQuantity));
     }
 
     [Fact]

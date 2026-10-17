@@ -20,33 +20,47 @@ public sealed class OperationalScheduleWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Catch up once when the host starts. The worker may have been offline
+        // across Cairo midnight (for example, while its Docker container was
+        // stopped); the persisted Scheduled run key makes this safe if the
+        // same Cairo day's run already completed before a restart.
         while (!stoppingToken.IsCancellationRequested)
         {
+            while (!stoppingToken.IsCancellationRequested && !await RunScheduledJobsSafelyAsync(stoppingToken))
+            {
+                // Keep retrying after a transient database or dependency failure
+                // instead of postponing the missed daily run until tomorrow.
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+            }
+            if (stoppingToken.IsCancellationRequested) break;
+
             using var clockScope = _scopeFactory.CreateScope();
             var now = clockScope.ServiceProvider.GetRequiredService<IClock>().EgyptNow;
             var next = now.Date.AddDays(1);
             var delay = next - now;
             if (delay > TimeSpan.Zero) await Task.Delay(delay, stoppingToken);
             if (stoppingToken.IsCancellationRequested) break;
-            await RunScheduledJobsSafelyAsync(stoppingToken);
         }
     }
 
-    private async Task RunScheduledJobsSafelyAsync(CancellationToken cancellationToken)
+    private async Task<bool> RunScheduledJobsSafelyAsync(CancellationToken cancellationToken)
     {
         try
         {
             await RunScheduledJobsAsync(cancellationToken);
+            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Host shutdown is expected and must not be reported as a failed job.
+            return false;
         }
         catch (Exception exception)
         {
             // A scheduled maintenance failure must never terminate the API host.
-            // The next scheduled pass retries after the underlying dependency recovers.
+            // ExecuteAsync retries after a short delay when dependencies recover.
             _logger.LogError(exception, "Operational scheduled jobs failed; the next scheduled run will retry.");
+            return false;
         }
     }
 

@@ -81,7 +81,7 @@ public sealed class TargetReplenishmentService
                 .Where(value => value.LocationId == main.Id)
                 .ToDictionaryAsync(
                     value => value.SkuId,
-                    value => Math.Max(value.AvailableQty - (value.TargetQty ?? 0), 0),
+                    value => Math.Max(value.AvailableQty, 0),
                     cancellationToken);
             foreach (var skuIdWithBalance in mainBalances.Keys.ToArray())
             {
@@ -127,6 +127,10 @@ public sealed class TargetReplenishmentService
                         Section = "Standard",
                         Quantity = line.Quantity,
                         EntryMode = "Packs",
+                        NormalQuantity = line.Quantity,
+                        ExceptionQuantity = 0,
+                        NormalValue = 0m,
+                        ExceptionValue = 0m,
                         LotNumber = line.LotNumber,
                         ExpiryDate = line.ExpiryDate,
                         LineNotes = "Target-stock replenishment"
