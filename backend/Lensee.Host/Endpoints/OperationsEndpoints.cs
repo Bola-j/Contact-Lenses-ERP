@@ -3039,9 +3039,9 @@ public static class OperationsEndpoints
             {
                 errors[nameof(request.SourceLocationId)] = ["Warehouse transfer source must be an active physical warehouse."];
             }
-            if (destination is null || !IsPhysicalWarehouse(destination) || destination.Id == source?.Id)
+            if (destination is null || !IsTransferDestination(destination) || destination.Id == source?.Id)
             {
-                errors[nameof(request.DestinationLocationId)] = ["Warehouse transfer destination must be a different active physical warehouse."];
+                errors[nameof(request.DestinationLocationId)] = ["Warehouse transfer destination must be a different active physical warehouse or Online location."];
             }
         }
         if (operationType == WholesaleSale)
@@ -4751,6 +4751,9 @@ public static class OperationsEndpoints
 
     private static bool IsPhysicalWarehouse(Location location) =>
         IsMainWarehouse(location) || string.Equals(location.LocationType, "SubWarehouse", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTransferDestination(Location location) =>
+        IsPhysicalWarehouse(location) || string.Equals(location.LocationType, Online, StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeReturnDisposition(string? value) => value?.Trim() switch
     {
