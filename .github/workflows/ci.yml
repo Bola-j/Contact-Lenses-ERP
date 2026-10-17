@@ -22,7 +22,7 @@ env:
 jobs:
   backend:
     name: Backend build, tests, and format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -54,7 +54,7 @@ jobs:
 
   frontend:
     name: Frontend checks and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - name: Check out repository
@@ -76,7 +76,7 @@ jobs:
 
   postgres-integration:
     name: PostgreSQL integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -101,7 +101,7 @@ jobs:
 
   ui-smoke:
     name: Critical UI smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -148,7 +148,7 @@ jobs:
 
   secret-scan:
     name: Secret scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository history
@@ -165,7 +165,7 @@ jobs:
     name: Required checks
     if: always()
     needs: [backend, frontend, postgres-integration, ui-smoke, secret-scan]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Fail unless every required job succeeded
         env:

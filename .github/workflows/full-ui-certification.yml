@@ -18,7 +18,7 @@ concurrency:
 jobs:
   candidate:
     name: Full UI / Candidate verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.verify.outputs.sha }}
@@ -44,7 +44,7 @@ jobs:
   browser:
     name: Full UI / All Playwright scenarios
     needs: candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 80
     steps:
       - name: Check out exact candidate
