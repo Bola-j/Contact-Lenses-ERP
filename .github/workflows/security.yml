@@ -19,7 +19,7 @@ concurrency:
 jobs:
   sbom-and-image-scan:
     name: Security / SBOM and image scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
       contents: read

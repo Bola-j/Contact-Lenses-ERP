@@ -41,7 +41,7 @@ concurrency:
 jobs:
   preflight:
     name: Certification / Candidate preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
@@ -82,7 +82,7 @@ jobs:
   same-sha-security-gate:
     name: Certification / Same-SHA security evidence
     needs: [preflight, build-candidate-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
       actions: read
@@ -197,7 +197,7 @@ jobs:
   build-candidate-images:
     name: Certification / Build candidate image bundle
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     outputs:
       api_image: ${{ steps.build.outputs.api_image }}
@@ -271,7 +271,7 @@ jobs:
   release-config:
     name: Certification / Release configuration
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
@@ -313,7 +313,7 @@ jobs:
   runtime:
     name: Certification / Runtime and deployment
     needs: [preflight, build-candidate-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 65
     outputs:
       duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
@@ -377,7 +377,7 @@ jobs:
   recovery:
     name: Certification / Backup and restore recovery
     needs: [preflight, build-candidate-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 70
     outputs:
       duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
@@ -445,7 +445,7 @@ jobs:
       needs.release-config.result == 'success' &&
       needs.runtime.result == 'success' &&
       needs.recovery.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       duration_seconds: ${{ steps.evidence.outputs.duration_seconds }}
@@ -512,7 +512,7 @@ jobs:
     name: Certification / Result manifest
     if: always()
     needs: [preflight, same-sha-security-gate, build-candidate-images, release-config, runtime, recovery, publish-images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Check out exact candidate for certification evidence
