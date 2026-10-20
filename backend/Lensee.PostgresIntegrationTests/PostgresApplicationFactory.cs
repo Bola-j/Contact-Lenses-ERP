@@ -205,6 +205,10 @@ internal sealed class PostgresTestAuthHandler : AuthenticationHandler<Authentica
             claims.AddRange(permissions.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(permission => new Claim("permission", permission)));
         }
+        if (Request.Headers.TryGetValue("X-Test-LocationId", out var locationId))
+        {
+            claims.Add(new Claim(LenseeClaims.LocationId, locationId.ToString()));
+        }
         var identity = new ClaimsIdentity(claims, TestScheme);
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), TestScheme)));
     }

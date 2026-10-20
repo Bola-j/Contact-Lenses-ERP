@@ -870,10 +870,11 @@ static async Task ValidateShopifyStartupConfigurationAsync(IServiceProvider serv
     }
 
     var locationIsReady = await services.GetRequiredService<InventoryDbContext>().Locations
-        .AnyAsync(location => location.Id == options.OnlineLocationId && location.IsActive && location.LocationType == "Online");
+        .AnyAsync(location => location.Id == options.OnlineLocationId && location.IsActive &&
+            (location.LocationType == "Online" || location.LocationType == "SubWarehouse"));
     if (!locationIsReady)
     {
-        throw new InvalidOperationException("Shopify:OnlineLocationId must identify an active Online inventory location before the enabled integration can start.");
+        throw new InvalidOperationException("Shopify:OnlineLocationId must identify an active Online location or designated SubWarehouse before the enabled integration can start.");
     }
     await ShopifyActivation.EnsureAsync(services.GetRequiredService<OperationsDbContext>(),
         services.GetRequiredService<IClock>(), options, CancellationToken.None);
