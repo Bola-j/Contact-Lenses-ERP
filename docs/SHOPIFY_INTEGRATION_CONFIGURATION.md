@@ -12,7 +12,7 @@ The webhook URL is:
 https://<ERP_PUBLIC_DOMAIN>/api/v1/integrations/shopify/webhooks
 ```
 
-Use the permanent `*.myshopify.com` domain of the real store, not its branded storefront URL. Use the GUID of the active ERP `Online` inventory location. Leave COD configuration blank.
+Use the permanent `*.myshopify.com` domain of the real store, not its branded storefront URL. Set `SHOPIFY_ONLINE_LOCATION_ID` to the GUID of the active ERP location used for Shopify fulfillment. The location may be an `Online` location for the legacy split workflow, or the dedicated physical `SubWarehouse` named Online. When a `SubWarehouse` is configured, Shopify orders must be allocated from that exact location and its warehouse clerks own the Shopify order queue. Leave COD configuration blank.
 
 ## ERP values to enter
 
@@ -21,7 +21,7 @@ Start from `.env.production.example`. Add these non-secret values to the product
 | Variable | Value |
 |---|---|
 | `SHOPIFY_STORE_DOMAIN` | The store's permanent `name.myshopify.com` domain. |
-| `SHOPIFY_ONLINE_LOCATION_ID` | GUID of the ERP's active Online inventory location. |
+| `SHOPIFY_ONLINE_LOCATION_ID` | GUID of the active ERP Online location, or the designated physical Online `SubWarehouse`. |
 | `SHOPIFY_ACTIVATION_AT_UTC` | Optional ISO-8601 UTC cutover. Leave blank to record the first enabled startup once. Orders before the saved cutoff are not imported automatically. |
 | `SHOPIFY_ENABLED` | Keep `false` until Shopify subscriptions and secrets are in place; then set `true`. |
 | `SHOPIFY_COD_GATEWAY_NAME_1` | Keep blank unless COD is deliberately enabled and its exact Shopify gateway label is approved. |
@@ -35,7 +35,7 @@ Add secrets directly to the production secret facility; do not put values in Git
 
 For automatic recovery of missed deliveries, set `SHOPIFY_RECONCILIATION_ENABLED=true` and `SHOPIFY_RECONCILIATION_INTERVAL_MINUTES=15`, and provide the Admin API token with `read_orders`. Shopify limits normal order access to the last 60 days; recovering older orders also requires Shopify approval for `read_all_orders`. If you do not set up this optional token, signed webhook intake still works, but periodic API reconciliation is disabled.
 
-The production app refuses to start with Shopify enabled unless signed webhooks, a store domain and an Online location are configured. Production does not accept the legacy path-secret bridge. Enabling reconciliation without its Admin API token also fails fast.
+The production app refuses to start with Shopify enabled unless signed webhooks, a store domain and an active Online location or designated Online `SubWarehouse` are configured. Production does not accept the legacy path-secret bridge. Enabling reconciliation without its Admin API token also fails fast.
 
 ## Shopify app setup (one time)
 
@@ -60,7 +60,7 @@ Shopify recommends app-specific subscriptions in `shopify.app.toml`; app-specifi
 ## Turn intake on
 
 1. Deploy the ERP revision normally with `SHOPIFY_ENABLED=false`; the deployment migrator applies additive migrations before the application starts.
-2. Set the production store domain and active Online location ID. Add the webhook signing secret to production secret storage. Choose a UTC cutoff or leave it blank for first-start activation.
+2. Set the production store domain and active Online location ID (use the physical Online `SubWarehouse` when that is where online orders are fulfilled). Add the webhook signing secret to production secret storage. Choose a UTC cutoff or leave it blank for first-start activation.
 3. Add and release the webhook configuration in the existing ERP-owned Shopify app. Confirm the five production subscriptions use the HTTPS receiver URL.
 4. Set `SHOPIFY_ENABLED=true` and redeploy/restart the ERP application. If using recovery, also set its flag and secret before restart.
 5. In the ERP, open Online intake and confirm it reports configured. Monitor Shopify events/queue for durable receipt and then the imported draft. A webhook 2xx means the event was saved; it does not mean import, payment verification or Finance reconciliation has finished.
@@ -70,7 +70,7 @@ No production order, checkout, payment method or COD setting is changed by these
 ## Routine operation
 
 - ERP SKUs must already be copied into Shopify variants. The integration matches unique active SKU codes, remembers store/variant links, and queues ambiguous or incompatible matches for review.
-- Orders import as unallocated drafts. ERP staff choose the warehouse batch and expiry and allocate stock. Shopify line quantities mean pieces for `SinglePiece`/`Both` and sealed packs for `SealedPackOnly`.
+- Orders import as unallocated drafts. With the physical Online `SubWarehouse` configured, ERP staff allocate each order from that warehouse and choose its batch and expiry; the API enforces the designated source. A legacy logical `Online` location continues to allow active SubWarehouse selection. Shopify line quantities mean pieces for `SinglePiece`/`Both` and sealed packs for `SealedPackOnly`.
 - Watch the ERP Shopify queue for waiting, retrying and requires-attention events. Fix the cause and use Retry; do not recreate a delayed order.
 - Keep unpaid orders blocked from dispatch. Shopify cancellation before dispatch releases reservations once; later cancellation and all refund notices require the existing governed review workflows.
 - Do not place fake paid/refund events or change webhook secrets to test production. Use the ERP queue/readiness screens and actual operational records.

@@ -1119,6 +1119,15 @@ public static class OperationsEndpoints
             .FirstOrDefaultAsync(value => value.Id == sourceLocationId && value.IsActive && value.LocationType == "SubWarehouse", cancellationToken);
         if (sourceLocation is null)
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SourceLocationId)] = ["The selected source must be an active SubWarehouse."] });
+        var configuredOnlineLocationIsSubWarehouse = await inventoryDbContext.Locations.AsNoTracking()
+            .AnyAsync(value => value.Id == shopifyOptions.Value.OnlineLocationId && value.IsActive && value.LocationType == "SubWarehouse", cancellationToken);
+        if (configuredOnlineLocationIsSubWarehouse && sourceLocationId != shopifyOptions.Value.OnlineLocationId)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.SourceLocationId)] = ["Shopify orders must be allocated from the configured Online SubWarehouse."]
+            });
+        }
         var onlineShopifyClerk = IsWarehouseClerk(currentUser) && currentUser.LocationId == shopifyOptions.Value.OnlineLocationId && operation.ShopifyOrderLink is not null;
         if (!IsOperationsAdministrator(currentUser) && (!IsWarehouseClerk(currentUser) || (!onlineShopifyClerk && currentUser.LocationId != sourceLocationId)))
             return Results.Forbid();

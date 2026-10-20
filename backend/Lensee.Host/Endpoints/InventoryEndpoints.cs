@@ -63,10 +63,22 @@ public static class InventoryEndpoints
 
             if (shopifyOptions.Value.Enabled && shopifyOptions.Value.OnlineLocationId == clerkLocationId)
             {
-                // Online clerks need to choose an active SubWarehouse when
-                // allocating a Shopify draft; all other location-scoped clerks
-                // continue to see only their assigned location.
-                query = query.Where(location => location.IsActive && location.LocationType == "SubWarehouse");
+                var configuredLocationType = await dbContext.Locations.AsNoTracking()
+                    .Where(location => location.Id == clerkLocationId)
+                    .Select(location => location.LocationType)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (configuredLocationType == "SubWarehouse")
+                {
+                    // A designated physical Online subwarehouse is both the
+                    // Shopify intake work queue and the only Shopify stock source.
+                    query = query.Where(location => location.Id == clerkLocationId && location.IsActive);
+                }
+                else
+                {
+                    // Legacy logical Online locations choose an active physical
+                    // SubWarehouse when allocating a Shopify draft.
+                    query = query.Where(location => location.IsActive && location.LocationType == "SubWarehouse");
+                }
             }
             else
             {
@@ -614,8 +626,12 @@ public static class InventoryEndpoints
             return false;
         }
 
+        var configuredLocationIsSubWarehouse = await inventoryDbContext.Locations.AsNoTracking().AnyAsync(
+            location => location.Id == shopifyOptions.OnlineLocationId && location.IsActive && location.LocationType == "SubWarehouse",
+            cancellationToken);
         return await inventoryDbContext.Locations.AsNoTracking().AnyAsync(
-            location => location.Id == locationId && location.IsActive && location.LocationType == "SubWarehouse",
+            location => location.Id == locationId && location.IsActive && location.LocationType == "SubWarehouse" &&
+                (!configuredLocationIsSubWarehouse || location.Id == shopifyOptions.OnlineLocationId),
             cancellationToken);
     }
 

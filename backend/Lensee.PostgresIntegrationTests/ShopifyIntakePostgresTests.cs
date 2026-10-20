@@ -31,6 +31,7 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
 
     private readonly DateTime _activationAtUtc = DateTime.UtcNow.AddMinutes(-10);
     private readonly Guid _onlineLocationId = Guid.NewGuid();
+    private readonly Guid _otherSubwarehouseId = Guid.NewGuid();
     private readonly Guid _testActorId = Guid.NewGuid();
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17-alpine")
         .WithDatabase("lensee_shopify")
@@ -130,6 +131,65 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         var payments = await QueryServiceAsync<PaymentsDbContext, int>(db => db.MainPaymentLogs
             .CountAsync(value => value.OperationId == imported.Operation.Id));
         Assert.Equal(0, payments);
+    }
+
+    [PostgreSqlIntegrationFact]
+    public async Task DesignatedOnlineSubwarehouse_IsAcceptedAndIsTheOnlyShopifyAllocationSource()
+    {
+        await SeedPackStockAsync();
+        await SeedPackStockAsync(quantity: 5, lotNumber: OtherLotNumber);
+        await ReceiveStockAsync(_otherSubwarehouseId, quantity: 5, lotNumber: LotNumber);
+
+        var imported = await ImportDraftAsync("pending", "designated-online-subwarehouse");
+        using (var wrongLocationStockRequest = CreateOnlineClerkRequest(
+                   $"/api/v1/inventory/stock-options?locationId={_otherSubwarehouseId}&skuId={_seed.SkuId}&entryMode=Packs&shopifyOperationId={imported.OperationId}"))
+        using (var wrongLocationStockResponse = await _client.SendAsync(wrongLocationStockRequest))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, wrongLocationStockResponse.StatusCode);
+        }
+        using (var designatedStockRequest = CreateOnlineClerkRequest(
+                   $"/api/v1/inventory/stock-options?locationId={_onlineLocationId}&skuId={_seed.SkuId}&entryMode=Packs&shopifyOperationId={imported.OperationId}"))
+        using (var designatedStockResponse = await _client.SendAsync(designatedStockRequest))
+        {
+            Assert.Equal(HttpStatusCode.OK, designatedStockResponse.StatusCode);
+        }
+
+        using var wrongLocationAllocation = await PutAuthorizedAsync($"/api/v1/operations/{imported.OperationId}/shopify-allocation", new
+        {
+            lines = new[] { new { operationLineId = imported.LineId, lotNumber = LotNumber, expiryDate = BatchExpiry } },
+            expectedVersion = imported.Version,
+            sourceLocationId = _otherSubwarehouseId
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, wrongLocationAllocation.StatusCode);
+        Assert.Contains("configured Online SubWarehouse", await wrongLocationAllocation.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        using var validAllocation = await PutAuthorizedAsync($"/api/v1/operations/{imported.OperationId}/shopify-allocation", new
+        {
+            lines = new[] { new { operationLineId = imported.LineId, lotNumber = LotNumber, expiryDate = BatchExpiry } },
+            expectedVersion = imported.Version,
+            sourceLocationId = _onlineLocationId
+        });
+        Assert.True(validAllocation.IsSuccessStatusCode, await validAllocation.Content.ReadAsStringAsync());
+        var savedSource = await QueryOperationsAsync(db => db.OperationLogs.Where(value => value.Id == imported.OperationId)
+            .Select(value => value.SourceLocationId).SingleAsync());
+        Assert.Equal(_onlineLocationId, savedSource);
+    }
+
+    [PostgreSqlIntegrationFact]
+    public async Task ShopifyClerkAtDesignatedOnlineSubwarehouse_SeesOnlyThatSubwarehouseForAllocation()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/inventory/locations");
+        request.Headers.Add("X-Test-Role", LenseeRoles.WarehouseClerk);
+        request.Headers.Add("X-Test-UserId", _testActorId.ToString());
+        request.Headers.Add("X-Test-LocationId", _onlineLocationId.ToString());
+        request.Headers.Add("X-Test-Permissions", LenseePermissions.InventoryRead);
+        using var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var locations = await response.Content.ReadFromJsonAsync<LocationContract[]>();
+        Assert.NotNull(locations);
+        var location = Assert.Single(locations!);
+        Assert.Equal(_onlineLocationId, location.Id);
+        Assert.Equal("SubWarehouse", location.LocationType);
     }
 
     [PostgreSqlIntegrationFact]
@@ -626,7 +686,7 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         var brandId = Guid.NewGuid();
         var productId = Guid.NewGuid();
         var skuId = Guid.NewGuid();
-        var locationId = Guid.NewGuid();
+        var locationId = _onlineLocationId;
         var skuCode = $"QA-SHOPIFY-{skuId:N}";
 
         catalog.Categories.Add(new Category { Id = categoryId, Name = $"Shopify QA {categoryId:N}" });
@@ -652,8 +712,8 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         catalog.Skus.Add(new Sku { Id = skuId, ProductId = productId, SkuCode = skuCode, ColorName = "Clear", IsActive = true, IsSellable = true });
         inventory.Locations.Add(new Location
         {
-            Id = locationId,
-            Name = $"Shopify QA Subwarehouse {locationId:N}",
+            Id = _otherSubwarehouseId,
+            Name = $"Shopify QA Other Subwarehouse {_otherSubwarehouseId:N}",
             LocationType = "SubWarehouse",
             IsActive = true
         });
@@ -669,8 +729,8 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         inventory.Locations.Add(new Location
         {
             Id = _onlineLocationId,
-            Name = $"Shopify QA Online {_onlineLocationId:N}",
-            LocationType = "Online",
+            Name = $"Online {_onlineLocationId:N}",
+            LocationType = "SubWarehouse",
             IsActive = true
         });
         await inventory.SaveChangesAsync();
@@ -682,6 +742,14 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         var ledger = scope.ServiceProvider.GetRequiredService<Lensee.Modules.Inventory.Services.StockLedgerService>();
         await ledger.ReceiveAsync(_seed.LocationId, _seed.SkuId, quantity, Guid.NewGuid(), lotNumber, BatchExpiry,
             "Isolated Shopify PostgreSQL dispatch fixture", cancellationToken: CancellationToken.None);
+    }
+
+    private async Task ReceiveStockAsync(Guid locationId, int quantity, string lotNumber)
+    {
+        await using var scope = _shopifyFactory.Services.CreateAsyncScope();
+        var ledger = scope.ServiceProvider.GetRequiredService<Lensee.Modules.Inventory.Services.StockLedgerService>();
+        await ledger.ReceiveAsync(locationId, _seed.SkuId, quantity, Guid.NewGuid(), lotNumber, BatchExpiry,
+            "Isolated Shopify PostgreSQL wrong-source allocation fixture", cancellationToken: CancellationToken.None);
     }
 
     private async Task SeedLoosePiecesAsync(int quantity)
@@ -714,6 +782,24 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         var product = await catalog.Products.SingleAsync(value => value.Id == _seed.ProductId);
         product.SellMode = sellMode;
         await catalog.SaveChangesAsync();
+    }
+
+    private async Task<(Guid OperationId, Guid LineId, uint Version)> ImportDraftAsync(string financialStatus, string suffix)
+    {
+        var orderId = NewProviderId();
+        using var receipt = await SendSignedWebhookAsync("orders/create", $"delivery-{suffix}",
+            CreateOrderPayload(orderId, financialStatus, DateTime.UtcNow, quantity: 1));
+        Assert.Equal(HttpStatusCode.Accepted, receipt.StatusCode);
+        await ProcessDueEventsAsync();
+
+        return await QueryOperationsAsync(async db =>
+        {
+            var link = await db.ShopifyOrderLinks.SingleAsync(value => value.ShopifyOrderId == orderId);
+            var operation = await db.OperationLogs.Include(value => value.OperationLines)
+                .SingleAsync(value => value.Id == link.OperationId);
+            var line = Assert.Single(operation.OperationLines);
+            return (operation.Id, line.Id, operation.ConcurrencyVersion);
+        });
     }
 
     private async Task<Guid> ImportAndReserveAsync(string financialStatus, string suffix)
@@ -939,6 +1025,16 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
         request.Headers.Add("X-Test-Permissions", LenseePermissions.OperationsWrite);
     }
 
+    private HttpRequestMessage CreateOnlineClerkRequest(string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("X-Test-Role", LenseeRoles.WarehouseClerk);
+        request.Headers.Add("X-Test-UserId", _testActorId.ToString());
+        request.Headers.Add("X-Test-LocationId", _onlineLocationId.ToString());
+        request.Headers.Add("X-Test-Permissions", LenseePermissions.InventoryRead);
+        return request;
+    }
+
     private async Task<T> QueryOperationsAsync<T>(Func<OperationsDbContext, Task<T>> query)
     {
         await using var scope = _shopifyFactory.Services.CreateAsyncScope();
@@ -960,6 +1056,7 @@ public sealed class ShopifyIntakePostgresTests : IAsyncLifetime
     private static string NewProviderId() => $"qa-{Guid.NewGuid():N}";
 
     private sealed record ShopifyFixtureSeed(Guid ProductId, Guid SkuId, string SkuCode, Guid LocationId);
+    private sealed record LocationContract(Guid Id, string Name, string LocationType, bool IsActive);
     private sealed record PieceReservationSnapshot(string OperationStatus, string LineMode, int LineQuantity,
         int BalanceAvailable, int BalanceReserved, int BatchQuantity, int LooseQuantity, string ReservationStatus,
         int RequestedPieceQuantity, IReadOnlyList<StockPieceReservationAllocation> Allocations, int SaleAndOpenCount);
