@@ -3,7 +3,6 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 const defaultBaseUrl = "http://127.0.0.1:55000";
-const defaultPassword = "E2E-only-not-production-2026!";
 const liveTargetConfirmation = "I_UNDERSTAND_THIS_HITS_A_LIVE_SYSTEM";
 const workloadRoutes = [
   "/api/v1/auth/me",
@@ -219,7 +218,7 @@ function loadConfig() {
   }
 
   const bearerToken = process.env.LENSEE_WORKLOAD_BEARER_TOKEN;
-  const password = process.env.LENSEE_WORKLOAD_PASSWORD ?? (isDefaultTarget ? defaultPassword : undefined);
+  const password = process.env.LENSEE_WORKLOAD_PASSWORD;
   if (!password && !bearerToken) {
     throw new Error("Set LENSEE_WORKLOAD_PASSWORD or LENSEE_WORKLOAD_BEARER_TOKEN; never place credentials on the command line.");
   }

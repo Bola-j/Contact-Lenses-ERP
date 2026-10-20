@@ -199,8 +199,8 @@ builder.Services.AddRateLimiter(options =>
     });
     options.AddFixedWindowLimiter("shopify-webhooks", limiter =>
     {
-        limiter.PermitLimit = rateLimitOptions.GetValue("ShopifyPermitLimit", 60);
-        limiter.Window = TimeSpan.FromSeconds(rateLimitOptions.GetValue("ShopifyWindowSeconds", 60));
+        limiter.PermitLimit = rateLimitOptions.GetValue("ShopifyPermitLimit", 600);
+        limiter.Window = TimeSpan.FromSeconds(rateLimitOptions.GetValue("ShopifyWindowSeconds", 1));
         limiter.QueueLimit = 0;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
@@ -288,6 +288,8 @@ else
     builder.Services.AddScoped<ICatalogEventPublisher, TransactionalCatalogEventPublisher>();
 }
 builder.Services.AddScoped<StockLedgerService>();
+builder.Services.AddScoped<StockCommitmentProjection>();
+builder.Services.AddScoped<IReservedPackAllocationReader>(services => services.GetRequiredService<StockCommitmentProjection>());
 builder.Services.AddScoped<InventoryReceiptCommandService>();
 builder.Services.AddScoped<PaymentIdempotencyService>();
 builder.Services.AddScoped<StocktakeBalanceLockService>();
@@ -313,14 +315,24 @@ builder.Services.AddOptions<ShopifyOptions>()
     .Bind(builder.Configuration.GetSection("Shopify"))
     .Validate(options => !options.Enabled ||
         ((!string.IsNullOrWhiteSpace(options.WebhookSecret) ||
-          (!string.IsNullOrWhiteSpace(options.LegacyWebhookPathSecret) && options.LegacyWebhookPathSecret.Length is >= 32 and <= 128 && options.LegacyWebhookPathSecret.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'))) &&
+          (!builder.Environment.IsProduction() && !string.IsNullOrWhiteSpace(options.LegacyWebhookPathSecret) && options.LegacyWebhookPathSecret.Length is >= 32 and <= 128 && options.LegacyWebhookPathSecret.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'))) &&
          !string.IsNullOrWhiteSpace(options.StoreDomain) &&
+         (!builder.Environment.IsProduction() || options.StoreDomain.Trim().EndsWith(".myshopify.com", StringComparison.OrdinalIgnoreCase)) &&
          options.OnlineLocationId != Guid.Empty &&
          options.MaxBodyBytes > 0 &&
          options.PayloadRetentionDays > 0),
-        "Enabled Shopify integration requires either a webhook secret or a 32-128 character legacy path secret, plus store domain, Online location, body limit, and payload retention.")
+        "Enabled Shopify integration requires a signed webhook secret, store domain, Online location, body limit, and payload retention. Production requires the permanent myshopify.com domain.")
+    .Validate(options => !options.Enabled || !builder.Environment.IsProduction() || string.IsNullOrWhiteSpace(options.LegacyWebhookPathSecret),
+        "Production Shopify intake uses signed webhooks only; clear Shopify:LegacyWebhookPathSecret.")
+    .Validate(options => !options.Enabled || !options.ReconciliationEnabled || !string.IsNullOrWhiteSpace(options.AdminAccessToken),
+        "Shopify reconciliation requires Shopify:AdminAccessToken. Add it to secret storage or disable reconciliation.")
     .ValidateOnStart();
 builder.Services.AddScoped<ShopifyIntegrationService>();
+builder.Services.AddScoped<ShopifyOrderReviewService>();
+builder.Services.AddHttpClient("shopify-reconciliation", client => client.Timeout = TimeSpan.FromSeconds(30))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped<ShopifyReconciliationService>();
+builder.Services.AddHostedService<ShopifyReconciliationWorker>();
 builder.Services.AddHostedService<ShopifyWebhookWorker>();
 builder.Services.AddHostedService<ShopifyPayloadRetentionWorker>();
 if (!builder.Environment.IsEnvironment("Testing"))
@@ -713,6 +725,7 @@ app.MapSupplyFinanceEndpoints();
 app.MapReconciliationImportEndpoints();
 app.MapOutboxEndpoints();
 app.MapShopifyEndpoints();
+app.MapShopifyReconciliationEndpoints();
 app.MapNotificationsEndpoints();
 app.MapReportsEndpoints();
 app.MapStocktakeEndpoints();
@@ -862,6 +875,8 @@ static async Task ValidateShopifyStartupConfigurationAsync(IServiceProvider serv
     {
         throw new InvalidOperationException("Shopify:OnlineLocationId must identify an active Online inventory location before the enabled integration can start.");
     }
+    await ShopifyActivation.EnsureAsync(services.GetRequiredService<OperationsDbContext>(),
+        services.GetRequiredService<IClock>(), options, CancellationToken.None);
 }
 
 static async Task ValidatePendingMigrationsAsync(WebApplication app, IServiceProvider services)
@@ -908,7 +923,9 @@ static async Task ValidateRequiredSchemaAsync(IServiceProvider services)
     }
 
     var missing = new List<string>();
-    await using var connection = payments.Database.GetDbConnection();
+    // The scoped DbContexts share this DI-owned connection. Disposing it here
+    // prevents the following Shopify startup validation from querying its context.
+    var connection = payments.Database.GetDbConnection();
     if (connection.State != System.Data.ConnectionState.Open)
     {
         await connection.OpenAsync();

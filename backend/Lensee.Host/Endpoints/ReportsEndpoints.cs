@@ -79,9 +79,16 @@ public static partial class ReportsEndpoints
         "stocktake-summary.pdf"
     };
 
-    private static PageRequest NormalizeReportPage(int page, int pageSize, int maximumPageSize)
+    // The shared PageRequest deliberately caps interactive lists at 100 rows.
+    // Reports need a separate request shape so an authorised all-rows export
+    // can use ReportingOptions.MaxExportRows without becoming a silent 100-row
+    // document.
+    private static ReportPageRequest NormalizeReportPage(int page, int pageSize, int maximumPageSize, bool forExport = false)
     {
-        return new PageRequest(Math.Max(1, page), Math.Clamp(pageSize, 1, Math.Max(1, maximumPageSize)));
+        // Interactive report pages retain the shared 100-row ceiling. Only an
+        // explicit all-rows export may use the report export limit.
+        var pageLimit = forExport ? maximumPageSize : Math.Min(maximumPageSize, 100);
+        return new ReportPageRequest(Math.Max(1, page), Math.Clamp(pageSize, 1, Math.Max(1, pageLimit)));
     }
 
     private static bool TryNormalizeSort(string? sortBy, string? sortDirection, IReadOnlySet<string> allowed, string defaultSort, out string normalizedSort, out bool descending)
@@ -100,6 +107,11 @@ public static partial class ReportsEndpoints
         PagedResult<MerchantBalanceReportRow> page => page.Items,
         _ => value
     };
+
+    private readonly record struct ReportPageRequest(int Page, int PageSize)
+    {
+        public int Skip => (Page - 1) * PageSize;
+    }
 
     public static RouteGroupBuilder MapReportsEndpoints(this IEndpointRouteBuilder routes)
     {
@@ -446,7 +458,7 @@ public static partial class ReportsEndpoints
             query = query.Where(balance => balance.LocationId == effectiveLocationId.Value);
         }
 
-        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize, forExport);
         var total = await query.CountAsync(cancellationToken);
         var balances = await query
             .OrderBy(balance => balance.Location.Name)
@@ -556,7 +568,7 @@ public static partial class ReportsEndpoints
             query = query.Where(operation => operation.OperationType == operationType.Trim());
         }
 
-        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize, forExport);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort switch
         {
@@ -629,7 +641,7 @@ public static partial class ReportsEndpoints
             .Include(log => log.InstallmentSubLogs)
             .Where(log => !log.IsDeleted)
             .AsQueryable();
-        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize, forExport);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort == "totalAmount"
             ? (descending ? query.OrderByDescending(log => log.TotalAmount) : query.OrderBy(log => log.TotalAmount))
@@ -751,7 +763,7 @@ public static partial class ReportsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["sortBy"] = ["Sort field is not valid."] });
         }
 
-        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize, forExport);
         var total = await query.CountAsync(cancellationToken);
         var ordered = normalizedSort switch
         {
@@ -939,7 +951,7 @@ public static partial class ReportsEndpoints
             .AsNoTracking()
             .Where(merchant => !merchant.IsDeleted)
             .AsQueryable();
-        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize);
+        var request = NormalizeReportPage(page, pageSize, forExport ? reportingOptions.Value.MaxExportRows + 1 : reportingOptions.Value.MaxPageSize, forExport);
         var total = await query.CountAsync(cancellationToken);
         var merchants = await query.OrderBy(merchant => merchant.BusinessName)
             .Skip(request.Skip)

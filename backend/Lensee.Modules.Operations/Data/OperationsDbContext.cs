@@ -52,6 +52,14 @@ public partial class OperationsDbContext : DbContext
 
     public virtual DbSet<ShopifyWebhookEvent> ShopifyWebhookEvents { get; set; }
 
+    public virtual DbSet<ShopifyVariantMapping> ShopifyVariantMappings { get; set; }
+
+    public virtual DbSet<ShopifyRefundReview> ShopifyRefundReviews { get; set; }
+
+    public virtual DbSet<ShopifyOrderCancellationTombstone> ShopifyOrderCancellationTombstones { get; set; }
+
+    public virtual DbSet<ShopifyReconciliationCheckpoint> ShopifyReconciliationCheckpoints { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
@@ -190,6 +198,7 @@ public partial class OperationsDbContext : DbContext
                 .HasColumnName("section");
             entity.Property(e => e.ShopifyLineItemId).HasMaxLength(100).HasColumnName("shopify_line_item_id");
             entity.Property(e => e.ShopifyPropertiesSnapshot).HasColumnType("jsonb").HasColumnName("shopify_properties_snapshot");
+            entity.Property(e => e.ShopifyCommercialSnapshot).HasColumnType("jsonb").HasColumnName("shopify_commercial_snapshot");
             entity.Property(e => e.ShopifySkuSnapshot).HasMaxLength(255).HasColumnName("shopify_sku_snapshot");
             entity.Property(e => e.ShopifyTitleSnapshot).HasMaxLength(255).HasColumnName("shopify_title_snapshot");
             entity.Property(e => e.ShopifyVariantId).HasMaxLength(100).HasColumnName("shopify_variant_id");
@@ -480,6 +489,23 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
             entity.Property(e => e.ShopifyOrderNumber).HasMaxLength(100).HasColumnName("shopify_order_number");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.FinancialStatus).HasMaxLength(50).HasColumnName("financial_status");
+            entity.Property(e => e.FinancialStatusTrusted).HasDefaultValue(false).HasColumnName("financial_status_trusted");
+            entity.Property(e => e.FinanceReconciliationStatus).HasMaxLength(50).HasDefaultValue("PendingEvidence").HasColumnName("finance_reconciliation_status");
+            entity.Property(e => e.ReportedCurrency).HasMaxLength(10).HasColumnName("reported_currency");
+            entity.Property(e => e.PresentmentCurrency).HasMaxLength(10).HasColumnName("presentment_currency");
+            entity.Property(e => e.ReportedSubtotal).HasPrecision(18, 2).HasColumnName("reported_subtotal");
+            entity.Property(e => e.ReportedDiscounts).HasPrecision(18, 2).HasColumnName("reported_discounts");
+            entity.Property(e => e.ReportedShipping).HasPrecision(18, 2).HasColumnName("reported_shipping");
+            entity.Property(e => e.ReportedTax).HasPrecision(18, 2).HasColumnName("reported_tax");
+            entity.Property(e => e.ReportedTotal).HasPrecision(18, 2).HasColumnName("reported_total");
+            entity.Property(e => e.SourceUpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("source_updated_at");
+            entity.Property(e => e.IsCancellationTombstone).HasDefaultValue(false).HasColumnName("is_cancellation_tombstone");
+            entity.Property(e => e.CancelledAt).HasColumnType("timestamp without time zone").HasColumnName("cancelled_at");
+            entity.Property(e => e.CommercialSnapshot).HasColumnType("jsonb").HasColumnName("commercial_snapshot");
+            entity.Property(e => e.CommercialSnapshotHash).HasMaxLength(128).HasColumnName("commercial_snapshot_hash");
+            entity.Property(e => e.RequiresReview).HasDefaultValue(false).HasColumnName("requires_review");
             entity.Property(e => e.PaymentReference).HasMaxLength(255).HasColumnName("payment_reference");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
@@ -507,6 +533,7 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.Status).HasMaxLength(50).HasColumnName("status");
             entity.Property(e => e.Detail).HasColumnName("detail");
             entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
+            entity.Property(e => e.ShopifyRefundId).HasMaxLength(100).HasColumnName("shopify_refund_id");
             entity.Property(e => e.OperationId).HasColumnName("operation_id");
             entity.Property(e => e.ReceivedAt).HasColumnType("timestamp without time zone").HasColumnName("received_at");
             entity.Property(e => e.VerifiedAt).HasColumnType("timestamp without time zone").HasColumnName("verified_at");
@@ -514,10 +541,78 @@ public partial class OperationsDbContext : DbContext
             entity.Property(e => e.ProcessedAt).HasColumnType("timestamp without time zone").HasColumnName("processed_at");
             entity.Property(e => e.NextAttemptAt).HasColumnType("timestamp without time zone").HasColumnName("next_attempt_at");
             entity.Property(e => e.LeaseUntil).HasColumnType("timestamp without time zone").HasColumnName("lease_until");
+            entity.Property(e => e.LeaseToken).HasColumnName("lease_token");
             entity.Property(e => e.AttemptCount).HasDefaultValue(0).HasColumnName("attempt_count");
             entity.Property(e => e.ResolvedAt).HasColumnType("timestamp without time zone").HasColumnName("resolved_at");
             entity.Property(e => e.ResolvedBy).HasColumnName("resolved_by");
             entity.Property(e => e.ResolutionNote).HasMaxLength(1000).HasColumnName("resolution_note");
+        });
+
+        modelBuilder.Entity<ShopifyVariantMapping>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_variant_links_pkey");
+            entity.ToTable("shopify_variant_links", "operations");
+            entity.HasIndex(e => new { e.ShopDomain, e.ShopifyVariantId }, "uq_shopify_variant_links_store_variant").IsUnique();
+            entity.HasIndex(e => e.SkuId, "idx_shopify_variant_links_sku");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.ShopifyVariantId).HasMaxLength(100).HasColumnName("shopify_variant_id");
+            entity.Property(e => e.ShopifySku).HasMaxLength(255).HasColumnName("shopify_sku");
+            entity.Property(e => e.SkuId).HasColumnName("sku_id");
+            entity.Property(e => e.EntryMode).HasMaxLength(20).HasDefaultValue("Pieces").HasColumnName("entry_mode");
+            entity.Property(e => e.Status).HasMaxLength(40).HasDefaultValue("Unresolved").HasColumnName("status");
+            entity.Property(e => e.Detail).HasMaxLength(1000).HasColumnName("detail");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+            entity.Property(e => e.Revision).IsConcurrencyToken().HasDefaultValue(1L).HasColumnName("revision");
+        });
+
+        modelBuilder.Entity<ShopifyRefundReview>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_refund_reviews_pkey");
+            entity.ToTable("shopify_refund_reviews", "operations");
+            entity.HasIndex(e => new { e.ShopDomain, e.ShopifyRefundId }, "uq_shopify_refund_reviews_identity").IsUnique();
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.ShopifyRefundId).HasMaxLength(100).HasColumnName("shopify_refund_id");
+            entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
+            entity.Property(e => e.OperationId).HasColumnName("operation_id");
+            entity.Property(e => e.Amount).HasPrecision(18, 4).HasColumnName("amount");
+            entity.Property(e => e.Currency).HasMaxLength(10).HasColumnName("currency");
+            entity.Property(e => e.Status).HasMaxLength(50).HasColumnName("status");
+            entity.Property(e => e.ReceivedAt).HasColumnType("timestamp without time zone").HasColumnName("received_at");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp without time zone").HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<ShopifyReconciliationCheckpoint>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_reconciliation_checkpoints_pkey");
+            entity.ToTable("shopify_reconciliation_checkpoints", "operations");
+            entity.HasIndex(e => e.ShopDomain, "uq_shopify_reconciliation_checkpoints_shop").IsUnique();
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.ActivatedAtUtc).HasColumnType("timestamp without time zone").HasColumnName("activated_at_utc");
+            entity.Property(e => e.UpdatedThroughUtc).HasColumnType("timestamp without time zone").HasColumnName("updated_through_utc");
+            entity.Property(e => e.WindowStartedUtc).HasColumnType("timestamp without time zone").HasColumnName("window_started_utc");
+            entity.Property(e => e.WindowEndedUtc).HasColumnType("timestamp without time zone").HasColumnName("window_ended_utc");
+            entity.Property(e => e.Cursor).HasColumnName("cursor");
+            entity.Property(e => e.NextRunAt).HasColumnType("timestamp without time zone").HasColumnName("next_run_at");
+            entity.Property(e => e.RequestedAt).HasColumnType("timestamp without time zone").HasColumnName("requested_at");
+            entity.Property(e => e.LeaseUntil).HasColumnType("timestamp without time zone").HasColumnName("lease_until");
+            entity.Property(e => e.LastSuccessAt).HasColumnType("timestamp without time zone").HasColumnName("last_success_at");
+            entity.Property(e => e.LastError).HasColumnName("last_error");
+            entity.Property(e => e.Revision).IsConcurrencyToken().HasDefaultValue(1L).HasColumnName("revision");
+        });
+
+        modelBuilder.Entity<ShopifyOrderCancellationTombstone>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("shopify_order_cancellation_tombstones_pkey");
+            entity.ToTable("shopify_order_cancellation_tombstones", "operations");
+            entity.HasIndex(e => new { e.ShopDomain, e.ShopifyOrderId }, "uq_shopify_order_cancellation_tombstones_order").IsUnique();
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.ShopDomain).HasMaxLength(255).HasColumnName("shop_domain");
+            entity.Property(e => e.ShopifyOrderId).HasMaxLength(100).HasColumnName("shopify_order_id");
+            entity.Property(e => e.CancelledAt).HasColumnType("timestamp without time zone").HasColumnName("cancelled_at");
         });
 
         modelBuilder.Entity<OperationVersion>(entity =>

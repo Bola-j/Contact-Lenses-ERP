@@ -22,7 +22,7 @@ public sealed class StocktakeBalanceLockService
         {
             if (_inventoryDbContext.Database.IsRelational())
             {
-                var key = $"stocktake:{locationId:N}:{skuId:N}";
+                var key = $"inventory-stock:{locationId:N}:{skuId:N}";
                 await _inventoryDbContext.Database.ExecuteSqlInterpolatedAsync(
                     $"select pg_advisory_xact_lock(hashtextextended({key}, 0))",
                     cancellationToken);

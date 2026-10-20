@@ -23,9 +23,69 @@ public partial class InventoryDbContext : DbContext
 
     public virtual DbSet<StockTransaction> StockTransactions { get; set; }
 
+    public virtual DbSet<StockPieceReservation> StockPieceReservations { get; set; }
+
+    public virtual DbSet<StockPieceReservationAllocation> StockPieceReservationAllocations { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<StockPieceReservation>(entity =>
+        {
+            entity.Property<uint>("xmin").IsRowVersion();
+            entity.HasKey(value => value.Id).HasName("stock_piece_reservations_pkey");
+            entity.ToTable("stock_piece_reservations", "inventory", table =>
+            {
+                table.HasCheckConstraint("chk_stock_piece_reservation_status", "status in ('Active','Consumed','Released')");
+                table.HasCheckConstraint("chk_stock_piece_reservation_quantity", "requested_piece_quantity > 0 and pieces_per_pack_snapshot > 0");
+                table.HasCheckConstraint("chk_stock_piece_reservation_terminal", "(status = 'Active' and consumed_at is null and released_at is null) or (status = 'Consumed' and consumed_at is not null and released_at is null) or (status = 'Released' and consumed_at is null and released_at is not null)");
+            });
+            entity.HasIndex(value => value.OperationLineId, "uq_stock_piece_reservations_operation_line").IsUnique();
+            entity.HasIndex(value => new { value.LocationId, value.SkuId, value.Status }, "idx_stock_piece_reservations_stock_status");
+            entity.Property(value => value.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(value => value.OperationId).HasColumnName("operation_id");
+            entity.Property(value => value.OperationLineId).HasColumnName("operation_line_id");
+            entity.Property(value => value.LocationId).HasColumnName("location_id");
+            entity.Property(value => value.SkuId).HasColumnName("sku_id");
+            entity.Property(value => value.RequestedPieceQuantity).HasColumnName("requested_piece_quantity");
+            entity.Property(value => value.PiecesPerPackSnapshot).HasColumnName("pieces_per_pack_snapshot");
+            entity.Property(value => value.Status).HasMaxLength(20).HasColumnName("status");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.Property(value => value.ConsumedAt).HasColumnType("timestamp without time zone").HasColumnName("consumed_at");
+            entity.Property(value => value.ReleasedAt).HasColumnType("timestamp without time zone").HasColumnName("released_at");
+            entity.HasMany(value => value.Allocations).WithOne(value => value.Reservation)
+                .HasForeignKey(value => value.ReservationId).OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("stock_piece_reservation_allocations_reservation_id_fkey");
+        });
+
+        modelBuilder.Entity<StockPieceReservationAllocation>(entity =>
+        {
+            entity.HasKey(value => value.Id).HasName("stock_piece_reservation_allocations_pkey");
+            entity.ToTable("stock_piece_reservation_allocations", "inventory", table =>
+            {
+                table.HasCheckConstraint("chk_stock_piece_reservation_allocation_source", "(source_kind = 'OpenedPieceLot' and source_opened_piece_lot_id is not null and physical_packs_held = 0) or (source_kind = 'SealedBatch' and source_opened_piece_lot_id is null and physical_packs_held > 0)");
+                table.HasCheckConstraint("chk_stock_piece_reservation_allocation_quantities", "piece_quantity > 0 and physical_packs_held >= 0");
+            });
+            entity.HasIndex(value => new { value.ReservationId, value.SourceKind, value.SourceBatchId }, "idx_stock_piece_reservation_allocations_reservation_source");
+            entity.HasIndex(value => value.SourceOpenedPieceLotId, "idx_stock_piece_reservation_allocations_opened_lot")
+                .HasFilter("(source_opened_piece_lot_id IS NOT NULL)");
+            entity.HasIndex(value => value.SourceBatchId, "idx_stock_piece_reservation_allocations_batch");
+            entity.Property(value => value.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(value => value.ReservationId).HasColumnName("reservation_id");
+            entity.Property(value => value.SourceKind).HasMaxLength(30).HasColumnName("source_kind");
+            entity.Property(value => value.SourceOpenedPieceLotId).HasColumnName("source_opened_piece_lot_id");
+            entity.Property(value => value.SourceBatchId).HasColumnName("source_batch_id");
+            entity.Property(value => value.PieceQuantity).HasColumnName("piece_quantity");
+            entity.Property(value => value.PhysicalPacksHeld).HasColumnName("physical_packs_held");
+            entity.Property(value => value.LotNumber).HasMaxLength(100).HasColumnName("lot_number");
+            entity.Property(value => value.ExpiryDate).HasColumnName("expiry_date");
+            entity.Property(value => value.CreatedAt).HasColumnType("timestamp without time zone").HasColumnName("created_at");
+            entity.HasOne<InventoryBatch>().WithMany().HasForeignKey(value => value.SourceBatchId)
+                .OnDelete(DeleteBehavior.Restrict).HasConstraintName("stock_piece_reservation_allocations_source_batch_id_fkey");
+            entity.HasOne<OpenedPieceLot>().WithMany().HasForeignKey(value => value.SourceOpenedPieceLotId)
+                .OnDelete(DeleteBehavior.Restrict).HasConstraintName("stock_piece_reservation_allocations_source_opened_piece_lot_id_fkey");
+        });
 
         modelBuilder.Entity<InventoryReceiptCommand>(entity =>
         {

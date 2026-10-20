@@ -19,8 +19,26 @@ function Convert-PlainPasswordPlaceholdersToHashes {
 
     return [regex]::Replace($Sql, "<hash:(?<password>[^>]+)>", {
         param($Match)
-        New-Pbkdf2PasswordHash -Password $Match.Groups["password"].Value
+        $password = $Match.Groups["password"].Value
+        if ($password.StartsWith('ENV:', [StringComparison]::Ordinal)) {
+            $environmentVariable = $password.Substring(4)
+            $password = [Environment]::GetEnvironmentVariable($environmentVariable)
+            if ([string]::IsNullOrWhiteSpace($password)) {
+                throw "Set $environmentVariable in the process environment before seeding E2E users."
+            }
+        }
+        New-Pbkdf2PasswordHash -Password $password
     })
+}
+
+if ([string]::IsNullOrWhiteSpace($env:LENSEE_E2E_PASSWORD)) {
+    if ([string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+        throw 'Set LENSEE_E2E_PASSWORD in the local secret facility before starting E2E.'
+    }
+
+    $env:LENSEE_E2E_PASSWORD = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    Write-Output "::add-mask::$($env:LENSEE_E2E_PASSWORD)"
+    Add-Content -LiteralPath $env:GITHUB_ENV -Value "LENSEE_E2E_PASSWORD=$($env:LENSEE_E2E_PASSWORD)"
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")

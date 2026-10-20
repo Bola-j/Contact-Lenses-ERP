@@ -18,10 +18,75 @@ public static class ShopifyEndpoints
         group.MapGet("/status", GetStatusAsync).RequireAuthorization("integrations.shopify.read");
         group.MapGet("/events", ListEventsAsync).RequireAuthorization("integrations.shopify.read");
         group.MapPost("/events/{id:guid}/retry", RetryEventAsync).RequireAuthorization("integrations.shopify.manage");
+        group.MapPost("/events/{id:guid}/refresh", RefreshEventAsync).RequireAuthorization("integrations.shopify.manage");
         group.MapPost("/events/{id:guid}/resolve", ResolveEventAsync).RequireAuthorization("integrations.shopify.manage");
         group.MapGet("/sku-readiness", ListSkuReadinessAsync).RequireAuthorization("integrations.shopify.read");
         group.MapGet("/sku-readiness/products", ListSkuReadinessProductsAsync).RequireAuthorization("integrations.shopify.read");
+        group.MapGet("/variant-links", ListVariantLinksAsync).RequireAuthorization("integrations.shopify.read");
+        group.MapPut("/variant-links/{id:guid}", UpdateVariantLinkAsync).RequireAuthorization("integrations.shopify.manage");
+        group.MapGet("/queue-health", GetQueueHealthAsync).RequireAuthorization("integrations.shopify.read");
         return group;
+    }
+
+    private static async Task<IResult> ListVariantLinksAsync(int? page, int? pageSize, string? status, string? search,
+        OperationsDbContext operations, CatalogDbContext catalog, CancellationToken cancellationToken)
+    {
+        var request = new PageRequest(page ?? 1, pageSize ?? 25);
+        var rows = await operations.ShopifyVariantMappings.AsNoTracking().OrderBy(value => value.ShopDomain).ThenBy(value => value.ShopifySku)
+            .ThenBy(value => value.ShopifyVariantId).ToListAsync(cancellationToken);
+        var skuIds = rows.Where(value => value.SkuId.HasValue).Select(value => value.SkuId!.Value).Distinct().ToArray();
+        var skus = skuIds.Length == 0 ? [] : await catalog.Skus.AsNoTracking().Where(value => skuIds.Contains(value.Id))
+            .Select(value => new { value.Id, value.SkuCode }).ToDictionaryAsync(value => value.Id, cancellationToken);
+        var projected = rows.Select(value => new ShopifyVariantLinkResponse(value.Id, value.ShopDomain, value.ShopifyVariantId,
+            value.ShopifySku, value.SkuId, value.SkuId.HasValue && skus.TryGetValue(value.SkuId.Value, out var sku) ? sku.SkuCode : null,
+            value.Status, value.Detail, value.UpdatedAt, value.Revision)).ToList();
+        if (!string.IsNullOrWhiteSpace(status)) projected = projected.Where(value => string.Equals(value.Status, status.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            projected = projected.Where(value => value.ShopDomain.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                value.ShopifyVariantId.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                (value.ShopifySku?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (value.SkuCode?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+        }
+        var total = projected.Count;
+        return Results.Ok(new PagedResult<ShopifyVariantLinkResponse>(projected.Skip(request.Skip).Take(request.PageSize).ToList(), request.Page, request.PageSize, total));
+    }
+
+    private static async Task<IResult> UpdateVariantLinkAsync(Guid id, ShopifyVariantLinkUpdateRequest request,
+        ShopifyIntegrationService integration, ICurrentUser currentUser, CancellationToken cancellationToken)
+    {
+        var result = await integration.UpdateVariantLinkAsync(id, request.SkuId, request.Revision, request.Reason,
+            currentUser.UserId ?? Guid.Empty, currentUser.Principal.Identity?.Name ?? "ERP user", cancellationToken);
+        return result.Status switch
+        {
+            "NotFound" => Results.NotFound(),
+            "Conflict" => Results.Conflict(new { code = "shopify-variant-link-revision-conflict", detail = result.Detail }),
+            "Validation" => Results.ValidationProblem(new Dictionary<string, string[]> { [result.Field!] = [result.Detail!] }),
+            _ => Results.Ok(result.Link)
+        };
+    }
+
+    private static async Task<IResult> GetQueueHealthAsync(OperationsDbContext operations, IClock clock, CancellationToken cancellationToken)
+    {
+        var now = clock.EgyptNow;
+        var events = operations.ShopifyWebhookEvents.AsNoTracking();
+        var queued = await events.CountAsync(value => value.Status == "Queued", cancellationToken);
+        var processing = await events.CountAsync(value => value.Status == "Processing", cancellationToken);
+        var retrying = await events.CountAsync(value => value.Status == "Retrying", cancellationToken);
+        var attention = await events.CountAsync(value => value.Status == "RequiresAttention" || value.Status == "ReviewRequired", cancellationToken);
+        var oldest = await events.Where(value => value.Status == "Queued" || value.Status == "Processing" || value.Status == "Retrying")
+            .OrderBy(value => value.ReceivedAt).Select(value => (DateTime?)value.ReceivedAt).FirstOrDefaultAsync(cancellationToken);
+        var expired = await events.CountAsync(value => value.Status == "Processing" && value.LeaseUntil < now, cancellationToken);
+        var unpaidReservationLinks = operations.ShopifyOrderLinks.AsNoTracking()
+            .Where(value => value.Operation.Status == "Reserved" && (!value.FinancialStatusTrusted || value.FinancialStatus != "paid" || value.RequiresReview));
+        var unpaidReservations = await unpaidReservationLinks.CountAsync(cancellationToken);
+        var oldestUnpaidReservationAt = await unpaidReservationLinks.Where(value => value.Operation.ConfirmedAt != null)
+            .OrderBy(value => value.Operation.ConfirmedAt)
+            .Select(value => value.Operation.ConfirmedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        return Results.Ok(new ShopifyQueueHealthResponse(queued, processing, retrying, attention, oldest, expired,
+            unpaidReservations, oldestUnpaidReservationAt));
     }
 
     private static async Task<IResult> ReceiveWebhookAsync(HttpRequest request, ShopifyIntegrationService integration, CancellationToken cancellationToken)
@@ -113,41 +178,58 @@ public static class ShopifyEndpoints
         return Results.Ok(new PagedResult<ShopifyWebhookEventResponse>(rows, request.Page, request.PageSize, total));
     }
 
-    private static async Task<IResult> RetryEventAsync(Guid id, OperationsDbContext operations, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    private static async Task<IResult> RetryEventAsync(Guid id, ShopifyIntegrationService integration, CancellationToken cancellationToken)
     {
-        var eventRecord = await operations.ShopifyWebhookEvents.FindAsync([id], cancellationToken);
-        if (eventRecord is null) return Results.NotFound();
-        if (string.IsNullOrWhiteSpace(eventRecord.ProtectedPayload))
+        var result = await integration.RetryEventAsync(id, cancellationToken);
+        return result.Status switch
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["event"] = ["The retained payload has expired and cannot be retried."] });
-        }
-        eventRecord.Status = "Queued";
-        eventRecord.Detail = "Manual retry requested.";
-        eventRecord.AttemptCount = 0;
-        eventRecord.NextAttemptAt = clock.EgyptNow;
-        eventRecord.LeaseUntil = null;
-        eventRecord.ResolvedAt = null;
-        eventRecord.ResolvedBy = null;
-        eventRecord.ResolutionNote = null;
-        await operations.SaveChangesAsync(cancellationToken);
-        return Results.Ok(ToEventResponse(eventRecord));
+            "NotFound" => Results.NotFound(),
+            "PayloadExpired" => Results.ValidationProblem(new Dictionary<string, string[]> { ["event"] = ["The retained payload has expired and cannot be retried."] }),
+            "Conflict" => Results.Conflict(new { message = "This Shopify event changed state and can no longer be retried." }),
+            _ => Results.Ok(ToEventResponse(result.EventRecord!))
+        };
     }
 
-    private static async Task<IResult> ResolveEventAsync(Guid id, ShopifyEventResolutionRequest request, OperationsDbContext operations, ICurrentUser currentUser, IClock clock, CancellationToken cancellationToken)
+    private static async Task<IResult> RefreshEventAsync(Guid id, OperationsDbContext operations,
+        ShopifyReconciliationService reconciliation, HttpContext httpContext, CancellationToken cancellationToken)
+    {
+        var eventRecord = await operations.ShopifyWebhookEvents.AsNoTracking()
+            .Where(value => value.Id == id)
+            .Select(value => new { value.ShopDomain, value.ShopifyOrderId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (eventRecord is null) return Results.NotFound();
+        if (string.IsNullOrWhiteSpace(eventRecord.ShopifyOrderId))
+            return Results.Conflict(new { message = "This event has no Shopify order identity to refresh." });
+
+        try
+        {
+            var queued = await reconciliation.RefreshOrderAsync(eventRecord.ShopDomain, eventRecord.ShopifyOrderId, cancellationToken);
+            return queued
+                ? Results.Accepted(value: new { status = "RefreshQueued", message = "A fresh Shopify snapshot was durably queued; the original receipt was retained." })
+                : Results.NotFound(new { message = "The Shopify order was not found or is outside the activation window." });
+        }
+        catch (ShopifyOrderRefreshException exception)
+        {
+            if (exception.RetryAfterSeconds is { } retryAfter)
+                httpContext.Response.Headers.RetryAfter = retryAfter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return Results.Problem(statusCode: exception.StatusCode, detail: exception.Message);
+        }
+    }
+
+    private static async Task<IResult> ResolveEventAsync(Guid id, ShopifyEventResolutionRequest request, ShopifyIntegrationService integration, ICurrentUser currentUser, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Note))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Note)] = ["Resolution note is required."] });
         }
-        var eventRecord = await operations.ShopifyWebhookEvents.FindAsync([id], cancellationToken);
-        if (eventRecord is null) return Results.NotFound();
-        eventRecord.Status = "Resolved";
-        eventRecord.ResolvedAt = clock.EgyptNow;
-        eventRecord.ResolvedBy = currentUser.UserId;
-        eventRecord.ResolutionNote = request.Note.Trim();
-        eventRecord.LeaseUntil = null;
-        await operations.SaveChangesAsync(cancellationToken);
-        return Results.Ok(ToEventResponse(eventRecord));
+        var result = await integration.ResolveEventAsync(id, currentUser.UserId, request.Note, cancellationToken);
+        return result.Status switch
+        {
+            "NotFound" => Results.NotFound(),
+            "Validation" => Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Note)] = ["Resolution note is required."] }),
+            "Conflict" => Results.Conflict(new { message = "This Shopify event changed state and can no longer be resolved." }),
+            _ => Results.Ok(ToEventResponse(result.EventRecord!))
+        };
     }
 
     private static async Task<IResult> ListSkuReadinessAsync(int? page, int? pageSize, string? search, string? status, Guid? productId, string? wearCycle, CatalogDbContext catalog, CancellationToken cancellationToken)
@@ -192,9 +274,10 @@ public static class ShopifyEndpoints
     {
         var product = sku.Product;
         var isLens = CatalogValidation.IsLensProduct(product.ProductType);
-        var pieceSaleAllowed = product.SellMode is "SinglePiece" or "Both";
+        var supportedSellMode = product.SellMode is "SinglePiece" or "Both" or "SealedPackOnly";
+        var validPackConfiguration = product.PiecesPerPack is > 0;
         var validWearCycle = CatalogValidation.HasValidOpenedExpiryRate(product.OpenedExpiryRate);
-        var status = !isLens ? "UnsupportedProduct" : !pieceSaleAllowed ? "PieceSaleDisabled" : !validWearCycle ? "NeedsWearCycle" : "Ready";
+        var status = !isLens ? "UnsupportedProduct" : !supportedSellMode ? "PieceSaleDisabled" : !validPackConfiguration ? "NeedsPackConfiguration" : !validWearCycle ? "NeedsWearCycle" : "Ready";
         return new(sku.Id, sku.SkuCode, product.Name, product.ProductType, sku.PowerSign, sku.PowerValue, sku.ColorName, sku.Size, product.PiecesPerPack, product.SellMode, isLens && validWearCycle ? product.OpenedExpiryRate : null, isLens && validWearCycle ? product.OpenedExpiryDuration : null, status);
     }
 
@@ -207,3 +290,7 @@ public sealed record ShopifySkuProductFilterResponse(Guid Id, string Name);
 public sealed record ShopifyIntegrationStatusResponse(bool IsConfigured, bool IsLegacyWebhookConfigured, int MaxBodyBytes);
 public sealed record ShopifyEventResolutionRequest(string Note);
 public sealed record ShopifyWebhookEventResponse(Guid Id, string Topic, string ShopDomain, string VerificationMode, string? EventId, string? ApiVersion, string Status, string? Detail, string? ShopifyOrderId, Guid? OperationId, DateTime ReceivedAt, DateTime? TriggeredAt, DateTime? ProcessedAt, DateTime? NextAttemptAt, int AttemptCount, DateTime? ResolvedAt, string? ResolutionNote, bool PayloadAvailable);
+public sealed record ShopifyVariantLinkUpdateRequest(Guid SkuId, long Revision, string Reason);
+public sealed record ShopifyVariantLinkResponse(Guid Id, string ShopDomain, string ShopifyVariantId, string? ShopifySku, Guid? SkuId, string? SkuCode, string Status, string? Detail, DateTime UpdatedAt, long Revision);
+public sealed record ShopifyQueueHealthResponse(int Queued, int Processing, int Retrying, int RequiresAttention,
+    DateTime? OldestPendingAt, int ExpiredLeases, int UnpaidReservations, DateTime? OldestUnpaidReservationAt = null);
