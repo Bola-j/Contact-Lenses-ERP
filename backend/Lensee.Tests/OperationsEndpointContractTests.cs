@@ -46,6 +46,7 @@ internal static class OperationTestPermissions
     public const string PaymentsApprove = "payments.approve";
     public const string PaymentsAdjustmentsRequest = "payments.adjustments.request";
     public const string PaymentsAdjustmentsApprove = "payments.adjustments.approve";
+    public const string PaymentsAdjustmentsPayout = "payments.adjustments.payout";
     public const string SupplyRead = "supply.read";
     public const string SupplyWrite = "supply.write";
     public const string SupplyReceive = "supply.receive";
@@ -1229,7 +1230,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
         var seed = await _factory.SeedAsync(withMainStock: true);
         var merchantId = await _factory.CreateMerchantAsync();
         using var client = _factory.CreateClient();
-        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsWrite, LenseePermissions.PaymentsDraft, LenseePermissions.PaymentsApprove, LenseePermissions.PaymentsAdjustmentsRequest, LenseePermissions.PaymentsAdjustmentsApprove);
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead, LenseePermissions.PaymentsRead, LenseePermissions.PaymentsWrite, LenseePermissions.PaymentsDraft, LenseePermissions.PaymentsApprove, LenseePermissions.PaymentsAdjustmentsRequest, LenseePermissions.PaymentsAdjustmentsApprove, LenseePermissions.PaymentsAdjustmentsPayout);
 
         var operation = await CreateOperationAsync(client, new
         {
@@ -1270,7 +1271,7 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
             notes = "Wrong cash sale correction"
         });
         using var approver = _factory.CreateClient();
-        approver.AuthorizeAs(LenseeRoles.Admin, Guid.NewGuid(), LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsApprove);
+        approver.AuthorizeAs(LenseeRoles.Admin, Guid.NewGuid(), LenseePermissions.PaymentsRead, LenseePermissions.PaymentsAdjustmentsApprove, LenseePermissions.PaymentsAdjustmentsPayout);
         var refundAdjustment = refundRequest.StatusCode == HttpStatusCode.Created
             ? await refundRequest.Content.ReadFromJsonAsync<FinancialAdjustmentContract>()
             : null;
@@ -1358,6 +1359,88 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
 
         Assert.Equal(HttpStatusCode.Created, adminOwnRequest.StatusCode);
         Assert.Equal(HttpStatusCode.OK, adminOwnApproval.StatusCode);
+    }
+
+    [Fact]
+    public async Task Accountant_CanApproveOwnPaymentAdjustment_ButCannotPayoutOrApproveOperations()
+    {
+        var seed = await _factory.SeedAsync(withMainStock: true);
+        var merchantId = await _factory.CreateMerchantAsync();
+        using var operationsUser = _factory.CreateClient();
+        operationsUser.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+        var operation = await CreateOperationAsync(operationsUser, new
+        {
+            operationType = "WholesaleSale",
+            sourceLocationId = seed.MainLocationId,
+            merchantId,
+            paymentMethod = "MerchantAccount",
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, entryMode = "Packs", unitPrice = 100, lotNumber = "MAIN-A", expiryDate = "2028-06-01" } }
+        });
+        await operationsUser.PostAsync($"/api/v1/operations/{operation.Id}/confirm", null);
+        await operationsUser.PostAsync($"/api/v1/operations/{operation.Id}/ship", null);
+        await operationsUser.PostAsync($"/api/v1/operations/{operation.Id}/receive", null);
+        await operationsUser.PostAsync($"/api/v1/operations/{operation.Id}/complete", null);
+
+        var accountantId = Guid.NewGuid();
+        using var accountant = _factory.CreateClient();
+        accountant.AuthorizeAs(LenseeRoles.Accountant, accountantId, LenseePermissions.OperationsRead,
+            LenseePermissions.PaymentsRead, LenseePermissions.PaymentsDraft,
+            LenseePermissions.PaymentsApprove, LenseePermissions.PaymentsAdjustmentsRequest,
+            LenseePermissions.PaymentsAdjustmentsApprove);
+        var collectionRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
+        {
+            sourceOperationId = operation.Id,
+            amount = 20m,
+            paymentMethod = "CashHandToHand",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync(),
+            submitForReview = true
+        });
+        Assert.Equal(HttpStatusCode.Created, collectionRequest.StatusCode);
+        var collection = await collectionRequest.Content.ReadFromJsonAsync<JsonElement>();
+        var collectionId = collection.GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK, (await PostPaymentAsync(accountant, $"/api/v1/payments/merchant-account-collections/{collectionId}/approve")).StatusCode);
+
+        var rejectedRequest = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/merchant-accounts/{merchantId}/collections", new
+        {
+            sourceOperationId = operation.Id,
+            amount = 10m,
+            paymentMethod = "CashHandToHand",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync(),
+            submitForReview = true
+        });
+        Assert.Equal(HttpStatusCode.Created, rejectedRequest.StatusCode);
+        var rejectedCollection = await rejectedRequest.Content.ReadFromJsonAsync<JsonElement>();
+        var rejectCollection = await PostPaymentJsonAsync(accountant,
+            $"/api/v1/payments/merchant-account-collections/{rejectedCollection.GetProperty("id").GetGuid()}/reject",
+            new { reason = "Accountant self-review contract" });
+        Assert.Equal(HttpStatusCode.OK, rejectCollection.StatusCode);
+
+        var created = await PostPaymentJsonAsync(accountant, "/api/v1/payments/adjustments", new
+        {
+            merchantId,
+            operationId = operation.Id,
+            adjustmentType = "BalanceReduction",
+            amount = 20m,
+            notes = "Accountant approval contract"
+        });
+        var adjustment = await created.Content.ReadFromJsonAsync<FinancialAdjustmentContract>();
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.NotNull(adjustment);
+
+        var approval = await PostPaymentAsync(accountant, $"/api/v1/payments/adjustments/{adjustment!.Id}/approve");
+        Assert.Equal(HttpStatusCode.OK, approval.StatusCode);
+        var payout = await PostPaymentJsonAsync(accountant, $"/api/v1/payments/adjustments/{adjustment.Id}/payout", new
+        {
+            amount = 20m,
+            paymentMethod = "CashHandToHand",
+            financeAccountId = await _factory.GetFinanceAccountIdAsync()
+        });
+        Assert.Equal(HttpStatusCode.Forbidden, payout.StatusCode);
+
+        var deniedOperationApproval = await accountant.PostAsync($"/api/v1/operations/{operation.Id}/confirm", null);
+        Assert.Equal(HttpStatusCode.Forbidden, deniedOperationApproval.StatusCode);
+        var deniedFinanceApproval = await accountant.PostAsync($"/api/v1/finance/expenses/{Guid.NewGuid()}/approve", null);
+        Assert.Equal(HttpStatusCode.Forbidden, deniedFinanceApproval.StatusCode);
     }
 
     [Fact]

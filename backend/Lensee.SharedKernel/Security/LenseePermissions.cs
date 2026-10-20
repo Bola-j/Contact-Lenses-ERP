@@ -18,6 +18,7 @@ public static class LenseePermissions
     public const string PaymentsApprove = "payments.approve";
     public const string PaymentsAdjustmentsRequest = "payments.adjustments.request";
     public const string PaymentsAdjustmentsApprove = "payments.adjustments.approve";
+    public const string PaymentsAdjustmentsPayout = "payments.adjustments.payout";
     public const string OperationsCorrectionsRequest = "operations.corrections.request";
     public const string OperationsCorrectionsApprove = "operations.corrections.approve";
     public const string ReportsRead = "reports.read";
@@ -46,26 +47,26 @@ public static class LenseePermissions
         {
             LenseeRoles.CLevel => new[]
             {
-                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, PaymentsAdjustmentsApprove, ReportsRead, ExecutiveSummaryRead, SupplyRead, IntegrationsShopifyRead, FinanceRead
+                CatalogRead, InventoryRead, OperationsRead, PaymentsRead, PaymentsAdjustmentsApprove, PaymentsAdjustmentsPayout, ReportsRead, ExecutiveSummaryRead, SupplyRead, IntegrationsShopifyRead, FinanceRead
             },
             LenseeRoles.Admin => new[]
             {
                 UsersRead, UsersWrite, UsersPasswordWrite, UsersDelete, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, OperationsCorrectionsRequest, OperationsCorrectionsApprove,
-                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove,
+                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove, PaymentsAdjustmentsPayout,
                 ReportsRead, ExecutiveSummaryRead, SupplyRead, SupplyWrite, SupplyReceive, SupplyPaymentsApprove, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage, FinanceRead, FinanceExpenseCreate, FinanceExpenseApprove, FinanceWithdrawalCreate, FinanceWithdrawalAssign, FinanceWithdrawalApprove, FinanceAccountsManage, FinanceReconcile, FinanceOpeningCreate, FinanceOpeningCorrect
             },
             LenseeRoles.ERPAdmin => new[]
             {
                 UsersRead, UsersWrite, CatalogRead, CatalogWrite, InventoryRead, InventoryWrite,
                 OperationsRead, OperationsWrite, OperationsCorrectionsRequest, OperationsCorrectionsApprove,
-                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove,
+                PaymentsRead, PaymentsWrite, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove, PaymentsAdjustmentsPayout,
                 ReportsRead, AuditRead, SettingsWrite, IntegrationsShopifyRead, IntegrationsShopifyManage,
                 SupplyRead, SupplyWrite, SupplyReceive
             },
             LenseeRoles.Accountant => new[]
             {
-                OperationsRead, OperationsCorrectionsRequest, PaymentsRead, PaymentsDraft, PaymentsAdjustmentsRequest, ReportsRead, FinanceRead, FinanceOpeningCreate, FinanceOpeningCorrect
+                OperationsRead, OperationsCorrectionsRequest, PaymentsRead, PaymentsDraft, PaymentsApprove, PaymentsAdjustmentsRequest, PaymentsAdjustmentsApprove, ReportsRead, FinanceRead, FinanceOpeningCreate, FinanceOpeningCorrect
             },
             LenseeRoles.WarehouseClerk => new[]
             {

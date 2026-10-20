@@ -14,6 +14,7 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.UsersPasswordWrite, permissions);
         Assert.Contains(LenseePermissions.SupplyWrite, permissions);
         Assert.Contains(LenseePermissions.PaymentsAdjustmentsApprove, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsPayout, permissions);
     }
 
     [Fact]
@@ -28,6 +29,7 @@ public sealed class PermissionTests
         Assert.Contains(LenseePermissions.OperationsWrite, permissions);
         Assert.Contains(LenseePermissions.OperationsCorrectionsRequest, permissions);
         Assert.Contains(LenseePermissions.OperationsCorrectionsApprove, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsPayout, permissions);
         Assert.DoesNotContain(LenseePermissions.UsersPasswordWrite, permissions);
         Assert.Contains(LenseePermissions.SupplyRead, permissions);
         Assert.Contains(LenseePermissions.SupplyWrite, permissions);
@@ -41,6 +43,7 @@ public sealed class PermissionTests
 
         Assert.Contains(LenseePermissions.SupplyRead, permissions);
         Assert.Contains(LenseePermissions.PaymentsAdjustmentsApprove, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsPayout, permissions);
         Assert.DoesNotContain(LenseePermissions.SupplyWrite, permissions);
     }
 
@@ -67,8 +70,12 @@ public sealed class PermissionTests
         var permissions = LenseePermissions.ForRole(LenseeRoles.Accountant);
 
         Assert.Contains(LenseePermissions.PaymentsDraft, permissions);
+        Assert.Contains(LenseePermissions.PaymentsApprove, permissions);
         Assert.Contains(LenseePermissions.PaymentsAdjustmentsRequest, permissions);
+        Assert.Contains(LenseePermissions.PaymentsAdjustmentsApprove, permissions);
         Assert.DoesNotContain(LenseePermissions.PaymentsWrite, permissions);
-        Assert.DoesNotContain(LenseePermissions.PaymentsApprove, permissions);
+        Assert.DoesNotContain(LenseePermissions.PaymentsAdjustmentsPayout, permissions);
+        Assert.DoesNotContain(LenseePermissions.OperationsCorrectionsApprove, permissions);
+        Assert.DoesNotContain(LenseePermissions.FinanceExpenseApprove, permissions);
     }
 }
