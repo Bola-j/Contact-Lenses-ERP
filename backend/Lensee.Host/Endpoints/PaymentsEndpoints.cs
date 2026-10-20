@@ -128,7 +128,7 @@ public static class PaymentsEndpoints
         group.MapGet("/adjustments", ListFinancialAdjustmentsAsync).RequireAuthorization("payments.read");
         group.MapPost("/adjustments", CreateFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.request");
         group.MapPost("/adjustments/{id:guid}/approve", ApproveFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
-        group.MapPost("/adjustments/{id:guid}/payout", PayoutCashRefundAsync).RequireAuthorization("payments.adjustments.approve");
+        group.MapPost("/adjustments/{id:guid}/payout", PayoutCashRefundAsync).RequireAuthorization("payments.adjustments.payout");
         group.MapPost("/adjustments/{id:guid}/reject", RejectFinancialAdjustmentAsync).RequireAuthorization("payments.adjustments.approve");
 
         return group;
@@ -3336,7 +3336,7 @@ public static class PaymentsEndpoints
             var entitlement = await LoadReturnEntitlementForUpdateAsync(waiver.ReturnEntitlementId, paymentsDbContext, cancellationToken);
             if (entitlement is null) { failure = Results.NotFound(); return; }
             if (waiver.Status != "PendingReview") { failure = Results.Conflict(new { code = "return-entitlement-waiver-already-decided", status = waiver.Status }); return; }
-            if (waiver.RequestedBy == actorId) { failure = Results.Forbid(); return; }
+            if (waiver.RequestedBy == actorId && LenseeRoles.Normalize(currentUser.Role) != LenseeRoles.Accountant) { failure = Results.Forbid(); return; }
             var available = await GetReturnEntitlementScopeAvailableAsync(entitlement, waiver.Scope, paymentsDbContext, cancellationToken, waiver.Id);
             if (waiver.Amount > available) { failure = Results.Conflict(new { code = "return-entitlement-waiver-cap-changed", scope = waiver.Scope, availableAmount = available }); return; }
             waiver.Status = "Approved";
@@ -3377,7 +3377,7 @@ public static class PaymentsEndpoints
             var entitlement = await LoadReturnEntitlementForUpdateAsync(waiver.ReturnEntitlementId, paymentsDbContext, cancellationToken);
             if (entitlement is null) { failure = Results.NotFound(); return; }
             if (waiver.Status != "PendingReview") { failure = Results.Conflict(new { code = "return-entitlement-waiver-already-decided", status = waiver.Status }); return; }
-            if (waiver.RequestedBy == actorId) { failure = Results.Forbid(); return; }
+            if (waiver.RequestedBy == actorId && LenseeRoles.Normalize(currentUser.Role) != LenseeRoles.Accountant) { failure = Results.Forbid(); return; }
             waiver.Status = "Rejected";
             waiver.ReviewedBy = actorId;
             waiver.ReviewedAt = now;
@@ -4058,7 +4058,7 @@ public static class PaymentsEndpoints
     {
         await using var idempotency = await paymentIdempotencyService.StartAsync(idempotencyKey, $"POST /api/v1/payments/adjustments/{id}/payout", request, cancellationToken);
         if (idempotency.Result is not null) return idempotency.Result;
-        if (!IsAdjustmentReviewer(currentUser)) return Results.Forbid();
+        if (!IsAdjustmentPayoutActor(currentUser)) return Results.Forbid();
         if (request.Amount <= 0m)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Amount)] = ["Payout amount must be greater than zero."] });
@@ -4589,6 +4589,9 @@ public static class PaymentsEndpoints
         operation.OperationType == RetailSale && operation.SalesChannel is ("Online" or "Shopify") && operation.Status == "Delivered";
 
     private static bool IsAdjustmentReviewer(ICurrentUser currentUser) =>
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.CLevel or LenseeRoles.Accountant;
+
+    private static bool IsAdjustmentPayoutActor(ICurrentUser currentUser) =>
         LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.CLevel;
 
     // Return entitlement settlement deliberately excludes C-Level and warehouse
@@ -4597,7 +4600,7 @@ public static class PaymentsEndpoints
         LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Accountant or LenseeRoles.Admin or LenseeRoles.ERPAdmin;
 
     private static bool IsReturnEntitlementWaiverReviewer(ICurrentUser currentUser) =>
-        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.Accountant;
 
     private static string? NormalizeReturnSettlementMethod(string? value) => value?.Trim() switch
     {
@@ -4614,7 +4617,7 @@ public static class PaymentsEndpoints
     // Collection review is deliberately narrower than adjustment review. C-Level retains
     // payment read access and adjustment authority, but does not approve collected cash.
     private static bool IsCollectionReviewer(ICurrentUser currentUser) =>
-        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin;
+        LenseeRoles.Normalize(currentUser.Role) is LenseeRoles.Admin or LenseeRoles.ERPAdmin or LenseeRoles.Accountant;
 
     private static IReadOnlyList<string> CollectionPermittedActions(string? status) =>
         status switch

@@ -7441,7 +7441,8 @@ async function renderPayments() {
   const auth = getAuth();
   const isAdmin = ["Admin", "ERPAdmin"].includes(auth?.user.role);
   const canDraft = ["Admin", "ERPAdmin", "Accountant"].includes(auth?.user.role);
-  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
+  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel", "Accountant"].includes(auth?.user.role);
+  const canPayoutAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(auth?.user.role);
   // The queue a user opened is the only data allowed to compete for the
   // first paint. Reference lists, KPIs, and review-only work are hydrated
   // after that queue is visible.
@@ -7501,12 +7502,12 @@ async function renderPayments() {
       <div class="table-wrap"><table><thead><tr><th>${paymentT("scope")}</th><th>${paymentT("reference")}</th><th>${paymentT("source")}</th><th>${paymentT("assignedTo")}</th><th>${paymentT("amount")}</th><th>${paymentT("method")}</th><th>${paymentT("status")}</th><th>${paymentT("action")}</th></tr></thead><tbody id="payment-review-rows"><tr><td colspan="8">${paymentT("loadingApprovalWork")}</td></tr></tbody></table></div>
       ${canApproveAdjustments ? `<section class="band payment-tool-card" id="financial-adjustment-inbox">
         <div class="section-head"><div><h2>${paymentT("financialAdjustment")}</h2><p>${paymentT("adjustmentHelp")}</p></div><button id="financial-adjustment-refresh" class="button secondary" type="button">${paymentT("refreshInbox")}</button></div>
-        <div class="toolbar" id="refund-payout-options">
+        ${canPayoutAdjustments ? `<div class="toolbar" id="refund-payout-options">
           <label class="inline-field"><span>${paymentT("receivedMethod")}</span><select id="adjustment-refund-payment-method" class="select"><option value="CashHandToHand">${paymentT("cashInHand")}</option><option value="BankTransfer">${paymentT("bankTransfer")}</option><option value="Wallet">${paymentT("wallet")}</option></select></label>
           <label class="inline-field"><span>${paymentT("financeAccount")}</span><select id="adjustment-refund-finance-account" class="select"><option value="">${paymentT("chooseFinanceAccount")}</option>${financeAccountOptions}</select></label>
           <label class="inline-field"><span>${paymentT("transactionReference")}</span><input id="adjustment-refund-reference" class="input" placeholder="${paymentT("electronicReferenceRequired")}"></label>
           <label class="inline-field" id="adjustment-refund-transfer-fee-field" hidden><span>${paymentT("transferFeeAmount")}</span><input id="adjustment-refund-transfer-fee" class="input" type="number" min="0" step="0.01" value="0"></label>
-        </div>
+        </div>` : ""}
         <div class="table-wrap"><table><thead><tr><th>${paymentT("operationNumber")}</th><th>${paymentT("type")}</th><th>${paymentT("amount")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody id="financial-adjustment-rows"><tr><td colspan="7">${paymentT("loading")}</td></tr></tbody></table></div>
       </section>` : ""}
       <section class="band payment-tool-card" id="return-entitlement-inbox">
@@ -7712,7 +7713,8 @@ async function loadFinancialAdjustmentInbox() {
   const rows = document.getElementById("financial-adjustment-rows");
   if (!rows) return;
   try {
-    const canApprove = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user?.role);
+    const canApprove = ["Admin", "ERPAdmin", "CLevel", "Accountant"].includes(getAuth()?.user?.role);
+    const canPayout = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user?.role);
     const merchantId = document.getElementById("payment-merchant")?.value || "";
     const query = canApprove
       ? "?actionableOnly=true"
@@ -7724,7 +7726,7 @@ async function loadFinancialAdjustmentInbox() {
       const operation = item.operationNumber || (item.operationId ? shortId(item.operationId, "OP") : paymentT("merchantAccount"));
       const actionMarkup = canApprove && item.status === "PendingApproval"
         ? `<button class="button secondary table-action" type="button" data-inbox-adjustment-approve="${escapeHtml(item.id)}">${paymentT("approve")}</button><button class="button secondary table-action" type="button" data-inbox-adjustment-reject="${escapeHtml(item.id)}">${paymentT("reject")}</button>`
-        : canApprove && item.adjustmentType === "CashRefund" && item.status === "Approved"
+        : canPayout && item.adjustmentType === "CashRefund" && item.status === "Approved"
           ? `<button class="button secondary table-action" type="button" data-inbox-adjustment-payout="${escapeHtml(item.id)}">${paymentT("recordPayout")}</button>`
           : "-";
       row.innerHTML = `<td>${escapeHtml(operation)}</td><td>${escapeHtml(paymentStageLabel(item.adjustmentType))}</td><td>${escapeHtml(formatMoney(item.amount))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(item.status))}</td><td>${escapeHtml(item.createdByName || "-")}</td><td>${escapeHtml([item.notes, item.rejectionReason ? `${paymentT("rejectionReason")}: ${item.rejectionReason}` : null, item.reviewedByName ? `${paymentT("reviewedBy")}: ${item.reviewedByName}` : null].filter(Boolean).join(" · ") || "-")}</td><td>${actionMarkup}</td>`;
@@ -7741,7 +7743,9 @@ async function loadFinancialAdjustmentInbox() {
 async function loadReturnEntitlements() {
   const rows = document.getElementById("return-entitlement-rows");
   if (!rows) return;
-  const canSettle = ["Accountant", "Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+  const role = getAuth()?.user?.role;
+  const canSettle = ["Accountant", "Admin", "ERPAdmin"].includes(role);
+  const canReviewWaivers = ["Accountant", "Admin", "ERPAdmin"].includes(role);
   rows.replaceChildren(paymentEmptyTableRow(9, paymentT("loading")));
   try {
     const result = await request("/api/v1/payments/return-entitlements");
@@ -7838,6 +7842,29 @@ async function loadReturnEntitlements() {
           document.getElementById("payment-review-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
         });
         actionCell.append(document.createTextNode(" "), review);
+      }
+      const pendingWaivers = (item.waivers || []).filter((waiver) => waiver.status === "PendingReview");
+      if (canReviewWaivers && pendingWaivers.length) {
+        for (const waiver of pendingWaivers) {
+          const review = document.createElement("div");
+          review.className = "muted-cell return-waiver-review";
+          const summary = document.createElement("span");
+          summary.textContent = `${paymentT("requestWaiver")}: ${paymentT(waiver.scope === "SourceOperation" ? "sourceOperationScope" : waiver.scope === "MerchantAccount" ? "merchantAccountScope" : "otherPaymentsScope")} · ${formatMoney(waiver.amount)} · ${waiver.reason}`;
+          const approve = document.createElement("button");
+          approve.className = "button secondary table-action";
+          approve.type = "button";
+          approve.dataset.returnWaiverApprove = waiver.id;
+          approve.textContent = paymentT("approve");
+          approve.addEventListener("click", () => void reviewReturnEntitlementWaiver(waiver.id, true));
+          const reject = document.createElement("button");
+          reject.className = "button danger table-action";
+          reject.type = "button";
+          reject.dataset.returnWaiverReject = waiver.id;
+          reject.textContent = paymentT("reject");
+          reject.addEventListener("click", () => void reviewReturnEntitlementWaiver(waiver.id, false));
+          review.append(summary, document.createTextNode(" "), approve, document.createTextNode(" "), reject);
+          actionCell.append(review);
+        }
       }
       row.append(actionCell);
       return row;
@@ -8605,7 +8632,8 @@ async function togglePaymentDetails(id, button) {
     target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
-    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.cashDetailApprove, approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.cashDetailReject, reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
     target.querySelectorAll("[data-adjustment-payout]").forEach((payout) => payout.addEventListener("click", () => payoutCashRefund(payout.dataset.adjustmentPayout, id)));
@@ -8638,7 +8666,8 @@ async function togglePaymentHistoryDetails(id, button) {
     target.querySelectorAll("[data-sublog-submit]").forEach((submit) => submit.addEventListener("click", () => submitSubLog(submit.dataset.sublogSubmit, submit.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-approve]").forEach((approve) => approve.addEventListener("click", () => approveSubLog(approve.dataset.sublogApprove, approve.dataset.paymentLogId)));
     target.querySelectorAll("[data-sublog-reject]").forEach((reject) => reject.addEventListener("click", () => rejectSubLog(reject.dataset.sublogReject, reject.dataset.paymentLogId)));
-    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-approve]").forEach((approve) => approve.addEventListener("click", () => approveCashReceipt(approve.dataset.cashDetailApprove, approve.dataset.paymentLogId)));
+    target.querySelectorAll("[data-cash-detail-reject]").forEach((reject) => reject.addEventListener("click", () => rejectCashReceipt(reject.dataset.cashDetailReject, reject.dataset.paymentLogId)));
     target.querySelectorAll("[data-adjustment-approve]").forEach((approve) => approve.addEventListener("click", () => approveAdjustment(approve.dataset.adjustmentApprove, id)));
     target.querySelectorAll("[data-adjustment-reject]").forEach((reject) => reject.addEventListener("click", () => rejectAdjustment(reject.dataset.adjustmentReject, id)));
   } catch (exception) {
@@ -8649,8 +8678,10 @@ async function togglePaymentHistoryDetails(id, button) {
 function renderPaymentDetail(detail) {
   const role = getAuth()?.user.role;
   const isAdmin = ["Admin", "ERPAdmin"].includes(role);
+  const canReviewPayments = ["Admin", "ERPAdmin", "Accountant"].includes(role);
   const canPrepareCollection = ["Accountant", "Admin", "ERPAdmin"].includes(role);
-  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(getAuth()?.user.role);
+  const canApproveAdjustments = ["Admin", "ERPAdmin", "CLevel", "Accountant"].includes(role);
+  const canPayoutAdjustments = ["Admin", "ERPAdmin", "CLevel"].includes(role);
   const subLogs = detail.subLogs || [];
   const cashRecords = detail.cashRecords || [];
   const adjustments = detail.adjustments || [];
@@ -8690,7 +8721,7 @@ function renderPaymentDetail(detail) {
         <td>${escapeHtml(sub.rejectionReason || formatDateTime(sub.confirmedAt) || "-")}<div class="muted-cell">${escapeHtml(sub.confirmedByName || "-")}</div>${sub.notes ? `<div class="muted-cell">${escapeHtml(sub.notes)}</div>` : ""}</td>
         <td>${sub.status === "Draft" && canPrepareCollection
           ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-submit="${escapeHtml(sub.id)}">${paymentT("sendForApproval")}</button>`
-          : isAdmin && sub.status === "PendingAdminReview"
+          : canReviewPayments && sub.status === "PendingAdminReview"
             ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-approve="${escapeHtml(sub.id)}">${paymentT("approve")}</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-sublog-reject="${escapeHtml(sub.id)}">${paymentT("reject")}</button>`
             : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
@@ -8703,8 +8734,8 @@ function renderPaymentDetail(detail) {
         <td><span class="status-pill ${paymentHistoryStatusClass(record.status)}">${escapeHtml(paymentWorkflowStatusLabel(record.status))}</span></td>
         <td>${escapeHtml(record.createdByName || "-")}</td>
         <td>${escapeHtml(record.notes || "-")}${!record.financeAccountId && ["PendingAccountant", "PendingAdminReview"].includes(record.status) ? `<div class="status-danger">${escapeHtml(paymentT("legacyReceiptMissingAccount"))}</div>` : ""}</td>
-        <td>${isAdmin && ["PendingAccountant", "PendingAdminReview"].includes(record.status)
-          ? `<button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">${paymentT("reject")}</button>`
+        <td>${canReviewPayments && ["PendingAccountant", "PendingAdminReview"].includes(record.status)
+          ? `<button class="button secondary table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-approve="${escapeHtml(record.id)}">${paymentT("approve")}</button><button class="button danger table-action" type="button" data-payment-log-id="${escapeHtml(log.id)}" data-cash-detail-reject="${escapeHtml(record.id)}">${paymentT("reject")}</button>`
           : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
     <div class="table-wrap compact-table"><table><thead><tr><th>${paymentT("adjustment")}</th><th>${paymentT("amount")}</th><th>${paymentT("date")}</th><th>${paymentT("status")}</th><th>${paymentT("createdBy")}</th><th>${paymentT("notes")}</th><th>${paymentT("actions")}</th></tr></thead><tbody>${adjustments.length === 0
@@ -8716,7 +8747,7 @@ function renderPaymentDetail(detail) {
         <td><span class="status-pill ${paymentHistoryStatusClass(adjustment.status)}">${escapeHtml(paymentWorkflowStatusLabel(adjustment.status))}</span></td>
         <td>${escapeHtml(adjustment.createdByName || "-")}</td>
         <td>${escapeHtml([adjustment.notes, adjustment.rejectionReason ? `${paymentT("rejectionReason")}: ${adjustment.rejectionReason}` : null, adjustment.reviewedByName ? `${paymentT("reviewedBy")}: ${adjustment.reviewedByName}` : null].filter(Boolean).join(" · ") || "-")}</td>
-        <td>${canApproveAdjustments && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">${paymentT("approve")}</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">${paymentT("reject")}</button>` : canApproveAdjustments && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">${paymentT("recordPayout")}</button>` : "-"}</td>
+        <td>${canApproveAdjustments && adjustment.status === "PendingApproval" ? `<button class="button secondary table-action" type="button" data-adjustment-approve="${escapeHtml(adjustment.id)}">${paymentT("approve")}</button><button class="button secondary table-action" type="button" data-adjustment-reject="${escapeHtml(adjustment.id)}">${paymentT("reject")}</button>` : canPayoutAdjustments && adjustment.adjustmentType === "CashRefund" && adjustment.status === "Approved" ? `<button class="button secondary table-action" type="button" data-adjustment-payout="${escapeHtml(adjustment.id)}">${paymentT("recordPayout")}</button>` : "-"}</td>
       </tr>`).join("")}</tbody></table></div>
   </div>`;
 }
@@ -8994,12 +9025,13 @@ async function submitSubLog(id, paymentLogId = null) {
   }
 }
 
-async function approveCashReceipt(id) {
+async function approveCashReceipt(id, paymentLogId = null) {
   return confirmFinalAction({ action: "approve", title: "Approve cash receipt", message: "Approve and post this cash receipt?", control: document.querySelector(`[data-cash-detail-approve="${CSS.escape(id)}"]`), key: `payment:cash:${id}:approve`, execute: async () => {
   try {
     await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/approve`, { method: "POST" });
     notice(paymentT("cashReceiptApprovedNotice"), "success");
     await Promise.all([loadPayments(), loadPaymentHistory()]);
+    await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
@@ -9007,7 +9039,7 @@ async function approveCashReceipt(id) {
   });
 }
 
-async function rejectCashReceipt(id) {
+async function rejectCashReceipt(id, paymentLogId = null) {
   return confirmFinalAction({ action: "reject", title: foundationT("app.prompt.rejectCashReceipt"), message: foundationT("app.prompt.rejectCashReceiptHelp"), reasonLabel: foundationT("app.prompt.rejectCashReceiptHelp"), control: document.querySelector(`[data-cash-detail-reject="${CSS.escape(id)}"]`), key: `payment:cash:${id}:reject`, execute: async (reason) => {
   try {
     await request(`/api/v1/payments/cash-receipts/${encodeURIComponent(id)}/reject`, {
@@ -9016,7 +9048,7 @@ async function rejectCashReceipt(id) {
     });
     notice(paymentT("cashReceiptRejectedNotice"), "success");
     await Promise.all([loadPayments(), loadPaymentHistory(), loadPaymentAudit()]);
-    await reopenPaymentDetail(id);
+    await reopenPaymentDetail(paymentLogId);
   } catch (exception) {
     notice(getFriendlyWorkspaceError(exception), "error");
   }
@@ -9340,7 +9372,7 @@ async function loadMerchantBalance() {
       <article class="merchant-account-answer"><span>${paymentT("amountReductions")}</span><strong>${escapeHtml(formatMoney(amountReductions))}</strong><p>${paymentT("amountReductionsHelp")}</p></article>`;
       const openingTarget = document.getElementById("merchant-opening-history");
     if (openingTarget) {
-      const canApproveOpening = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+      const canApproveOpening = ["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
       const canCorrectOpening = ["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
       openingTarget.innerHTML = financeTable(openingHistory, [foundationT("payments.merchantOpening.amount"), foundationT("payments.merchantOpening.date"), foundationT("payments.merchantOpening.status"), foundationT("payments.merchantOpening.note"), foundationT("payments.merchantOpening.actions")], (item) => `<tr><td>${escapeHtml(formatMoney(item.amount))}</td><td>${escapeHtml(renderDateOnly(item.asOfDate))}</td><td>${escapeHtml(paymentWorkflowStatusLabel(item.status))}</td><td>${escapeHtml(item.description || "—")}${item.reviewReason ? `<small>${escapeHtml(item.reviewReason)}</small>` : ""}</td><td>${canApproveOpening && item.status === "PendingReview" ? `<button class="button secondary table-action" type="button" data-merchant-opening-approve="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.approve")}</button>` : ""}${canCorrectOpening && item.status === "Posted" && !item.replacedByChargeId ? `<button class="button secondary table-action" type="button" data-merchant-opening-correct="${escapeHtml(item.id)}">${foundationT("payments.merchantOpening.correct")}</button>` : ""}</td></tr>`);
       const openingCreate = document.getElementById("merchant-opening-create");
@@ -9377,7 +9409,7 @@ async function loadMerchantBalance() {
     }
     const collectionRows = document.getElementById("merchant-collection-draft-rows");
     if (collectionRows) {
-      const canReview = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+      const canReview = ["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
       collectionRows.replaceChildren(...(collections.length ? collections.map((item) => paymentCollectionDraftRow(item, canReview)) : [paymentEmptyTableRow(7, paymentT("noAccountCollections"))]));
     }
     const orderRows = document.getElementById("merchant-order-rows");
@@ -9486,7 +9518,7 @@ async function loadMerchantFinancialClosure(merchantId) {
     syncSubmitAvailability();
     const review = document.getElementById("merchant-closure-review");
     if (review) {
-      review.hidden = !["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+      review.hidden = !["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
       if (!review.hidden) {
         try {
           const proposals = await request(`/api/v1/payments/merchant-accounts/${merchantId}/financial-closure/proposals`);
@@ -9633,7 +9665,7 @@ async function loadCollectionWorkInbox() {
   try {
     const result = await request("/api/v1/payments/collection-work?pageSize=200");
     const items = Array.isArray(result) ? result : (result.items || []);
-    const canReview = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+    const canReview = ["Admin", "ERPAdmin", "Accountant"].includes(getAuth()?.user?.role);
     const rendered = items.map((item) => {
       const allocationSummary = (item.allocationDetails || []).map((allocation) =>
         `${allocation.operationNumber || paymentT("openingBalance")} · ${formatMoney(allocation.amount)}`).join(", ");
