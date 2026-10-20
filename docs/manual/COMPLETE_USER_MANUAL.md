@@ -44,7 +44,7 @@ Use the same Payments collection review steps described for Admin. If an Admin-a
 
 ### Role purpose
 
-Prepare and submit collection work for review.
+Prepare payment work and review pending financial decisions in Payments. This approval role does not include Finance-module approval or cash payout execution.
 
 ### Daily workflow
 
@@ -52,9 +52,10 @@ Prepare and submit collection work for review.
 2. Select the operation by its visible operation number/payment reference; for OtherPayments, enter a reference and let the workspace resolve it.
 3. Enter the received amount, date, supported movement method, and a real active receiving account. Add the transaction reference for electronic methods.
 4. Submit for approval and wait for the acknowledgement. Repeated submission with the same unchanged request is deduplicated by the same idempotency key in the current browser form.
-5. Revisit the queue/history to see the reviewer’s decision.
+5. Open the Payments approval inbox to approve or reject pending payment work, collections, adjustments/refunds, financial-closure requests, and return-entitlement waiver requests. Accountants may decide requests they submitted themselves. Rejections that ask for a reason require a specific explanation.
+6. Revisit the queue/history and verify the decision status and resulting balance or payment state.
 
-Expected downstream effect: the reviewer sees pending work; merchant balance and Finance ledger change only after approval. This complete handoff is not yet verified against real accounts.
+Expected downstream effect: pending work remains unposted until approval; an approved collection or adjustment updates its Payments state and applicable balance/ledger records. A rejected request remains in history with its reason. Accountants cannot record cash-refund payouts or approve Finance-module records. These role changes require authenticated UI and live-state certification before this candidate guide is treated as operationally complete.
 
 DO check the operation and payment amount. DON'T resubmit as a new item just because a refresh is slow; search for the original request first.
 

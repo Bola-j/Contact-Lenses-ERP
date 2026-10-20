@@ -488,7 +488,7 @@ builder.Services.AddAuthorization(options =>
             .RequireClaim("permission", LenseePermissions.PaymentsDraft));
 
     options.AddPolicy("payments.approve", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.PaymentsApprove));
 
     options.AddPolicy("payments.adjustments.request", policy =>
@@ -496,8 +496,12 @@ builder.Services.AddAuthorization(options =>
             .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsRequest));
 
     options.AddPolicy("payments.adjustments.approve", policy =>
-        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel, LenseeRoles.Accountant)
             .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsApprove));
+
+    options.AddPolicy("payments.adjustments.payout", policy =>
+        policy.RequireRole(LenseeRoles.Admin, LenseeRoles.ERPAdmin, LenseeRoles.CLevel)
+            .RequireClaim("permission", LenseePermissions.PaymentsAdjustmentsPayout));
 
     options.AddPolicy("finance.read", policy =>
         policy.RequireRole(LenseeRoles.Admin, LenseeRoles.CLevel, LenseeRoles.Accountant).RequireClaim("permission", LenseePermissions.FinanceRead));
