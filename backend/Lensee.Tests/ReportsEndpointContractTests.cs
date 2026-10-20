@@ -213,6 +213,29 @@ public sealed class ReportsEndpointContractTests : IClassFixture<ReportsEndpoint
     }
 
     [Fact]
+    public async Task StockExport_AllScopeIncludesRowsBeyondTheInteractivePageLimit()
+    {
+        await _factory.SeedStockRowsAsync(101);
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.ReportsRead);
+
+        using var export = await client.GetAsync("/api/v1/reports/stock/export?format=csv&language=en&scope=all");
+        var csv = await export.Content.ReadAsStringAsync();
+
+        using var interactive = await client.GetAsync("/api/v1/reports/stock?page=1&pageSize=1000");
+        var interactivePage = await interactive.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(HttpStatusCode.OK, export.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, interactive.StatusCode);
+        Assert.Equal(100, interactivePage.GetProperty("pageSize").GetInt32());
+        Assert.Equal(100, interactivePage.GetProperty("items").GetArrayLength());
+        for (var index = 0; index < 101; index++)
+        {
+            Assert.Contains($"ALL-ROWS-{index:D3}", csv, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task PrintableDocuments_RenderInEnglishAndArabic_AndLogExports()
     {
         await _factory.ResetAsync();
@@ -616,6 +639,46 @@ public class ReportsEndpointFactory : WebApplicationFactory<Program>
         await payments.SaveChangesAsync();
 
         return new PrintableDocumentSeed(operationId, paymentId, cashPaymentId, shipmentId, merchantId, stocktakeId, locationId);
+    }
+
+    public async Task SeedStockRowsAsync(int count)
+    {
+        using var scope = Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var inventory = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        var now = new DateTime(2026, 8, 4, 10, 30, 0, DateTimeKind.Utc);
+        var locationId = Guid.NewGuid();
+        var productId = Guid.NewGuid();
+
+        inventory.Locations.Add(new Location { Id = locationId, Name = "All rows export warehouse", LocationType = "Warehouse", IsActive = true });
+        catalog.Products.Add(new Product
+        {
+            Id = productId,
+            CategoryId = Guid.NewGuid(),
+            BrandId = Guid.NewGuid(),
+            Name = "All rows export lens",
+            ProductType = "Lens",
+            IsActive = true,
+            CreatedAt = now
+        });
+
+        for (var index = 0; index < count; index++)
+        {
+            var skuId = Guid.NewGuid();
+            catalog.Skus.Add(new Sku { Id = skuId, ProductId = productId, SkuCode = $"ALL-ROWS-{index:D3}", IsActive = true });
+            inventory.StockBalances.Add(new StockBalance
+            {
+                Id = Guid.NewGuid(),
+                LocationId = locationId,
+                SkuId = skuId,
+                AvailableQty = index + 1,
+                TargetQty = index + 1,
+                LastUpdated = now
+            });
+        }
+
+        await catalog.SaveChangesAsync();
+        await inventory.SaveChangesAsync();
     }
 }
 

@@ -217,6 +217,17 @@ public sealed class StockLedgerServiceTests
         var skuId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         var batchId = Guid.NewGuid();
+        dbContext.InventoryBatches.Add(new InventoryBatch
+        {
+            Id = batchId,
+            LocationId = locationId,
+            SkuId = skuId,
+            LotNumber = "LOT",
+            ExpiryDate = new DateOnly(2028, 6, 1),
+            Quantity = 1,
+            CreatedBy = userId,
+            CreatedAt = new DateTime(2026, 6, 25)
+        });
         dbContext.OpenedPieceLots.Add(new OpenedPieceLot
         {
             Id = Guid.NewGuid(),
@@ -361,9 +372,14 @@ public sealed class StockLedgerServiceTests
         var locationId = Guid.NewGuid();
         var skuId = Guid.NewGuid();
         var userId = Guid.NewGuid();
+        var firstBatchId = Guid.NewGuid();
+        var secondBatchId = Guid.NewGuid();
+        dbContext.InventoryBatches.AddRange(
+            new InventoryBatch { Id = firstBatchId, LocationId = locationId, SkuId = skuId, Quantity = 0, ExpiryDate = new DateOnly(2028, 6, 1), CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) },
+            new InventoryBatch { Id = secondBatchId, LocationId = locationId, SkuId = skuId, Quantity = 0, ExpiryDate = new DateOnly(2028, 6, 1), CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) });
         dbContext.OpenedPieceLots.AddRange(
-            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 1, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) },
-            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = Guid.NewGuid(), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 3, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) });
+            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = firstBatchId, BatchExpiryDate = new DateOnly(2028, 6, 1), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 1, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) },
+            new OpenedPieceLot { Id = Guid.NewGuid(), LocationId = locationId, SkuId = skuId, SourceBatchId = secondBatchId, BatchExpiryDate = new DateOnly(2028, 6, 1), OpenedDate = new DateOnly(2026, 6, 25), LoosePieceQuantity = 3, CreatedBy = userId, CreatedAt = new DateTime(2026, 6, 25) });
         await dbContext.SaveChangesAsync();
 
         await service.IssuePiecesFefoAsync(locationId, skuId, 3, 10, userId);

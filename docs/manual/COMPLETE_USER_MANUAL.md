@@ -91,3 +91,49 @@ Payments is not listed as a WarehouseClerk route in the current UI allowlist. Do
 - Permission denied: stop and ask the system administrator to check the intended role boundary; do not repeatedly submit.
 
 The following remain uncertified: persistent company users, full UI coverage for every role/operation, ERPAdmin differential parity, shared-company cross-role chains, and real PostgreSQL concurrency/upgrade behavior. See `artifacts/overnight/SCENARIO_MATRIX.md` and `artifacts/overnight/OVERNIGHT_REPORT.md`.
+
+## Shopify Online intake — verified isolated QA behavior (Admin/ERPAdmin and WarehouseClerk)
+
+### Role purpose
+
+Admin/ERPAdmin maintain exception mappings and monitor Shopify intake. The Online Warehouse Clerk allocates stock and fulfills eligible drafts. Shopify owns the commercial order; ERP owns stock and fulfillment. Finance/provider verification remains an independent process.
+
+### Daily workflow
+
+1. The catalog owner copies the ERP SKU into each Shopify variant before orders are created. The integration does not change Shopify SKUs.
+2. Open **Online intake** and review queue age, attempts and actionable status. A routine active unique SKU match is remembered by store and variant; unresolved or conflicting items stay visible for correction.
+3. To correct a mismatch, open the variant mapping, select the verified active ERP SKU, enter a reason and save. Retry/replay the existing delivery. Do not create another order because processing is delayed.
+4. A valid order arrives as an unallocated Draft. Open it in **Operations**, choose the correct SubWarehouse and each line's batch/expiry, save the allocation, and confirm to reserve stock.
+5. Before dispatch, inspect the payment facts. A trusted Shopify-reported **paid** status allows dispatch when normal stock and fulfillment checks pass, even if independent provider evidence and weekend Finance reconciliation remain pending. A pending/unpaid order remains reserved but cannot dispatch.
+6. Dispatch never creates provider verification, collection or Finance reconciliation. Use the established Finance and provider-verification workflows when evidence arrives.
+
+### Quantity and commercial facts
+
+Shopify quantities are pieces for ERP `SinglePiece`/`Both` products and packs for `SealedPackOnly` products. Review the displayed unit, exact quantity, price and line total. Do not convert pieces to packs or re-enter Shopify commercial amounts. ERP chooses batches and controls reservations/expiry.
+
+### Do and don't
+
+**Do:** verify SKU, unit, quantity, buyer delivery facts, source location and batch before confirming; wait for the save/confirmation message; use the existing queued event for retries; review reported payment, provider verification and Finance reconciliation separately.
+
+**Don't:** resolve an ambiguous SKU by guessing; alter historical lines to repair a mapping; dispatch while Shopify still reports pending; treat a gateway label, checkout ID or Shopify paid notice as independent provider proof; create a payment/collection/reconciliation during dispatch; or automatically reverse dispatched stock on cancellation/refund.
+
+### Cancellation, refunds and recovery
+
+A pre-dispatch cancellation releases the actual held pieces/packs once. After dispatch (including delivered/failed-delivery statuses), cancellation and refund notices create review work; do not reverse stock or accounting from the notice. Physical goods return and financial adjustments use the existing governed return/Finance workflows. Reconciliation/manual recovery schedules durable recovery; it does not claim the order was already imported. Escalate unresolved events rather than recreating orders.
+
+### Verification status
+
+ERP UI simulation covered mapping/replay, allocation, paid dispatch and unpaid dispatch blocking. This is implementation evidence, not a requirement to maintain a separate Shopify test store. Actual production Shopify delivery and Paymob certification are separate; follow `docs/SHOPIFY_INTEGRATION_CONFIGURATION.md` for the one-store production setup.
+
+### Verified Online Warehouse Clerk company handoff — 2026-10-19
+
+In the isolated company workflow, the Online Warehouse Clerk can search using the Shopify order number. Open **Edit** on its unallocated Shopify draft; the Shopify retail type and commercial line are shown read-only. Choose an active SubWarehouse and the line's available batch/expiry, save the allocation, then confirm to reserve. On an unpaid order, Ship is disabled and a message explains that Shopify must report paid and the order must have no open review; the order remains Reserved. On an eligible paid order, dispatch is available when normal stock and fulfillment checks pass. The UI confirms each transition and the queue reflects the saved status after refresh. This path was verified in Chrome against the persistent isolated company QA database. It does not certify actual Shopify-origin delivery or production permissions.
+
+The selected SubWarehouse's batches are visible only for the linked Shopify draft and SKU being allocated; ordinary Warehouse Clerk inventory access remains assigned-location scoped. If no batch appears, check that the target SKU has active, non-quarantined, unexpired stock at the selected SubWarehouse and ask an administrator to correct the stock rather than creating a replacement order.
+
+### Verified Accountant handoff
+
+The Accountant can inspect a dispatched order's Shopify-reported payment state, independent provider verification and Finance reconciliation separately. A Shopify-paid order can be dispatched while the other two facts remain pending. The Accountant review path displayed those states without a financial mutation. Provider verification and Finance reconciliation continue only through their existing authorized workflows.
+### Production activation
+
+Use the existing production Shopify store and the ERP's production HTTPS address. Enter the store domain, active Online location ID and signing secret as described in `docs/SHOPIFY_INTEGRATION_CONFIGURATION.md`; then release the five app-specific webhook subscriptions and enable intake. No QA store, tunnel or QA catalog copy is part of this setup. Preserve the existing ERP SKU codes in Shopify and leave COD blank unless it is separately approved.

@@ -14,6 +14,7 @@ public partial class ShopifyWebhookEvent
     public string Status { get; set; } = null!;
     public string? Detail { get; set; }
     public string? ShopifyOrderId { get; set; }
+    public string? ShopifyRefundId { get; set; }
     public Guid? OperationId { get; set; }
     public DateTime ReceivedAt { get; set; }
     public DateTime? VerifiedAt { get; set; }
@@ -21,6 +22,7 @@ public partial class ShopifyWebhookEvent
     public DateTime? ProcessedAt { get; set; }
     public DateTime? NextAttemptAt { get; set; }
     public DateTime? LeaseUntil { get; set; }
+    public Guid? LeaseToken { get; set; }
     public int AttemptCount { get; set; }
     public DateTime? ResolvedAt { get; set; }
     public Guid? ResolvedBy { get; set; }

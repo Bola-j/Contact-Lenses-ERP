@@ -1,6 +1,6 @@
 import { formatDateTime as formatSharedDateTime } from "../date-format.js?v=20261014-date-format";
-import en from "./en.js?v=20261014-cod-settings-history-v2";
-import ar from "./ar.js?v=20261014-cod-settings-history-v2";
+import en from "./en.js?v=20261019-shopify-ops-refresh-4";
+import ar from "./ar.js?v=20261019-shopify-ops-refresh-4";
 
 const languageKey = "lensee.language";
 const dictionaries = Object.freeze({ en, ar });

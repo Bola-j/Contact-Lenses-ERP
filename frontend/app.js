@@ -5,8 +5,8 @@ import {
   findVisibleUuidLeaks,
   sanitizeVisibleText
 } from "./localization.js?v=20261002-sale-line-kinds";
-import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20261014-cod-settings-history-v2";
-import enMessages from "./i18n/en.js?v=20261014-cod-settings-history-v2";
+import { getLanguage as getFoundationLanguage, setLanguage as setFoundationLanguage, t as foundationT } from "./i18n/index.js?v=20261019-shopify-ops-refresh-4";
+import enMessages from "./i18n/en.js?v=20261019-shopify-ops-refresh-4";
 import { formatDateOnly as renderDateOnly, formatDateTime as renderDateTime, isValidDateOnly, isValidDateTime, parseDateOnly } from "./date-format.js?v=20261014-date-format";
 
 // Keep API calls same-origin. Deployment-specific routing belongs to the reverse proxy.
@@ -162,7 +162,10 @@ let auditPageState = { page: 1, pageSize: 50 };
 let notificationPageState = { page: 1, pageSize: 10 };
 let notificationLoadGeneration = 0;
 let shopifyIntegrationPageState = { page: 1, pageSize: 25 };
+let shopifyReconciliationAvailable = false;
 let shopifySkuPageState = { page: 1, pageSize: 50 };
+let shopifyVariantPageState = { page: 1, pageSize: 25 };
+let shopifySkuChoices = [];
 let activeRefreshTimer = null;
 let activeRefreshController = null;
 let activeRefreshInFlight = false;
@@ -1351,7 +1354,7 @@ const arabicTranslations = Object.freeze({
   "Buyer contact": "بيانات تواصل العميل",
   "Check catalog": "فحص الكتالوج",
   "Copy SKU": "نسخ رمز الصنف",
-  "Copy the ERP SKU into each Shopify variant. Orders match SKU only; each quantity is an individual lens piece.": "انسخ رمز صنف ERP إلى حقل SKU لكل متغير في Shopify. تتم مطابقة الطلبات باستخدام SKU فقط، وتمثل كل كمية قطعة عدسة منفردة.",
+  "Copy the ERP SKU into each Shopify variant. Shopify quantities follow the product's online sell mode: packs for SealedPackOnly, pieces for SinglePiece or Both.": "انسخ رمز صنف ERP إلى حقل SKU لكل متغير في Shopify. تتبع الكمية في Shopify نمط البيع الإلكتروني للمنتج: عبوات عند البيع SealedPackOnly، وقطع عند البيع SinglePiece أو Both.",
   "Could not copy the SKU. Copy it manually from the table.": "تعذر نسخ رمز الصنف. انسخه يدويًا من الجدول.",
   "Could not load audit history.": "تعذر تحميل سجل التدقيق.",
   "CSV / PDF": "CSV / PDF",
@@ -1959,6 +1962,8 @@ async function executeRequest(path, options = {}) {
     const body = await response.text();
     const error = new Error(body || response.statusText);
     error.status = response.status;
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = Math.min(86400, Math.ceil(retryAfter));
     throw error;
   }
 
@@ -5354,7 +5359,7 @@ function addOperationLine(line = {}, target = null) {
     skuId: line.skuId || "",
     entryMode: line.entryMode || "Packs",
     section: line.section || "ChangeOut",
-    packQuantity: line.packQuantity ?? 1,
+    packQuantity: line.packQuantity ?? (line.entryMode === "Pieces" ? 0 : 1),
     pieceQuantity: line.pieceQuantity ?? null,
     unitPrice: line.unitPrice ?? 0,
     isBonus: Boolean(line.isBonus),
@@ -5401,7 +5406,7 @@ function addOperationLine(line = {}, target = null) {
     ${operationType === "Change" ? `<div class="field op-line-source-line-field" hidden><label>${escapeHtml(foundationT("app.inline.originalSaleLine"))}</label><select class="select op-line-source-line"><option value="">${escapeHtml(foundationT("app.inline.selectOriginalSaleLine"))}</option></select></div>` : ""}
     <div class="field op-line-section-field"><label>${escapeHtml(foundationT("app.inline.side"))}</label><select class="select op-line-section"><option value="ChangeOut">${escapeHtml(foundationT("app.returned"))}</option><option value="ChangeIn">${escapeHtml(foundationT("app.inline.replacement"))}</option></select></div>
     <div class="field"><label>${escapeHtml(foundationT("app.inline.mode"))}</label><select class="select op-line-entry-mode"><option value="Packs">${escapeHtml(foundationT("app.inline.packs"))}</option><option value="Pieces">${escapeHtml(foundationT("app.inline.pieces"))}</option></select></div>
-    <div class="field"><label>${escapeHtml(foundationT("reports.sortQuantity"))}</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.packQuantity || line.pieceQuantity || 1)}" required><small class="muted-text op-line-pack-opening-hint" hidden></small></div>
+    <div class="field"><label>${escapeHtml(foundationT("reports.sortQuantity"))}</label><input class="input op-line-qty" type="number" min="1" step="1" value="${escapeHtml(line.entryMode === "Pieces" ? (line.pieceQuantity ?? 1) : (line.packQuantity ?? 1))}" required><small class="muted-text op-line-pack-opening-hint" hidden></small></div>
     <div class="field op-line-sale-field"><label>${escapeHtml(foundationT("app.inline.lineType"))}</label><select class="select op-line-type"><option value="Paid">${escapeHtml(foundationT("app.inline.lineTypePaid"))}</option><option value="Bonus">${escapeHtml(foundationT("app.inline.lineTypeBonus"))}</option><option value="Offer">${escapeHtml(foundationT("app.inline.lineTypeOffer"))}</option></select><small class="muted-text">${escapeHtml(foundationT("app.inline.lineTypeHelp"))}</small></div>
     <div class="field op-line-sale-field"><label>${escapeHtml(foundationT("supply.unitPrice"))}</label><input class="input op-line-price" type="number" min="0" step="0.01" value="${escapeHtml(line.unitPrice || 0)}"><small class="muted-text op-line-price-hint"></small></div>
   <div class="field op-line-return-disposition-field" hidden><label>${escapeHtml(foundationT("app.inline.returnDisposition"))}</label><select class="select op-line-return-disposition"><option value="Sellable">${escapeHtml(foundationT("app.inline.returnSellable"))}</option><option value="WriteOff">${escapeHtml(foundationT("app.inline.returnWriteOff"))}</option></select></div>
@@ -6321,6 +6326,14 @@ function resetOperationEditorMode() {
   }
   const typeControl = document.getElementById("op-type");
   if (typeControl) {
+    typeControl.querySelector('option[data-shopify-draft-type="true"]')?.remove();
+    const user = getAuth()?.user;
+    const allowedCreateTypes = user?.role === "WarehouseClerk"
+      ? ["InventoryReceipt", "Return"]
+      : ["InventoryReceipt", "WarehouseTransfer", "WholesaleSale", "RetailSale", "Return", "WriteOff"];
+    if (!allowedCreateTypes.includes(operationsUiState.operationType)) {
+      operationsUiState.operationType = user?.role === "WarehouseClerk" ? "InventoryReceipt" : "WarehouseTransfer";
+    }
     typeControl.value = operationsUiState.operationType || "WarehouseTransfer";
   }
   syncOperationTypeControls();
@@ -6352,7 +6365,17 @@ function seedOperationEditor(detail, mode) {
 
   form.reset();
   form.dataset.shopifyDraft = detail.salesChannel === "Shopify" ? "true" : "false";
-  document.getElementById("op-type").value = detail.operationType;
+  const typeControl = document.getElementById("op-type");
+  // A location-scoped Online Warehouse Clerk cannot create retail sales, but
+  // must be able to load a Shopify retail draft to assign its stock batches.
+  // Keep the exceptional type available only while editing that Shopify draft.
+  if (form.dataset.shopifyDraft === "true" && detail.operationType === "RetailSale" &&
+      !typeControl.querySelector('option[value="RetailSale"]')) {
+    const shopifyTypeOption = new Option(operationTypeLabel("RetailSale"), "RetailSale");
+    shopifyTypeOption.dataset.shopifyDraftType = "true";
+    typeControl.add(shopifyTypeOption);
+  }
+  typeControl.value = detail.operationType;
   const operationReference = document.getElementById("op-operation-reference");
   if (operationReference) operationReference.value = detail.externalReference || "";
   const channel = document.getElementById("op-sales-channel");
@@ -6528,6 +6551,9 @@ async function refreshOperationStockOptions(row) {
   const merchantId = document.getElementById("op-merchant")?.value;
   const skuId = row.querySelector(".op-line-sku")?.value;
   const sourceLineId = row.querySelector(".op-line-source-line")?.value || "";
+  const shopifyOperationId = document.getElementById("operation-form")?.dataset.shopifyDraft === "true"
+    ? operationsUiState.operationId
+    : "";
   // The selected entry mode determines the available quantity shown for every
   // stock-consuming operation. Wholesale sealed-pack lines may now be entered
   // in pieces (only as whole packs), so do not silently query pack-only stock.
@@ -6536,7 +6562,7 @@ async function refreshOperationStockOptions(row) {
     lotNumber: row.querySelector(".op-line-lot").value || null,
     expiryDate: row.querySelector(".op-line-expiry").value || null
   });
-  const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}|${sourceLineId}`;
+  const lookupKey = `${batchSource}|${locationId || ""}|${merchantId || ""}|${skuId || ""}|${entryMode}|${sourceLineId}|${shopifyOperationId}`;
   if (select.dataset.lookupKey === lookupKey && select.options.length > 1) return;
 
   const isGenericReturn = type === "Return";
@@ -6598,7 +6624,8 @@ async function refreshOperationStockOptions(row) {
           label: `${renderDateOnly(option.expiryDate)} / ${option.lotNumber} / ${foundationT("app.inline.packCount", { count: option.packQuantity || 0 })}`
         }));
     } else {
-      options = await loadCached(() => request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}`, { signal }));
+      const shopifyScope = shopifyOperationId ? `&shopifyOperationId=${encodeURIComponent(shopifyOperationId)}` : "";
+      options = await loadCached(() => request(`/api/v1/inventory/stock-options?locationId=${encodeURIComponent(locationId)}&skuId=${encodeURIComponent(skuId)}&entryMode=${encodeURIComponent(entryMode)}${shopifyScope}`, { signal }));
     }
 
     if (controller.signal.aborted || operationStockOptionRequests.get(select) !== controller) return;
@@ -7092,9 +7119,13 @@ function renderOperationActions(operation, canWrite) {
         cancel: operation.operationType === "Return" ? "app.inline.cancelReturn" : null
       }[action];
       const actionLabel = actionKey ? foundationT(actionKey) : action === "dispatch" ? foundationT("app.inline.dispatch") : action === "delivered" ? foundationT("app.inline.delivered") : action === "failed-delivery" ? foundationT("app.inline.failedDelivery") : systemValueLabel(action);
-      const disabled = item.disabledExplanation ? " disabled" : "";
-      const title = item.disabledExplanation ? ` title="${escapeHtml(item.disabledExplanation)}"` : "";
-      return `<button class="button secondary table-action" type="button" data-op-action="${escapeHtml(action)}" data-op-id="${escapeHtml(operation.id)}" data-op-requires-reason="${item.requiresReason ? "true" : "false"}"${title}${disabled}>${escapeHtml(actionLabel)}</button>`;
+      const shopifyDispatchGate = action === "ship" && operation.salesChannel === "Shopify" && item.disabledExplanation;
+      const disabledExplanation = shopifyDispatchGate ? foundationT("shopify.dispatchBlocked") : item.disabledExplanation;
+      const disabled = disabledExplanation ? " disabled" : "";
+      const helpId = disabledExplanation ? `op-action-help-${operation.id}-${action}` : "";
+      const title = disabledExplanation ? ` title="${escapeHtml(disabledExplanation)}" aria-describedby="${escapeHtml(helpId)}"` : "";
+      const help = disabledExplanation ? `<span class="muted-cell" id="${escapeHtml(helpId)}">${escapeHtml(disabledExplanation)}</span>` : "";
+      return `<button class="button secondary table-action" type="button" data-op-action="${escapeHtml(action)}" data-op-id="${escapeHtml(operation.id)}" data-op-requires-reason="${item.requiresReason ? "true" : "false"}"${title}${disabled}>${escapeHtml(actionLabel)}</button>${help}`;
     }).join(" ")}`;
 }
 
@@ -7182,6 +7213,7 @@ function renderOperationDetail(detail, returnEntitlement = null, returnSourceAll
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.merchantBuyer"))}</span><strong>${escapeHtml(detail.clientName || "-")}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("payments.payment"))}</span><strong>${escapeHtml(movementMethodLabel(detail.paymentMethod))}</strong></div>
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.channel"))}</span><strong>${escapeHtml(uiText(detail.salesChannel || foundationT("app.inline.manual")))}${detail.shopifyOrderNumber ? ` / ${escapeHtml(detail.shopifyOrderNumber)}` : ""}</strong></div>
+      ${detail.salesChannel === "Shopify" ? renderShopifyPaymentFacts(detail) : ""}
       <div class="metric"><span>${escapeHtml(foundationT("app.inline.buyerContact"))}</span><strong>${escapeHtml([detail.buyerPhone, detail.buyerEmail].filter(Boolean).join(" / ") || "-")}</strong></div>
       ${detail.shippingAddress ? `<div class="metric"><span>${escapeHtml(foundationT("app.inline.shippingAddress"))}</span><strong>${escapeHtml(detail.shippingAddress)}</strong></div>` : ""}
       ${detail.allocationPending ? `<div class="metric"><span>${escapeHtml(foundationT("payments.allocation"))}</span><strong><span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.batchAllocationPending"))}</span></strong></div>` : ""}
@@ -7230,6 +7262,29 @@ function renderOperationDetail(detail, returnEntitlement = null, returnSourceAll
     <div class="operation-version-list">${versions.length === 0
       ? `<span class="muted-text">${escapeHtml(foundationT("app.inline.noVersions"))}</span>`
       : versions.map((version) => `<span class="status-pill status-muted">v${escapeHtml(version.versionNumber)} ${escapeHtml(version.reason)} - ${escapeHtml(formatDateTime(version.editedAt))} - ${escapeHtml(version.editedByName || "-")}</span>`).join("")}</div>`;
+}
+
+function renderShopifyPaymentFacts(detail) {
+  const has = (key) => Object.prototype.hasOwnProperty.call(detail, key) && detail[key] !== null && detail[key] !== undefined;
+  const reportedStatus = detail.shopifyFinancialStatus ?? detail.financialStatus;
+  const trusted = detail.shopifyFinancialStatusTrusted ?? detail.financialStatusTrusted;
+  const normalizedReportedStatus = String(reportedStatus || "").trim().toLowerCase();
+  const reportedLabel = normalizedReportedStatus === "pending"
+    ? foundationT("shopify.paymentPending")
+    : systemValueLabel(reportedStatus);
+  const reported = reportedStatus
+    ? (trusted === true && normalizedReportedStatus === "paid" ? foundationT("shopify.paymentPaid") : `${reportedLabel}${trusted === false ? ` · ${foundationT("shopify.untrusted")}` : ""}`)
+    : foundationT("shopify.notAvailable");
+  const providerVerified = has("externalPaymentVerified") ? Boolean(detail.externalPaymentVerified) : (has("providerPaymentVerified") ? Boolean(detail.providerPaymentVerified) : null);
+  const provider = providerVerified === true ? foundationT("shopify.providerVerified") : (providerVerified === false ? foundationT("shopify.providerUnverified") : foundationT("shopify.notAvailable"));
+  const reconciliation = detail.shopifyReconciliationStatus;
+  const finance = reconciliation === "PendingEvidence"
+    ? foundationT("shopify.reconciliationPending")
+    : (reconciliation ? systemValueLabel(reconciliation) : foundationT("shopify.notConfirmedByIntegration"));
+  return `<section class="shopify-payment-state" aria-label="${escapeHtml(foundationT("shopify.paymentStates"))}">
+    <p>${escapeHtml(foundationT("shopify.paymentSeparationHelp"))}</p>
+    <dl><div><dt>${escapeHtml(foundationT("shopify.reportedPayment"))}</dt><dd>${escapeHtml(reported)}</dd></div><div><dt>${escapeHtml(foundationT("shopify.providerVerification"))}</dt><dd>${escapeHtml(provider)}</dd></div><div><dt>${escapeHtml(foundationT("shopify.financeReconciliation"))}</dt><dd>${escapeHtml(finance)}</dd></div></dl>
+  </section>`;
 }
 
 function renderReturnApprovalPanel(detail) {
@@ -10865,7 +10920,14 @@ function reportExportFilterParams(reportName) {
     if (value("report-filter-supply-status")) params.set("status", value("report-filter-supply-status"));
   }
   params.set("pageSize", String(reportPageSize));
-  params.set("scope", document.getElementById("report-export-scope")?.value || "all");
+  const scope = document.getElementById("report-export-scope")?.value || "all";
+  params.set("scope", scope);
+  // A visible-page export must match the page the employee is looking at,
+  // rather than silently falling back to the API default of page 1.
+  if (scope === "page") {
+    const stateKey = reportName === "merchant-balances" ? "merchantBalances" : reportName;
+    params.set("page", String(reportPageState[stateKey] || 1));
+  }
   return params;
 }
 
@@ -13170,28 +13232,53 @@ async function openAuditSource(auditEventId) {
 async function renderShopifyIntegration() {
   shopifyIntegrationPageState = { page: 1, pageSize: 25 };
   shopifySkuPageState = { page: 1, pageSize: 50 };
+  shopifyVariantPageState = { page: 1, pageSize: 25 };
   document.getElementById("view").innerHTML = `
     ${pageIntro({
       eyebrow: "Online intake",
       title: "Shopify intake desk",
       body: "Review online orders, repair mappings, and resolve exceptions before they reach warehouse fulfillment.",
-      metrics: `${scenarioCard("Receiver", "Checking", "status-muted", "shopify-receiver-state")}${scenarioCard("Queue", "Loading", "status-muted", "shopify-queue-count")}${scenarioCard("Payload access", "Protected", "status-ok")}`
+      metrics: `${scenarioCard("Receiver", "Checking", "status-muted", "shopify-receiver-state")}${scenarioCard("Queued", "—", "status-muted", "shopify-queue-queued")}${scenarioCard("Needs review", "—", "status-muted", "shopify-queue-attention")}`
     })}
     <section class="integration-command-band">
       <div class="integration-command-copy"><span class="eyebrow">${escapeHtml(foundationT("app.inline.deliveryQueue"))}</span><h2>${escapeHtml(foundationT("app.inline.protectTheCommercialRecordAllocateStockOnlyAfterReview"))}</h2><p>${escapeHtml(foundationT("app.inline.webhookContentIsNeverShownHereTemporaryLegacyPath"))}</p></div>
       <button id="shopify-refresh" class="button primary" type="button">${escapeHtml(foundationT("app.inline.refreshIntake"))}</button>
     </section>
-    <section class="band">
-      <div class="section-head tight-head"><div><h2>${escapeHtml(foundationT("app.inline.integrationEvents"))}</h2><p>${escapeHtml(foundationT("app.inline.queuedEventsProcessAutomaticallyExceptionsRequireADeliberateRetry"))}</p></div><select id="shopify-event-status" class="select compact-select"><option value="">${escapeHtml(foundationT("app.inline.allStates"))}</option><option value="Queued">${escapeHtml(foundationT("app.inline.queued"))}</option><option value="Processing">${escapeHtml(foundationT("app.inline.processing"))}</option><option value="Retrying">${escapeHtml(foundationT("app.inline.retrying"))}</option><option value="RequiresAttention">${escapeHtml(foundationT("app.inline.needsReview"))}</option><option value="Resolved">${escapeHtml(foundationT("app.inline.resolved"))}</option><option value="Succeeded">${escapeHtml(foundationT("app.inline.succeeded"))}</option><option value="Imported">${escapeHtml(foundationT("app.inline.imported"))}</option></select></div>
-      <div id="shopify-event-list" class="integration-event-list">${escapeHtml(foundationT("app.inline.loadingIntegrationEvents"))}</div>
+    <section class="band" aria-labelledby="shopify-queue-title">
+      <div class="section-head tight-head"><div><h2 id="shopify-queue-title">${escapeHtml(foundationT("shopify.queueHealth"))}</h2><p>${escapeHtml(foundationT("shopify.queueHealthHelp"))}</p></div></div>
+      <div id="shopify-queue-alerts" class="shopify-queue-alerts" role="status" aria-live="polite"></div>
+      <div id="shopify-queue-health" class="shopify-health-grid"><span class="muted-text">${escapeHtml(foundationT("app.message.working"))}</span></div>
+    </section>
+    <section class="band" aria-labelledby="shopify-reconciliation-title">
+      <div class="section-head tight-head"><div><h2 id="shopify-reconciliation-title">${escapeHtml(foundationT("shopify.reconciliation"))}</h2><p>${escapeHtml(foundationT("shopify.reconciliationHelp"))}</p></div><button id="shopify-reconciliation-run" class="button secondary" type="button" hidden>${escapeHtml(foundationT("shopify.runReconciliation"))}</button></div>
+      <div id="shopify-reconciliation" class="shopify-reconciliation-state"><span class="muted-text">${escapeHtml(foundationT("app.message.working"))}</span></div>
     </section>
     <section class="band">
-      <div class="section-head tight-head"><div><h2>${escapeHtml(foundationT("app.inline.eRPSKUsForShopify"))}</h2><p>${escapeHtml(foundationT("app.inline.copyTheERPSKUIntoEachShopifyVariantOrders"))}</p></div></div>
+      <div class="section-head tight-head"><div><h2>${escapeHtml(foundationT("app.inline.integrationEvents"))}</h2><p>${escapeHtml(foundationT("app.inline.queuedEventsProcessAutomaticallyExceptionsRequireADeliberateRetry"))} <span id="shopify-queue-count" class="muted-text"></span></p></div><select id="shopify-event-status" class="select compact-select"><option value="">${escapeHtml(foundationT("app.inline.allStates"))}</option><option value="Queued">${escapeHtml(foundationT("app.inline.queued"))}</option><option value="Processing">${escapeHtml(foundationT("app.inline.processing"))}</option><option value="Retrying">${escapeHtml(foundationT("app.inline.retrying"))}</option><option value="RequiresAttention">${escapeHtml(foundationT("app.inline.needsReview"))}</option><option value="Resolved">${escapeHtml(foundationT("app.inline.resolved"))}</option><option value="Succeeded">${escapeHtml(foundationT("app.inline.succeeded"))}</option><option value="Imported">${escapeHtml(foundationT("app.inline.imported"))}</option></select></div>
+      <div id="shopify-event-list" class="integration-event-list">${escapeHtml(foundationT("app.inline.loadingIntegrationEvents"))}</div>
+    </section>
+    <section class="band" aria-labelledby="shopify-mappings-title">
+      <div class="section-head tight-head"><div><h2 id="shopify-mappings-title">${escapeHtml(foundationT("shopify.variantLinks"))}</h2><p>${escapeHtml(foundationT("shopify.variantLinksHelp"))}</p></div><div class="shopify-filter-controls"><input id="shopify-mapping-filter" class="input compact-input" autocomplete="off" aria-label="${escapeHtml(foundationT("shopify.searchVariantLinks"))}" placeholder="${escapeHtml(foundationT("shopify.searchVariantLinks"))}"><button id="shopify-mapping-filter-button" class="button secondary table-action" type="button">${escapeHtml(foundationT("app.inline.checkCatalog"))}</button><select id="shopify-mapping-status" class="select compact-select" aria-label="${escapeHtml(foundationT("shopify.mappingStatus"))}"><option value="">${escapeHtml(foundationT("app.inline.allStates"))}</option><option value="Unresolved">${escapeHtml(foundationT("shopify.unresolved"))}</option><option value="Active">${escapeHtml(foundationT("shopify.linked"))}</option><option value="Conflict">${escapeHtml(foundationT("shopify.conflict"))}</option></select></div></div>
+      <div id="shopify-mapping-editor" class="shopify-mapping-editor" hidden>
+        <p id="shopify-mapping-context" class="muted-text"></p>
+        <div class="shopify-mapping-editor-grid">
+          <div class="field"><label for="shopify-mapping-sku-search">${escapeHtml(foundationT("shopify.searchErpSku"))}</label><input id="shopify-mapping-sku-search" class="input" autocomplete="off"></div>
+          <button id="shopify-mapping-sku-search-button" class="button secondary" type="button">${escapeHtml(foundationT("app.inline.checkCatalog"))}</button>
+          <div class="field"><label for="shopify-mapping-sku-choice">${escapeHtml(foundationT("shopify.selectErpSku"))}</label><select id="shopify-mapping-sku-choice" class="select"><option value="">${escapeHtml(foundationT("shopify.searchCatalogFirst"))}</option></select></div>
+          <div class="field"><label for="shopify-mapping-reason">${escapeHtml(foundationT("shopify.mappingReason"))}</label><input id="shopify-mapping-reason" class="input" maxlength="500" required></div>
+          <div class="shopify-mapping-editor-actions"><button id="shopify-mapping-save" class="button primary" type="button">${escapeHtml(foundationT("common.save"))}</button><button id="shopify-mapping-cancel" class="button secondary" type="button">${escapeHtml(foundationT("common.cancel"))}</button></div>
+        </div>
+      </div>
+      <div id="shopify-variant-links" class="shopify-variant-links">${escapeHtml(foundationT("app.message.working"))}</div>
+      <div class="pagination-bar" id="shopify-variant-pagination" hidden><span class="muted-text" id="shopify-variant-page-label"></span><button class="button secondary table-action" type="button" id="shopify-variant-prev">${escapeHtml(foundationT("pagination.previous"))}</button><button class="button secondary table-action" type="button" id="shopify-variant-next">${escapeHtml(foundationT("pagination.next"))}</button></div>
+    </section>
+    <section class="band">
+      <div class="section-head tight-head"><div><h2>${escapeHtml(foundationT("app.inline.eRPSKUsForShopify"))}</h2><p>${escapeHtml(foundationT("shopify.skuPublishingHelp"))}</p></div></div>
       <div class="integration-mapping-form">
         <div class="field"><label for="shopify-sku-search">${escapeHtml(foundationT("app.inline.findSKUOrProduct"))}</label><input id="shopify-sku-search" class="input" autocomplete="off" placeholder="${escapeHtml(foundationT("app.attribute.sKUOrProductName"))}"></div>
         <div class="field"><label for="shopify-sku-product">${escapeHtml(foundationT("app.product"))}</label><select id="shopify-sku-product" class="select"><option value="">${escapeHtml(foundationT("app.inline.allCatalogProducts"))}</option></select></div>
         <div class="field"><label for="shopify-sku-wear-cycle">${escapeHtml(foundationT("app.wearCycle"))}</label><select id="shopify-sku-wear-cycle" class="select"><option value="">${escapeHtml(foundationT("app.inline.allWearCycles"))}</option><option value="Daily">${escapeHtml(foundationT("finance.executive.daily"))}</option><option value="Monthly">${escapeHtml(foundationT("finance.executive.monthly"))}</option><option value="Annual">${escapeHtml(foundationT("app.inline.annual"))}</option></select></div>
-        <div class="field"><label for="shopify-sku-status">${escapeHtml(foundationT("app.readiness"))}</label><select id="shopify-sku-status" class="select"><option value="">${escapeHtml(foundationT("app.inline.allActiveSKUs"))}</option><option value="Ready">${escapeHtml(foundationT("app.inline.readyToPublish"))}</option><option value="NeedsWearCycle">${escapeHtml(foundationT("app.inline.setLensCycle"))}</option><option value="PieceSaleDisabled">${escapeHtml(foundationT("app.inline.pieceSaleDisabled"))}</option><option value="UnsupportedProduct">${escapeHtml(foundationT("app.inline.unsupportedProduct"))}</option></select></div>
+        <div class="field"><label for="shopify-sku-status">${escapeHtml(foundationT("app.readiness"))}</label><select id="shopify-sku-status" class="select"><option value="">${escapeHtml(foundationT("app.inline.allActiveSKUs"))}</option><option value="Ready">${escapeHtml(foundationT("app.inline.readyToPublish"))}</option><option value="NeedsWearCycle">${escapeHtml(foundationT("app.inline.setLensCycle"))}</option><option value="NeedsPackConfiguration">${escapeHtml(foundationT("app.inline.setPiecesPerPack"))}</option><option value="PieceSaleDisabled">${escapeHtml(foundationT("app.inline.pieceSaleDisabled"))}</option><option value="UnsupportedProduct">${escapeHtml(foundationT("app.inline.unsupportedProduct"))}</option></select></div>
         <button id="shopify-sku-search-button" class="button secondary" type="button">${escapeHtml(foundationT("app.inline.checkCatalog"))}</button>
       </div>
       <div id="shopify-sku-readiness" class="table-wrap compact-table">${escapeHtml(foundationT("app.inline.loadingERPSKUReadiness"))}</div>
@@ -13208,6 +13295,16 @@ async function renderShopifyIntegration() {
     </section>`;
   document.getElementById("shopify-refresh").addEventListener("click", () => loadShopifyIntegration());
   document.getElementById("shopify-event-status").addEventListener("change", () => loadShopifyEvents());
+  document.getElementById("shopify-mapping-status").addEventListener("change", () => loadShopifyVariantLinks(1));
+  document.getElementById("shopify-mapping-filter-button").addEventListener("click", () => loadShopifyVariantLinks(1));
+  document.getElementById("shopify-mapping-filter").addEventListener("keydown", (event) => { if (event.key === "Enter") loadShopifyVariantLinks(1); });
+  document.getElementById("shopify-variant-prev").addEventListener("click", () => loadShopifyVariantLinks(Math.max(1, shopifyVariantPageState.page - 1)));
+  document.getElementById("shopify-variant-next").addEventListener("click", () => loadShopifyVariantLinks(shopifyVariantPageState.page + 1));
+  document.getElementById("shopify-mapping-sku-search-button").addEventListener("click", () => searchShopifyMappingSkus());
+  document.getElementById("shopify-mapping-sku-search").addEventListener("keydown", (event) => { if (event.key === "Enter") searchShopifyMappingSkus(); });
+  document.getElementById("shopify-mapping-save").addEventListener("click", () => saveShopifyVariantLink());
+  document.getElementById("shopify-mapping-cancel").addEventListener("click", () => { document.getElementById("shopify-mapping-editor").hidden = true; });
+  document.getElementById("shopify-reconciliation-run").addEventListener("click", () => runShopifyReconciliation());
   document.getElementById("shopify-sku-search-button").addEventListener("click", () => loadShopifySkuReadiness(1));
   document.getElementById("shopify-sku-search").addEventListener("keydown", (event) => {
     if (event.key === "Enter") loadShopifySkuReadiness(1);
@@ -13234,7 +13331,227 @@ async function loadShopifyIntegration() {
     receiver.textContent = foundationT("app.message.unavailable");
     receiver.className = "status-pill status-warn";
   }
-  await Promise.all([loadShopifyEvents(), loadShopifySkuProducts(), loadShopifySkuReadiness()]);
+  await Promise.all([
+    loadShopifyReconciliation(), loadShopifyQueueHealth(), loadShopifyVariantLinks(1),
+    loadShopifySkuProducts(), loadShopifySkuReadiness()
+  ]);
+}
+
+function shopifyCanManageMappings() {
+  return ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role);
+}
+
+async function loadShopifyQueueHealth() {
+  const target = document.getElementById("shopify-queue-health");
+  if (!target) return;
+  try {
+    const health = await request("/api/v1/integrations/shopify/queue-health");
+    const queued = Number(health.queued || 0);
+    const attention = Number(health.requiresAttention || 0);
+    const processing = Number(health.processing || 0);
+    const retrying = Number(health.retrying || 0);
+    const pendingCount = queued + processing + retrying + attention;
+    const expiredLeases = Number(health.expiredLeases || 0);
+    const pendingAgeMinutes = health.oldestPendingAt ? Math.ceil((Date.now() - Date.parse(health.oldestPendingAt)) / 60000) : 0;
+    const alerts = [];
+    if (expiredLeases > 0) alerts.push(foundationT("shopify.alertExpiredLeases", { count: expiredLeases }));
+    if (Number.isFinite(pendingAgeMinutes) && pendingAgeMinutes > 15) alerts.push(foundationT("shopify.alertOldPending", { minutes: pendingAgeMinutes }));
+    if (pendingCount >= 100) alerts.push(foundationT("shopify.alertBacklog", { count: pendingCount }));
+    if (attention > 0) alerts.push(foundationT("shopify.alertNeedsReview", { count: attention }));
+    const alertTarget = document.getElementById("shopify-queue-alerts");
+    if (alertTarget) replaceMarkup(alertTarget, alerts.map((message) => `<p class="shopify-operational-alert">${escapeHtml(message)}</p>`).join(""));
+    const queuedMetric = document.getElementById("shopify-queue-queued");
+    const attentionMetric = document.getElementById("shopify-queue-attention");
+    if (queuedMetric) queuedMetric.textContent = String(queued);
+    if (attentionMetric) attentionMetric.textContent = String(attention);
+    replaceMarkup(target, [
+      ["shopify.queued", health.queued], ["shopify.processing", health.processing],
+      ["shopify.retrying", health.retrying], ["shopify.requiresAttention", health.requiresAttention],
+      ["shopify.expiredLeases", health.expiredLeases], ["shopify.unpaidReservations", health.unpaidReservations]
+    ].map(([label, value]) => `<div class="metric"><span>${escapeHtml(foundationT(label))}</span><strong>${escapeHtml(String(Number(value || 0)))}</strong></div>`).join("")
+      + `<div class="metric"><span>${escapeHtml(foundationT("shopify.oldestPending"))}</span><strong>${escapeHtml(health.oldestPendingAt ? formatDateTime(health.oldestPendingAt) : foundationT("shopify.nonePending"))}</strong></div>`
+      + `<div class="metric"><span>${escapeHtml(foundationT("shopify.oldestUnpaidReservation"))}</span><strong>${escapeHtml(health.oldestUnpaidReservationAt ? formatDateTime(health.oldestUnpaidReservationAt) : (Number(health.unpaidReservations || 0) > 0 ? foundationT("shopify.notAvailable") : foundationT("shopify.nonePending")))}</strong></div>`);
+  } catch (exception) {
+    const alertTarget = document.getElementById("shopify-queue-alerts");
+    if (alertTarget) replaceMarkup(alertTarget, "");
+    replaceMarkup(target, `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`);
+    ["shopify-queue-queued", "shopify-queue-attention"].forEach((id) => {
+      const metric = document.getElementById(id);
+      if (metric) metric.textContent = foundationT("app.message.unavailable");
+    });
+  }
+}
+
+async function loadShopifyReconciliation() {
+  const target = document.getElementById("shopify-reconciliation");
+  const runButton = document.getElementById("shopify-reconciliation-run");
+  if (!target) return;
+  try {
+    const state = await request("/api/v1/integrations/shopify/reconciliation");
+    shopifyReconciliationAvailable = state.available === true;
+    const statusLabel = state.available === false
+      ? foundationT("shopify.unavailable")
+      : (state.status ? systemValueLabel(state.status) : foundationT("shopify.notScheduled"));
+    replaceMarkup(target, `<div class="shopify-reconciliation-facts">
+      ${shopifyFact("shopify.status", statusLabel)}
+      ${shopifyFact("shopify.enabled", state.enabled ? foundationT("shopify.yes") : foundationT("shopify.no"))}
+      ${shopifyFact("shopify.lastRun", state.lastRunAt ? formatDateTime(state.lastRunAt) : foundationT("shopify.never"))}
+      ${shopifyFact("shopify.lastSuccess", state.lastSuccessAt ? formatDateTime(state.lastSuccessAt) : foundationT("shopify.never"))}
+      ${shopifyFact("shopify.nextRun", state.nextRunAt ? formatDateTime(state.nextRunAt) : foundationT("shopify.notScheduled"))}
+    </div>${state.lastError ? `<p class="shopify-operational-alert" role="status">${escapeHtml(foundationT("shopify.reconciliationIssueDetected"))}</p>` : ""}`);
+    if (runButton) {
+      runButton.hidden = !shopifyCanManageMappings();
+      runButton.disabled = !state.enabled || state.available === false || ["Running", "Processing"].includes(state.status);
+    }
+    if (document.getElementById("shopify-event-list")) {
+      await loadShopifyEvents();
+    }
+  } catch (exception) {
+    shopifyReconciliationAvailable = false;
+    replaceMarkup(target, `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`);
+    if (runButton) runButton.hidden = true;
+    if (document.getElementById("shopify-event-list")) {
+      await loadShopifyEvents();
+    }
+  }
+}
+
+function shopifyFact(labelKey, value) {
+  return `<div><dt>${escapeHtml(foundationT(labelKey))}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+}
+
+async function runShopifyReconciliation() {
+  const button = document.getElementById("shopify-reconciliation-run");
+  if (!shopifyCanManageMappings() || !button || button.disabled) return;
+  if (!await confirmDialog({
+    title: foundationT("shopify.runReconciliation"),
+    message: foundationT("shopify.runReconciliationConfirm"),
+    confirmLabel: foundationT("shopify.runNow"), tone: "warning"
+  })) return;
+  button.disabled = true;
+  try {
+    await request("/api/v1/integrations/shopify/reconciliation/run", { method: "POST" });
+    notice(foundationT("shopify.reconciliationRequested"), "success");
+    await loadShopifyReconciliation();
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+    button.disabled = false;
+  }
+}
+
+async function loadShopifyVariantLinks(page = shopifyVariantPageState.page || 1) {
+  const list = document.getElementById("shopify-variant-links");
+  const pagination = document.getElementById("shopify-variant-pagination");
+  const pageLabel = document.getElementById("shopify-variant-page-label");
+  const previous = document.getElementById("shopify-variant-prev");
+  const next = document.getElementById("shopify-variant-next");
+  if (!list) return;
+  document.getElementById("shopify-mapping-editor").hidden = true;
+  shopifyVariantRows.clear();
+  const query = new URLSearchParams({ page: String(Math.max(1, Number(page) || 1)), pageSize: String(shopifyVariantPageState.pageSize) });
+  const status = document.getElementById("shopify-mapping-status")?.value || "";
+  const search = document.getElementById("shopify-mapping-filter")?.value.trim() || "";
+  if (status) query.set("status", status);
+  if (search) query.set("search", search);
+  try {
+    const result = await request(`/api/v1/integrations/shopify/variant-links?${query}`);
+    const totalPages = Math.max(1, Math.ceil(result.totalCount / result.pageSize));
+    if (!result.items.length && result.totalCount && page > totalPages) return loadShopifyVariantLinks(totalPages);
+    shopifyVariantPageState.page = Math.min(result.page || page, totalPages);
+    replaceMarkup(list, result.items.length ? `<div class="table-wrap compact-table"><table><thead><tr>
+      <th>${escapeHtml(foundationT("shopify.store"))}</th><th>${escapeHtml(foundationT("shopify.shopifySku"))}</th><th>${escapeHtml(foundationT("app.erpSku"))}</th><th>${escapeHtml(foundationT("shopify.status"))}</th><th>${escapeHtml(foundationT("shopify.details"))}</th><th>${escapeHtml(foundationT("shopify.updated"))}</th><th></th>
+      </tr></thead><tbody>${result.items.map((link, index) => {
+        const rowKey = `variant-link-${index}`;
+        shopifyVariantRows.set(rowKey, link);
+        const canEdit = shopifyCanManageMappings();
+        const statusLabel = shopifyMappingStatusLabel(link.status);
+        return `<tr><td>${escapeHtml(link.shopDomain || "-")}</td><td>${escapeHtml(link.shopifySku || foundationT("shopify.skuMissing"))}</td><td>${escapeHtml(link.skuCode || foundationT("shopify.notLinked"))}</td><td><span class="status-pill ${["Linked", "Active"].includes(link.status) ? "status-ok" : (String(link.status).toLowerCase().includes("conflict") ? "status-warn" : "status-muted")}">${escapeHtml(statusLabel)}</span></td><td>${escapeHtml(link.detail || "-")}</td><td>${escapeHtml(link.updatedAt ? formatDateTime(link.updatedAt) : "-")}</td><td>${canEdit ? `<button class="button secondary table-action" type="button" data-shopify-map="${rowKey}">${escapeHtml(foundationT("shopify.changeMapping"))}</button>` : ""}</td></tr>`;
+      }).join("")}</tbody></table></div>` : `<div class="empty-state">${escapeHtml(foundationT("shopify.noVariantLinks"))}</div>`);
+    list.querySelectorAll("[data-shopify-map]").forEach((button) => button.addEventListener("click", () => openShopifyMappingEditor(button.dataset.shopifyMap)));
+    pagination.hidden = result.totalCount <= result.pageSize;
+    const from = result.totalCount ? ((shopifyVariantPageState.page - 1) * result.pageSize) + 1 : 0;
+    const to = Math.min(shopifyVariantPageState.page * result.pageSize, result.totalCount);
+    pageLabel.textContent = foundationT("shopify.variantPage", { from, to, total: result.totalCount, page: shopifyVariantPageState.page, pages: totalPages });
+    previous.disabled = shopifyVariantPageState.page <= 1;
+    next.disabled = shopifyVariantPageState.page >= totalPages;
+  } catch (exception) {
+    replaceMarkup(list, `<div class="empty-state">${escapeHtml(getFriendlyWorkspaceError(exception))}</div>`);
+    pagination.hidden = true;
+  }
+}
+
+const shopifyVariantRows = new Map();
+
+function shopifyMappingStatusLabel(status) {
+  const keys = { Linked: "shopify.linked", Active: "shopify.linked", Unresolved: "shopify.unresolved", Conflict: "shopify.conflict", CodeConflict: "shopify.conflict" };
+  return keys[status] ? foundationT(keys[status]) : systemValueLabel(status);
+}
+
+function openShopifyMappingEditor(rowKey) {
+  const row = shopifyVariantRows.get(rowKey);
+  const editor = document.getElementById("shopify-mapping-editor");
+  if (!row || !editor) return;
+  editor.dataset.mappingKey = rowKey;
+  editor.hidden = false;
+  const search = document.getElementById("shopify-mapping-sku-search");
+  search.value = row.shopifySku || "";
+  document.getElementById("shopify-mapping-reason").value = "";
+  replaceMarkup(document.getElementById("shopify-mapping-sku-choice"), `<option value="">${escapeHtml(foundationT("shopify.searchCatalogFirst"))}</option>`);
+  document.getElementById("shopify-mapping-context").textContent = foundationT("shopify.mappingContext", { store: row.shopDomain || "", sku: row.shopifySku || foundationT("shopify.skuMissing") });
+  editor.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function searchShopifyMappingSkus() {
+  const input = document.getElementById("shopify-mapping-sku-search");
+  const select = document.getElementById("shopify-mapping-sku-choice");
+  const search = input.value.trim();
+  if (!search) {
+    input.focus();
+    return;
+  }
+  replaceMarkup(select, `<option value="">${escapeHtml(foundationT("app.message.working"))}</option>`);
+  try {
+    const query = new URLSearchParams({ page: "1", pageSize: "50", search });
+    const result = await request(`/api/v1/integrations/shopify/sku-readiness?${query}`);
+    shopifySkuChoices = result.items || [];
+    replaceMarkup(select, shopifySkuChoices.length
+      ? `<option value="">${escapeHtml(foundationT("shopify.selectSku"))}</option>${shopifySkuChoices.map((sku) => `<option value="${escapeHtml(sku.skuId)}">${escapeHtml(sku.skuCode)} — ${escapeHtml(sku.productName)}</option>`).join("")}`
+      : `<option value="">${escapeHtml(foundationT("shopify.noSkuMatches"))}</option>`);
+  } catch (exception) {
+    replaceMarkup(select, `<option value="">${escapeHtml(getFriendlyWorkspaceError(exception))}</option>`);
+  }
+}
+
+async function saveShopifyVariantLink() {
+  const editor = document.getElementById("shopify-mapping-editor");
+  const row = shopifyVariantRows.get(editor?.dataset.mappingKey || "");
+  const skuId = document.getElementById("shopify-mapping-sku-choice")?.value || "";
+  const reason = document.getElementById("shopify-mapping-reason")?.value.trim() || "";
+  if (!row || !skuId) {
+    notice(foundationT("shopify.selectSkuRequired"), "error");
+    return;
+  }
+  if (!reason) {
+    notice(foundationT("shopify.mappingReasonRequired"), "error");
+    document.getElementById("shopify-mapping-reason").focus();
+    return;
+  }
+  const button = document.getElementById("shopify-mapping-save");
+  button.disabled = true;
+  try {
+    await request(`/api/v1/integrations/shopify/variant-links/${encodeURIComponent(row.id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ skuId, revision: row.revision, reason })
+    });
+    notice(foundationT("shopify.mappingSaved"), "success");
+    editor.hidden = true;
+    await loadShopifyVariantLinks(shopifyVariantPageState.page);
+  } catch (exception) {
+    notice(getFriendlyWorkspaceError(exception), "error");
+    if (exception?.status === 409) await loadShopifyVariantLinks(shopifyVariantPageState.page);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function loadShopifyEvents() {
@@ -13249,6 +13566,7 @@ async function loadShopifyEvents() {
     count.textContent = foundationT(result.totalCount === 1 ? "app.count.event" : "app.count.events", { count: result.totalCount });
     list.innerHTML = result.items.length === 0 ? `<div class="empty-state">${escapeHtml(foundationT("app.inline.noShopifyEventsMatchThisView"))}</div>` : result.items.map(renderShopifyEvent).join("");
     list.querySelectorAll("[data-shopify-retry]").forEach((button) => button.addEventListener("click", () => retryShopifyEvent(button.dataset.shopifyRetry)));
+    list.querySelectorAll("[data-shopify-refresh]").forEach((button) => button.addEventListener("click", () => refreshShopifyEvent(button.dataset.shopifyRefresh)));
     list.querySelectorAll("[data-shopify-resolve]").forEach((button) => button.addEventListener("click", () => resolveShopifyEvent(button.dataset.shopifyResolve)));
   } catch (exception) {
     count.textContent = foundationT("app.message.unavailable");
@@ -13257,26 +13575,87 @@ async function loadShopifyEvents() {
 }
 
 function renderShopifyEvent(event) {
-  const statusClass = event.status === "RequiresAttention" ? "status-warn" : (event.status === "Imported" || event.status === "Succeeded" ? "status-ok" : "status-muted");
-  const canManage = ["Admin", "ERPAdmin"].includes(getAuth()?.user?.role) || (getAuth()?.user?.role === "WarehouseClerk" && getAuth()?.user?.locationType === "Online");
-  const actions = canManage && event.status === "RequiresAttention"
-    ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>${escapeHtml(foundationT("app.inline.retry"))}</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">${escapeHtml(foundationT("app.inline.resolve"))}</button>`
+  const statusClass = event.status === "RequiresAttention" ? "status-warn" : (["Imported", "Succeeded"].includes(event.status) ? "status-ok" : "status-muted");
+  const canManage = shopifyCanManageEvents();
+  const retryActions = canManage && event.status === "RequiresAttention"
+    ? `<button class="button secondary table-action" type="button" data-shopify-retry="${escapeHtml(event.id)}" ${event.payloadAvailable ? "" : "disabled"}>${escapeHtml(foundationT("shopify.replayCapturedDelivery"))}</button><button class="button secondary table-action" type="button" data-shopify-resolve="${escapeHtml(event.id)}">${escapeHtml(foundationT("app.inline.resolve"))}</button>`
     : "";
-  const trust = event.verificationMode === "Hmac" ? "Signed HMAC" : "Temporary legacy path";
+  const refreshAction = canManage && shopifyReconciliationAvailable && event.shopifyOrderId
+    ? `<button class="button secondary table-action" type="button" data-shopify-refresh="${escapeHtml(event.id)}">${escapeHtml(foundationT("shopify.refreshFromShopify"))}</button>`
+    : "";
+  const actions = `${retryActions}${refreshAction}`;
+  const trustKey = {
+    Hmac: "shopify.signedWebhookTrust",
+    AdminApi: "shopify.verifiedRecoveryTrust",
+    Legacy: "shopify.legacyTrust",
+    TemporaryLegacy: "shopify.legacyTrust"
+  }[event.verificationMode];
+  const trust = trustKey ? foundationT(trustKey) : (event.verificationMode ? systemValueLabel(event.verificationMode) : foundationT("shopify.notAvailable"));
   const statusKeys = { RequiresAttention: "app.inline.needsReview", Queued: "app.inline.queued", Processing: "app.inline.processing", Retrying: "app.inline.retrying", Resolved: "app.inline.resolved", Succeeded: "app.inline.succeeded", Imported: "app.inline.imported" };
   const visibleStatus = statusKeys[event.status] ? foundationT(statusKeys[event.status]) : systemValueLabel(event.status);
-  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(visibleStatus)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(uiText(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">${escapeHtml(foundationT("app.openOperation"))}${event.shopifyOrderId ? ` · Shopify ${escapeHtml(event.shopifyOrderId)}` : ""}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>${escapeHtml(foundationT("app.trust"))}</dt><dd>${escapeHtml(uiText(trust))}</dd></div><div><dt>${escapeHtml(foundationT("payments.order"))}</dt><dd>${escapeHtml(event.shopifyOrderId || foundationT("app.notParsed"))}</dd></div><div><dt>${escapeHtml(foundationT("app.store"))}</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>${escapeHtml(foundationT("app.attempts"))}</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>${escapeHtml(foundationT("app.payload"))}</dt><dd>${event.payloadAvailable ? escapeHtml(foundationT("app.retainedSecurely")) : escapeHtml(foundationT("app.retentionExpired"))}</dd></div>${event.resolutionNote ? `<div><dt>${escapeHtml(foundationT("app.resolution"))}</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
+  return `<article class="integration-event-card"><div class="integration-event-main"><div><div class="notification-title-row"><span class="status-pill ${statusClass}">${escapeHtml(visibleStatus)}</span><strong>${escapeHtml(event.topic)}</strong><span class="muted-text">${escapeHtml(formatDateTime(event.receivedAt))}</span></div><p>${escapeHtml(shopifyEventDetail(event.detail || "Delivery accepted for processing."))}</p></div><div class="integration-event-actions">${event.operationId ? `<a class="button secondary table-action" href="#/operations">${escapeHtml(foundationT("app.openOperation"))}${event.shopifyOrderId ? ` · Shopify ${escapeHtml(event.shopifyOrderId)}` : ""}</a>` : ""}${actions}</div></div><dl class="integration-event-facts"><div><dt>${escapeHtml(foundationT("app.trust"))}</dt><dd>${escapeHtml(uiText(trust))}</dd></div><div><dt>${escapeHtml(foundationT("payments.order"))}</dt><dd>${escapeHtml(event.shopifyOrderId || foundationT("app.notParsed"))}</dd></div><div><dt>${escapeHtml(foundationT("app.store"))}</dt><dd>${escapeHtml(event.shopDomain)}</dd></div><div><dt>${escapeHtml(foundationT("app.attempts"))}</dt><dd>${escapeHtml(event.attemptCount)}</dd></div><div><dt>${escapeHtml(foundationT("shopify.nextAttempt"))}</dt><dd>${escapeHtml(event.nextAttemptAt ? formatDateTime(event.nextAttemptAt) : foundationT("shopify.notScheduled"))}</dd></div><div><dt>${escapeHtml(foundationT("app.payload"))}</dt><dd>${event.payloadAvailable ? escapeHtml(foundationT("app.retainedSecurely")) : escapeHtml(foundationT("app.retentionExpired"))}</dd></div>${event.resolutionNote ? `<div><dt>${escapeHtml(foundationT("app.resolution"))}</dt><dd>${escapeHtml(event.resolutionNote)}</dd></div>` : ""}</dl></article>`;
+}
+
+function shopifyEventDetail(detail) {
+  const value = String(detail || "").trim();
+  if (/^Shopify order was imported as an unallocated draft\.$/i.test(value)) return foundationT("shopify.eventImportedDraft");
+  const commercialChange = value.match(/^Shopify order (.+?) changed its commercial totals after import; review the order before any dispatch\.$/i);
+  if (commercialChange) return foundationT("shopify.eventCommercialChange", { order: commercialChange[1] });
+  const inactiveSku = value.match(/^Shopify order (.+?) cannot be imported: Line (\d+) SKU '([^']+)' is not an active Lensee SKU\./i);
+  if (inactiveSku) return foundationT("shopify.eventSkuInactive", { order: inactiveSku[1], line: inactiveSku[2], sku: inactiveSku[3] });
+  const duplicateSku = value.match(/^Shopify order (.+?) cannot be imported: Line (\d+) SKU '([^']+)' matches multiple Lensee SKUs when compared without case\./i);
+  if (duplicateSku) return foundationT("shopify.eventSkuDuplicate", { order: duplicateSku[1], line: duplicateSku[2], sku: duplicateSku[3] });
+  const changedVariantSku = value.match(/^Shopify order (.+?) cannot be imported: Line (\d+) Shopify variant '([^']+)' now carries a different copied SKU than its remembered link/i);
+  if (changedVariantSku) return foundationT("shopify.eventVariantSkuChanged", { order: changedVariantSku[1], line: changedVariantSku[2] });
+  return uiText(value);
 }
 
 async function retryShopifyEvent(id) {
-  if (!await confirmDialog({ title: foundationT("app.confirm.retryShopifyEvent"), message: foundationT("app.confirm.retryShopifyEventMessage"), confirmLabel: foundationT("app.inline.retry"), tone: "warning" })) return;
+  if (!await confirmDialog({ title: foundationT("shopify.replayCapturedDelivery"), message: foundationT("shopify.replayCapturedDeliveryConfirm"), confirmLabel: foundationT("shopify.replayCapturedDelivery"), tone: "warning" })) return;
   try {
     await request(`/api/v1/integrations/shopify/events/${id}/retry`, { method: "POST" });
     notice(foundationT("app.message.shopifyEventQueuedForRetry"), "success");
     await loadShopifyEvents();
   } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
+    if (exception?.status === 409) {
+      notice(foundationT("shopify.eventChangedReloaded"), "error");
+      await loadShopifyEvents();
+    } else {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
   }
+}
+
+async function refreshShopifyEvent(id) {
+  if (!shopifyCanManageEvents() || !shopifyReconciliationAvailable) return;
+  if (!await confirmDialog({
+    title: foundationT("shopify.refreshFromShopify"),
+    message: foundationT("shopify.refreshFromShopifyConfirm"),
+    confirmLabel: foundationT("shopify.refreshFromShopify"), tone: "warning"
+  })) return;
+  try {
+    await request(`/api/v1/integrations/shopify/events/${encodeURIComponent(id)}/refresh`, { method: "POST" });
+    notice(foundationT("shopify.refreshAccepted"), "success");
+    await loadShopifyEvents();
+  } catch (exception) {
+    if (exception?.status === 404) {
+      notice(foundationT("shopify.refreshNotFound"), "error");
+    } else if (exception?.status === 409) {
+      notice(foundationT("shopify.refreshUnavailable"), "error");
+    } else if (exception?.status === 503) {
+      const retryAfter = Number(exception.retryAfterSeconds);
+      notice(Number.isFinite(retryAfter) && retryAfter > 0
+        ? foundationT("shopify.refreshTemporarilyUnavailableAfter", { seconds: retryAfter })
+        : foundationT("shopify.refreshTemporarilyUnavailable"), "error");
+    } else {
+      notice(foundationT("shopify.refreshFailed"), "error");
+    }
+  }
+}
+
+function shopifyCanManageEvents() {
+  const user = getAuth()?.user;
+  return ["Admin", "ERPAdmin"].includes(user?.role) || (user?.role === "WarehouseClerk" && user?.locationType === "Online");
 }
 
 async function resolveShopifyEvent(id) {
@@ -13293,7 +13672,12 @@ async function resolveShopifyEvent(id) {
     notice(foundationT("app.message.shopifyEventResolved"), "success");
     await loadShopifyEvents();
   } catch (exception) {
-    notice(getFriendlyWorkspaceError(exception), "error");
+    if (exception?.status === 409) {
+      notice(foundationT("shopify.eventChangedReloaded"), "error");
+      await loadShopifyEvents();
+    } else {
+      notice(getFriendlyWorkspaceError(exception), "error");
+    }
   }
 }
 
@@ -13356,6 +13740,7 @@ async function loadShopifySkuReadiness(page = shopifySkuPageState.page || 1) {
 function renderShopifySkuReadiness(status) {
   if (status === "Ready") return `<span class="status-pill status-ok">${escapeHtml(foundationT("supply.ready"))}</span>`;
   if (status === "NeedsWearCycle") return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.setLensCycle"))}</span>`;
+  if (status === "NeedsPackConfiguration") return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.setPiecesPerPack"))}</span>`;
   if (status === "PieceSaleDisabled") return `<span class="status-pill status-warn">${escapeHtml(foundationT("app.inline.enablePieceSales"))}</span>`;
   return `<span class="status-pill status-muted">${escapeHtml(foundationT("app.inline.lensProductsOnly"))}</span>`;
 }
@@ -13457,6 +13842,9 @@ function getFriendlyInventoryError(exception) {
 function getFriendlyWorkspaceError(exception) {
   const problem = parseProblemDetails(exception);
   if (problem) {
+    if (problem.includes("Shopify dispatch requires the latest trusted Shopify order state")) {
+      return foundationT("shopify.dispatchBlocked");
+    }
     return problem;
   }
   if (exception?.status === 401) {

@@ -252,6 +252,45 @@ public sealed class OperationsEndpointContractTests : IClassFixture<OperationsEn
     }
 
     [Fact]
+    public async Task ManualOperation_CannotBeCreatedOrReclassifiedAsShopify()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.OperationsRead, LenseePermissions.OperationsWrite, LenseePermissions.InventoryRead);
+        var attemptedCreate = await client.PostAsJsonAsync("/api/v1/operations", new
+        {
+            operationType = "InventoryReceipt",
+            destinationLocationId = seed.MainLocationId,
+            salesChannel = "Shopify",
+            receipt = new { supplierName = "SKU boundary supplier", invoiceNumber = "SKU-BOUNDARY-CREATE" },
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, lotNumber = "SKU-BOUNDARY-CREATE", expiryDate = "2028-06-01" } }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, attemptedCreate.StatusCode);
+        var operation = await CreateOperationAsync(client, new
+        {
+            operationType = "InventoryReceipt",
+            destinationLocationId = seed.MainLocationId,
+            receipt = new { supplierName = "SKU boundary supplier", invoiceNumber = "SKU-BOUNDARY-1" },
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, lotNumber = "SKU-BOUNDARY", expiryDate = "2028-06-01" } }
+        });
+
+        var response = await client.PutAsJsonAsync($"/api/v1/operations/{operation.Id}", new
+        {
+            operationType = operation.OperationType,
+            destinationLocationId = seed.MainLocationId,
+            salesChannel = "Shopify",
+            receipt = new { supplierName = "SKU boundary supplier", invoiceNumber = "SKU-BOUNDARY-1" },
+            lines = new[] { new { skuId = seed.SkuId, packQuantity = 1, lotNumber = "SKU-BOUNDARY", expiryDate = "2028-06-01" } }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Shopify orders are created only by the Shopify integration.", await response.Content.ReadAsStringAsync());
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        Assert.Equal("Manual", (await operations.OperationLogs.SingleAsync(value => value.Id == operation.Id)).SalesChannel);
+    }
+
+    [Fact]
     public async Task InventoryReceipt_RejectsNonMainDestination()
     {
         var seed = await _factory.SeedAsync();

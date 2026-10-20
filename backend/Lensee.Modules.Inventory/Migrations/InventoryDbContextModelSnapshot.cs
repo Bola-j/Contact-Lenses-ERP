@@ -37,10 +37,6 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<int?>("ConversionPiecesPerPack")
-                        .HasColumnType("integer")
-                        .HasColumnName("conversion_pieces_per_pack");
-
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
@@ -359,6 +355,145 @@ namespace Lensee.Modules.Inventory.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockPieceReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("LocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("location_id");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<Guid>("OperationLineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_line_id");
+
+                    b.Property<int>("PiecesPerPackSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("pieces_per_pack_snapshot");
+
+                    b.Property<DateTime?>("ReleasedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("released_at");
+
+                    b.Property<int>("RequestedPieceQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("requested_piece_quantity");
+
+                    b.Property<Guid>("SkuId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("sku_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("stock_piece_reservations_pkey");
+
+                    b.HasIndex(new[] { "LocationId", "SkuId", "Status" }, "idx_stock_piece_reservations_stock_status");
+
+                    b.HasIndex(new[] { "OperationLineId" }, "uq_stock_piece_reservations_operation_line")
+                        .IsUnique();
+
+                    b.ToTable("stock_piece_reservations", "inventory", t =>
+                        {
+                            t.HasCheckConstraint("chk_stock_piece_reservation_quantity", "requested_piece_quantity > 0 and pieces_per_pack_snapshot > 0");
+
+                            t.HasCheckConstraint("chk_stock_piece_reservation_status", "status in ('Active','Consumed','Released')");
+
+                            t.HasCheckConstraint("chk_stock_piece_reservation_terminal", "(status = 'Active' and consumed_at is null and released_at is null) or (status = 'Consumed' and consumed_at is not null and released_at is null) or (status = 'Released' and consumed_at is null and released_at is not null)");
+                        });
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockPieceReservationAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateOnly?>("ExpiryDate")
+                        .HasColumnType("date")
+                        .HasColumnName("expiry_date");
+
+                    b.Property<string>("LotNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("lot_number");
+
+                    b.Property<int>("PhysicalPacksHeld")
+                        .HasColumnType("integer")
+                        .HasColumnName("physical_packs_held");
+
+                    b.Property<int>("PieceQuantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("piece_quantity");
+
+                    b.Property<Guid>("ReservationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reservation_id");
+
+                    b.Property<Guid>("SourceBatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_batch_id");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("source_kind");
+
+                    b.Property<Guid?>("SourceOpenedPieceLotId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_opened_piece_lot_id");
+
+                    b.HasKey("Id")
+                        .HasName("stock_piece_reservation_allocations_pkey");
+
+                    b.HasIndex(new[] { "SourceBatchId" }, "idx_stock_piece_reservation_allocations_batch");
+
+                    b.HasIndex(new[] { "SourceOpenedPieceLotId" }, "idx_stock_piece_reservation_allocations_opened_lot")
+                        .HasFilter("(source_opened_piece_lot_id IS NOT NULL)");
+
+                    b.HasIndex(new[] { "ReservationId", "SourceKind", "SourceBatchId" }, "idx_stock_piece_reservation_allocations_reservation_source");
+
+                    b.ToTable("stock_piece_reservation_allocations", "inventory", t =>
+                        {
+                            t.HasCheckConstraint("chk_stock_piece_reservation_allocation_quantities", "piece_quantity > 0 and physical_packs_held >= 0");
+
+                            t.HasCheckConstraint("chk_stock_piece_reservation_allocation_source", "(source_kind = 'OpenedPieceLot' and source_opened_piece_lot_id is not null and physical_packs_held = 0) or (source_kind = 'SealedBatch' and source_opened_piece_lot_id is null and physical_packs_held > 0)");
+                        });
+                });
+
             modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockTransaction", b =>
                 {
                     b.Property<Guid>("Id")
@@ -366,6 +501,10 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<int?>("ConversionPiecesPerPack")
+                        .HasColumnType("integer")
+                        .HasColumnName("conversion_pieces_per_pack");
 
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
@@ -386,13 +525,13 @@ namespace Lensee.Modules.Inventory.Migrations
                         .HasColumnType("character varying(10)")
                         .HasColumnName("quantity_unit");
 
-                    b.Property<Guid?>("RelatedTransactionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("related_transaction_id");
-
                     b.Property<Guid?>("ReferenceOperationId")
                         .HasColumnType("uuid")
                         .HasColumnName("reference_operation_id");
+
+                    b.Property<Guid?>("RelatedTransactionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("related_transaction_id");
 
                     b.Property<Guid>("SkuId")
                         .HasColumnType("uuid")
@@ -424,6 +563,7 @@ namespace Lensee.Modules.Inventory.Migrations
                     b.ToTable("stock_transactions", "inventory", t =>
                         {
                             t.HasCheckConstraint("chk_txn_quantity_unit", "quantity_unit is null or (quantity_unit in ('Pack','Piece') and quantity_change <> 0)");
+
                             t.HasCheckConstraint("chk_txn_type", "transaction_type in ('Receipt','Sale','ReserveInWarehouse','ReserveWithRep','ReserveReleaseInWarehouse','ReserveReleaseWithRep','WriteOff','SupplyOut','SupplyIn','StocktakeAdjustment','ChangeOut','ChangeIn','ReturnIn','ReturnRestore','PackOpen','QuarantineIn','QuarantineRelease','QuarantineWriteOff')");
                         });
                 });
@@ -474,6 +614,31 @@ namespace Lensee.Modules.Inventory.Migrations
                     b.Navigation("Location");
                 });
 
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockPieceReservationAllocation", b =>
+                {
+                    b.HasOne("Lensee.Modules.Inventory.Data.StockPieceReservation", "Reservation")
+                        .WithMany("Allocations")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("stock_piece_reservation_allocations_reservation_id_fkey");
+
+                    b.HasOne("Lensee.Modules.Inventory.Data.InventoryBatch", null)
+                        .WithMany()
+                        .HasForeignKey("SourceBatchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("stock_piece_reservation_allocations_source_batch_id_fkey");
+
+                    b.HasOne("Lensee.Modules.Inventory.Data.OpenedPieceLot", null)
+                        .WithMany()
+                        .HasForeignKey("SourceOpenedPieceLotId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("stock_piece_reservation_allocations_source_opened_piece_lot_id_fkey");
+
+                    b.Navigation("Reservation");
+                });
+
             modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockTransaction", b =>
                 {
                     b.HasOne("Lensee.Modules.Inventory.Data.Location", "Location")
@@ -492,6 +657,11 @@ namespace Lensee.Modules.Inventory.Migrations
                     b.Navigation("StockBalances");
 
                     b.Navigation("StockTransactions");
+                });
+
+            modelBuilder.Entity("Lensee.Modules.Inventory.Data.StockPieceReservation", b =>
+                {
+                    b.Navigation("Allocations");
                 });
 #pragma warning restore 612, 618
         }

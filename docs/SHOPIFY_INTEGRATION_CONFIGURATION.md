@@ -1,70 +1,78 @@
-# Shopify integration: operator configuration
+# Shopify production setup
 
-This repository does not create Shopify apps, webhook subscriptions, HMAC values, passwords, or secrets. Complete the following steps only after the ERP deployment is ready.
+This is the production-only setup. You do not need a separate Shopify development store or a Shopify DEV environment. The ERP endpoint receives Shopify events directly over the production HTTPS domain and saves them to the durable queue before acknowledging them.
 
-## 1. Prepare ERP configuration
+## Before deployment
 
-Supply these values through the deployment platform's secret/configuration facility. Do not commit them to `.env`, source control, logs, Postman collections, or support tickets.
+The production deployment already runs the database migrator. Keep Shopify disabled until migrations, the public HTTPS endpoint, Shopify app configuration and ERP values are ready. Do not reset or backfill the production database.
 
-| Placeholder | Operator supplies | Notes |
-|---|---|---|
-| `SHOPIFY_ENABLED` | `true` when ready | Leave `false` until mappings and networking are verified. |
-| `SHOPIFY_WEBHOOK_SECRET` | Shopify-provided secret | Production secret injection only. |
-| `SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET` | Your temporary URL-safe path secret | Use only for the ordinary Shopify Admin webhook bridge; 32-128 letters, numbers, `_`, or `-`. |
-| `SHOPIFY_STORE_DOMAIN` | `<your-store>.myshopify.com` | One store is accepted in v1. |
-| `SHOPIFY_ONLINE_LOCATION_ID` | Existing Lensee Online-location GUID | Must be an active location whose type is `Online`. |
-| `SHOPIFY_COD_GATEWAY_NAME_1` | Exact Shopify gateway label | Example placeholder: `Cash on Delivery`. |
-| `HOSTING_TRUSTED_PROXY_NETWORK` | Caddy container-network CIDR | Obtain this from the deployment platform/Docker network; never use a broad public CIDR. |
-
-The receiver also uses `SHOPIFY_WEBHOOK_MAX_BODY_BYTES=262144` and `SHOPIFY_PAYLOAD_RETENTION_DAYS=30` unless the operator deliberately changes them.
-
-## 2. Deploy and verify ERP first
-
-1. Deploy the migrations and host with `SHOPIFY_ENABLED=false`.
-2. Confirm `/ready` succeeds and the Integration Queue is visible to Admin, ERP Admin, and Warehouse Clerk.
-3. Add Shopify variant-to-Lensee SKU mappings in **Online intake**.
-4. Inject either the Shopify client secret or the temporary legacy path secret through the platform secret/configuration service, then redeploy.
-5. Confirm the Online intake receiver says **Ready** or **Temporary legacy receiver**. It never exposes a secret.
-
-## 3. Temporary ordinary Shopify webhook
-
-Use this only while you have not upgraded to a Shopify custom-app subscription. It is a guarded compatibility bridge, not a signed Shopify delivery.
-
-1. Create your own URL-safe path secret: 32-128 letters, numbers, `_`, or `-`. Do not send it to Lensee or commit it anywhere.
-2. Inject it as `SHOPIFY_LEGACY_WEBHOOK_PATH_SECRET` through the production secret store and redeploy.
-3. In Shopify Admin, go to **Settings → Notifications → Webhooks** and create these three JSON webhooks, one at a time:
-   - Order creation
-   - Order cancellation
-   - Refund creation
-4. Use this exact destination form for all three, replacing both placeholders yourself:
-
-```text
-https://<ERP_PUBLIC_DOMAIN>/api/v1/integrations/shopify/legacy-webhooks/<YOUR_PATH_SECRET>
-```
-
-Legacy deliveries appear as **Temporary legacy path** in Online intake and are not marked HMAC-verified. Do not use a URL copied from logs, screenshots, or chat. Replace this bridge with the signed custom-app endpoint when available.
-
-## 4. Configure signed Shopify subscriptions
-
-The operator creates/configures the Shopify webhook outside this repository. Use the public HTTPS ERP endpoint:
+The webhook URL is:
 
 ```text
 https://<ERP_PUBLIC_DOMAIN>/api/v1/integrations/shopify/webhooks
 ```
 
-Subscribe only to:
+Use the permanent `*.myshopify.com` domain of the real store, not its branded storefront URL. Use the GUID of the active ERP `Online` inventory location. Leave COD configuration blank.
 
-```text
-orders/create
-orders/cancelled
-refunds/create
+## ERP values to enter
+
+Start from `.env.production.example`. Add these non-secret values to the production ERP environment:
+
+| Variable | Value |
+|---|---|
+| `SHOPIFY_STORE_DOMAIN` | The store's permanent `name.myshopify.com` domain. |
+| `SHOPIFY_ONLINE_LOCATION_ID` | GUID of the ERP's active Online inventory location. |
+| `SHOPIFY_ACTIVATION_AT_UTC` | Optional ISO-8601 UTC cutover. Leave blank to record the first enabled startup once. Orders before the saved cutoff are not imported automatically. |
+| `SHOPIFY_ENABLED` | Keep `false` until Shopify subscriptions and secrets are in place; then set `true`. |
+| `SHOPIFY_COD_GATEWAY_NAME_1` | Keep blank unless COD is deliberately enabled and its exact Shopify gateway label is approved. |
+
+Add secrets directly to the production secret facility; do not put values in Git, tickets or chat:
+
+| Secret | Runtime setting | Use |
+|---|---|---|
+| `SHOPIFY_WEBHOOK_SECRET` | `Shopify__WebhookSecret` | Required. The app client secret for the ERP-owned Shopify app that signs these deliveries. |
+| `SHOPIFY_ADMIN_ACCESS_TOKEN` | `Shopify__AdminAccessToken` | Optional recovery. Needed only when `SHOPIFY_RECONCILIATION_ENABLED=true`. |
+
+For automatic recovery of missed deliveries, set `SHOPIFY_RECONCILIATION_ENABLED=true` and `SHOPIFY_RECONCILIATION_INTERVAL_MINUTES=15`, and provide the Admin API token with `read_orders`. Shopify limits normal order access to the last 60 days; recovering older orders also requires Shopify approval for `read_all_orders`. If you do not set up this optional token, signed webhook intake still works, but periodic API reconciliation is disabled.
+
+The production app refuses to start with Shopify enabled unless signed webhooks, a store domain and an Online location are configured. Production does not accept the legacy path-secret bridge. Enabling reconciliation without its Admin API token also fails fast.
+
+## Shopify app setup (one time)
+
+Use the existing ERP-owned app installed on the production store. Do not create a new app or change the unrelated Shopify connector. The app needs the `read_orders` scope for order and refund topics. Use Shopify's app-specific webhook subscriptions in that app's `shopify.app.toml`; merge this configuration into the existing file, preserving its other settings:
+
+```toml
+[access_scopes]
+scopes = "read_orders"
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+topics = ["orders/create", "orders/updated", "orders/paid", "orders/cancelled", "refunds/create"]
+uri = "https://<ERP_PUBLIC_DOMAIN>/api/v1/integrations/shopify/webhooks"
 ```
 
-After Shopify sends a test delivery, verify an event appears in **Online intake**. Shopify must receive a 2xx response; the ERP worker processes the event afterwards. Do not send secrets, raw payloads, or HMAC headers through chat or email.
+If the app already declares scopes or subscriptions, merge rather than replacing them. Remove any duplicate shop-specific subscriptions for these same topics before switching to app-specific subscriptions. Release the updated app version and confirm the five topics point to the URL above. Do not configure a tunnel or the DEV receiver for production.
 
-## 5. Normal operation
+Shopify recommends app-specific subscriptions in `shopify.app.toml`; app-specific subscriptions are deployed with the Shopify app and share its configured API version. See [Manage webhook subscriptions](https://shopify.dev/docs/apps/build/webhooks/subscribe), [webhook signature verification](https://shopify.dev/docs/api/webhooks/2026-07), and [Shopify API access scopes](https://shopify.dev/docs/api/usage/access-scopes).
 
-- Warehouse Clerks repair variant mappings and resolve/retry exceptions.
-- Admin and ERP Admin oversee configuration health and all integration events.
-- Shopify can create only an unallocated Draft. Staff allocate batches, fulfill, and complete the sale through normal ERP workflows.
-- Raw encrypted payloads are purged after 30 days. Event metadata and resolution history remain available.
+## Turn intake on
+
+1. Deploy the ERP revision normally with `SHOPIFY_ENABLED=false`; the deployment migrator applies additive migrations before the application starts.
+2. Set the production store domain and active Online location ID. Add the webhook signing secret to production secret storage. Choose a UTC cutoff or leave it blank for first-start activation.
+3. Add and release the webhook configuration in the existing ERP-owned Shopify app. Confirm the five production subscriptions use the HTTPS receiver URL.
+4. Set `SHOPIFY_ENABLED=true` and redeploy/restart the ERP application. If using recovery, also set its flag and secret before restart.
+5. In the ERP, open Online intake and confirm it reports configured. Monitor Shopify events/queue for durable receipt and then the imported draft. A webhook 2xx means the event was saved; it does not mean import, payment verification or Finance reconciliation has finished.
+
+No production order, checkout, payment method or COD setting is changed by these steps. Shopify-reported paid status, provider verification and Finance reconciliation remain separate. A Shopify-paid order may proceed through normal ERP fulfillment while provider verification is pending; dispatch never creates payment or collection records.
+
+## Routine operation
+
+- ERP SKUs must already be copied into Shopify variants. The integration matches unique active SKU codes, remembers store/variant links, and queues ambiguous or incompatible matches for review.
+- Orders import as unallocated drafts. ERP staff choose the warehouse batch and expiry and allocate stock. Shopify line quantities mean pieces for `SinglePiece`/`Both` and sealed packs for `SealedPackOnly`.
+- Watch the ERP Shopify queue for waiting, retrying and requires-attention events. Fix the cause and use Retry; do not recreate a delayed order.
+- Keep unpaid orders blocked from dispatch. Shopify cancellation before dispatch releases reservations once; later cancellation and all refund notices require the existing governed review workflows.
+- Do not place fake paid/refund events or change webhook secrets to test production. Use the ERP queue/readiness screens and actual operational records.
+
+Paymob checkout and real payment-provider certification are separate work and are not enabled by this Shopify intake setup.

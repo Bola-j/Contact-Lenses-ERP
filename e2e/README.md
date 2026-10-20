@@ -68,22 +68,9 @@ The existing `e2e/support/helpers.js` remains the shared compatibility layer. Th
 
 ## Credentials
 
-Defaults match the dedicated synthetic E2E seed. They are valid only in the isolated `lensee-e2e` database and may be overridden by environment variables when required:
+The isolated seed reads its password from `LENSEE_E2E_PASSWORD`. Set it through the local secret facility before running setup and Playwright. CI generates a per-job random value and masks it. The setup script does not print or persist the value. Role-specific `LENSEE_E2E_*_PASSWORD` variables may override it when needed.
 
-```powershell
-$env:LENSEE_E2E_ADMIN_USER = "e2e_admin"
-$env:LENSEE_E2E_ADMIN_PASSWORD = "E2E-only-not-production-2026!"
-$env:LENSEE_E2E_ERP_ADMIN_USER = "e2e_erp_admin"
-$env:LENSEE_E2E_ERP_ADMIN_PASSWORD = "E2E-only-not-production-2026!"
-$env:LENSEE_E2E_CLEVEL_USER = "e2e_clevel"
-$env:LENSEE_E2E_CLEVEL_PASSWORD = "E2E-only-not-production-2026!"
-$env:LENSEE_E2E_ACCOUNTANT_USER = "e2e_accountant"
-$env:LENSEE_E2E_ACCOUNTANT_PASSWORD = "E2E-only-not-production-2026!"
-$env:LENSEE_E2E_CLERK_USER = "e2e_roxy_clerk"
-$env:LENSEE_E2E_CLERK_PASSWORD = "E2E-only-not-production-2026!"
-$env:LENSEE_E2E_RETAIL_CLERK_USER = "e2e_retail_clerk"
-$env:LENSEE_E2E_ONLINE_CLERK_USER = "e2e_online_clerk"
-```
+The isolated Shopify QA launcher additionally requires `SHOPIFY_QA_WEBHOOK_SECRET`, supplied through the local secret facility. Never use production credentials for these local test accounts.
 
 The default isolated ports are PostgreSQL `58181`, API `55000`, and frontend `53001`, all loopback-only. The suite uses `LENSEE_E2E_API_URL` when set, otherwise `http://127.0.0.1:55000`.
 

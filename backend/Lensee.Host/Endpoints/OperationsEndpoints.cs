@@ -18,6 +18,7 @@ using Lensee.SharedKernel.Data;
 using Lensee.SharedKernel.Primitives;
 using Lensee.SharedKernel.Security;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Lensee.Host.Endpoints;
 
@@ -410,6 +411,7 @@ public static class OperationsEndpoints
         CrmDbContext crmDbContext,
         IdentityDbContext identityDbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         CancellationToken cancellationToken)
     {
         var safePage = Math.Max(page ?? 1, 1);
@@ -472,6 +474,7 @@ public static class OperationsEndpoints
                 EF.Functions.ILike(operation.OperationNumber, pattern) ||
                 EF.Functions.ILike(operation.ExternalReference ?? "", pattern) ||
                 EF.Functions.ILike(operation.ClientName ?? "", pattern) ||
+                (operation.ShopifyOrderLink != null && EF.Functions.ILike(operation.ShopifyOrderLink.ShopifyOrderNumber ?? "", pattern)) ||
                 EF.Functions.ILike(operation.Notes ?? "", pattern) ||
                 operation.OperationLines.Any(line => EF.Functions.ILike(line.SkuCodeSnapshot ?? "", pattern) || EF.Functions.ILike(line.ProductNameSnapshot ?? "", pattern)) ||
                 (operation.ClientId.HasValue && merchantIds.Contains(operation.ClientId.Value)) ||
@@ -485,7 +488,9 @@ public static class OperationsEndpoints
                 return Results.Forbid();
             }
 
-            query = query.Where(operation => operation.SourceLocationId == locationId || operation.DestinationLocationId == locationId);
+            var canReceiveShopifyOrders = shopifyOptions.Value.OnlineLocationId == locationId;
+            query = query.Where(operation => operation.SourceLocationId == locationId || operation.DestinationLocationId == locationId ||
+                (canReceiveShopifyOrders && operation.ShopifyOrderLink != null && operation.SalesChannel == "Shopify"));
         }
 
         var total = await query.CountAsync(cancellationToken);
@@ -504,7 +509,7 @@ public static class OperationsEndpoints
         var userLookup = await LoadUserLookupAsync(identityDbContext, operations, cancellationToken);
 
         return Results.Ok(new PagedResult<OperationListResponse>(
-            operations.Select(operation => ToListResponse(operation, locationLookup, userLookup, currentUser, allocationPending.Contains(operation.Id))).ToList(),
+            operations.Select(operation => ToListResponse(operation, locationLookup, userLookup, currentUser, allocationPending.Contains(operation.Id), shopifyOptions.Value)).ToList(),
             safePage,
             safePageSize,
             total));
@@ -519,6 +524,7 @@ public static class OperationsEndpoints
         PaymentsDbContext paymentsDbContext,
         IdentityDbContext identityDbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         CancellationToken cancellationToken)
     {
         var operation = includeCollections == false
@@ -528,7 +534,7 @@ public static class OperationsEndpoints
         {
             return Results.NotFound();
         }
-        if (!CanReadOperation(currentUser, operation))
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value))
         {
             return Results.Forbid();
         }
@@ -542,14 +548,14 @@ public static class OperationsEndpoints
             ? await operationsDbContext.OperationLines.AsNoTracking().AnyAsync(line => line.OperationId == id && line.ExpiryDate == null, cancellationToken)
             : IsAllocationPending(operation);
         var returnFinancialOutcome = await GetReturnFinancialOutcomeAsync(operation, operationsDbContext, paymentsDbContext, cancellationToken);
-        return Results.Ok(ToDetailResponse(operation, locationLookup, userLookup, wearCycles, currentUser, includeCollections != false, allocationPending, returnFinancialOutcome));
+        return Results.Ok(ToDetailResponse(operation, locationLookup, userLookup, wearCycles, currentUser, includeCollections != false, allocationPending, returnFinancialOutcome, shopifyOptions.Value));
     }
 
-    private static async Task<IResult> GetOperationLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext operationsDbContext, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    private static async Task<IResult> GetOperationLinesAsync(Guid id, int? page, int? pageSize, OperationsDbContext operationsDbContext, CatalogDbContext catalogDbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, IOptions<ShopifyOptions> shopifyOptions, CancellationToken cancellationToken)
     {
         var operation = await LoadOperationSummaryAsync(operationsDbContext, id, cancellationToken);
         if (operation is null) return Results.NotFound();
-        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value)) return Results.Forbid();
         var request = new PageRequest(page ?? 1, pageSize ?? 50);
         var query = operationsDbContext.OperationLines.AsNoTracking().Where(line => line.OperationId == id);
         var total = await query.CountAsync(cancellationToken);
@@ -563,11 +569,11 @@ public static class OperationsEndpoints
         return Results.Ok(new PagedResult<OperationLineResponse>(rows, request.Page, request.PageSize, total));
     }
 
-    private static async Task<IResult> GetOperationVersionsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, IdentityDbContext identityDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    private static async Task<IResult> GetOperationVersionsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, IdentityDbContext identityDbContext, ICurrentUser currentUser, IOptions<ShopifyOptions> shopifyOptions, CancellationToken cancellationToken)
     {
         var operation = await LoadOperationSummaryAsync(dbContext, id, cancellationToken);
         if (operation is null) return Results.NotFound();
-        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value)) return Results.Forbid();
         var request = new PageRequest(page ?? 1, pageSize ?? 25);
         var query = dbContext.OperationVersions.AsNoTracking().Where(value => value.OperationId == id);
         var total = await query.CountAsync(cancellationToken);
@@ -580,11 +586,11 @@ public static class OperationsEndpoints
         return Results.Ok(new PagedResult<OperationVersionResponse>(rows, request.Page, request.PageSize, total));
     }
 
-    private static async Task<IResult> GetOperationAllocationsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    private static async Task<IResult> GetOperationAllocationsAsync(Guid id, int? page, int? pageSize, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, IOptions<ShopifyOptions> shopifyOptions, CancellationToken cancellationToken)
     {
         var operation = await LoadOperationSummaryAsync(dbContext, id, cancellationToken);
         if (operation is null) return Results.NotFound();
-        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value)) return Results.Forbid();
         var currentVersion = operation.CurrentVersionId.HasValue
             ? await dbContext.OperationVersions.AsNoTracking().FirstOrDefaultAsync(value => value.Id == operation.CurrentVersionId.Value, cancellationToken)
             : await dbContext.OperationVersions.AsNoTracking().Where(value => value.OperationId == id).OrderByDescending(value => value.VersionNumber).FirstOrDefaultAsync(cancellationToken);
@@ -594,11 +600,11 @@ public static class OperationsEndpoints
         return Results.Ok(new PagedResult<OperationAllocationResponse>(rows.Skip(request.Skip).Take(request.PageSize).ToList(), request.Page, request.PageSize, rows.Count));
     }
 
-    private static async Task<IResult> GetOperationEditorAsync(Guid id, OperationsDbContext dbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    private static async Task<IResult> GetOperationEditorAsync(Guid id, OperationsDbContext dbContext, ICurrentUser currentUser, IOptions<ShopifyOptions> shopifyOptions, CancellationToken cancellationToken)
     {
         var operation = await dbContext.OperationLogs.AsNoTracking().Include(value => value.OperationLines).Include(value => value.InventoryReceiptHeader).Include(value => value.ShopifyOrderLink).FirstOrDefaultAsync(value => value.Id == id && !value.IsDeleted, cancellationToken);
         if (operation is null) return Results.NotFound();
-        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value)) return Results.Forbid();
         var lines = operation.OperationLines
             .OrderBy(value => value.Id)
             .Select(line => new OperationEditorLineResponse(
@@ -789,6 +795,8 @@ public static class OperationsEndpoints
         CancellationToken cancellationToken)
     {
         var validation = await ValidateDraftAsync(request, catalogDbContext, crmDbContext, inventoryDbContext, operationsDbContext, currentUser, isCreate: true, cancellationToken);
+        if (string.Equals(NormalizeSalesChannel(request.SalesChannel), "Shopify", StringComparison.OrdinalIgnoreCase))
+            validation.Errors[nameof(request.SalesChannel)] = ["Shopify orders are created only by the Shopify integration."];
         var codChargeResolution = await ResolveDraftCodChargeAsync(request, sharedDbContext, currentUser, cancellationToken);
         if (codChargeResolution.Error is not null)
             validation.Errors[nameof(request.CodCharge)] = [codChargeResolution.Error];
@@ -968,6 +976,15 @@ public static class OperationsEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.ExpectedVersion)] = ["expectedVersion is required when editing a draft operation."] });
         }
 
+        if (string.Equals(NormalizeSalesChannel(request.SalesChannel), "Shopify", StringComparison.OrdinalIgnoreCase) &&
+            (operation.SalesChannel != "Shopify" || operation.ShopifyOrderLink is null))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.SalesChannel)] = ["Shopify orders are created only by the Shopify integration."]
+            });
+        }
+
         var validation = await ValidateDraftAsync(request, catalogDbContext, crmDbContext, inventoryDbContext, operationsDbContext, currentUser, isCreate: false, cancellationToken);
         var codChargeResolution = await ResolveDraftCodChargeAsync(request, sharedDbContext, currentUser, cancellationToken);
         if (codChargeResolution.Error is not null)
@@ -1081,6 +1098,7 @@ public static class OperationsEndpoints
         InventoryDbContext inventoryDbContext,
         IdentityDbContext identityDbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -1101,7 +1119,8 @@ public static class OperationsEndpoints
             .FirstOrDefaultAsync(value => value.Id == sourceLocationId && value.IsActive && value.LocationType == "SubWarehouse", cancellationToken);
         if (sourceLocation is null)
             return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.SourceLocationId)] = ["The selected source must be an active SubWarehouse."] });
-        if (!IsOperationsAdministrator(currentUser) && (!IsWarehouseClerk(currentUser) || currentUser.LocationId != sourceLocationId))
+        var onlineShopifyClerk = IsWarehouseClerk(currentUser) && currentUser.LocationId == shopifyOptions.Value.OnlineLocationId && operation.ShopifyOrderLink is not null;
+        if (!IsOperationsAdministrator(currentUser) && (!IsWarehouseClerk(currentUser) || (!onlineShopifyClerk && currentUser.LocationId != sourceLocationId)))
             return Results.Forbid();
 
         var lines = request.Lines ?? [];
@@ -1506,6 +1525,7 @@ public static class OperationsEndpoints
         MerchantExpiryRecallService recallService,
         MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         IReturnWorkflowPersistenceService returnPersistence,
@@ -1530,7 +1550,7 @@ public static class OperationsEndpoints
             {
                 return Results.Conflict(new { code = "return-approval-submission-required", status = Draft, detail = "This unlinked retail/online return must be submitted by an Admin or ERPAdmin before physical confirmation." });
             }
-            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "confirm", cancellationToken))
+            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "confirm", cancellationToken))
             {
                 return Results.Forbid();
             }
@@ -1561,7 +1581,7 @@ public static class OperationsEndpoints
 
                 operation = lockedOperation;
                 await NormalizeLegacySealedWholesalePieceLinesAsync(operation, catalogDbContext, cancellationToken);
-                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "confirm", cancellationToken))
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "confirm", cancellationToken))
                 {
                     confirmationConflict = Results.Forbid();
                     return false;
@@ -1693,7 +1713,10 @@ public static class OperationsEndpoints
                 await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, identityDbContext, async () =>
                 {
                     if (!await LockDraftForConfirmationAsync()) return;
+                    await ledgerService.AcquireStockLocksAsync(operation.OperationLines.Select(line => new StockKey(operation.SourceLocationId!.Value, line.SkuId)), cancellationToken);
+                    allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
                     await ReserveSelectedAllocationsAsync(operation.SourceLocationId!.Value, allocations, ledgerService, userId, operation.Id, cancellationToken);
+                    await ReserveSelectedPieceLinesAsync(operation, allocations, ledgerService, userId, cancellationToken);
 
                     operation.Status = Reserved;
                     operation.ConfirmedAt = now;
@@ -1711,8 +1734,10 @@ public static class OperationsEndpoints
                     await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
                     {
                         if (!await LockDraftForConfirmationAsync()) return;
+                        await ledgerService.AcquireStockLocksAsync(operation.OperationLines.Select(line => new StockKey(operation.SourceLocationId!.Value, line.SkuId)), cancellationToken);
                         allocations = await BuildSelectedPackAllocationsAsync(operation, inventoryDbContext, operationsDbContext, clock, cancellationToken);
                         await ReserveSelectedAllocationsAsync(operation.SourceLocationId!.Value, allocations, ledgerService, userId, operation.Id, cancellationToken);
+                        await ReserveSelectedPieceLinesAsync(operation, allocations, ledgerService, userId, cancellationToken);
 
                         operation.Status = Reserved;
                         operation.ConfirmedAt = now;
@@ -2027,7 +2052,9 @@ public static class OperationsEndpoints
         IdentityDbContext identityDbContext,
         StockLedgerService ledgerService,
         NotificationsDbContext notificationsDbContext,
+        ShopifyOrderReviewService shopifyOrderReviewService,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -2047,7 +2074,11 @@ public static class OperationsEndpoints
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Only reserved transfers or sales can be shipped."] });
             }
-            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "ship", cancellationToken))
+            if (IsShopifySale(operation) && !CanDispatchShopifySale(operation))
+            {
+                return ShopifyDispatchBlockedResult();
+            }
+            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "ship", cancellationToken))
             {
                 return Results.Forbid();
             }
@@ -2077,7 +2108,12 @@ public static class OperationsEndpoints
                 }
 
                 operation = lockedOperation;
-                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "ship", cancellationToken))
+                if (IsShopifySale(operation) && !CanDispatchShopifySale(operation))
+                {
+                    shipConflict = ShopifyDispatchBlockedResult();
+                    return;
+                }
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "ship", cancellationToken))
                 {
                     shipConflict = Results.Forbid();
                     return;
@@ -2092,10 +2128,21 @@ public static class OperationsEndpoints
 
                 if (operation.OperationType == WarehouseTransfer)
                 {
+                    if (!await HasActivePieceReservationsAsync(operation, inventoryDbContext, cancellationToken))
+                    {
+                        shipConflict = Results.Conflict(new { code = "piece-reservation-missing", detail = "The confirmed piece reservation is missing or no longer active. The transfer was held for inventory review." });
+                        return;
+                    }
                     await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
                 }
                 else if (operation.OperationType is WholesaleSale or RetailSale)
                 {
+                    if (!await HasActivePieceReservationsAsync(operation, inventoryDbContext, cancellationToken))
+                    {
+                        await shopifyOrderReviewService.MarkReservationMissingAsync(operation.ShopifyOrderLink, cancellationToken);
+                        shipConflict = Results.Conflict(new { code = "piece-reservation-missing", detail = "The confirmed piece reservation is missing or no longer active. The order was held for inventory review." });
+                        return;
+                    }
                     await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
                 }
                 var dispatchedOnline = IsOnlineSale(operation);
@@ -2145,7 +2192,9 @@ public static class OperationsEndpoints
         MerchantAccountService merchantAccountService,
         FinanceLedgerService financeLedgerService,
         OperationCompletionService operationCompletionService,
+        ShopifyOrderReviewService shopifyOrderReviewService,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -2169,7 +2218,7 @@ public static class OperationsEndpoints
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(operation.Status)] = ["Wholesale sales must be shipped before receipt/complete. Other reserved transfers or sales can be received."] });
             }
-            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "receive", cancellationToken))
+            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "receive", cancellationToken))
             {
                 return Results.Forbid();
             }
@@ -2201,7 +2250,7 @@ public static class OperationsEndpoints
                 }
 
                 operation = lockedOperation;
-                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "receive", cancellationToken))
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "receive", cancellationToken))
                 {
                     receiveConflict = Results.Forbid();
                     return;
@@ -2218,10 +2267,21 @@ public static class OperationsEndpoints
                 {
                     if (operation.OperationType == WarehouseTransfer)
                     {
+                        if (!await HasActivePieceReservationsAsync(operation, inventoryDbContext, cancellationToken))
+                        {
+                            receiveConflict = Results.Conflict(new { code = "piece-reservation-missing", detail = "The confirmed piece reservation is missing or no longer active. The transfer was held for inventory review." });
+                            return;
+                        }
                         await CommitTransferOutAsync(operation, allocations, operationsDbContext, ledgerService, userId, InventoryTransactionTypes.SupplyOut, cancellationToken);
                     }
                     else if (operation.OperationType is WholesaleSale or RetailSale)
                     {
+                        if (!await HasActivePieceReservationsAsync(operation, inventoryDbContext, cancellationToken))
+                        {
+                            await shopifyOrderReviewService.MarkReservationMissingAsync(operation.ShopifyOrderLink, cancellationToken);
+                            receiveConflict = Results.Conflict(new { code = "piece-reservation-missing", detail = "The confirmed piece reservation is missing or no longer active. The order was held for inventory review." });
+                            return;
+                        }
                         await ShipSaleOutAsync(operation, allocations, operationsDbContext, catalogDbContext, ledgerService, userId, clock.EgyptNow, cancellationToken);
                     }
                 }
@@ -2360,6 +2420,7 @@ public static class OperationsEndpoints
         IdentityDbContext identityDbContext,
         MerchantAccountService merchantAccountService,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -2368,7 +2429,7 @@ public static class OperationsEndpoints
         if (operation is null) return Results.NotFound();
         if (operation.OperationType != WholesaleSale || operation.Status != Received)
             return Results.Conflict(new { code = "transition-conflict", detail = "Only a received wholesale sale can be completed." });
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "complete", cancellationToken)) return Results.Forbid();
+        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "complete", cancellationToken)) return Results.Forbid();
 
         IResult? failure = null;
         await ExecuteInventoryOperationTransactionAsync(inventoryDbContext, operationsDbContext, paymentsDbContext, identityDbContext, async () =>
@@ -2379,7 +2440,7 @@ public static class OperationsEndpoints
                 failure = Results.Conflict(new { code = "transition-conflict", detail = "The wholesale sale changed before completion could be applied. Reload and retry." });
                 return;
             }
-            if (!await CanMutateOperationAsync(currentUser, locked, inventoryDbContext, "complete", cancellationToken)) { failure = Results.Forbid(); return; }
+            if (!await CanMutateOperationAsync(currentUser, locked, inventoryDbContext, shopifyOptions.Value, "complete", cancellationToken)) { failure = Results.Forbid(); return; }
             var now = clock.EgyptNow;
             var userId = currentUser.UserId ?? Guid.Empty;
             locked.Status = Completed;
@@ -2399,6 +2460,7 @@ public static class OperationsEndpoints
         InventoryDbContext inventoryDbContext,
         IdentityDbContext identityDbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -2407,7 +2469,7 @@ public static class OperationsEndpoints
         if (operation is null) return Results.NotFound();
         if (!IsOnlineSale(operation) || operation.Status != Dispatched)
             return Results.Conflict(new { code = "transition-conflict", detail = "Only a dispatched online sale can be marked as failed delivery." });
-        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "failed-delivery", cancellationToken)) return Results.Forbid();
+        if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "failed-delivery", cancellationToken)) return Results.Forbid();
 
         IResult? failure = null;
         await SharedDbTransaction.ExecuteAsync(operationsDbContext, async () =>
@@ -2418,7 +2480,7 @@ public static class OperationsEndpoints
                 failure = Results.Conflict(new { code = "transition-conflict", detail = "The online order changed before failed delivery could be recorded. Reload and retry." });
                 return;
             }
-            if (!await CanMutateOperationAsync(currentUser, locked, inventoryDbContext, "failed-delivery", cancellationToken))
+            if (!await CanMutateOperationAsync(currentUser, locked, inventoryDbContext, shopifyOptions.Value, "failed-delivery", cancellationToken))
             {
                 failure = Results.Forbid();
                 return;
@@ -2439,6 +2501,7 @@ public static class OperationsEndpoints
         IdentityDbContext identityDbContext,
         StockLedgerService ledgerService,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         IAuditLogWriter auditLogWriter,
         CancellationToken cancellationToken)
@@ -2491,7 +2554,7 @@ public static class OperationsEndpoints
             {
                 return Results.Forbid();
             }
-            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "cancel", cancellationToken))
+            if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "cancel", cancellationToken))
             {
                 return Results.Forbid();
             }
@@ -2535,7 +2598,7 @@ public static class OperationsEndpoints
                 {
                     return;
                 }
-                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, "cancel", cancellationToken))
+                if (!await CanMutateOperationAsync(currentUser, operation, inventoryDbContext, shopifyOptions.Value, "cancel", cancellationToken))
                 {
                     cancelConflict = Results.Forbid();
                     return;
@@ -2543,10 +2606,11 @@ public static class OperationsEndpoints
 
                 if (operation.OperationType == WarehouseTransfer && operation.Status is Reserved or Shipped)
                 {
-                    foreach (var group in operation.OperationLines.GroupBy(line => line.SkuId))
+                    foreach (var group in operation.OperationLines.Where(line => line.EntryMode == "Packs").GroupBy(line => line.SkuId))
                     {
                         await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
                     }
+                    await ledgerService.ReleasePieceReservationsAsync(operation.Id, userId, cancellationToken);
                 }
                 if (operation.OperationType is WholesaleSale or RetailSale && operation.Status == Reserved)
                 {
@@ -2554,6 +2618,7 @@ public static class OperationsEndpoints
                     {
                         await ledgerService.ReleaseInWarehouseAsync(operation.SourceLocationId!.Value, group.Key, group.Sum(line => line.Quantity), userId, operation.Id, cancellationToken);
                     }
+                    await ledgerService.ReleasePieceReservationsAsync(operation.Id, userId, cancellationToken);
                 }
 
                 operation.Status = Cancelled;
@@ -2791,6 +2856,12 @@ public static class OperationsEndpoints
                 (batch.ExpiryDate == null || batch.ExpiryDate >= today))
             .ToListAsync(cancellationToken);
         var reservedByBatch = await LoadReservedBatchQuantitiesAsync(operationsDbContext, sourceLocationId, operation.Id, cancellationToken);
+        var activePiecePackHolds = await (from allocation in inventoryDbContext.StockPieceReservationAllocations
+                                          join reservation in inventoryDbContext.StockPieceReservations on allocation.ReservationId equals reservation.Id
+                                          where reservation.Status == "Active" && reservation.LocationId == sourceLocationId && allocation.SourceKind == "SealedBatch"
+                                          group allocation by allocation.SourceBatchId into grouped
+                                          select new { BatchId = grouped.Key, Quantity = grouped.Sum(value => value.PhysicalPacksHeld) })
+            .ToDictionaryAsync(value => value.BatchId, value => value.Quantity, cancellationToken);
         var plannedByBatch = new Dictionary<Guid, int>();
         var allocations = new List<TransferAllocationSnapshot>();
 
@@ -2819,7 +2890,8 @@ public static class OperationsEndpoints
             {
                 reservedByBatch.TryGetValue(batch.Id, out var reservedQuantity);
                 plannedByBatch.TryGetValue(batch.Id, out var plannedQuantity);
-                var availableQuantity = Math.Max(batch.Quantity - reservedQuantity - plannedQuantity, 0);
+                activePiecePackHolds.TryGetValue(batch.Id, out var pieceHeldQuantity);
+                var availableQuantity = Math.Max(batch.Quantity - reservedQuantity - plannedQuantity - pieceHeldQuantity, 0);
                 if (availableQuantity == 0) continue;
                 var take = Math.Min(availableQuantity, remaining);
                 plannedByBatch[batch.Id] = plannedQuantity + take;
@@ -2837,6 +2909,46 @@ public static class OperationsEndpoints
         }
 
         return allocations;
+    }
+
+    private static async Task ReserveSelectedPieceLinesAsync(
+        OperationLog operation,
+        IReadOnlyList<TransferAllocationSnapshot> packAllocations,
+        StockLedgerService ledgerService,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var locationId = operation.SourceLocationId ?? throw new InvalidOperationException("Sale source location is required.");
+        var committedPacksByBatch = packAllocations.SelectMany(value => value.Allocations)
+            .GroupBy(value => value.BatchId).ToDictionary(group => group.Key, group => group.Sum(value => value.Quantity));
+        foreach (var line in operation.OperationLines.Where(value => value.EntryMode == "Pieces"))
+        {
+            if (line.PiecesPerPackSnapshot is not > 0)
+                throw new InvalidOperationException($"{line.SkuCodeSnapshot} requires a valid pieces-per-pack snapshot.");
+            await ledgerService.ReservePieceLineAsync(new PieceReservationRequest(
+                operation.Id, line.Id, locationId, line.SkuId, line.LotNumber, line.ExpiryDate,
+                line.Quantity, line.PiecesPerPackSnapshot.Value, userId), committedPacksByBatch, cancellationToken);
+        }
+    }
+
+    private static async Task<bool> HasActivePieceReservationsAsync(OperationLog operation, InventoryDbContext inventoryDbContext, CancellationToken cancellationToken)
+    {
+        foreach (var line in operation.OperationLines.Where(value => value.EntryMode == "Pieces"))
+        {
+            var reservation = await inventoryDbContext.StockPieceReservations.AsNoTracking()
+                .Where(value => value.OperationId == operation.Id && value.OperationLineId == line.Id)
+                .Select(value => new
+                {
+                    value.Status,
+                    value.RequestedPieceQuantity,
+                    value.PiecesPerPackSnapshot,
+                    AllocatedPieceQuantity = value.Allocations.Sum(allocation => allocation.PieceQuantity)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (reservation is null || reservation.Status != "Active" || reservation.RequestedPieceQuantity != line.Quantity ||
+                reservation.AllocatedPieceQuantity != line.Quantity || reservation.PiecesPerPackSnapshot != line.PiecesPerPackSnapshot) return false;
+        }
+        return true;
     }
 
     private static async Task ReserveSelectedAllocationsAsync(
@@ -3342,10 +3454,11 @@ public static class OperationsEndpoints
         }
     }
 
-    private static bool CanReadOperation(ICurrentUser currentUser, OperationLog operation) =>
+    private static bool CanReadOperation(ICurrentUser currentUser, OperationLog operation, ShopifyOptions? shopifyOptions = null) =>
         !IsWarehouseClerk(currentUser) ||
         (currentUser.LocationId.HasValue &&
-            (operation.SourceLocationId == currentUser.LocationId || operation.DestinationLocationId == currentUser.LocationId));
+            (operation.SourceLocationId == currentUser.LocationId || operation.DestinationLocationId == currentUser.LocationId ||
+                (shopifyOptions?.OnlineLocationId == currentUser.LocationId && operation.ShopifyOrderLink is not null)));
 
     private static bool CanCreateDraft(ICurrentUser currentUser, OperationRequest request, Location? source, Location? destination)
     {
@@ -3380,7 +3493,7 @@ public static class OperationsEndpoints
             (destination is null || IsPhysicalWarehouse(destination));
     }
 
-    private static async Task<bool> CanMutateOperationAsync(ICurrentUser currentUser, OperationLog operation, InventoryDbContext dbContext, string action, CancellationToken cancellationToken)
+    private static async Task<bool> CanMutateOperationAsync(ICurrentUser currentUser, OperationLog operation, InventoryDbContext dbContext, ShopifyOptions shopifyOptions, string action, CancellationToken cancellationToken)
     {
         // Retired workflows remain readable for audit, but cannot be edited,
         // confirmed, shipped, received, or cancelled through legacy routes.
@@ -3393,6 +3506,15 @@ public static class OperationsEndpoints
         if (!IsWarehouseClerk(currentUser) || currentUser.LocationId is not { } clerkLocationId)
         {
             return false;
+        }
+
+        // The configured Online-location clerk owns Shopify fulfillment and must be
+        // able to allocate the unassigned draft to a SubWarehouse, then complete its
+        // governed delivery lifecycle across that selected physical location.
+        if (operation.SalesChannel == "Shopify" && operation.ShopifyOrderLink is not null &&
+            clerkLocationId == shopifyOptions.OnlineLocationId)
+        {
+            return action is "confirm" or "ship" or "receive" or "failed-delivery" or "cancel";
         }
 
         var source = operation.SourceLocationId.HasValue
@@ -3419,12 +3541,14 @@ public static class OperationsEndpoints
         return false;
     }
 
-    private static OperationWorkflowResponse BuildWorkflowProjection(ICurrentUser currentUser, OperationLog operation)
+    private static OperationWorkflowResponse BuildWorkflowProjection(ICurrentUser currentUser, OperationLog operation, ShopifyOptions? shopifyOptions = null)
     {
         var actions = new List<OperationWorkflowActionResponse>();
         var isAdministrator = IsOperationsAdministrator(currentUser);
+        var isShopifyOnlineClerk = IsWarehouseClerk(currentUser) && currentUser.LocationId is { } locationId &&
+            shopifyOptions?.OnlineLocationId == locationId && operation.ShopifyOrderLink is not null;
         var isAssignedClerk = IsWarehouseClerk(currentUser) && currentUser.LocationId.HasValue &&
-            (operation.SourceLocationId == currentUser.LocationId || operation.DestinationLocationId == currentUser.LocationId);
+            (operation.SourceLocationId == currentUser.LocationId || operation.DestinationLocationId == currentUser.LocationId || isShopifyOnlineClerk);
 
         if (isAdministrator)
         {
@@ -3450,7 +3574,9 @@ public static class OperationsEndpoints
             }
             else if (operation.Status == Reserved)
             {
-                actions.Add(new("ship", false));
+                actions.Add(new("ship", false, IsShopifySale(operation) && !CanDispatchShopifySale(operation)
+                    ? "Shopify dispatch requires the latest trusted paid state and no unresolved order review."
+                    : null));
                 actions.Add(new("cancel", false));
             }
             else if (operation.Status == Shipped)
@@ -3469,7 +3595,28 @@ public static class OperationsEndpoints
         }
         else if (isAssignedClerk)
         {
-            if (operation.OperationType == InventoryReceipt && operation.Status == Draft && operation.DestinationLocationId == currentUser.LocationId)
+            if (isShopifyOnlineClerk && operation.OperationType == RetailSale)
+            {
+                if (operation.Status == Draft)
+                {
+                    actions.Add(new("edit-draft", false));
+                    actions.Add(new("confirm", false));
+                    actions.Add(new("cancel", false));
+                }
+                else if (operation.Status == Reserved)
+                {
+                    actions.Add(new("ship", false, IsShopifySale(operation) && !CanDispatchShopifySale(operation)
+                        ? "Shopify dispatch requires the latest trusted paid state and no unresolved order review."
+                        : null));
+                    actions.Add(new("cancel", false));
+                }
+                else if (operation.Status == Dispatched)
+                {
+                    actions.Add(new("delivered", false));
+                    actions.Add(new("failed-delivery", false));
+                }
+            }
+            else if (operation.OperationType == InventoryReceipt && operation.Status == Draft && operation.DestinationLocationId == currentUser.LocationId)
             {
                 actions.Add(new("edit-draft", false));
                 actions.Add(new("confirm", false));
@@ -3494,11 +3641,11 @@ public static class OperationsEndpoints
         return new(operation.Status, actions);
     }
 
-    private static async Task<IResult> GetOperationSourceAllocationsAsync(Guid id, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, CancellationToken cancellationToken)
+    private static async Task<IResult> GetOperationSourceAllocationsAsync(Guid id, OperationsDbContext dbContext, InventoryDbContext inventoryDbContext, ICurrentUser currentUser, IOptions<ShopifyOptions> shopifyOptions, CancellationToken cancellationToken)
     {
         var operation = await LoadOperationSummaryAsync(dbContext, id, cancellationToken);
         if (operation is null) return Results.NotFound();
-        if (!CanReadOperation(currentUser, operation)) return Results.Forbid();
+        if (!CanReadOperation(currentUser, operation, shopifyOptions.Value)) return Results.Forbid();
 
         var rows = await (
                 from allocation in dbContext.OperationLineSourceAllocations.AsNoTracking()
@@ -4008,7 +4155,8 @@ public static class OperationsEndpoints
         string.Equals(value, "Pieces", StringComparison.OrdinalIgnoreCase) ? "Pieces" : "Packs";
 
     private static string NormalizeSalesChannel(string? value) =>
-        string.Equals(value, "Online", StringComparison.OrdinalIgnoreCase) ? "Online" : "Manual";
+        string.Equals(value, "Online", StringComparison.OrdinalIgnoreCase) ? "Online" :
+        string.Equals(value, "Shopify", StringComparison.OrdinalIgnoreCase) ? "Shopify" : "Manual";
 
     private static string? NormalizePaymentStatus(string? value) =>
         value?.Trim() switch
@@ -4246,7 +4394,7 @@ public static class OperationsEndpoints
                 group => group.Key,
                 group => group.SelectMany(value => value.Allocations).ToList());
 
-    private static IReadOnlyList<TransferAllocationSnapshot> ReadTransferAllocations(OperationLog operation)
+    internal static IReadOnlyList<TransferAllocationSnapshot> ReadTransferAllocations(OperationLog operation)
     {
         var snapshot = operation.OperationVersions
             .OrderByDescending(version => version.VersionNumber)
@@ -4300,17 +4448,8 @@ public static class OperationsEndpoints
                 throw new InvalidOperationException($"{line.SkuCodeSnapshot} requires a valid pieces-per-pack snapshot.");
             }
 
-            var pieceAllocations = await ledgerService.IssuePiecesFromSelectionAsync(
-                operation.SourceLocationId!.Value,
-                line.SkuId,
-                line.Quantity,
-                line.PiecesPerPackSnapshot.Value,
-                line.LotNumber,
-                line.ExpiryDate,
-                userId,
-                operation.Id,
-                cancellationToken,
-                transactionType);
+            var pieceAllocations = await ledgerService.ConsumePieceLineReservationAsync(
+                operation.Id, line.Id, line.Quantity, transactionType, userId, cancellationToken);
             PersistPieceAllocations(operationsDbContext, line, pieceAllocations, line.PiecesPerPackSnapshot.Value, DateTime.UtcNow);
         }
     }
@@ -4343,10 +4482,6 @@ public static class OperationsEndpoints
             return;
         }
 
-        var sellModes = await catalogDbContext.Skus
-            .Include(sku => sku.Product)
-            .Where(sku => pieceLines.Select(line => line.SkuId).Contains(sku.Id))
-            .ToDictionaryAsync(sku => sku.Id, sku => sku.Product.SellMode, cancellationToken);
         foreach (var line in pieceLines)
         {
             if (line.PiecesPerPackSnapshot is not > 0)
@@ -4358,17 +4493,8 @@ public static class OperationsEndpoints
                 throw new InvalidOperationException($"{line.SkuCodeSnapshot} requires a selected batch expiry.");
             }
 
-            var pieceAllocations = await ledgerService.IssuePiecesFromSelectionAsync(
-                operation.SourceLocationId!.Value,
-                line.SkuId,
-                line.Quantity,
-                line.PiecesPerPackSnapshot.Value,
-                line.LotNumber,
-                line.ExpiryDate,
-                userId,
-                operation.Id,
-                cancellationToken,
-                allowOpeningSelectedPacks: !string.Equals(sellModes.GetValueOrDefault(line.SkuId), "SealedPackOnly", StringComparison.OrdinalIgnoreCase));
+            var pieceAllocations = await ledgerService.ConsumePieceLineReservationAsync(
+                operation.Id, line.Id, line.Quantity, InventoryTransactionTypes.Sale, userId, cancellationToken);
             PersistPieceAllocations(operationsDbContext, line, pieceAllocations, line.PiecesPerPackSnapshot.Value, now);
         }
     }
@@ -4459,7 +4585,7 @@ public static class OperationsEndpoints
     private static bool IsAllocationPending(OperationLog operation) =>
         operation.SalesChannel == "Shopify" && operation.OperationLines.Any(line => line.ExpiryDate is null);
 
-    private static OperationListResponse ToListResponse(OperationLog operation, IReadOnlyDictionary<Guid, Location> locationLookup, IReadOnlyDictionary<Guid, User> userLookup, ICurrentUser currentUser, bool? allocationPendingOverride = null) =>
+    private static OperationListResponse ToListResponse(OperationLog operation, IReadOnlyDictionary<Guid, Location> locationLookup, IReadOnlyDictionary<Guid, User> userLookup, ICurrentUser currentUser, bool? allocationPendingOverride = null, ShopifyOptions? shopifyOptions = null) =>
         new(
             operation.Id,
             operation.OperationNumber,
@@ -4491,7 +4617,11 @@ public static class OperationsEndpoints
             allocationPendingOverride ?? IsAllocationPending(operation),
             operation.CorrectionReason,
             operation.FinancialClosureStatus,
-            BuildWorkflowProjection(currentUser, operation));
+            BuildWorkflowProjection(currentUser, operation, shopifyOptions),
+            operation.ShopifyOrderLink?.FinancialStatus,
+            operation.ShopifyOrderLink?.FinancialStatusTrusted ?? false,
+            operation.ExternalPaymentVerified,
+            operation.ShopifyOrderLink?.FinanceReconciliationStatus);
 
     private static OperationDetailResponse ToDetailResponse(
         OperationLog operation,
@@ -4501,7 +4631,8 @@ public static class OperationsEndpoints
         ICurrentUser currentUser,
         bool includeCollections = true,
         bool? allocationPendingOverride = null,
-        string? returnFinancialOutcome = null)
+        string? returnFinancialOutcome = null,
+        ShopifyOptions? shopifyOptions = null)
     {
         var lines = includeCollections ? operation.OperationLines
             .Select(line =>
@@ -4578,9 +4709,12 @@ public static class OperationsEndpoints
             operation.ReturnRejectedBy,
             operation.ReturnRejectedAt,
             approvalLines,
-            BuildWorkflowProjection(currentUser, operation),
+            BuildWorkflowProjection(currentUser, operation, shopifyOptions),
             operation.ReturnReferenceOperationId,
-            returnFinancialOutcome);
+            returnFinancialOutcome,
+            operation.ShopifyOrderLink?.FinancialStatus,
+            operation.ShopifyOrderLink?.FinancialStatusTrusted ?? false,
+            operation.ShopifyOrderLink?.FinanceReconciliationStatus);
     }
 
     private static async Task<string?> GetReturnFinancialOutcomeAsync(
@@ -4907,6 +5041,19 @@ public static class OperationsEndpoints
         operation.OperationType == RetailSale &&
         (string.Equals(operation.SalesChannel, "Online", StringComparison.OrdinalIgnoreCase) ||
          string.Equals(operation.SalesChannel, "Shopify", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsShopifySale(OperationLog operation) =>
+        operation.OperationType == RetailSale && string.Equals(operation.SalesChannel, "Shopify", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanDispatchShopifySale(OperationLog operation) =>
+        operation.ShopifyOrderLink is { FinancialStatusTrusted: true, RequiresReview: false, IsCancellationTombstone: false } link &&
+        string.Equals(link.FinancialStatus, "paid", StringComparison.OrdinalIgnoreCase);
+
+    private static IResult ShopifyDispatchBlockedResult() =>
+        Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            [nameof(OperationLog.Status)] = ["Shopify dispatch requires the latest trusted Shopify order state to report paid and the order to have no unresolved review. Independent payment verification and Finance reconciliation remain separate."]
+        });
 
     private static bool IsFinalizedForCorrection(string status) => status is Confirmed or Completed or Received or Dispatched or Delivered or FailedDelivery;
 
@@ -5422,7 +5569,7 @@ public static class OperationsEndpoints
 
     private sealed record WearCycleLookup(Guid SkuId, string ProductType, string? OpenedExpiryRate, string? OpenedExpiryDuration);
 
-    private sealed record TransferAllocationSnapshot(Guid SkuId, IReadOnlyList<BatchAllocation> Allocations);
+    internal sealed record TransferAllocationSnapshot(Guid SkuId, IReadOnlyList<BatchAllocation> Allocations);
 
     private sealed class ClockStub : IClock
     {
@@ -5582,7 +5729,11 @@ public sealed record OperationListResponse(
     bool AllocationPending,
     string? CorrectionReason = null,
     string FinancialClosureStatus = "Open",
-    OperationWorkflowResponse? Workflow = null);
+    OperationWorkflowResponse? Workflow = null,
+    string? ShopifyFinancialStatus = null,
+    bool ShopifyFinancialStatusTrusted = false,
+    bool ExternalPaymentVerified = false,
+    string? ShopifyReconciliationStatus = null);
 
 public sealed record OperationDetailResponse(
     Guid Id,
@@ -5641,7 +5792,10 @@ public sealed record OperationDetailResponse(
     IReadOnlyList<ReturnApprovalLineResponse>? ReturnApprovalLines = null,
     OperationWorkflowResponse? Workflow = null,
     Guid? ReturnReferenceOperationId = null,
-    string? ReturnFinancialOutcome = null);
+    string? ReturnFinancialOutcome = null,
+    string? ShopifyFinancialStatus = null,
+    bool ShopifyFinancialStatusTrusted = false,
+    string? ShopifyReconciliationStatus = null);
 
 public sealed record ReturnApprovalLineResponse(Guid Id, Guid OperationLineId, Guid SkuId, int RequestedQuantity, int? EligibleQuantity, string? BatchName, DateOnly? ExpiryDate, string MismatchType, string Detail);
 public sealed record OperationWorkflowResponse(string Status, IReadOnlyList<OperationWorkflowActionResponse> Actions);

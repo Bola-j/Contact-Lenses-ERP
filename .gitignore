@@ -238,3 +238,4 @@ artifacts/overnight/db-backups
 artifacts/overnight
 
 artifacts/*/*
+**/TestResults/*.trx

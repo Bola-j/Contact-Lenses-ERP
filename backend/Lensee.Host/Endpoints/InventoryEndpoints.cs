@@ -14,6 +14,7 @@ using Lensee.SharedKernel.Text;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Lensee.Host.Endpoints;
 
@@ -49,6 +50,7 @@ public static class InventoryEndpoints
     private static async Task<IResult> ListLocationsAsync(
         InventoryDbContext dbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         CancellationToken cancellationToken)
     {
         var query = dbContext.Locations.AsQueryable();
@@ -59,7 +61,17 @@ public static class InventoryEndpoints
                 return Results.Forbid();
             }
 
-            query = query.Where(location => location.Id == clerkLocationId);
+            if (shopifyOptions.Value.Enabled && shopifyOptions.Value.OnlineLocationId == clerkLocationId)
+            {
+                // Online clerks need to choose an active SubWarehouse when
+                // allocating a Shopify draft; all other location-scoped clerks
+                // continue to see only their assigned location.
+                query = query.Where(location => location.IsActive && location.LocationType == "SubWarehouse");
+            }
+            else
+            {
+                query = query.Where(location => location.Id == clerkLocationId);
+            }
         }
 
         var locations = await query
@@ -379,10 +391,10 @@ public static class InventoryEndpoints
         {
             looseQuery = looseQuery.Where(lot => lot.LocationId == scopedLocationId.Value);
         }
-        var loosePieces = await looseQuery
-            .GroupBy(lot => lot.SkuId)
-            .Select(group => new { SkuId = group.Key, Quantity = group.Sum(lot => lot.LoosePieceQuantity) })
-            .ToDictionaryAsync(value => value.SkuId, value => value.Quantity, cancellationToken);
+        var looseRows = await looseQuery.ToListAsync(cancellationToken);
+        var looseHolds = await LoadActiveLoosePieceHoldsAsync(inventoryDbContext, looseRows.Select(x => x.Id).ToArray(), cancellationToken);
+        var loosePieces = looseRows.GroupBy(lot => lot.SkuId)
+            .ToDictionary(group => group.Key, group => group.Sum(lot => Math.Max(0, lot.LoosePieceQuantity - looseHolds.GetValueOrDefault(lot.Id))));
 
         var packsBySku = balances.ToDictionary(balance => balance.SkuId, balance => balance.AvailableQty);
         var skuIds = packsBySku.Where(value => value.Value > 0).Select(value => value.Key)
@@ -469,14 +481,20 @@ public static class InventoryEndpoints
         Guid locationId,
         Guid skuId,
         string? entryMode,
+        Guid? shopifyOperationId,
         InventoryDbContext inventoryDbContext,
         CatalogDbContext catalogDbContext,
         OperationsDbContext operationsDbContext,
         ICurrentUser currentUser,
+        IOptions<ShopifyOptions> shopifyOptions,
         IClock clock,
         CancellationToken cancellationToken)
     {
-        if (!CanAccessLocation(currentUser, locationId))
+        var canReadShopifyAllocationStock = shopifyOperationId is { } operationId &&
+            await CanReadShopifyAllocationStockAsync(
+                operationId, locationId, skuId, inventoryDbContext, operationsDbContext,
+                currentUser, shopifyOptions.Value, cancellationToken);
+        if (!CanAccessLocation(currentUser, locationId) && !canReadShopifyAllocationStock)
         {
             return Results.Forbid();
         }
@@ -510,35 +528,30 @@ public static class InventoryEndpoints
             .ThenBy(batch => batch.LotNumber)
             .ToListAsync(cancellationToken);
 
+        var piecePackHolds = await LoadActivePiecePackHoldsAsync(inventoryDbContext, batches.Select(x => x.Id).ToArray(), cancellationToken);
+
         var packGroups = batches
             .Select(batch => new
             {
                 batch.LotNumber,
                 batch.ExpiryDate,
-                Quantity = Math.Max(batch.Quantity - reservedByBatch.GetValueOrDefault(batch.Id), 0)
+                Quantity = Math.Max(batch.Quantity - reservedByBatch.GetValueOrDefault(batch.Id) - piecePackHolds.GetValueOrDefault(batch.Id), 0)
             })
             .Where(batch => batch.Quantity > 0)
             .GroupBy(batch => (LotNumber: NormalizeBlank(batch.LotNumber), batch.ExpiryDate))
             .ToDictionary(group => group.Key, group => group.Sum(batch => batch.Quantity));
 
-        var looseGroups = await inventoryDbContext.OpenedPieceLots
+        var looseLots = await inventoryDbContext.OpenedPieceLots
             .Where(lot =>
                 lot.LocationId == locationId &&
                 lot.SkuId == skuId &&
                 lot.LoosePieceQuantity > 0 &&
                 lot.PieceExpiryDate != null &&
                 lot.PieceExpiryDate >= today)
-            .GroupBy(lot => new { LotNumber = lot.LotNumber, ExpiryDate = lot.BatchExpiryDate })
-            .Select(group => new
-            {
-                group.Key.LotNumber,
-                group.Key.ExpiryDate,
-                Quantity = group.Sum(lot => lot.LoosePieceQuantity)
-            })
             .ToListAsync(cancellationToken);
-        var looseByKey = looseGroups.ToDictionary(
-            group => (LotNumber: NormalizeBlank(group.LotNumber), group.ExpiryDate),
-            group => group.Quantity);
+        var looseHolds = await LoadActiveLoosePieceHoldsAsync(inventoryDbContext, looseLots.Select(x => x.Id).ToArray(), cancellationToken);
+        var looseByKey = looseLots.GroupBy(lot => (LotNumber: NormalizeBlank(lot.LotNumber), ExpiryDate: lot.BatchExpiryDate))
+            .ToDictionary(group => group.Key, group => group.Sum(lot => Math.Max(0, lot.LoosePieceQuantity - looseHolds.GetValueOrDefault(lot.Id))));
 
         var allowsPieces = AllowsPieceDisplay(location.LocationType);
         var piecesPerPack = sku.Product.PiecesPerPack.GetValueOrDefault();
@@ -574,6 +587,38 @@ public static class InventoryEndpoints
         return Results.Ok(options);
     }
 
+    private static async Task<bool> CanReadShopifyAllocationStockAsync(
+        Guid operationId,
+        Guid locationId,
+        Guid skuId,
+        InventoryDbContext inventoryDbContext,
+        OperationsDbContext operationsDbContext,
+        ICurrentUser currentUser,
+        ShopifyOptions shopifyOptions,
+        CancellationToken cancellationToken)
+    {
+        if (!shopifyOptions.Enabled || !IsWarehouseClerk(currentUser) ||
+            currentUser.LocationId != shopifyOptions.OnlineLocationId)
+        {
+            return false;
+        }
+
+        var operation = await operationsDbContext.OperationLogs.AsNoTracking()
+            .Include(value => value.ShopifyOrderLink)
+            .Include(value => value.OperationLines)
+            .FirstOrDefaultAsync(value => value.Id == operationId && !value.IsDeleted, cancellationToken);
+        if (operation is null || operation.ShopifyOrderLink is null || operation.SalesChannel != "Shopify" ||
+            operation.OperationType != "RetailSale" || operation.Status != "Draft" ||
+            !operation.OperationLines.Any(line => line.SkuId == skuId))
+        {
+            return false;
+        }
+
+        return await inventoryDbContext.Locations.AsNoTracking().AnyAsync(
+            location => location.Id == locationId && location.IsActive && location.LocationType == "SubWarehouse",
+            cancellationToken);
+    }
+
     private static async Task<IResult> ListAvailableSkuIdsAsync(
         Guid locationId,
         InventoryDbContext inventoryDbContext,
@@ -591,11 +636,11 @@ public static class InventoryEndpoints
             .Select(balance => balance.SkuId)
             .ToListAsync(cancellationToken);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var looseSkuIds = await inventoryDbContext.OpenedPieceLots.AsNoTracking()
+        var looseLots = await inventoryDbContext.OpenedPieceLots.AsNoTracking()
             .Where(lot => lot.LocationId == locationId && lot.LoosePieceQuantity > 0 && (lot.PieceExpiryDate == null || lot.PieceExpiryDate >= today))
-            .Select(lot => lot.SkuId)
-            .Distinct()
             .ToListAsync(cancellationToken);
+        var looseHolds = await LoadActiveLoosePieceHoldsAsync(inventoryDbContext, looseLots.Select(x => x.Id).ToArray(), cancellationToken);
+        var looseSkuIds = looseLots.Where(lot => lot.LoosePieceQuantity > looseHolds.GetValueOrDefault(lot.Id)).Select(lot => lot.SkuId).Distinct();
         return Results.Ok(packSkuIds.Concat(looseSkuIds).Distinct().OrderBy(id => id).ToList());
     }
 
@@ -1194,9 +1239,31 @@ public static class InventoryEndpoints
             .Where(lot => locationIds.Contains(lot.LocationId) && skuIds.Contains(lot.SkuId) && lot.LoosePieceQuantity > 0 && (lot.PieceExpiryDate == null || lot.PieceExpiryDate >= today))
             .ToListAsync(cancellationToken);
 
+        var held = await LoadActiveLoosePieceHoldsAsync(dbContext, lots.Select(x => x.Id).ToArray(), cancellationToken);
+
         return lots
             .GroupBy(lot => (lot.LocationId, lot.SkuId))
-            .ToDictionary(group => group.Key, group => group.Sum(lot => lot.LoosePieceQuantity));
+            .ToDictionary(group => group.Key, group => group.Sum(lot => Math.Max(0, lot.LoosePieceQuantity - held.GetValueOrDefault(lot.Id))));
+    }
+
+    private static async Task<Dictionary<Guid, int>> LoadActiveLoosePieceHoldsAsync(InventoryDbContext db,
+        Guid[] lotIds, CancellationToken ct)
+    {
+        if (lotIds.Length == 0) return [];
+        return await db.StockPieceReservationAllocations.AsNoTracking()
+            .Where(x => x.Reservation.Status == "Active" && x.SourceOpenedPieceLotId.HasValue && lotIds.Contains(x.SourceOpenedPieceLotId.Value))
+            .GroupBy(x => x.SourceOpenedPieceLotId!.Value)
+            .ToDictionaryAsync(x => x.Key, x => x.Sum(y => y.PieceQuantity), ct);
+    }
+
+    private static async Task<Dictionary<Guid, int>> LoadActivePiecePackHoldsAsync(InventoryDbContext db,
+        Guid[] batchIds, CancellationToken ct)
+    {
+        if (batchIds.Length == 0) return [];
+        return await db.StockPieceReservationAllocations.AsNoTracking()
+            .Where(x => x.Reservation.Status == "Active" && x.PhysicalPacksHeld > 0 && batchIds.Contains(x.SourceBatchId))
+            .GroupBy(x => x.SourceBatchId)
+            .ToDictionaryAsync(x => x.Key, x => x.Sum(y => y.PhysicalPacksHeld), ct);
     }
 
     private static async Task<Dictionary<Guid, int>> LoadReservedBatchQuantitiesAsync(
@@ -1243,7 +1310,10 @@ public static class InventoryEndpoints
                     return null;
                 }
             })
-            .FirstOrDefault(value => value?.TransferAllocations.Count > 0);
+            // Older audit snapshots and newer Shopify reservation snapshots do
+            // not necessarily contain transfer allocations. Treat an omitted
+            // collection as an empty snapshot while searching older versions.
+            .FirstOrDefault(value => value?.TransferAllocations?.Count > 0);
 
         return snapshot?.TransferAllocations ?? [];
     }

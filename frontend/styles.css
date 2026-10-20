@@ -2960,6 +2960,104 @@ html[dir="rtl"] .category-tree-chevron.is-collapsed {
   margin-bottom: 16px;
 }
 
+.shopify-health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.shopify-reconciliation-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.shopify-reconciliation-facts > div,
+.shopify-health-grid > .metric {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcfc;
+}
+
+.shopify-reconciliation-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.shopify-reconciliation-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.shopify-mapping-editor {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft, #f7f9f9);
+}
+
+.shopify-filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.shopify-mapping-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(230px, 1fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.shopify-mapping-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.shopify-payment-state {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  border: 1px solid #d5e2e0;
+  border-radius: 9px;
+  background: #f4f9f8;
+}
+
+.shopify-payment-state > p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.shopify-payment-state dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.shopify-payment-state dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.shopify-payment-state dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .shopify-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .shopify-reconciliation-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .shopify-mapping-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media (max-width: 760px) {
   .integration-command-band,
   .integration-event-main {
@@ -2975,6 +3073,13 @@ html[dir="rtl"] .category-tree-chevron.is-collapsed {
   }
 
   .integration-mapping-form {
+    grid-template-columns: 1fr;
+  }
+
+  .shopify-health-grid,
+  .shopify-reconciliation-facts,
+  .shopify-mapping-editor-grid,
+  .shopify-payment-state dl {
     grid-template-columns: 1fr;
   }
 }
@@ -3869,3 +3974,7 @@ html[dir="rtl"] .op-line-search-result:hover {
   .finance-supply-detail { padding: 12px; }
   .finance-supply-detail-head { align-items: center; }
 }
+
+.shopify-queue-alerts:empty { display: none; }
+.shopify-operational-alert { margin: 0 0 8px; padding: 10px 14px; border: 1px solid #e6c36a; border-inline-start: 4px solid #b77b00; border-radius: 8px; background: #fff8e5; color: #563a00; }
+html[dir="rtl"] .shopify-operational-alert { text-align: right; }

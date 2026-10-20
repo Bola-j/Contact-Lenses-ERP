@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Lensee.Modules.Catalog.Data;
 using Lensee.Modules.Finance.Data;
 using Lensee.Modules.Inventory.Data;
@@ -82,6 +83,163 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     }
 
     [Fact]
+    public async Task RememberedVariantLink_HoldsWhenCopiedSkuChanges()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        var firstPayload = OrderPayload("remembered-link-first", SkuCode(seed.SkuId));
+        using var firstRequest = CreateWebhookRequest("orders/create", "webhook-remembered-first", firstPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(firstRequest)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        var changedSkuPayload = OrderPayload("remembered-link-changed", "DIFFERENT-COPIED-SKU")
+            .Replace("variant-remembered-link-changed", "variant-remembered-link-first", StringComparison.Ordinal);
+        using var changedRequest = CreateWebhookRequest("orders/create", "webhook-remembered-changed", changedSkuPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(changedRequest)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var firstEvent = await operations.ShopifyWebhookEvents.SingleAsync(value => value.ShopifyOrderId == "customer-remembered-link-first");
+        var changedEvent = await operations.ShopifyWebhookEvents.SingleAsync(value => value.ShopifyOrderId == "customer-remembered-link-changed");
+        Assert.Equal("Imported", firstEvent.Status);
+        Assert.Equal("RequiresAttention", changedEvent.Status);
+        Assert.Contains("different copied SKU", changedEvent.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(await operations.OperationLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task UnresolvedVariantLink_AutoBindsWhenCorrectedCopyHasUniqueSku()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        var initialPayload = OrderPayload("unresolved-link-first", "MISSING-SKU");
+        using var initialRequest = CreateWebhookRequest("orders/create", "webhook-unresolved-first", initialPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(initialRequest)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        var correctedPayload = OrderPayload("unresolved-link-corrected", SkuCode(seed.SkuId))
+            .Replace("variant-unresolved-link-corrected", "variant-unresolved-link-first", StringComparison.Ordinal);
+        using var correctedRequest = CreateWebhookRequest("orders/create", "webhook-unresolved-corrected", correctedPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(correctedRequest)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var initialEvent = await operations.ShopifyWebhookEvents.SingleAsync(value => value.ShopifyOrderId == "customer-unresolved-link-first");
+        var correctedEvent = await operations.ShopifyWebhookEvents.SingleAsync(value => value.ShopifyOrderId == "customer-unresolved-link-corrected");
+        var mapping = await operations.ShopifyVariantMappings.SingleAsync(value => value.ShopifyVariantId == "variant-unresolved-link-first");
+        Assert.Equal("RequiresAttention", initialEvent.Status);
+        Assert.Equal("Imported", correctedEvent.Status);
+        Assert.Equal(seed.SkuId, mapping.SkuId);
+        Assert.Equal(SkuCode(seed.SkuId), mapping.ShopifySku);
+        Assert.Equal("Active", mapping.Status);
+        Assert.Equal(2, mapping.Revision);
+        Assert.Single(await operations.OperationLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task RecoveryEquivalentPayloadsKeepCanonicalHash_ButMaterialPropertyChangeNeedsReview()
+    {
+        var seed = await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        var orderId = "canonical-hash-equivalence";
+        var createdAt = DateTime.UtcNow.AddMinutes(4);
+        var firstPayload = MinimalWebhookOrderPayload(orderId, SkuCode(seed.SkuId), createdAt, createdAt, "pending");
+        using var create = CreateWebhookRequest("orders/create", "webhook-canonical-create", firstPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(create)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        string initialHash;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+            initialHash = (await operations.ShopifyOrderLinks.SingleAsync(value => value.ShopifyOrderId == $"customer-{orderId}")).CommercialSnapshotHash!;
+        }
+
+        var equivalentPayload = RecoveryOrderPayload(orderId, SkuCode(seed.SkuId), createdAt, createdAt.AddMinutes(1), "paid");
+        using var equivalent = CreateWebhookRequest("orders/updated", "webhook-canonical-equivalent", equivalentPayload);
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(equivalent)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+            var link = await operations.ShopifyOrderLinks.SingleAsync(value => value.ShopifyOrderId == $"customer-{orderId}");
+            Assert.Equal(initialHash, link.CommercialSnapshotHash);
+            Assert.False(link.RequiresReview);
+            Assert.Equal("paid", link.FinancialStatus);
+            Assert.True(link.FinancialStatusTrusted);
+        }
+
+        var materialNode = JsonNode.Parse(firstPayload)!.AsObject();
+        materialNode["updated_at"] = createdAt.AddMinutes(2).ToString("O");
+        materialNode["line_items"]!.AsArray()[0]!["properties"]!.AsArray()[0]!["value"] = "Left";
+        using var material = CreateWebhookRequest("orders/updated", "webhook-canonical-material", materialNode.ToJsonString());
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(material)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        using var finalScope = _factory.Services.CreateScope();
+        var finalOperations = finalScope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+        var finalLink = await finalOperations.ShopifyOrderLinks.SingleAsync(value => value.ShopifyOrderId == $"customer-{orderId}");
+        var materialEvent = await finalOperations.ShopifyWebhookEvents.SingleAsync(value =>
+            value.Topic == "orders/updated" && value.ShopifyOrderId == $"customer-{orderId}" && value.Status == "RequiresAttention");
+        Assert.Equal(initialHash, finalLink.CommercialSnapshotHash);
+        Assert.True(finalLink.RequiresReview);
+        Assert.Equal("RequiresAttention", materialEvent.Status);
+    }
+
+    [Fact]
+    public async Task RetryAndResolveRejectStaleProcessingEventsAndClearLeaseOnValidRetry()
+    {
+        await _factory.SeedAsync();
+        using var client = _factory.CreateClient();
+        using var receipt = CreateWebhookRequest("orders/create", "webhook-stale-action", OrderPayload("stale-action", "UNKNOWN-SHOPIFY-SKU"));
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(receipt)).StatusCode);
+        await ProcessQueuedEventsAsync();
+
+        Guid eventId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+            var eventRecord = await operations.ShopifyWebhookEvents.SingleAsync(value =>
+                value.Topic == "orders/create" && value.ShopifyOrderId == "customer-stale-action");
+            Assert.Equal("RequiresAttention", eventRecord.Status);
+            eventRecord.Status = "Processing";
+            eventRecord.LeaseToken = Guid.NewGuid();
+            eventRecord.LeaseUntil = DateTime.UtcNow.AddMinutes(2);
+            eventId = eventRecord.Id;
+            await operations.SaveChangesAsync();
+        }
+
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.IntegrationsShopifyManage);
+        var retryUri = $"/api/v1/integrations/shopify/events/{eventId}/retry";
+        var resolveUri = $"/api/v1/integrations/shopify/events/{eventId}/resolve";
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(retryUri, content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(resolveUri, new { note = "Concurrent worker owns this event." })).StatusCode);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var operations = scope.ServiceProvider.GetRequiredService<OperationsDbContext>();
+            var eventRecord = await operations.ShopifyWebhookEvents.SingleAsync(value => value.Id == eventId);
+            Assert.Equal("Processing", eventRecord.Status);
+            Assert.True(eventRecord.LeaseToken.HasValue);
+            Assert.True(eventRecord.LeaseUntil.HasValue && eventRecord.LeaseUntil.Value > DateTime.UtcNow);
+            eventRecord.Status = "RequiresAttention";
+            await operations.SaveChangesAsync();
+        }
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync(retryUri, content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(retryUri, content: null)).StatusCode);
+        using var finalScope = _factory.Services.CreateScope();
+        var finalEvent = await finalScope.ServiceProvider.GetRequiredService<OperationsDbContext>()
+            .ShopifyWebhookEvents.SingleAsync(value => value.Id == eventId);
+        Assert.Equal("Queued", finalEvent.Status);
+        Assert.Null(finalEvent.LeaseToken);
+        Assert.Null(finalEvent.LeaseUntil);
+    }
+
+    [Fact]
     public async Task UnlinkedShopifyCustomer_RemainsOtherPaymentsWithoutCreatingOrMatchingMerchant()
     {
         var seed = await _factory.SeedAsync();
@@ -157,6 +315,29 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     }
 
     [Fact]
+    public async Task SkuReadiness_ReportsSealedPackOnlyAsReadyForPackSales()
+    {
+        var seed = await _factory.SeedAsync();
+        await SetSeedProductAsync(seed.SkuId, "Lens", "Daily", "30 days");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+            var sku = await catalog.Skus.Include(value => value.Product).SingleAsync(value => value.Id == seed.SkuId);
+            sku.Product.SellMode = "SealedPackOnly";
+            sku.Product.PiecesPerPack = 30;
+            await catalog.SaveChangesAsync();
+        }
+
+        using var client = _factory.CreateClient();
+        client.AuthorizeAs(LenseeRoles.Admin, LenseePermissions.IntegrationsShopifyRead);
+        var result = await client.GetFromJsonAsync<PagedContract<ShopifySkuReadinessContract>>("/api/v1/integrations/shopify/sku-readiness");
+        var skuReadiness = Assert.Single(result!.Items);
+        Assert.Equal("SealedPackOnly", skuReadiness.SellMode);
+        Assert.Equal(30, skuReadiness.PiecesPerPack);
+        Assert.Equal("Ready", skuReadiness.Status);
+    }
+
+    [Fact]
     public async Task InvalidLensCycle_CreatesExceptionWithoutCustomerOrOperation()
     {
         var seed = await _factory.SeedAsync();
@@ -203,12 +384,25 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         {
             id = "customer-lines",
             name = "#lines",
+            created_at = DateTime.UtcNow.AddMinutes(5).ToString("O"),
+            updated_at = DateTime.UtcNow.AddMinutes(5).ToString("O"),
             email = "buyer@example.com",
+            currency = "EGP",
+            presentment_currency = "EGP",
+            subtotal_price = "251.00",
+            current_subtotal_price = "251.00",
+            total_discounts = "0.00",
+            total_shipping_price_set = new { shop_money = new { amount = "0.00", currency_code = "EGP" }, presentment_money = new { amount = "0.00", currency_code = "EGP" } },
+            total_tax = "0.00",
+            current_total_tax = "0.00",
+            total_price = "251.00",
+            current_total_price = "251.00",
+            taxes_included = false,
             payment_gateway_names = new[] { "Card" },
             line_items = new[]
             {
-                new { id = "right-line", variant_id = "right-variant", sku = skuCode, title = "Right eye", quantity = 1, price = "125.50", properties = new[] { new { name = "Eye", value = "Right" } } },
-                new { id = "left-line", variant_id = "left-variant", sku = skuCode, title = "Left eye", quantity = 1, price = "125.50", properties = new[] { new { name = "Eye", value = "Left" } } }
+                new { id = "right-line", variant_id = "right-variant", sku = skuCode, title = "Right eye", quantity = 1, price = "125.50", total_discount = "0.00", original_total_set = new { shop_money = new { amount = "125.50", currency_code = "EGP" } }, discounted_total_set = new { shop_money = new { amount = "125.50", currency_code = "EGP" } }, discount_allocations = Array.Empty<object>(), properties = new[] { new { name = "Eye", value = "Right" } } },
+                new { id = "left-line", variant_id = "left-variant", sku = skuCode, title = "Left eye", quantity = 1, price = "125.50", total_discount = "0.00", original_total_set = new { shop_money = new { amount = "125.50", currency_code = "EGP" } }, discounted_total_set = new { shop_money = new { amount = "125.50", currency_code = "EGP" } }, discount_allocations = Array.Empty<object>(), properties = new[] { new { name = "Eye", value = "Left" } } }
             }
         });
         using var client = _factory.CreateClient();
@@ -245,6 +439,14 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         using var successResponse = await client.PutAsJsonAsync($"/api/v1/operations/{operationId}/shopify-allocation", new { sourceLocationId = seed.SubLocationId, lines = detail!.Lines.Select(line => new { operationLineId = line.Id, lotNumber = "ONLINE-1", expiryDate = expiry }) });
         Assert.Equal(HttpStatusCode.NoContent, successResponse.StatusCode);
         Assert.All(detail.Lines, line => Assert.NotNull(line.ShopifyLineItemId));
+
+        using var mappingScope = _factory.Services.CreateScope();
+        var mappings = mappingScope.ServiceProvider.GetRequiredService<OperationsDbContext>().ShopifyVariantMappings;
+        var eyeMappings = await mappings.Where(mapping => mapping.ShopifyVariantId == "right-variant" || mapping.ShopifyVariantId == "left-variant")
+            .OrderBy(mapping => mapping.ShopifyVariantId).ToListAsync();
+        Assert.Equal(new[] { "left-variant", "right-variant" }, eyeMappings.Select(mapping => mapping.ShopifyVariantId));
+        Assert.All(eyeMappings, mapping => Assert.Equal(seed.SkuId, mapping.SkuId));
+        Assert.All(eyeMappings, mapping => Assert.Equal("Active", mapping.Status));
     }
 
     [Fact]
@@ -265,6 +467,12 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
             }
         }
 
+        using (var diagnosticScope = factory.Services.CreateScope())
+        {
+            var received = await diagnosticScope.ServiceProvider.GetRequiredService<OperationsDbContext>().ShopifyWebhookEvents.SingleAsync();
+            Assert.Equal("Imported", received.Status);
+            Assert.NotNull(received.OperationId);
+        }
         Guid operationId;
         Guid operationLineId;
         DateOnly expiry = new(2028, 6, 1);
@@ -327,6 +535,127 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
 
     private static string SkuCode(Guid skuId) => $"LEN-{skuId:N}";
 
+    private static string MinimalWebhookOrderPayload(string id, string sku, DateTime createdAt, DateTime updatedAt, string financialStatus) => JsonSerializer.Serialize(new
+    {
+        id = $"customer-{id}",
+        name = "#Canonical",
+        created_at = createdAt.ToString("O"),
+        updated_at = updatedAt.ToString("O"),
+        financial_status = financialStatus,
+        email = "buyer@example.com",
+        phone = "+20 100 000 0000",
+        currency = "EGP",
+        presentment_currency = "EGP",
+        subtotal_price = "251.00",
+        total_discounts = "0.00",
+        total_shipping_price = "0.00",
+        total_tax = "0.00",
+        total_price = "251.00",
+        taxes_included = false,
+        shipping_address = CanonicalTestAddress(),
+        billing_address = CanonicalTestAddress(),
+        shipping_lines = new[] { new { id = "ship-hash", title = "Standard", code = "standard", price = "0.00", discounted_price = "0.00", discount_allocations = Array.Empty<object>(), tax_lines = Array.Empty<object>() } },
+        line_items = new[] { new { id = "line-hash", variant_id = "variant-hash", sku, title = "Lens", variant_title = "Hazel", quantity = 2, price = "125.50", total_discount = "0.00", properties = new[] { new { name = "Eye", value = "Right" } } } }
+    });
+
+    private static string RecoveryOrderPayload(string id, string sku, DateTime createdAt, DateTime updatedAt, string financialStatus)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            id = $"customer-{id}",
+            name = "#Canonical",
+            created_at = createdAt.ToString("O"),
+            updated_at = updatedAt.ToString("O"),
+            financial_status = financialStatus,
+            email = "buyer@example.com",
+            phone = "+20 100 000 0000",
+            currency = "EGP",
+            presentment_currency = "EGP",
+            taxes_included = false,
+            subtotal_price = "251.000",
+            subtotal_price_set = TestMoneyBag("251.000"),
+            current_subtotal_price = "251.000",
+            current_subtotal_price_set = TestMoneyBag("251.000"),
+            total_discounts = "0.000",
+            total_discounts_set = TestMoneyBag("0.000"),
+            current_total_discounts = "0.000",
+            current_total_discounts_set = TestMoneyBag("0.000"),
+            total_shipping_price = "0.000",
+            total_shipping_price_set = TestMoneyBag("0.000"),
+            current_shipping_price = "0.000",
+            current_shipping_price_set = TestMoneyBag("0.000"),
+            total_tax = "0.000",
+            total_tax_set = TestMoneyBag("0.000"),
+            current_total_tax = "0.000",
+            current_total_tax_set = TestMoneyBag("0.000"),
+            total_price = "251.000",
+            total_price_set = TestMoneyBag("251.000"),
+            current_total_price = "251.000",
+            current_total_price_set = TestMoneyBag("251.000"),
+            total_cash_rounding_payment_adjustment_set = TestMoneyBag("0.000"),
+            total_cash_rounding_refund_adjustment_set = TestMoneyBag("0.000"),
+            shipping_address = CanonicalTestAddress(),
+            billing_address = CanonicalTestAddress(),
+            shipping_lines = new[] { new { id = "ship-hash", title = "Standard", code = "standard", price = "0.000", price_set = TestMoneyBag("0.000"), discounted_price = "0.000", discounted_price_set = TestMoneyBag("0.000"), discount_allocations = Array.Empty<object>(), tax_lines = Array.Empty<object>() } },
+            line_items = new[] { new { id = "line-hash", variant_id = "variant-hash", sku, title = "Lens", variant_title = "Hazel", quantity = 2, current_quantity = 2, price = "125.500", price_set = TestMoneyBag("125.500"), original_total_set = TestMoneyBag("251.000"), discounted_total_set = TestMoneyBag("251.000"), total_discount = "0.000", discount_allocations = Array.Empty<object>(), tax_lines = Array.Empty<object>(), properties = new[] { new { name = "Eye", value = "Right" } } } }
+        });
+        var scaled = payload.Replace("125.500", "125.5000", StringComparison.Ordinal)
+            .Replace("251.000", "251.0000", StringComparison.Ordinal)
+            .Replace("0.000", "0.0000", StringComparison.Ordinal);
+        return ReverseJsonPropertyOrder(scaled);
+    }
+
+    private static object TestMoneyBag(string amount) => new
+    {
+        shop_money = new { amount, currency_code = "EGP" },
+        presentment_money = new { amount, currency_code = "EGP" }
+    };
+
+    private static object CanonicalTestAddress() => new
+    {
+        first_name = "Online",
+        last_name = "Buyer",
+        address1 = "15 Nile Street",
+        address2 = (string?)null,
+        city = "Cairo",
+        province = "Cairo",
+        province_code = (string?)null,
+        zip = "11511",
+        country = "Egypt",
+        country_code = "EG",
+        phone = "+20 100 000 0000",
+        company = (string?)null
+    };
+
+    private static string ReverseJsonPropertyOrder(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) WriteReversed(document.RootElement, writer);
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static void WriteReversed(JsonElement value, Utf8JsonWriter writer)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            foreach (var property in value.EnumerateObject().Reverse())
+            {
+                writer.WritePropertyName(property.Name);
+                WriteReversed(property.Value, writer);
+            }
+            writer.WriteEndObject();
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var item in value.EnumerateArray()) WriteReversed(item, writer);
+            writer.WriteEndArray();
+        }
+        else value.WriteTo(writer);
+    }
+
     private static HttpRequestMessage CreateWebhookRequest(string topic, string webhookId, string payload, string? signature = null, string? shopDomain = null)
     {
         var body = Encoding.UTF8.GetBytes(payload);
@@ -337,6 +666,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
         request.Headers.Add("X-Shopify-Webhook-Id", webhookId);
         request.Headers.Add("X-Shopify-Topic", topic);
         request.Headers.Add("X-Shopify-Shop-Domain", shopDomain ?? OperationsEndpointFactory.ShopifyStoreDomain);
+        request.Headers.Add("X-Shopify-Triggered-At", DateTime.UtcNow.ToString("O"));
         return request;
     }
 
@@ -353,12 +683,25 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     {
         id = $"customer-{id}",
         name = $"#{id}",
+        created_at = DateTime.UtcNow.AddMinutes(5).ToString("O"),
+        updated_at = DateTime.UtcNow.AddMinutes(5).ToString("O"),
         email = "buyer@example.com",
         phone = "+20 100 000 0000",
+        currency = "EGP",
+        presentment_currency = "EGP",
+        subtotal_price = "251.00",
+        current_subtotal_price = "251.00",
+        total_discounts = "0.00",
+        total_shipping_price_set = new { shop_money = new { amount = "0.00", currency_code = "EGP" }, presentment_money = new { amount = "0.00", currency_code = "EGP" } },
+        total_tax = "0.00",
+        current_total_tax = "0.00",
+        total_price = "251.00",
+        current_total_price = "251.00",
+        taxes_included = false,
         payment_gateway_names = new[] { gateway },
         customer = new { id = $"shopify-buyer-{id}", first_name = "Online", last_name = "Buyer", email = "buyer@example.com", phone = "+20 100 000 0000" },
         shipping_address = new { first_name = "Online", last_name = "Buyer", address1 = "15 Nile Street", city = "Cairo", country = "EG", phone = "+20 100 000 0000" },
-        line_items = new[] { new { id = $"line-{id}", variant_id = $"variant-{id}", sku, title = "Lens", variant_title = "Hazel", quantity = 2, price = "125.50", properties = new[] { new { name = "Eye", value = "Right" } } } }
+        line_items = new[] { new { id = $"line-{id}", variant_id = $"variant-{id}", sku, title = "Lens", variant_title = "Hazel", quantity = 2, price = "125.50", total_discount = "0.00", original_total_set = new { shop_money = new { amount = "251.00", currency_code = "EGP" } }, discounted_total_set = new { shop_money = new { amount = "251.00", currency_code = "EGP" } }, discount_allocations = Array.Empty<object>(), properties = new[] { new { name = "Eye", value = "Right" } } } }
     });
 
     private async Task ProcessQueuedEventsAsync()
@@ -369,7 +712,7 @@ public sealed class ShopifyEndpointContractTests : IClassFixture<OperationsEndpo
     }
 
     private sealed class PagedContract<T> { public List<T> Items { get; init; } = []; }
-    private sealed class ShopifySkuReadinessContract { public string? WearCycle { get; init; } public string? WearDuration { get; init; } public string? Status { get; init; } }
+    private sealed class ShopifySkuReadinessContract { public string? WearCycle { get; init; } public string? WearDuration { get; init; } public string? Status { get; init; } public string? SellMode { get; init; } public int? PiecesPerPack { get; init; } }
     private sealed class OperationDetailContract { public List<OperationLineContract> Lines { get; init; } = []; }
     private sealed class OperationLineContract { public Guid Id { get; init; } public string? ShopifyLineItemId { get; init; } }
 }

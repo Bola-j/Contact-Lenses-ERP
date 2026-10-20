@@ -1,7 +1,10 @@
 const { expect } = require("@playwright/test");
 
 const apiBaseUrl = process.env.LENSEE_E2E_API_URL || "http://127.0.0.1:55000";
-const defaultE2ePassword = "E2E-only-not-production-2026!";
+const defaultE2ePassword = process.env.LENSEE_E2E_PASSWORD;
+if (!defaultE2ePassword) {
+  throw new Error("Set LENSEE_E2E_PASSWORD through the local secret facility before running UI certification.");
+}
 
 const users = {
   admin: { username: process.env.LENSEE_E2E_ADMIN_USER || "e2e_admin", password: process.env.LENSEE_E2E_ADMIN_PASSWORD || defaultE2ePassword },
@@ -133,7 +136,7 @@ async function selectOptionByText(select, textOrRegex) {
   await select.selectOption(value);
 }
 
-async function createCatalogFixture(page, data) {
+async function createCatalogFixture(page, data, options = {}) {
   await gotoRoute(page, "/catalog");
   await page.locator("#catalog-search").fill(data.product);
   if (await page.locator("#catalog-products tr", { hasText: data.product }).first().isVisible().catch(() => false)) {
@@ -165,17 +168,25 @@ async function createCatalogFixture(page, data) {
 
   await page.locator("#catalog-search").fill(data.product);
   await page.locator("#catalog-products tr", { hasText: data.product }).first().click();
-  await createSkuForSelectedProduct(page, data);
+  return createSkuForSelectedProduct(page, data, options);
 }
 
-async function createSkuForSelectedProduct(page, data) {
+async function createSkuForSelectedProduct(page, data, options = {}) {
   await page.locator("#sku-power-sign").selectOption("+");
   await page.locator("#sku-power-value").fill("1.25");
   await page.locator("#sku-color").fill(data.skuColor);
   await page.locator("#sku-size").fill(data.skuSize);
   await page.locator("#sku-barcode").fill(data.barcode);
+  const skuResponse = options.captureSkuResponse
+    ? page.waitForResponse((response) => response.request().method() === "POST" &&
+      /\/api\/v1\/catalog\/products\/[^/]+\/skus(?:\?|$)/.test(response.url()))
+    : null;
   await page.locator("#sku-form button[type='submit']").click();
   await expectNotice(page, /SKU saved/i);
+  if (!skuResponse) return null;
+  const response = await skuResponse;
+  if (!response.ok()) throw new Error(`UI-created SKU request failed with HTTP ${response.status()}.`);
+  return response.json();
 }
 
 async function createCrmFixture(page, data) {
@@ -278,18 +289,24 @@ async function createSupplyReceipt(page, options) {
   await page.locator("#supply-reset").click();
   await page.locator("#supply-supplier").fill(options.supplier || "E2E Supplier");
   if (options.invoice) await page.locator("#supply-invoice").fill(options.invoice);
+  if (options.destinationText) await selectOptionByText(page.locator("#supply-location"), options.destinationText);
   const row = page.locator(".supply-line-row").first();
   await selectSupplyLineSku(row, options.skuText);
   await row.locator(".supply-line-qty").fill(options.quantity || "1");
   if (options.lot) await row.locator(".supply-line-lot").fill(options.lot);
   if (options.expiry) await row.locator(".supply-line-expiry").fill(options.expiry);
+  const expiryInput = row.locator(".supply-line-expiry");
+  const expiryValidity = await expiryInput.evaluate((input) => ({ valid: input.validity.valid, message: input.validationMessage, value: input.value }));
+  if (!expiryValidity.valid) throw new Error(`Supply expiry field rejected '${expiryValidity.value}': ${expiryValidity.message}`);
   const [createResponse] = await Promise.all([
     page.waitForResponse((response) =>
       response.url().includes("/api/v1/supply/shipments") &&
-      response.request().method() === "POST" &&
-      response.status() === 201),
+      response.request().method() === "POST"),
     page.locator("#supply-form button[type='submit']").click()
   ]);
+  if (createResponse.status() !== 201) {
+    throw new Error(`Supply shipment draft returned HTTP ${createResponse.status()}.`);
+  }
   const shipment = await createResponse.json();
   await expect(page.locator("#supply-rows")).toContainText(shipment.shipmentNumber, { timeout: 20_000 });
   await page.locator("#supply-rows tr", { hasText: shipment.shipmentNumber }).first().click();

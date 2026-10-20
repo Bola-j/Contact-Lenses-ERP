@@ -74,6 +74,8 @@ public partial class OperationLine
 
     public string? ShopifyPropertiesSnapshot { get; set; }
 
+    public string? ShopifyCommercialSnapshot { get; set; }
+
     public virtual OperationLog Operation { get; set; } = null!;
 
     public virtual ICollection<OperationLineSourceAllocation> SourceAllocations { get; set; } = new List<OperationLineSourceAllocation>();
